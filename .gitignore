@@ -1,0 +1,24 @@
+# Secrets — never commit real values (only *.example templates are tracked)
+config/secrets.env
+config/backup.env
+config/rclone.conf
+*-secrets.env
+.env
+
+# OpenTofu / Terraform
+opentofu/.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
+# Runtime state / caches / logs
+cache/
+*.log
+
+# OS / editor cruft
+.DS_Store
+*.swp
