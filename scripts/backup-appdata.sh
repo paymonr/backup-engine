@@ -7,7 +7,17 @@ source "$HERE/lib/common.sh"
 # shellcheck source=lib/config.sh
 source "$HERE/lib/config.sh"
 
+# Guard so a failure already recorded/notified by _fail() isn't double-reported
+# by the catch-all EXIT trap below.
+_USB_FAIL_HANDLED=0
+
 main() {
+  # Catch-all: any non-zero exit from here on (an explicit _fail, a die() in
+  # validate_appdata/acquire_lock, or an unexpected `set -e` abort) must still
+  # record failure state + notify. Installed first thing, right after
+  # CACHE_DIR is known (common.sh defaults it as soon as it's sourced above).
+  trap '_usb_exit_trap "$?"' EXIT
+
   # Allow tests to preset env; only load mounted files when present.
   if [ -f "${CONFIG_DIR:-/config}/backup.env" ]; then
     load_config "${CONFIG_DIR:-/config}"
@@ -36,7 +46,7 @@ main() {
   if restic -r "$RESTIC_REPOSITORY" "${class_opt[@]}" backup "$APPDATA_SRC" \
        --tag appdata --json | tee "$CACHE_DIR/state/appdata-last.jsonl" >/dev/null; then
     snap_id="$(grep '"message_type":"summary"' "$CACHE_DIR/state/appdata-last.jsonl" \
-                | grep -o '"snapshot_id":"[a-f0-9]*"' | head -n1 | cut -d'"' -f4)"
+                | grep -o '"snapshot_id":"[a-f0-9]*"' | head -n1 | cut -d'"' -f4)" || true
     snap_id="${snap_id:-unknown}"
   else
     _fail "restic backup failed"
@@ -67,13 +77,35 @@ _forget_or_defer() {
     log_warn "restic forget/prune reported an error (non-fatal for this run)"
 }
 
+# _record_failure MSG [EXIT_CODE] — single place that writes the failure
+# run-state and sends the failure notification. Sets the guard flag first so
+# the EXIT trap (which may still fire right after this, via die()/exit) never
+# double-notifies.
+_record_failure() {
+  local msg="$1" rc="${2:-1}"
+  _USB_FAIL_HANDLED=1
+  mkdir -p "$CACHE_DIR/state"
+  printf '{"last_run":"%s","outcome":"failure","error":"%s","exit_code":%d}\n' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$msg" "$rc" >"$CACHE_DIR/state/appdata.json"
+  notify failure "appdata backup FAILED" "$msg"
+}
+
 _fail() {
   local msg="$1"
-  mkdir -p "$CACHE_DIR/state"
-  printf '{"last_run":"%s","outcome":"failure","error":"%s"}\n' \
-    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$msg" >"$CACHE_DIR/state/appdata.json"
-  notify failure "appdata backup FAILED" "$msg"
+  _record_failure "$msg" 1
   die "$msg"
+}
+
+# _usb_exit_trap RC — EXIT-trap catch-all. Fires for every exit of this
+# script (success, an explicit _fail, or any other non-zero exit such as
+# validate_appdata's or acquire_lock's die()). No-ops on success and no-ops
+# if _record_failure already ran, so it only fires for the failure paths
+# that _fail() didn't already handle.
+_usb_exit_trap() {
+  local rc="$1"
+  [ "$rc" -eq 0 ] && return 0
+  [ "$_USB_FAIL_HANDLED" -eq 1 ] && return 0
+  _record_failure "pipeline exited with status $rc" "$rc"
 }
 
 main "$@"
