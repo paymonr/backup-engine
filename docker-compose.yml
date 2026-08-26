@@ -1,0 +1,12 @@
+services:
+  unraid-s3-backup:
+    image: ghcr.io/paymon/unraid-s3-backup:latest
+    container_name: unraid-s3-backup
+    restart: unless-stopped
+    volumes:
+      - /mnt/appdata_system/appdata_backups:/backup/appdata:ro
+      - /mnt/user/media:/backup/media:ro
+      - ./config:/config
+      - ./cache:/cache
+    ports:
+      - "8099:8099"   # GUI (Phase 2)
