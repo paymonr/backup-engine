@@ -14,6 +14,11 @@ render_rclone_conf() {
     # Bucket-level SSE requires a KMS backend; standalone MinIO (no KMS) 501s
     # on PutObject if we ask for it. Only request it against real AWS.
     sse_line=""
+    # log_warn comes from common.sh; guard so this file can still be sourced
+    # and unit-tested (render_rclone_conf called directly) without it.
+    if command -v log_warn >/dev/null 2>&1; then
+      log_warn "S3_ENDPOINT set — server-side encryption (AES256) not requested for a non-AWS endpoint; configure it manually if your backend supports/requires it."
+    fi
   fi
   mkdir -p "$(dirname "$path")"
   cat >"$path" <<EOF
