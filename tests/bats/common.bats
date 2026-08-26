@@ -48,3 +48,27 @@ setup() { setup_common; }
   run notify failure "t" "b"
   [ "$status" -eq 0 ]
 }
+
+@test "version_banner logs unknown for missing tools without leaking errors" {
+  # Build a minimal PATH containing only what log()/version_banner need
+  # (date, head) but none of restic/rclone/supercronic, so we can assert
+  # the "missing binary" fallback without any real tool interfering.
+  local stub_bin="$BATS_TEST_TMPDIR/stubbin"
+  mkdir -p "$stub_bin"
+  ln -s "$(command -v date)" "$stub_bin/date"
+  ln -s "$(command -v head)" "$stub_bin/head"
+  local bash_bin; bash_bin="$(command -v bash)"
+
+  run env -u LOG_FILE PATH="$stub_bin" "$bash_bin" -c \
+    "source '$BATS_TEST_DIRNAME/../../scripts/lib/common.sh'; version_banner"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"restic:"* ]]
+  [[ "$output" == *"rclone:"* ]]
+  [[ "$output" == *"supercronic:"* ]]
+  [[ "$output" != *"command not found"* ]]
+  [[ "$output" != *"common.sh"* ]]
+  local count
+  count=$(grep -o "unknown" <<<"$output" | wc -l)
+  [ "$count" -eq 3 ]
+}

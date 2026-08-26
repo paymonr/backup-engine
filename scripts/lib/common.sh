@@ -69,9 +69,27 @@ notify() {
   return 0
 }
 
+# _tool_version NAME CMD... — prints the first line of `CMD...`'s version
+# output, or "unknown" when NAME isn't on PATH or the command produces no
+# output. Never invokes a missing binary (so the shell can't leak a
+# "command not found" error into the result) and never propagates a
+# failure status, regardless of the caller's pipefail/errexit settings.
+_tool_version() {
+  local name="$1"
+  local out=""
+  if command -v "$name" >/dev/null 2>&1; then
+    out="$("$@" 2>&1 | head -n1)" || true
+  fi
+  if [ -z "$out" ]; then
+    printf 'unknown\n'
+  else
+    printf '%s\n' "$out"
+  fi
+}
+
 version_banner() {
   log_info "unraid-s3-backup $USB_VERSION"
-  log_info "restic:     $(restic version 2>/dev/null | head -n1 || echo unknown)"
-  log_info "rclone:     $(rclone version 2>/dev/null | head -n1 || echo unknown)"
-  log_info "supercronic: $(supercronic -version 2>&1 | head -n1 || echo unknown)"
+  log_info "restic:      $(_tool_version restic version)"
+  log_info "rclone:      $(_tool_version rclone version)"
+  log_info "supercronic: $(_tool_version supercronic -version)"
 }
