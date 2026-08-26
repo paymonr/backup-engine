@@ -1,0 +1,5 @@
+# Follow local `source`d files (lib/*.sh) resolved relative to each script's
+# own directory, so `shellcheck scripts/backup-appdata.sh` (run from anywhere)
+# actually checks scripts/lib/common.sh and scripts/lib/config.sh too.
+external-sources=true
+source-path=SCRIPTDIR
