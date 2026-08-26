@@ -1,0 +1,12 @@
+services:
+  backup-engine:
+    image: ghcr.io/paymonr/backup-engine:latest
+    container_name: backup-engine
+    restart: unless-stopped
+    volumes:
+      - /mnt/appdata_system/appdata_backups:/backup/appdata:ro
+      - /mnt/user/media:/backup/media:ro
+      - ./config:/config
+      - ./cache:/cache
+    ports:
+      - "8099:8099"   # GUI (Phase 2)

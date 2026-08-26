@@ -22,3 +22,6 @@ cache/
 # OS / editor cruft
 .DS_Store
 *.swp
+
+# Internal working docs (specs/plans) — not part of the distributable tool
+docs/
