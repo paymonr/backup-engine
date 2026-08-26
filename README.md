@@ -1,4 +1,4 @@
-# unraid-s3-backup
+# backup-engine
 
 Off-site, encrypted AWS S3 backups for an Unraid server — the off-site leg of a 3-2-1 strategy.
 A single configuration-driven Docker container ships two things to S3:
@@ -30,11 +30,11 @@ the AWS destination is provisioned either by the included OpenTofu module or by 
 
 ### Community Applications (Unraid)
 
-1. In the Unraid UI, go to **Apps → Settings → look for the "unraid-s3-backup" template**, or add
+1. In the Unraid UI, go to **Apps → Settings → look for the "backup-engine" template**, or add
    this repo's template directly: **Apps → Template Repositories**, add
-   `https://github.com/paymon/unraid-s3-backup`.
-2. Install **unraid-s3-backup** from Apps (or **Docker → Add Container → select
-   `my-unraid-s3-backup.xml`**). Review the four required paths and fix them if your shares
+   `https://github.com/paymonr/backup-engine`.
+2. Install **backup-engine** from Apps (or **Docker → Add Container → select
+   `backup-engine.xml`**). Review the four required paths and fix them if your shares
    differ from the defaults:
    - `Appdata backups (ro)` → your Appdata Backup plugin's output directory
    - `Media root (ro)` → your media share (curated further via `includes-media.txt`)
@@ -47,8 +47,8 @@ the AWS destination is provisioned either by the included OpenTofu module or by 
 ### Plain docker-compose (any Docker host)
 
 ```bash
-git clone https://github.com/paymon/unraid-s3-backup.git
-cd unraid-s3-backup
+git clone https://github.com/paymonr/backup-engine.git
+cd backup-engine
 cp config/backup.env.example config/backup.env
 cp config/secrets.env.example config/secrets.env
 cp config/includes-media.txt.example config/includes-media.txt
@@ -172,7 +172,7 @@ backup.
 ## Restore runbook
 
 Both tiers restore via `scripts/restore.sh`, run inside the container
-(`docker exec -it unraid-s3-backup /app/scripts/restore.sh ...`) or with the same image/config
+(`docker exec -it backup-engine /app/scripts/restore.sh ...`) or with the same image/config
 locally.
 
 ### Appdata (restic)
@@ -229,7 +229,7 @@ retrieval modeling) is planned for a later phase — see §8 of the design spec 
 - `bats tests/bats/` — unit tests.
 - `bats tests/integration/` — integration tests against a standalone MinIO binary.
 - `cd opentofu && tofu fmt -check && tofu validate` — module lint/validate.
-- `docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from usb` —
+- `docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from backup-engine` —
   containerized smoke run against Dockerized MinIO.
 
 All of the above run in CI on every push/PR (`.github/workflows/ci.yml`).

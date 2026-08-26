@@ -1,7 +1,7 @@
 # opentofu/ — AWS destination module
 
 This module is the single definition of the AWS destination for
-`unraid-s3-backup`: one hardened S3 bucket plus a least-privilege,
+`backup-engine`: one hardened S3 bucket plus a least-privilege,
 object-only IAM user that the backup container uses at runtime.
 
 It provisions:

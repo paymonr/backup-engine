@@ -18,7 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          sudo apt-get update && sudo apt-get install -y restic awscli
+          sudo apt-get update && sudo apt-get install -y restic
+          # awscli is not an apt package on the runner (Ubuntu 24.04); use the official v2 installer
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install --update
           curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/r.zip
           sudo unzip -j /tmp/r.zip '*/rclone' -d /usr/local/bin
           curl -fsSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /tmp/minio
@@ -35,8 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t unraid-s3-backup:ci .
+      - run: docker build -t backup-engine:ci .
       - name: compose smoke run (best-effort; MinIO readiness can race)
         run: |
-          docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from usb || true
-          docker compose -f docker-compose.test.yml logs usb
+          docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from backup-engine || true
+          docker compose -f docker-compose.test.yml logs backup-engine

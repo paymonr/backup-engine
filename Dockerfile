@@ -47,7 +47,7 @@ RUN set -eux; \
     unzip -j /tmp/rclone.zip "*/rclone" -d /usr/local/bin; \
     chmod 0755 /usr/local/bin/rclone; \
     rm -f /tmp/rclone.zip; \
-    rclone version
+    env -u RCLONE_VERSION rclone version   # the RCLONE_VERSION build arg leaks into env; rclone reads any RCLONE_* var as a flag (here --version), so strip it for the smoke check
 
 # supercronic — download, verify sha256, install.
 RUN set -eux; \

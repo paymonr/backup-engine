@@ -6,7 +6,7 @@ variable "bucket_name" {
 }
 variable "name_prefix" {
   type    = string
-  default = "unraid-s3-backup"
+  default = "backup-engine"
 }
 variable "noncurrent_version_expiration_days" {
   type    = number

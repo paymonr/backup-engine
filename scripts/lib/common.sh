@@ -2,7 +2,7 @@
 # scripts/lib/common.sh — shared engine helpers. Source, don't execute.
 # shellcheck shell=bash
 
-USB_VERSION="${VERSION:-0.1.0-dev}"
+BACKUP_ENGINE_VERSION="${VERSION:-0.1.0-dev}"
 CACHE_DIR="${CACHE_DIR:-/cache}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
@@ -103,7 +103,7 @@ _tool_version() {
 }
 
 version_banner() {
-  log_info "unraid-s3-backup $USB_VERSION"
+  log_info "backup-engine $BACKUP_ENGINE_VERSION"
   log_info "restic:      $(_tool_version restic version)"
   log_info "rclone:      $(_tool_version rclone version)"
   log_info "supercronic: $(_tool_version supercronic -version)"

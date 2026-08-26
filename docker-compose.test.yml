@@ -6,7 +6,7 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports: ["9000:9000"]
-  usb:
+  backup-engine:
     build: .
     depends_on: [minio]
     environment:
@@ -15,6 +15,6 @@ services:
     volumes:
       - ./tests/fixtures/config:/config
       - ./tests/fixtures/appdata:/backup/appdata:ro
-      - usb-cache:/cache
+      - backup-engine-cache:/cache
 volumes:
-  usb-cache:
+  backup-engine-cache:

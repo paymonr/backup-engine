@@ -11,7 +11,7 @@ source "$HERE/lib/rclone-conf.sh"
 
 # Guard so a failure already recorded/notified by _fail() isn't double-reported
 # by the catch-all EXIT trap below.
-_USB_FAIL_HANDLED=0
+_BE_FAIL_HANDLED=0
 
 main() {
   # Catch-all: any non-zero exit from here on (an explicit _fail, a die() in
@@ -74,7 +74,7 @@ main() {
 # double-notifies.
 _record_failure() {
   local msg="$1" rc="${2:-1}"
-  _USB_FAIL_HANDLED=1
+  _BE_FAIL_HANDLED=1
   mkdir -p "$CACHE_DIR/state"
   printf '{"last_run":"%s","outcome":"failure","error":"%s","exit_code":%d}\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$msg" "$rc" >"$CACHE_DIR/state/media.json"
@@ -96,7 +96,7 @@ _fail() {
 _usb_exit_trap() {
   local rc="$1"
   [ "$rc" -eq 0 ] && return 0
-  [ "$_USB_FAIL_HANDLED" -eq 1 ] && return 0
+  [ "$_BE_FAIL_HANDLED" -eq 1 ] && return 0
   _record_failure "pipeline exited with status $rc" "$rc"
 }
 

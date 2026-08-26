@@ -55,7 +55,7 @@ load_config() {
   : "${KEEP_LAST:=3}"; : "${KEEP_DAILY:=7}"; : "${KEEP_WEEKLY:=4}"; : "${KEEP_MONTHLY:=6}"
   : "${RCLONE_TRANSFERS:=8}"; : "${RCLONE_BWLIMIT:=}"
   : "${MEDIA_INCLUDES:=$dir/includes-media.txt}"
-  : "${LOG_FILE:=$CACHE_DIR/logs/unraid-s3-backup.log}"
+  : "${LOG_FILE:=$CACHE_DIR/logs/backup-engine.log}"
   : "${NOTIFY_ON_SUCCESS:=false}"
 
   if [ -z "${RESTIC_REPOSITORY:-}" ]; then
