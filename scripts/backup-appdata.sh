@@ -59,6 +59,7 @@ main() {
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$snap_id" "$dur" >"$CACHE_DIR/state/appdata.json"
   log_info "appdata backup complete (snapshot=$snap_id, ${dur}s)"
   notify success "appdata backup OK" "snapshot $snap_id in ${dur}s"
+  healthcheck success
 }
 
 _is_cold() {
@@ -88,6 +89,7 @@ _record_failure() {
   printf '{"last_run":"%s","outcome":"failure","error":"%s","exit_code":%d}\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$msg" "$rc" >"$CACHE_DIR/state/appdata.json"
   notify failure "appdata backup FAILED" "$msg"
+  healthcheck failure
 }
 
 _fail() {

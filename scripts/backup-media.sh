@@ -65,6 +65,7 @@ main() {
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$verb" "$dur" >"$CACHE_DIR/state/media.json"
   log_info "media backup complete (${verb}, ${dur}s)"
   notify success "media backup OK" "$verb finished in ${dur}s"
+  healthcheck success
 }
 
 # _record_failure MSG [EXIT_CODE] — single place that writes the failure
@@ -78,6 +79,7 @@ _record_failure() {
   printf '{"last_run":"%s","outcome":"failure","error":"%s","exit_code":%d}\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$msg" "$rc" >"$CACHE_DIR/state/media.json"
   notify failure "media backup FAILED" "$msg"
+  healthcheck failure
 }
 
 _fail() {

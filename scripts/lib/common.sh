@@ -69,6 +69,21 @@ notify() {
   return 0
 }
 
+# healthcheck EVENT — best-effort ping to a healthchecks.io-style dead-man's
+# switch. EVENT is "success" or "failure". No-op when HEALTHCHECK_URL is
+# unset/empty. Never fails the caller (mirrors notify()'s best-effort shape):
+# a curl error is logged and swallowed, not propagated.
+healthcheck() {
+  local event="$1"
+  [ -n "${HEALTHCHECK_URL:-}" ] || return 0
+  local url="$HEALTHCHECK_URL"
+  [ "$event" = "failure" ] && url="${HEALTHCHECK_URL%/}/fail"
+  if ! curl -fsS -m 10 -o /dev/null "$url"; then
+    log_warn "healthcheck ping failed (event=$event)"
+  fi
+  return 0
+}
+
 # _tool_version NAME CMD... — prints the first line of `CMD...`'s version
 # output, or "unknown" when NAME isn't on PATH or the command produces no
 # output. Never invokes a missing binary (so the shell can't leak a
