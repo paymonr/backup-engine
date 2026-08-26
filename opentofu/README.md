@@ -73,9 +73,12 @@ AWS_SECRET_ACCESS_KEY=$(tofu output -raw runtime_secret_access_key)
 ```
 
 `rclone_remote` is exposed as a map (`type`, `provider`, `region`,
-`storage_class`, `bucket`) for tooling (e.g. Task 9's `setup.sh`) that
-renders `rclone.conf` from structured values rather than shelling out
-per-field; read it with `tofu output -json rclone_remote`.
+`storage_class`, `bucket`) as a convenience for adopters who want to inspect
+or script against the provisioned destination in rclone's own field names
+(`tofu output -json rclone_remote`). It's purely informational — `setup.sh`
+does not read it, and the running container renders its own `rclone.conf`
+directly from `backup.env`/`secrets.env` at startup (see
+`scripts/lib/rclone-conf.sh`), not from this output.
 
 ## Security note
 

@@ -33,6 +33,7 @@ appdata() {
   validate_common
   require_env RESTIC_PASSWORD RESTIC_REPOSITORY
   : "${APPDATA_STORAGE_CLASS:=STANDARD}"
+  export RESTIC_CACHE_DIR="$CACHE_DIR/restic"
   case "${1:-}" in
     list) restic -r "$RESTIC_REPOSITORY" snapshots --tag appdata ;;
     restore)

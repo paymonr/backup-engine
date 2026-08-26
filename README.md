@@ -98,6 +98,7 @@ yourself), replicate what the module does:
 3. **Create an IAM policy** scoped to just this bucket and just the two prefixes — object actions
    only, no bucket-configuration permissions:
 
+   <!-- keep in sync with opentofu/main.tf data.aws_iam_policy_document.runtime -->
    ```json
    {
      "Version": "2012-10-17",
@@ -149,10 +150,12 @@ Three files live under the `Config` path (`/config` in the container):
 Copy each `.example` file, drop the suffix, and edit. Key knobs in `backup.env`:
 
 - `APPDATA_STORAGE_CLASS` / `MEDIA_STORAGE_CLASS` — per-pipeline S3 storage class. Media defaults
-  to `DEEP_ARCHIVE` (cheapest); appdata defaults to `STANDARD` (cold is allowed but see the
-  restore runbook below for the thaw cost/latency it implies). Both pipelines write directly in
-  the chosen class on first upload — no Standard-then-lifecycle round-trip, so no extra transition
-  charges.
+  to `DEEP_ARCHIVE` (cheapest) and cold works fine there — it's plain objects. Appdata defaults to,
+  and should stay on, `STANDARD`: a cold class (`GLACIER`/`DEEP_ARCHIVE`) is **not usable** for
+  appdata in Phase 1 — `restic` has to read the repository's `config`/`keys` objects on every run,
+  and it can't do that against a cold repo without a thaw first. That thaw-then-run orchestration
+  is a Phase-3 feature. Both pipelines write directly in the chosen class on first upload — no
+  Standard-then-lifecycle round-trip, so no extra transition charges.
 - `MEDIA_MIRROR` — `false` (default) is additive (`rclone copy`, never deletes from S3); `true`
   switches to an exact mirror (`rclone sync`). Bucket versioning is your backstop either way.
 - `APPDATA_SCHEDULE` / `MEDIA_SCHEDULE` — cron expressions (via `supercronic`).
@@ -183,9 +186,11 @@ restore.sh appdata list
 restore.sh appdata restore latest /cache/restore/appdata
 ```
 
-If `APPDATA_STORAGE_CLASS` is a cold class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`), a restore
-needs thawed pack files first — restic will error on the first cold read if you skip this. Thaw
-the `appdata/` prefix (see the media thaw flow below, adapted to that prefix) before retrying.
+Keep `APPDATA_STORAGE_CLASS=STANDARD`. A cold class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) is not
+usable for appdata in Phase 1: restic needs to read the repository's `config`/`keys` objects for
+*every* operation, including `restore.sh appdata list`, not just the final data read, so a cold
+repo can't be driven through a manual thaw the way media can. Automated thaw-then-restore
+orchestration for appdata is a Phase-3 feature.
 
 ### Media (rclone) — including the Deep Archive thaw flow
 
@@ -212,9 +217,10 @@ copyable yet.
 Storage class is the main lever. Illustrative pricing (us-east-1, subject to change): ~2 TB of
 media on **Deep Archive** runs roughly **$2/mo** in storage vs. roughly **$12/mo** on a flat,
 no-tier backend — at the cost of a slow, egress-billed restore (12–48h thaw + retrieval/egress
-fees, see the runbook above). Appdata defaults to Standard for cheap/instant restores since it's
-usually much smaller; cold appdata is supported but trades restore convenience for storage cost
-the same way. A full interactive cost estimator (per-region price tables, packing/versioning/
+fees, see the runbook above). Appdata defaults to, and should stay on, Standard — it's usually
+much smaller, and a cold class isn't usable there yet in Phase 1 (see the storage-class note above
+and the restore runbook). Cold appdata is a Phase-3 feature. A full interactive cost estimator
+(per-region price tables, packing/versioning/
 retrieval modeling) is planned for a later phase — see §8 of the design spec linked above.
 
 ## Development
