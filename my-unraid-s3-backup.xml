@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>unraid-s3-backup</Name>
+  <Repository>ghcr.io/paymon/unraid-s3-backup:latest</Repository>
+  <Registry>https://github.com/paymon/unraid-s3-backup</Registry>
+  <Network>bridge</Network>
+  <Support>https://github.com/paymon/unraid-s3-backup/issues</Support>
+  <Project>https://github.com/paymon/unraid-s3-backup</Project>
+  <Overview>Off-site, encrypted AWS S3 backups for Unraid: appdata via restic, curated media via rclone (Glacier Deep Archive). The off-site leg of a 3-2-1 strategy.
+
+Before starting this container, provision an AWS destination (bucket + least-privilege IAM user) with the included OpenTofu module or the scripted `setup.sh` — see the README — then populate backup.env / secrets.env / includes-media.txt under the Config path below.</Overview>
+  <Category>Backup:</Category>
+  <WebUI>http://[IP]:[PORT:8099]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/paymon/unraid-s3-backup/main/docs/icon.png</Icon>
+  <Config Name="Appdata backups (ro)" Target="/backup/appdata" Default="/mnt/appdata_system/appdata_backups" Mode="ro" Type="Path" Display="always" Required="true">Appdata Backup plugin output directory.</Config>
+  <Config Name="Media root (ro)" Target="/backup/media" Default="/mnt/user/media" Mode="ro" Type="Path" Display="always" Required="true">Media root; curate which subdirs via includes-media.txt.</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/unraid-s3-backup/config" Mode="rw" Type="Path" Display="always" Required="true">backup.env, secrets.env, includes-media.txt.</Config>
+  <Config Name="Cache/state" Target="/cache" Default="/mnt/user/appdata/unraid-s3-backup/cache" Mode="rw" Type="Path" Display="always" Required="true">restic cache, logs, run-state, lockfiles.</Config>
+  <Config Name="GUI port" Target="8099" Default="8099" Mode="tcp" Type="Port" Display="always" Required="false">Web GUI (Phase 2).</Config>
+</Container>
