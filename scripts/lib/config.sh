@@ -3,17 +3,48 @@
 # shellcheck shell=bash
 # Requires common.sh to be sourced first (die, require_env, log_*).
 
+# _load_env_file FILE — load KEY=VALUE pairs from FILE into the current
+# shell and export them. Unlike a plain `source`/`.`, this treats the whole
+# remainder of a line as the literal value (no word-splitting, no pathname
+# expansion, no command execution), so unquoted values containing spaces or
+# glob characters — e.g. a cron expression like `APPDATA_SCHEDULE=0 3 * * *`
+# — survive intact instead of bash parsing "3 * * *" as a command line.
+# Blank lines and lines starting with `#` are skipped. A value wrapped in
+# matching quotes is taken verbatim; otherwise a trailing ` #comment` is
+# stripped, mirroring what `source` already does for single-word values.
+_load_env_file() {
+  local file="$1" line key val
+  while IFS= read -r line || [ -n "$line" ]; do
+    while [ "${line:0:1}" = " " ] || [ "${line:0:1}" = $'\t' ]; do line="${line:1}"; done
+    [ -z "$line" ] && continue
+    [ "${line:0:1}" = "#" ] && continue
+    case "$line" in
+      [A-Za-z_]*=*) ;;
+      *) continue ;;
+    esac
+    key="${line%%=*}"
+    val="${line#*=}"
+    case "$val" in
+      \"*\"|\'*\')
+        val="${val#?}"
+        val="${val%?}"
+        ;;
+      *)
+        val="${val%% #*}"
+        val="${val%"${val##*[![:space:]]}"}"
+        ;;
+    esac
+    export "$key=$val"
+  done <"$file"
+}
+
 load_config() {
   local dir="${1:-${CONFIG_DIR:-/config}}"
   CONFIG_DIR="$dir"
   [ -f "$dir/backup.env" ] || die "missing $dir/backup.env (copy backup.env.example and edit)"
   [ -f "$dir/secrets.env" ] || die "missing $dir/secrets.env (copy secrets.env.example and edit; mode 600)"
-  set -a
-  # shellcheck source=/dev/null
-  . "$dir/backup.env"
-  # shellcheck source=/dev/null
-  . "$dir/secrets.env"
-  set +a
+  _load_env_file "$dir/backup.env"
+  _load_env_file "$dir/secrets.env"
 
   : "${CACHE_DIR:=/cache}"
   : "${APPDATA_SRC:=/backup/appdata}"
