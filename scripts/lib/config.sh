@@ -63,8 +63,21 @@ load_config() {
     RESTIC_REPOSITORY="s3:${host}/${S3_BUCKET:-}/appdata"
   fi
   export CACHE_DIR APPDATA_SRC MEDIA_SRC APPDATA_STORAGE_CLASS MEDIA_STORAGE_CLASS \
-    MEDIA_MIRROR KEEP_LAST KEEP_DAILY KEEP_WEEKLY KEEP_MONTHLY RCLONE_TRANSFERS \
-    RCLONE_BWLIMIT MEDIA_INCLUDES LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY
+    MEDIA_MIRROR KEEP_LAST KEEP_DAILY KEEP_WEEKLY KEEP_MONTHLY \
+    MEDIA_INCLUDES LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY
+
+  # RCLONE_TRANSFERS/RCLONE_BWLIMIT are user-facing config vars that
+  # backup-media.sh reads in-process to build its --transfers/--bwlimit CLI
+  # flags — they must stay ordinary (non-exported) shell vars. rclone ALSO
+  # reads these exact names as its own environment-variable overrides for
+  # those same flags, unconditionally, regardless of what's on the CLI. The
+  # shipped default leaves RCLONE_BWLIMIT unset/blank; if it's exported,
+  # rclone sees RCLONE_BWLIMIT="" and hard-fails every run ("CRITICAL:
+  # Invalid value when setting --bwlimit ... empty string") before copying
+  # anything. Never add these two to the export list above — `export -n`
+  # here also strips the export bit if a user uncommented RCLONE_BWLIMIT in
+  # backup.env (the parser exports whatever it finds).
+  export -n RCLONE_TRANSFERS RCLONE_BWLIMIT
 }
 
 validate_common() {
