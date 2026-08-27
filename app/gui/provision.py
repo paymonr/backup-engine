@@ -4,8 +4,10 @@
 # It never writes secrets itself — it returns discovered values to the route, which
 # calls config_io.write_secrets (the single secret writer).
 from __future__ import annotations
+import json
 import os
 import secrets as _secrets
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -84,3 +86,60 @@ def validate_runtime_key(bucket, region, key, secret, *, run=_run_aws) -> None:
             cp = run(args, region=region, key=key, secret=secret)
             if cp.returncode != 0:
                 raise ValidationError(step, _scrub(cp.stderr, key, secret))
+
+
+class TofuError(Exception):
+    def __init__(self, phase: str, detail: str = ""):
+        super().__init__(f"tofu {phase} failed")
+        self.phase = phase
+        self.detail = detail
+
+
+def _tofu_env(admin_key: str, admin_secret: str, session_token: str | None) -> dict:
+    env = os.environ.copy()
+    env.pop("AWS_PROFILE", None)
+    env.update(AWS_ACCESS_KEY_ID=admin_key, AWS_SECRET_ACCESS_KEY=admin_secret)
+    if session_token:
+        env["AWS_SESSION_TOKEN"] = session_token
+    else:
+        env.pop("AWS_SESSION_TOKEN", None)
+    return env
+
+
+def _run_tofu(args, *, cwd, env):
+    return subprocess.run(["tofu", *args], cwd=cwd, env=env, capture_output=True, text=True)
+
+
+def run_tofu_apply(bucket, region, admin_key, admin_secret, session_token=None,
+                   *, run=_run_tofu, module_src=OPENTOFU_DIR, provisioning_src=PROVISIONING_DIR) -> dict:
+    """One-shot `tofu init && apply` in a throwaway temp dir. Admin creds go ONLY via the
+    subprocess env. Returns the runtime key/secret + bucket/region from `tofu output`.
+    Always removes the temp dir (which holds the ephemeral state)."""
+    workdir = tempfile.mkdtemp(prefix="be-provision-")
+    scrub_vals = (admin_key, admin_secret, session_token or "")
+    try:
+        tf_dir = Path(workdir, "opentofu")
+        shutil.copytree(module_src, tf_dir)
+        shutil.copytree(provisioning_src, Path(workdir, "provisioning"))
+        # tfvars holds ONLY non-secret bucket/region — never any credential.
+        Path(tf_dir, "terraform.tfvars").write_text(
+            f'bucket_name = "{bucket}"\nregion = "{region}"\n'
+        )
+        env = _tofu_env(admin_key, admin_secret, session_token)
+        for phase, args in (("init", ["init", "-backend=false", "-input=false"]),
+                            ("apply", ["apply", "-auto-approve", "-input=false"])):
+            cp = run(args, cwd=str(tf_dir), env=env)
+            if cp.returncode != 0:
+                raise TofuError(phase, _scrub(cp.stderr, *scrub_vals))
+        cp = run(["output", "-json"], cwd=str(tf_dir), env=env)
+        if cp.returncode != 0:
+            raise TofuError("output", _scrub(cp.stderr, *scrub_vals))
+        data = json.loads(cp.stdout)
+        return {
+            "AWS_ACCESS_KEY_ID": data["runtime_access_key_id"]["value"],
+            "AWS_SECRET_ACCESS_KEY": data["runtime_secret_access_key"]["value"],
+            "bucket": data["bucket_name"]["value"],
+            "region": data["region"]["value"],
+        }
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)

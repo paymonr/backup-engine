@@ -80,3 +80,72 @@ def test_validate_raises_at_failing_step_and_scrubs_secret():
         provision.validate_runtime_key("b", "us-east-1", "AKIA", "sekret", run=fake)
     assert ei.value.step == "get"
     assert "sekret" not in ei.value.detail and "***" in ei.value.detail
+
+
+import json as _json
+from pathlib import Path as _Path
+
+TOFU_OUTPUT = _json.dumps({
+    "runtime_access_key_id": {"value": "AKIARUNTIME", "sensitive": True},
+    "runtime_secret_access_key": {"value": "runtimesecret", "sensitive": True},
+    "bucket_name": {"value": "acme-backups"},
+    "region": {"value": "us-east-1"},
+})
+
+
+def _fake_tofu(rec):
+    def run(args, *, cwd, env):
+        rec.setdefault("calls", []).append(args[0])
+        rec["env"] = dict(env)
+        rec["workdir"] = str(_Path(cwd).parent)
+        rec["tfvars"] = _Path(cwd, "terraform.tfvars").read_text()
+
+        class CP:
+            returncode = 0
+            stdout = TOFU_OUTPUT if args[0] == "output" else ""
+            stderr = ""
+        return CP()
+    return run
+
+
+def test_apply_passes_admin_creds_via_env_only_never_in_tfvars():
+    rec = {}
+    out = provision.run_tofu_apply("acme-backups", "us-east-1", "ADMINKEY", "ADMINSECRET",
+                                   run=_fake_tofu(rec))
+    assert rec["env"]["AWS_ACCESS_KEY_ID"] == "ADMINKEY"
+    assert rec["env"]["AWS_SECRET_ACCESS_KEY"] == "ADMINSECRET"
+    assert "ADMINKEY" not in rec["tfvars"] and "ADMINSECRET" not in rec["tfvars"]
+    assert out["AWS_ACCESS_KEY_ID"] == "AKIARUNTIME"
+    assert out["AWS_SECRET_ACCESS_KEY"] == "runtimesecret"
+    assert out["bucket"] == "acme-backups" and out["region"] == "us-east-1"
+
+
+def test_apply_order_is_init_apply_output():
+    rec = {}
+    provision.run_tofu_apply("b", "us-east-1", "K", "S", run=_fake_tofu(rec))
+    assert rec["calls"] == ["init", "apply", "output"]
+
+
+def test_apply_removes_tempdir_on_success():
+    rec = {}
+    provision.run_tofu_apply("b", "us-east-1", "K", "S", run=_fake_tofu(rec))
+    assert not _Path(rec["workdir"]).exists()
+
+
+def test_apply_failure_raises_scrubs_and_still_cleans_up():
+    rec = {}
+
+    def run(args, *, cwd, env):
+        rec["workdir"] = str(_Path(cwd).parent)
+
+        class CP:
+            returncode = 1 if args[0] == "apply" else 0
+            stdout = ""
+            stderr = "boom ADMINSECRET leaked"
+        return CP()
+
+    with pytest.raises(provision.TofuError) as ei:
+        provision.run_tofu_apply("b", "us-east-1", "ADMINKEY", "ADMINSECRET", run=run)
+    assert ei.value.phase == "apply"
+    assert "ADMINSECRET" not in ei.value.detail and "***" in ei.value.detail
+    assert not _Path(rec["workdir"]).exists()
