@@ -13,8 +13,10 @@ the AWS destination is provisioned either by the included OpenTofu module or by 
 [Provision the destination](#provision-the-destination) below).
 
 > **Status:** the Phase-1 engine — appdata backups, media backups, restore for both tiers,
-> scheduling, notifications, and AWS provisioning — is implemented and usable headless (no GUI
-> yet). A web GUI and interactive cost estimator ship in a later phase; see the design spec:
+> scheduling, notifications, and AWS provisioning — is implemented, usable headless, and now has
+> a small ops [GUI](#gui) (config editor + run/status/logs) alongside it. Still deferred: an
+> interactive cost-estimator screen, restore wizard, provisioning wizard, and OIDC login — see
+> [Roadmap](#roadmap) and the design spec:
 > [`docs/superpowers/specs/2026-08-26-unraid-s3-backup-redesign.md`](docs/superpowers/specs/2026-08-26-unraid-s3-backup-redesign.md).
 
 ## Prerequisites
@@ -236,6 +238,49 @@ It reads `AWS_REGION` and the storage classes from `backup.env` when present (fl
 runs fully offline against a bundled, dated us-east-1 price table, and prints a per-pipeline
 line-item breakdown plus monthly, first-year, and illustrative full-restore totals.
 
+## GUI
+
+A small web UI (config editor + run/status/logs) ships in the container, served on `GUI_PORT`
+(default 8099). Reach it at `http://<host>:8099`.
+
+> ⚠ **No authentication.** The GUI has no login of its own — put it behind your reverse proxy /
+> SSO and never expose it directly to the internet. Set `GUI_ENABLED=false` in `backup.env` to
+> disable it and run scheduler-only/headless.
+
+- **Config editor** — edits `backup.env` (regenerated from the bundled `backup.env.example`
+  template) and `includes-media.txt`. Secret fields (AWS keys, restic password) are **write-only**:
+  they never display existing values; leave a field blank to keep it, fill it to overwrite.
+- **Run & status** — trigger an appdata/media backup now, see the last-run outcome per pipeline,
+  and watch the live log tail.
+
+> **First run:** copy *both* example files — `backup.env.example` **and** `secrets.env.example` —
+> into `/config` before starting the container. The engine's `entrypoint.sh` (`prepare()` /
+> `load_config`) exits at startup if either `backup.env` or `secrets.env` is missing, so the GUI
+> never gets a chance to boot without them.
+
+Prefer to manage secrets by hand? Create the file directly instead of using the form:
+
+    cp config/secrets.env.example /config/secrets.env
+    chmod 600 /config/secrets.env
+    $EDITOR /config/secrets.env   # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, RESTIC_PASSWORD
+
+Set `GUI_SECRET_KEY` in the environment to a stable random value (e.g.
+`python3 -c "import secrets; print(secrets.token_hex(32))"`) so sessions/CSRF tokens survive
+container restarts — without it, a new key is generated per process, which invalidates any
+in-flight session/CSRF token on every restart.
+
+## Roadmap
+
+Planned, not yet built:
+
+- **Restore wizard** — guided both-tier restore in the GUI (incl. the Glacier/Deep Archive thaw flow).
+- **Media-dir picker** — browse the media mount to build `includes-media.txt`.
+- **Provisioning wizard** — the three-mode AWS setup in the GUI.
+- **Cost-estimator screen** — interactive what-if over the `estimate` module.
+- **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.
+- **Per-run history** — a persisted run history beyond the last-run state.
+- **Scheduler liveness / health endpoint** — surface whether the background scheduler (supercronic) is still running, so a silent crash is visible in the GUI.
+
 ## Development
 
 - `shellcheck scripts/*.sh scripts/lib/*.sh setup.sh` — lint.
@@ -245,5 +290,6 @@ line-item breakdown plus monthly, first-year, and illustrative full-restore tota
 - `docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from backup-engine` —
   containerized smoke run against Dockerized MinIO.
 - `python3 -m pytest tests/estimator/` — cost-estimator unit tests.
+- `python3 -m pytest tests/gui/` — GUI unit tests (Flask test client).
 
 All of the above run in CI on every push/PR (`.github/workflows/ci.yml`).

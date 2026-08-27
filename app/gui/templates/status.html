@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block body %}
+<h1>Run &amp; status</h1>
+{% for pipeline, st in states.items() %}
+<section>
+  <h2>{{ pipeline }}</h2>
+  {% if st %}<p class="status-{{ 'ok' if st.outcome == 'success' else 'fail' }}">
+    last run: {{ st.outcome }}{% if st.snapshot_id %} · snapshot {{ st.snapshot_id }}{% endif %}{% if st.duration_s is defined %} · {{ st.duration_s }}s{% endif %} · {{ st.last_run }}
+  </p>{% else %}<p>never run</p>{% endif %}
+  <form method="post" action="{{ url_for('gui.run', pipeline=pipeline) }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit">Run {{ pipeline }} now</button>
+  </form>
+</section>
+{% endfor %}
+<h2>Log</h2>
+<pre class="log" id="log">loading…</pre>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

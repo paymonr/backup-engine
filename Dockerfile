@@ -25,7 +25,7 @@ ARG SUPERCRONIC_SHA256=feefa310da569c81b99e1027b86b27b51e6ee9ab647747b4909964512
 
 RUN apk add --no-cache bash ca-certificates curl coreutils tzdata unzip \
       python3 py3-pip aws-cli flock \
-    && pip install --no-cache-dir --break-system-packages apprise
+    && pip install --no-cache-dir --break-system-packages apprise flask waitress
 
 # restic — download, verify sha256, extract, install.
 RUN set -eux; \
@@ -61,6 +61,8 @@ RUN set -eux; \
 WORKDIR /app
 COPY scripts/ /app/scripts/
 COPY app/ /app/app/
+COPY config/backup.env.example /app/config/backup.env.example
+COPY config/secrets.env.example /app/config/secrets.env.example
 RUN chmod +x /app/scripts/*.sh
 ENV CACHE_DIR=/cache CONFIG_DIR=/config
 VOLUME ["/backup/appdata", "/backup/media", "/config", "/cache"]

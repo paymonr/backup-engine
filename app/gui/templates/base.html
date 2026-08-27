@@ -1,0 +1,12 @@
+<!-- app/gui/templates/base.html -->
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>backup-engine</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head><body>
+<div class="warn">⚠ This GUI has <strong>no authentication</strong>. Put it behind a reverse proxy / SSO — never expose it directly to the internet.</div>
+<nav><a href="{{ url_for('gui.config_page') }}">Config</a> · <a href="{{ url_for('gui.status_page') }}">Run &amp; status</a></nav>
+{% with msgs = get_flashed_messages() %}{% if msgs %}<ul class="flash">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}{% endwith %}
+<main>{% block body %}{% endblock %}</main>
+</body></html>
