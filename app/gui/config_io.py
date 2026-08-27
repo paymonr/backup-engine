@@ -17,6 +17,17 @@ def _parse_env(text: str) -> dict[str, str]:
         out[k.strip()] = _INLINE_COMMENT.sub("", v).strip().strip('"').strip("'")
     return out
 
+def _read_secrets_raw(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        out[k.strip()] = v   # verbatim remainder — NO comment/quote/whitespace stripping
+    return out
+
 def template_keys(template_path: str) -> list[str]:
     keys: list[str] = []
     for line in Path(template_path).read_text().splitlines():
@@ -34,7 +45,8 @@ def write_backup_env(template_path: str, config_dir: str, values: dict[str, str]
     for line in Path(template_path).read_text().splitlines():
         m = _KEY_RE.match(line)
         if m and values.get(m.group(1), "") != "":
-            out.append(f"{m.group(1)}={values[m.group(1)]}")
+            safe_value = values[m.group(1)].replace("\n", " ").replace("\r", " ")
+            out.append(f"{m.group(1)}={safe_value}")
         else:
             out.append(line)
     Path(config_dir, "backup.env").write_text("\n".join(out) + "\n")
@@ -48,7 +60,7 @@ def write_includes(config_dir: str, text: str) -> None:
 
 def secrets_status(config_dir: str) -> dict[str, bool]:
     p = Path(config_dir, "secrets.env")
-    vals = _parse_env(p.read_text()) if p.exists() else {}
+    vals = _read_secrets_raw(p)
     return {k: bool(vals.get(k)) for k in SECRET_KEYS}
 
 def secrets_mode(config_dir: str) -> str | None:
@@ -57,10 +69,13 @@ def secrets_mode(config_dir: str) -> str | None:
 
 def write_secrets(config_dir: str, values: dict[str, str]) -> None:
     p = Path(config_dir, "secrets.env")
-    existing = _parse_env(p.read_text()) if p.exists() else {}
+    existing = _read_secrets_raw(p)
     for k in SECRET_KEYS:
-        if values.get(k, "") != "":
-            existing[k] = values[k]
+        v = values.get(k, "")
+        if v != "":
+            if "\n" in v or "\r" in v:
+                raise ValueError("secret value must not contain a newline")
+            existing[k] = v
     body = "# backup-engine secrets — managed by the GUI (mode 600).\n"
     body += "".join(f"{k}={existing[k]}\n" for k in SECRET_KEYS if k in existing)
     p.write_text(body)

@@ -253,6 +253,11 @@ A small web UI (config editor + run/status/logs) ships in the container, served 
 - **Run & status** — trigger an appdata/media backup now, see the last-run outcome per pipeline,
   and watch the live log tail.
 
+> **First run:** copy *both* example files — `backup.env.example` **and** `secrets.env.example` —
+> into `/config` before starting the container. The engine's `entrypoint.sh` (`prepare()` /
+> `load_config`) exits at startup if either `backup.env` or `secrets.env` is missing, so the GUI
+> never gets a chance to boot without them.
+
 Prefer to manage secrets by hand? Create the file directly instead of using the form:
 
     cp config/secrets.env.example /config/secrets.env
@@ -274,6 +279,7 @@ Planned, not yet built:
 - **Cost-estimator screen** — interactive what-if over the `estimate` module.
 - **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.
 - **Per-run history** — a persisted run history beyond the last-run state.
+- **Scheduler liveness / health endpoint** — surface whether the background scheduler (supercronic) is still running, so a silent crash is visible in the GUI.
 
 ## Development
 

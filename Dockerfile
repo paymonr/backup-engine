@@ -62,6 +62,7 @@ WORKDIR /app
 COPY scripts/ /app/scripts/
 COPY app/ /app/app/
 COPY config/backup.env.example /app/config/backup.env.example
+COPY config/secrets.env.example /app/config/secrets.env.example
 RUN chmod +x /app/scripts/*.sh
 ENV CACHE_DIR=/cache CONFIG_DIR=/config
 VOLUME ["/backup/appdata", "/backup/media", "/config", "/cache"]
