@@ -1,0 +1,6 @@
+/* app/gui/static/style.css */
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 1rem auto; padding: 0 1rem; }
+.warn { background: #ffe8e8; border: 1px solid #e0a0a0; padding: .5rem .75rem; border-radius: 6px; }
+nav { margin: 1rem 0; } .flash { color: #175; } label { display:block; margin:.5rem 0 .15rem; font-weight:600; }
+input, textarea, select { width: 100%; box-sizing: border-box; } textarea { min-height: 8rem; }
+.status-ok { color: #175; } .status-fail { color: #a00; } pre.log { background:#111; color:#ddd; padding:.75rem; overflow:auto; max-height:24rem; }
