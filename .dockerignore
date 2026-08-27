@@ -1,4 +1,6 @@
 .git
 docs
-tests
+tests/
 *.md
+**/__pycache__/
+*.pyc

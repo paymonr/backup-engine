@@ -35,6 +35,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: opentofu/setup-opentofu@v1
       - run: cd opentofu && tofu fmt -check && tofu init -backend=false && tofu validate
+  estimator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pytest
+      - run: python -m pytest tests/estimator/ -v
   image:
     runs-on: ubuntu-latest
     steps:
