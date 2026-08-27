@@ -16,8 +16,7 @@ the AWS destination is provisioned either by the included OpenTofu module or by 
 > scheduling, notifications, and AWS provisioning — is implemented, usable headless, and now has
 > a small ops [GUI](#gui) (config editor + run/status/logs) alongside it. Still deferred: an
 > interactive cost-estimator screen, restore wizard, provisioning wizard, and OIDC login — see
-> [Roadmap](#roadmap) and the design spec:
-> [`docs/superpowers/specs/2026-08-26-unraid-s3-backup-redesign.md`](docs/superpowers/specs/2026-08-26-unraid-s3-backup-redesign.md).
+> the [Roadmap](#roadmap).
 
 ## Prerequisites
 
@@ -137,7 +136,7 @@ yourself), replicate what the module does:
 
 A GUI flow that takes transient admin credentials, drives the OpenTofu module for you, and
 discards the admin credentials afterward, writing only the runtime keys to `secrets.env`. Not
-part of the Phase-1 headless engine — see the design spec for the full three-mode plan.
+part of the Phase-1 headless engine — see the [Roadmap](#roadmap).
 
 ## Configure
 
