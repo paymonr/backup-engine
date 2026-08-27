@@ -1,5 +1,6 @@
 import json
 import re
+import pytest
 from app.gui import provision
 
 
@@ -34,3 +35,48 @@ def test_tofu_module_consumes_canonical_policy_template():
     assert "../provisioning/iam-policy.json.tmpl" in main_tf
     # the old inline policy-document block is gone (single source of truth)
     assert 'data "aws_iam_policy_document" "runtime"' not in main_tf
+
+
+def _ok(**_):
+    class CP:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+    return CP()
+
+
+def test_validate_runs_list_put_get_delete_in_order():
+    seen = []
+
+    def fake(args, *, region, key, secret):
+        seen.append(args[1])  # the s3api subcommand
+        return _ok()
+
+    provision.validate_runtime_key("b", "us-east-1", "AKIA", "sekret", run=fake)
+    assert seen == ["list-objects-v2", "put-object", "get-object", "delete-object"]
+
+
+def test_validate_probe_object_is_under_allowed_prefix():
+    captured = {}
+
+    def fake(args, *, region, key, secret):
+        if args[1] == "put-object":
+            captured["key"] = args[args.index("--key") + 1]
+        return _ok()
+
+    provision.validate_runtime_key("b", "us-east-1", "AKIA", "sekret", run=fake)
+    assert captured["key"].startswith("appdata/")
+
+
+def test_validate_raises_at_failing_step_and_scrubs_secret():
+    def fake(args, *, region, key, secret):
+        class CP:
+            returncode = 0 if args[1] != "get-object" else 1
+            stdout = ""
+            stderr = "AccessDenied for sekret"
+        return CP()
+
+    with pytest.raises(provision.ValidationError) as ei:
+        provision.validate_runtime_key("b", "us-east-1", "AKIA", "sekret", run=fake)
+    assert ei.value.step == "get"
+    assert "sekret" not in ei.value.detail and "***" in ei.value.detail
