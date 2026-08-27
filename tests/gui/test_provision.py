@@ -26,3 +26,11 @@ def test_render_policy_action_set_matches_least_privilege():
 def test_policy_template_has_exactly_one_placeholder():
     txt = provision.POLICY_TEMPLATE.read_text()
     assert set(re.findall(r"\$\{(\w+)\}", txt)) == {"bucket_arn"}
+
+
+def test_tofu_module_consumes_canonical_policy_template():
+    main_tf = (provision.OPENTOFU_DIR / "main.tf").read_text()
+    assert "templatefile(" in main_tf
+    assert "../provisioning/iam-policy.json.tmpl" in main_tf
+    # the old inline policy-document block is gone (single source of truth)
+    assert 'data "aws_iam_policy_document" "runtime"' not in main_tf

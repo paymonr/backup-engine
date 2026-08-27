@@ -47,30 +47,12 @@ resource "aws_iam_user" "runtime" {
   name = "${var.name_prefix}-runtime"
 }
 
-data "aws_iam_policy_document" "runtime" {
-  statement {
-    sid       = "ListBucketScoped"
-    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
-    resources = [aws_s3_bucket.backup.arn]
-  }
-  statement {
-    sid = "ObjectRW"
-    actions = [
-      "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
-      "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts",
-      "s3:RestoreObject",
-    ]
-    resources = [
-      "${aws_s3_bucket.backup.arn}/appdata/*",
-      "${aws_s3_bucket.backup.arn}/media/*",
-    ]
-  }
-}
-
 resource "aws_iam_user_policy" "runtime" {
-  name   = "${var.name_prefix}-runtime-object-only"
-  user   = aws_iam_user.runtime.name
-  policy = data.aws_iam_policy_document.runtime.json
+  name = "${var.name_prefix}-runtime-object-only"
+  user = aws_iam_user.runtime.name
+  policy = templatefile("${path.module}/../provisioning/iam-policy.json.tmpl", {
+    bucket_arn = aws_s3_bucket.backup.arn
+  })
 }
 
 resource "aws_iam_access_key" "runtime" {
