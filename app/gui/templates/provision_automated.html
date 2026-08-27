@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Automated provisioning</h1>
+<p class="warn">These admin credentials are <strong>transient</strong>: used only for one
+<code>tofu apply</code> in this container, never written to disk or logs, and discarded
+immediately after. Use short-lived keys and delete them afterward.</p>
+{% if error %}<p class="warn">{{ error }}</p>{% endif %}
+<form method="post" action="{{ url_for('gui.provision_automated_run') }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Bucket <input name="bucket" value="{{ bucket }}" required></label>
+  <label>Region <input name="region" value="{{ region }}" required></label>
+  <label>Admin AWS_ACCESS_KEY_ID <input name="ADMIN_ACCESS_KEY_ID" autocomplete="off" required></label>
+  <label>Admin AWS_SECRET_ACCESS_KEY <input name="ADMIN_SECRET_ACCESS_KEY" type="password" autocomplete="off" required></label>
+  <label>Admin AWS_SESSION_TOKEN (optional) <input name="ADMIN_SESSION_TOKEN" type="password" autocomplete="off"></label>
+  <button type="submit">Provision now</button>
+</form>
+{% endblock %}

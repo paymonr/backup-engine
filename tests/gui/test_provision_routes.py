@@ -85,3 +85,49 @@ def test_validate_failure_saves_nothing_and_hides_secret(client, dirs, monkeypat
 def test_validate_requires_csrf(client):
     r = client.post("/provision/validate", data={"bucket": "b"})
     assert r.status_code == 400
+
+
+def test_automated_form_renders(client):
+    r = client.get("/provision/automated")
+    assert r.status_code == 200
+    assert b"transient" in r.data.lower()
+
+
+def test_automated_success_writes_runtime_key_and_never_shows_secrets(client, dirs, monkeypatch):
+    from app.gui import provision
+    monkeypatch.setattr(provision, "run_tofu_apply",
+                        lambda *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
+                                         "AWS_SECRET_ACCESS_KEY": "runsek",
+                                         "bucket": "acme", "region": "us-east-1"})
+    token = _csrf(client, "/provision/automated")
+    r = client.post("/provision/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"},
+                    follow_redirects=True)
+    assert r.status_code == 200
+    assert b"ADMINK" not in r.data and b"ADMINS" not in r.data and b"runsek" not in r.data
+    sec = Path(dirs["config"], "secrets.env").read_text()
+    assert "AWS_ACCESS_KEY_ID=AKIARUN" in sec
+    be = Path(dirs["config"], "backup.env").read_text()
+    assert "S3_BUCKET=acme" in be and "AWS_REGION=us-east-1" in be
+
+
+def test_automated_failure_saves_nothing(client, dirs, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise provision.TofuError("apply", "boom")
+
+    monkeypatch.setattr(provision, "run_tofu_apply", boom)
+    token = _csrf(client, "/provision/automated")
+    r = client.post("/provision/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
+    assert r.status_code == 400
+    assert not Path(dirs["config"], "secrets.env").exists()
+    assert b"ADMINK" not in r.data and b"ADMINS" not in r.data
+
+
+def test_automated_requires_csrf(client):
+    r = client.post("/provision/automated", data={"bucket": "b"})
+    assert r.status_code == 400

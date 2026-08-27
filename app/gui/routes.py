@@ -112,8 +112,34 @@ def provision_validate():
 
 @bp.get("/provision/automated")
 def provision_automated():
-    abort(501)  # implemented in Task 7
+    return render_template("provision_automated.html", csrf=security.issue_csrf(),
+                           bucket="", region="", error=None)
+
 
 @bp.post("/provision/automated")
 def provision_automated_run():
-    abort(501)  # implemented in Task 7
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    bucket = request.form.get("bucket", "").strip()
+    region = request.form.get("region", "").strip()
+    admin_key = request.form.get("ADMIN_ACCESS_KEY_ID", "").strip()
+    admin_secret = request.form.get("ADMIN_SECRET_ACCESS_KEY", "").strip()
+    session_token = request.form.get("ADMIN_SESSION_TOKEN", "").strip() or None
+    try:
+        result = provision.run_tofu_apply(bucket, region, admin_key, admin_secret, session_token)
+    except provision.TofuError as e:
+        return render_template("provision_automated.html", csrf=security.issue_csrf(),
+                               bucket=bucket, region=region,
+                               error=f"Automated provisioning failed at tofu {e.phase} — nothing saved."), 400
+    finally:
+        # discard transient admin creds from this frame regardless of outcome
+        admin_key = admin_secret = session_token = None
+    config_io.write_secrets(cfg["CONFIG_DIR"],
+                            {"AWS_ACCESS_KEY_ID": result["AWS_ACCESS_KEY_ID"],
+                             "AWS_SECRET_ACCESS_KEY": result["AWS_SECRET_ACCESS_KEY"]})
+    config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
+                               {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
+                                "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"]})
+    flash("AWS destination provisioned and runtime key saved.")
+    return redirect(url_for("gui.provision_home"))
