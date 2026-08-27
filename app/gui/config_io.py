@@ -5,6 +5,7 @@ import re
 
 SECRET_KEYS: tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "RESTIC_PASSWORD")
 _KEY_RE = re.compile(r"^\s*#?\s*([A-Z0-9_]+)=")
+_INLINE_COMMENT = re.compile(r"\s#.*$")
 
 def _parse_env(text: str) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -13,7 +14,7 @@ def _parse_env(text: str) -> dict[str, str]:
         if not s or s.startswith("#") or "=" not in s:
             continue
         k, _, v = s.partition("=")
-        out[k.strip()] = v.split("#", 1)[0].strip().strip('"').strip("'")
+        out[k.strip()] = _INLINE_COMMENT.sub("", v).strip().strip('"').strip("'")
     return out
 
 def template_keys(template_path: str) -> list[str]:

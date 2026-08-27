@@ -1,5 +1,4 @@
 from pathlib import Path
-import os
 from app.gui import config_io as cio
 
 def test_template_keys_include_optional_commented_keys(template_path):
@@ -43,3 +42,10 @@ def test_secrets_are_write_only(dirs):
 def test_secrets_status_absent_file(dirs):
     assert cio.secrets_status(dirs["config"]) == {k: False for k in cio.SECRET_KEYS}
     assert cio.secrets_mode(dirs["config"]) is None
+
+def test_secret_value_containing_hash_survives_blank_keeps_existing(dirs):
+    cio.write_secrets(dirs["config"], {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "shh", "RESTIC_PASSWORD": "p#ssw0rd"})
+    cio.write_secrets(dirs["config"], {"AWS_ACCESS_KEY_ID": "x", "RESTIC_PASSWORD": ""})
+    from app.gui.config_io import _parse_env
+    vals = _parse_env(Path(dirs["config"], "secrets.env").read_text())
+    assert vals["RESTIC_PASSWORD"] == "p#ssw0rd"
