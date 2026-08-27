@@ -1,7 +1,7 @@
 {
   "region": "us-east-1",
-  "date": "2026-08-26",
-  "source": "plan-provided figures, 2026-08-26 — re-verify before public release",
+  "date": "2026-08-27",
+  "source": "AWS S3 pricing, US East (N. Virginia)/us-east-1 — verified 2026-08-27 against aws.amazon.com/s3/pricing and published 2026 rate guides",
   "storage_gb_month": {
     "STANDARD": 0.023,
     "STANDARD_IA": 0.0125,
@@ -14,7 +14,7 @@
     "per_gb": {
       "STANDARD_IA": { "Standard": 0.01 },
       "GLACIER_IR": { "Standard": 0.03 },
-      "GLACIER": { "Bulk": 0.0025, "Standard": 0.01, "Expedited": 0.03 },
+      "GLACIER": { "Bulk": 0.0, "Standard": 0.01, "Expedited": 0.03 },
       "DEEP_ARCHIVE": { "Bulk": 0.0025, "Standard": 0.02 }
     },
     "request_per_1k": { "Bulk": 0.025, "Standard": 0.05, "Expedited": 10.0 }
