@@ -89,7 +89,26 @@ def provision_scripted():
 
 @bp.post("/provision/validate")
 def provision_validate():
-    abort(501)  # implemented in Task 6
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    bucket = request.form.get("bucket", "").strip()
+    region = request.form.get("region", "").strip()
+    key = request.form.get("AWS_ACCESS_KEY_ID", "").strip()
+    secret = request.form.get("AWS_SECRET_ACCESS_KEY", "").strip()
+    try:
+        provision.validate_runtime_key(bucket, region, key, secret)
+    except provision.ValidationError as e:
+        return render_template("provision_manual.html", csrf=security.issue_csrf(),
+                               bucket=bucket, region=region, policy=None, console=None,
+                               error=f"Validation failed at the {e.step} step — nothing saved."), 400
+    config_io.write_secrets(cfg["CONFIG_DIR"],
+                            {"AWS_ACCESS_KEY_ID": key, "AWS_SECRET_ACCESS_KEY": secret})
+    config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
+                               {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
+                                "AWS_REGION": region, "S3_BUCKET": bucket})
+    flash("Runtime key validated and saved. Reminder: confirm bucket versioning is ON.")
+    return redirect(url_for("gui.provision_home"))
 
 @bp.get("/provision/automated")
 def provision_automated():

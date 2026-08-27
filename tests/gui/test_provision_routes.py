@@ -50,3 +50,38 @@ def test_scripted_panel_shows_setup_command(client):
     r = client.get("/provision/scripted")
     assert r.status_code == 200
     assert b"setup.sh" in r.data
+
+
+def test_validate_success_writes_secrets_and_backup_env(client, dirs, monkeypatch):
+    from app.gui import provision
+    monkeypatch.setattr(provision, "validate_runtime_key", lambda *a, **k: None)
+    token = _csrf(client, "/provision/manual")
+    r = client.post("/provision/validate",
+                    data={"csrf": token, "bucket": "acme", "region": "eu-west-1",
+                          "AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    assert r.status_code in (302, 303)
+    sec = Path(dirs["config"], "secrets.env").read_text()
+    assert "AWS_ACCESS_KEY_ID=AKIA" in sec and "AWS_SECRET_ACCESS_KEY=sek" in sec
+    be = Path(dirs["config"], "backup.env").read_text()
+    assert "AWS_REGION=eu-west-1" in be and "S3_BUCKET=acme" in be
+
+
+def test_validate_failure_saves_nothing_and_hides_secret(client, dirs, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise provision.ValidationError("put", "denied")
+
+    monkeypatch.setattr(provision, "validate_runtime_key", boom)
+    token = _csrf(client, "/provision/manual")
+    r = client.post("/provision/validate",
+                    data={"csrf": token, "bucket": "acme", "region": "eu-west-1",
+                          "AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    assert r.status_code == 400
+    assert not Path(dirs["config"], "secrets.env").exists()
+    assert b"AKIA" not in r.data and b"sek" not in r.data
+
+
+def test_validate_requires_csrf(client):
+    r = client.post("/provision/validate", data={"bucket": "b"})
+    assert r.status_code == 400
