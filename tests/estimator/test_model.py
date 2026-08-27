@@ -115,3 +115,18 @@ def test_golden_default_scenario_totals(prices):
 
 def test_public_api_importable():
     from app.estimator import estimate, Scenario, PipelineInputs, Estimate, load_prices  # noqa: F401
+
+def test_restore_standard_ia_uses_single_rate_and_no_request_fee(prices):
+    # STANDARD_IA is the non-tiered-cold fallback path: retrieval_per_gb table has
+    # only {"Standard": 0.01}, so any tier falls back to next(iter(table.values())).
+    # Unlike GLACIER/DEEP_ARCHIVE, no per-1k retrieval *request* fee applies.
+    p = PipelineInputs(size_gb=10, file_count=100, storage_class="STANDARD_IA")
+    s = Scenario(appdata=p, media=p, restore_fraction=1.0)
+    # egress 10*0.10=1.0; GET 100*0.0004/1000=0.00004; retrieval 10*0.01=0.1
+    expected = 10 * 0.10 + 100 * 0.0004 / 1000 + 10 * 0.01
+    assert math.isclose(restore_cost(p, s, prices, 1.0), expected)
+
+def test_storage_monthly_raises_for_unknown_storage_class(prices):
+    p = PipelineInputs(size_gb=10, file_count=5, storage_class="NEBULA")
+    with pytest.raises(ValueError):
+        storage_monthly(p, prices)

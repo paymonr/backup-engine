@@ -4,8 +4,10 @@
 #   * The 128 KB minimum billable object size is applied as
 #     billed_gb = max(size_gb, object_count * 128KB) rather than per-object.
 #   * Data-transfer-out uses a single flat first-tier $/GB rate.
-#   * Rotation/early-deletion (Task 3) charges churned bytes the full
-#     minimum-storage-duration remainder — a conservative upper bound.
+#   * Rotation/early-deletion (Task 3) charges churned bytes for the full
+#     minimum-storage-duration as a conservative early-deletion proxy; this
+#     intentionally overlaps with the versioning term, giving a deliberate
+#     conservative upper bound rather than a precise churn accounting.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from math import ceil
@@ -14,7 +16,7 @@ from .prices import PriceTable
 STORAGE_CLASSES: tuple[str, ...] = (
     "STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE",
 )
-_KB_IN_GB = 1 / (1024 * 1024)
+_GB_PER_KB = 1 / (1024 * 1024)
 
 @dataclass(frozen=True)
 class PipelineInputs:
@@ -72,7 +74,7 @@ def effective_object_count(p: PipelineInputs) -> int:
 def billed_gb(p: PipelineInputs, prices: PriceTable) -> float:
     if p.storage_class == "STANDARD":
         return p.size_gb
-    floor = effective_object_count(p) * prices.min_billable_object_kb * _KB_IN_GB
+    floor = effective_object_count(p) * prices.min_billable_object_kb * _GB_PER_KB
     return max(p.size_gb, floor)
 
 def storage_monthly(p: PipelineInputs, prices: PriceTable) -> float:

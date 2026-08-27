@@ -48,6 +48,16 @@ def test_unknown_storage_class_flag_errors(prices, monkeypatch, capsys):
     rc = main(["--media-storage-class", "NEBULA"])
     assert rc != 0
 
+def test_unknown_retrieval_tier_errors_even_for_all_warm_pipelines(prices, monkeypatch, capsys):
+    # Warm classes (STANDARD) short-circuit retrieval-fee lookup entirely, so an invalid
+    # --retrieval-tier must still be caught unconditionally, not only when a cold
+    # pipeline is present to trigger the retrieval-fee code path.
+    monkeypatch.setattr("app.estimator.cli.load_prices", lambda region: prices)
+    rc = main(["--retrieval-tier", "Warp",
+               "--appdata-storage-class", "STANDARD",
+               "--media-storage-class", "STANDARD"])
+    assert rc != 0
+
 def test_explicit_zero_versioning_retention_days_is_honored():
     # A falsy-but-explicit override (0) must not be discarded in favor of the default (30).
     s = build_scenario(_args(["--versioning-retention-days", "0"]), {})

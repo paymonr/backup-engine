@@ -219,9 +219,9 @@ media on **Deep Archive** runs roughly **$2/mo** in storage vs. roughly **$12/mo
 no-tier backend — at the cost of a slow, egress-billed restore (12–48h thaw + retrieval/egress
 fees, see the runbook above). Appdata defaults to, and should stay on, Standard — it's usually
 much smaller, and a cold class isn't usable there yet in Phase 1 (see the storage-class note above
-and the restore runbook). Cold appdata is a Phase-3 feature. A full interactive cost estimator
-(per-region price tables, packing/versioning/
-retrieval modeling) is planned for a later phase — see §8 of the design spec linked above.
+and the restore runbook). Cold appdata is a Phase-3 feature. A fully interactive GUI cost
+estimator (multi-region price tables, live what-if) is planned for a later phase; the headless
+`estimate` CLI below is available now.
 
 ## Cost estimator
 

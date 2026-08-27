@@ -11,7 +11,9 @@ from .prices import load_prices
 _ASSUMPTIONS = """cost model assumptions (decision-support, not billing-accurate):
   * 128 KB minimum object size applied as max(size, object_count * 128KB), not per-object
   * data-transfer-out uses a single flat first-tier $/GB rate
-  * rotation charges churned bytes the full minimum-storage-duration remainder
+  * rotation charges churned bytes for the full minimum-storage-duration as a
+    conservative early-deletion proxy (intentionally overlaps with versioning,
+    a deliberate conservative upper bound)
   * one bundled price table (us-east-1); every figure is stamped with its capture date"""
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -109,7 +111,10 @@ def main(argv: list[str] | None = None) -> int:
         env = _read_env_file(cfg)
     try:
         scenario = build_scenario(args, env)
-        est = estimate(scenario, load_prices(scenario.region))
+        prices = load_prices(scenario.region)
+        if scenario.retrieval_tier not in prices.retrieval_request_per_1k:
+            raise ValueError(f"unknown retrieval tier '{scenario.retrieval_tier}'")
+        est = estimate(scenario, prices)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
