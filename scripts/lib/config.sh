@@ -57,6 +57,8 @@ load_config() {
   : "${MEDIA_INCLUDES:=$dir/includes-media.txt}"
   : "${LOG_FILE:=$CACHE_DIR/logs/backup-engine.log}"
   : "${NOTIFY_ON_SUCCESS:=false}"
+  : "${GUI_ENABLED:=true}"
+  : "${GUI_PORT:=8099}"
 
   if [ -z "${RESTIC_REPOSITORY:-}" ]; then
     local host="${S3_ENDPOINT:-s3.${AWS_REGION:-}.amazonaws.com}"
@@ -64,7 +66,8 @@ load_config() {
   fi
   export CACHE_DIR APPDATA_SRC MEDIA_SRC APPDATA_STORAGE_CLASS MEDIA_STORAGE_CLASS \
     MEDIA_MIRROR KEEP_LAST KEEP_DAILY KEEP_WEEKLY KEEP_MONTHLY \
-    MEDIA_INCLUDES LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY
+    MEDIA_INCLUDES LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY \
+    GUI_ENABLED GUI_PORT
 
   # RCLONE_TRANSFERS/RCLONE_BWLIMIT are user-facing config vars that
   # backup-media.sh reads in-process to build its --transfers/--bwlimit CLI

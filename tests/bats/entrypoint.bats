@@ -36,3 +36,10 @@ EOF
   [ -f "$CACHE_DIR/restic-password" ]
   [ "$(stat -c '%a' "$CACHE_DIR/rclone.conf")" = "600" ]
 }
+
+@test "entrypoint with GUI_ENABLED=false emits crontab and does not require the GUI" {
+  echo "GUI_ENABLED=false" >>"$CFG/backup.env"
+  run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
+  [ "$status" -eq 0 ]
+  grep -q "backup-appdata.sh" "$CACHE_DIR/crontab"
+}

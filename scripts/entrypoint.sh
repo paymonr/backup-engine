@@ -42,7 +42,12 @@ main() {
       *) die "RUN_ONCE must be 'appdata' or 'media'" ;;
     esac
   fi
-  log_info "starting supercronic"
+  if [ "${GUI_ENABLED:-true}" != "false" ]; then
+    log_info "starting scheduler (background) + GUI on port ${GUI_PORT:-8099}"
+    supercronic "$CACHE_DIR/crontab" &
+    exec python3 -m app.gui.server
+  fi
+  log_info "GUI disabled; scheduler only"
   exec supercronic "$CACHE_DIR/crontab"
 }
 
