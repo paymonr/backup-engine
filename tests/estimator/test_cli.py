@@ -1,6 +1,5 @@
 # tests/estimator/test_cli.py
 import json
-import pytest
 from app.estimator.cli import build_scenario, estimate_to_dict, main, _read_env_file
 from app.estimator.model import estimate
 from app.estimator.cli import _parser
@@ -48,3 +47,8 @@ def test_unknown_storage_class_flag_errors(prices, monkeypatch, capsys):
     monkeypatch.setattr("app.estimator.cli.load_prices", lambda region: prices)
     rc = main(["--media-storage-class", "NEBULA"])
     assert rc != 0
+
+def test_explicit_zero_versioning_retention_days_is_honored():
+    # A falsy-but-explicit override (0) must not be discarded in favor of the default (30).
+    s = build_scenario(_args(["--versioning-retention-days", "0"]), {})
+    assert s.versioning_retention_days == 0

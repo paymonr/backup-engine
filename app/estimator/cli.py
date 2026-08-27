@@ -55,22 +55,24 @@ def _pipeline(args, env, name: str, default: PipelineInputs) -> PipelineInputs:
         file_count=g("file_count", default.file_count),
         storage_class=cls,
         packing=(args.media_packing if name == "media" else False),
-        pack_member_gb=(args.media_pack_member_gb if name == "media" and args.media_pack_member_gb else default.pack_member_gb),
+        pack_member_gb=(args.media_pack_member_gb if name == "media" and args.media_pack_member_gb is not None else default.pack_member_gb),
         backups_per_month=g("backups_per_month", default.backups_per_month),
         change_rate_pct=g("change_rate_pct", default.change_rate_pct),
     )
 
 def build_scenario(args, env: dict[str, str]) -> Scenario:
     d = Scenario()  # defaults
-    region = args.region or env.get("AWS_REGION", d.region)
+    region = args.region if args.region is not None else env.get("AWS_REGION", d.region)
     return Scenario(
         region=region,
         appdata=_pipeline(args, env, "appdata", d.appdata),
         media=_pipeline(args, env, "media", d.media),
-        versioning_retention_days=args.versioning_retention_days or d.versioning_retention_days,
+        versioning_retention_days=(
+            args.versioning_retention_days if args.versioning_retention_days is not None
+            else d.versioning_retention_days),
         restore_fraction=args.restore_fraction if args.restore_fraction is not None else d.restore_fraction,
         restores_per_year=args.restores_per_year if args.restores_per_year is not None else d.restores_per_year,
-        retrieval_tier=args.retrieval_tier or d.retrieval_tier,
+        retrieval_tier=args.retrieval_tier if args.retrieval_tier is not None else d.retrieval_tier,
     )
 
 def estimate_to_dict(est: Estimate) -> dict:
