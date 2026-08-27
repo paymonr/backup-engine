@@ -83,13 +83,27 @@ def versioning_monthly(p: PipelineInputs, scenario: Scenario, prices: PriceTable
         p.backups_per_month * scenario.versioning_retention_days / 30)
     return noncurrent_gb * _rate(prices, p.storage_class)
 
+def ingest_monthly(p: PipelineInputs, prices: PriceTable) -> float:
+    new_objects_per_backup = effective_object_count(p) * (p.change_rate_pct / 100)
+    return new_objects_per_backup * p.backups_per_month * prices.put_per_1k / 1000
+
+def upfront_onetime(p: PipelineInputs, prices: PriceTable) -> float:
+    return effective_object_count(p) * prices.put_per_1k / 1000
+
+def rotation_monthly(p: PipelineInputs, scenario: Scenario, prices: PriceTable) -> float:
+    min_days = prices.min_storage_duration_days.get(p.storage_class, 0)
+    if not min_days:
+        return 0.0
+    rotated_gb_per_month = p.size_gb * (p.change_rate_pct / 100) * p.backups_per_month
+    return rotated_gb_per_month * _rate(prices, p.storage_class) * (min_days / 30)
+
 def _line_items(p: PipelineInputs, scenario: Scenario, prices: PriceTable) -> LineItems:
     return LineItems(
         storage=storage_monthly(p, prices),
         versioning=versioning_monthly(p, scenario, prices),
-        ingest_monthly=0.0,      # Task 3
-        upfront_onetime=0.0,     # Task 3
-        rotation_monthly=0.0,    # Task 3
+        ingest_monthly=ingest_monthly(p, prices),
+        upfront_onetime=upfront_onetime(p, prices),
+        rotation_monthly=rotation_monthly(p, scenario, prices),
         restore_per_event=0.0,   # Task 4
         effective_object_count=effective_object_count(p),
         billed_gb=billed_gb(p, prices),

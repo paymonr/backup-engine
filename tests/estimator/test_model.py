@@ -4,6 +4,7 @@ import pytest
 from app.estimator.model import (
     PipelineInputs, Scenario, estimate,
     effective_object_count, billed_gb, storage_monthly, versioning_monthly,
+    ingest_monthly, upfront_onetime, rotation_monthly,
 )
 
 def test_effective_object_count_uses_file_count_without_packing():
@@ -41,3 +42,35 @@ def test_estimate_returns_stamped_estimate_with_both_pipelines(prices):
     assert est.price_date == "2099-01-01"
     assert set(est.pipelines) == {"appdata", "media"}
     assert est.monthly_total >= 0
+
+def test_ingest_monthly_counts_changed_objects(prices):
+    p = PipelineInputs(size_gb=20, file_count=5, storage_class="STANDARD",
+                       backups_per_month=30, change_rate_pct=10)
+    # new objects/backup = 5 * 0.10 = 0.5; * 30 backups = 15; * 0.005/1000
+    assert math.isclose(ingest_monthly(p, prices), 15 * 0.005 / 1000)
+
+def test_upfront_onetime_is_one_put_per_object(prices):
+    p = PipelineInputs(size_gb=2000, file_count=50000, storage_class="DEEP_ARCHIVE")
+    assert math.isclose(upfront_onetime(p, prices), 50000 * 0.005 / 1000)  # 0.25
+
+def test_rotation_zero_for_warm_class(prices):
+    p = PipelineInputs(size_gb=20, file_count=5, storage_class="STANDARD",
+                       backups_per_month=30, change_rate_pct=10)
+    s = Scenario(appdata=p, media=p)
+    assert rotation_monthly(p, s, prices) == 0.0
+
+def test_rotation_charges_min_duration_for_cold_churn(prices):
+    p = PipelineInputs(size_gb=2000, file_count=50000, storage_class="DEEP_ARCHIVE",
+                       backups_per_month=4, change_rate_pct=1)
+    s = Scenario(appdata=p, media=p)
+    # rotated/mo = 2000 * 0.01 * 4 = 80 GB; * 0.001 * (180/30) = 0.48
+    assert math.isclose(rotation_monthly(p, s, prices), 0.48)
+
+def test_estimate_monthly_includes_ingest_and_rotation(prices):
+    s = Scenario()
+    est = estimate(s, prices)
+    appdata = est.pipelines["appdata"]
+    assert appdata.ingest_monthly > 0
+    assert appdata.upfront_onetime > 0
+    # media is cold -> rotation > 0
+    assert est.pipelines["media"].rotation_monthly > 0
