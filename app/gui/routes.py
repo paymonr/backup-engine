@@ -1,7 +1,7 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
 from flask import Blueprint, redirect, url_for, render_template, request, flash, current_app, abort, Response
-from . import config_io, runner, security
+from . import config_io, runner, security, provision
 
 bp = Blueprint("gui", __name__)
 
@@ -57,3 +57,44 @@ def run(pipeline):
 def logs():
     n = request.args.get("tail", default=200, type=int)
     return Response(runner.tail_log(current_app.config["CACHE_DIR"], n), mimetype="text/plain")
+
+@bp.get("/provision")
+def provision_home():
+    return render_template("provision_home.html", csrf=security.issue_csrf())
+
+@bp.get("/provision/manual")
+def provision_manual():
+    return render_template("provision_manual.html", csrf=security.issue_csrf(),
+                           bucket="", region="", policy=None, console=None, error=None)
+
+@bp.post("/provision/manual/render")
+def provision_manual_render():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    bucket = request.form.get("bucket", "").strip()
+    region = request.form.get("region", "").strip()
+    if not bucket or not region:
+        return render_template("provision_manual.html", csrf=security.issue_csrf(),
+                               bucket=bucket, region=region, policy=None, console=None,
+                               error="Bucket and region are required."), 400
+    return render_template("provision_manual.html", csrf=security.issue_csrf(),
+                           bucket=bucket, region=region,
+                           policy=provision.render_policy(bucket),
+                           console=provision.render_console_steps(bucket, region),
+                           error=None)
+
+@bp.get("/provision/scripted")
+def provision_scripted():
+    return render_template("provision_scripted.html", csrf=security.issue_csrf())
+
+@bp.post("/provision/validate")
+def provision_validate():
+    abort(501)  # implemented in Task 6
+
+@bp.get("/provision/automated")
+def provision_automated():
+    abort(501)  # implemented in Task 7
+
+@bp.post("/provision/automated")
+def provision_automated_run():
+    abort(501)  # implemented in Task 7

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Provision the AWS destination</h1>
+<p>Get from "no bucket" to "runtime key saved and validated". Pick a mode:</p>
+<ul>
+  <li><a href="{{ url_for('gui.provision_manual') }}"><strong>Guided-manual</strong></a> —
+      no admin credentials. We render the exact least-privilege IAM policy + console steps,
+      then validate the key you create.</li>
+  <li><a href="{{ url_for('gui.provision_scripted') }}"><strong>Scripted</strong></a> —
+      run <code>setup.sh</code> from your own shell (admin creds never touch this container).</li>
+  <li><a href="{{ url_for('gui.provision_automated') }}"><strong>Automated</strong></a> —
+      paste transient admin credentials; we run OpenTofu once, save the runtime key, and
+      discard the admin creds.</li>
+</ul>
+{% endblock %}

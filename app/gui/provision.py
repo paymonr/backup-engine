@@ -110,6 +110,38 @@ def _run_tofu(args, *, cwd, env):
     return subprocess.run(["tofu", *args], cwd=cwd, env=env, capture_output=True, text=True)
 
 
+def render_console_steps(bucket: str, region: str) -> dict:
+    loc = "" if region == "us-east-1" else \
+        f" --create-bucket-configuration LocationConstraint={region}"
+    cli = [
+        f"aws s3api create-bucket --bucket {bucket} --region {region}{loc}",
+        f"aws s3api put-bucket-versioning --bucket {bucket} "
+        f"--versioning-configuration Status=Enabled",
+        f"aws s3api put-bucket-encryption --bucket {bucket} "
+        f"--server-side-encryption-configuration "
+        f"'{{\"Rules\":[{{\"ApplyServerSideEncryptionByDefault\":"
+        f"{{\"SSEAlgorithm\":\"AES256\"}}}}]}}'",
+        f"aws s3api put-public-access-block --bucket {bucket} "
+        f"--public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,"
+        f"BlockPublicPolicy=true,RestrictPublicBuckets=true",
+        "aws iam create-policy --policy-name backup-engine-runtime-object-only "
+        "--policy-document file://iam-policy.json",
+        "aws iam create-user --user-name backup-engine-runtime",
+        "aws iam attach-user-policy --user-name backup-engine-runtime "
+        "--policy-arn <policy-arn-from-create-policy>",
+        "aws iam create-access-key --user-name backup-engine-runtime",
+    ]
+    steps = [
+        "Create the bucket in your region with versioning + default SSE + all public access blocked.",
+        "Add lifecycle rules: expire noncurrent versions and abort incomplete multipart uploads.",
+        "Save the policy JSON above as iam-policy.json, then create an IAM policy from it.",
+        "Create an IAM user and attach that policy.",
+        "Create an access key for the user — that is your runtime key/secret.",
+        "Paste the runtime key/secret below and click Test & Validate.",
+    ]
+    return {"cli": cli, "steps": steps}
+
+
 def run_tofu_apply(bucket, region, admin_key, admin_secret, session_token=None,
                    *, run=_run_tofu, module_src=OPENTOFU_DIR, provisioning_src=PROVISIONING_DIR) -> dict:
     """One-shot `tofu init && apply` in a throwaway temp dir. Admin creds go ONLY via the

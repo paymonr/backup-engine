@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Guided-manual provisioning</h1>
+{% if error %}<p class="warn">{{ error }}</p>{% endif %}
+<form method="post" action="{{ url_for('gui.provision_manual_render') }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Bucket <input name="bucket" value="{{ bucket }}" required></label>
+  <label>Region <input name="region" value="{{ region }}" required></label>
+  <button type="submit">Render policy &amp; steps</button>
+</form>
+
+{% if policy %}
+<h2>1. Least-privilege IAM policy</h2>
+<pre>{{ policy }}</pre>
+<h2>2. Console / CLI steps</h2>
+<ol>{% for s in console.steps %}<li>{{ s }}</li>{% endfor %}</ol>
+<pre>{% for c in console.cli %}{{ c }}
+{% endfor %}</pre>
+
+<h2>3. Test &amp; Validate the runtime key</h2>
+<form method="post" action="{{ url_for('gui.provision_validate') }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="bucket" value="{{ bucket }}">
+  <input type="hidden" name="region" value="{{ region }}">
+  <label>AWS_ACCESS_KEY_ID <input name="AWS_ACCESS_KEY_ID" autocomplete="off" required></label>
+  <label>AWS_SECRET_ACCESS_KEY <input name="AWS_SECRET_ACCESS_KEY" type="password" autocomplete="off" required></label>
+  <button type="submit">Test &amp; Validate</button>
+</form>
+<p><em>On success we save the key write-only and set the region/bucket. Then confirm bucket
+versioning is ON — object-only keys can't verify bucket-level settings.</em></p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Scripted provisioning</h1>
+<p>Run this from a shell that already has your AWS <strong>admin</strong> credentials
+(<code>AWS_PROFILE</code> or <code>AWS_ACCESS_KEY_ID</code>/<code>AWS_SECRET_ACCESS_KEY</code>).
+Admin creds stay in your shell — this container never sees them.</p>
+<pre>./setup.sh &lt;bucket-name&gt; &lt;region&gt;</pre>
+<p>It wraps <code>tofu apply</code> and prints the runtime key/secret + region/bucket to paste
+into <a href="{{ url_for('gui.config_page') }}">Config</a> (or re-run Test &amp; Validate in
+guided-manual mode).</p>
+{% endblock %}
