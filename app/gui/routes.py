@@ -1,7 +1,7 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
-from flask import Blueprint, redirect, url_for, render_template, request, flash, current_app, abort
-from . import config_io, security
+from flask import Blueprint, redirect, url_for, render_template, request, flash, current_app, abort, Response
+from . import config_io, runner, security
 
 bp = Blueprint("gui", __name__)
 
@@ -37,7 +37,23 @@ def config_save():
     flash("Configuration saved.")
     return redirect(url_for("gui.config_page"))
 
-# Temporary stub — replaced in Task 5.
 @bp.get("/status")
 def status_page():
-    return ""
+    cfg = current_app.config
+    states = {p: runner.read_state(cfg["CACHE_DIR"], p) for p in runner.PIPELINES}
+    return render_template("status.html", states=states, csrf=security.issue_csrf())
+
+@bp.post("/run/<pipeline>")
+def run(pipeline):
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    if pipeline not in runner.PIPELINES:
+        abort(404)
+    runner.trigger_backup(current_app.config["SCRIPTS_DIR"], pipeline)
+    flash(f"Started {pipeline} backup.")
+    return redirect(url_for("gui.status_page"))
+
+@bp.get("/logs")
+def logs():
+    n = request.args.get("tail", default=200, type=int)
+    return Response(runner.tail_log(current_app.config["CACHE_DIR"], n), mimetype="text/plain")
