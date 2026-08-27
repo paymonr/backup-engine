@@ -98,7 +98,7 @@ def _fake_tofu(rec):
         rec.setdefault("calls", []).append(args[0])
         rec["env"] = dict(env)
         rec["workdir"] = str(_Path(cwd).parent)
-        rec["tfvars"] = _Path(cwd, "terraform.tfvars").read_text()
+        rec["tfvars"] = _Path(cwd, "terraform.tfvars.json").read_text()
 
         class CP:
             returncode = 0
@@ -149,3 +149,12 @@ def test_apply_failure_raises_scrubs_and_still_cleans_up():
     assert ei.value.phase == "apply"
     assert "ADMINSECRET" not in ei.value.detail and "***" in ei.value.detail
     assert not _Path(rec["workdir"]).exists()
+
+
+def test_apply_writes_tfvars_as_injection_safe_json():
+    rec = {}
+    evil = 'x"\nname_prefix = "evil'
+    provision.run_tofu_apply(evil, "us-east-1", "K", "S", run=_fake_tofu(rec))
+    parsed = _json.loads(rec["tfvars"])
+    assert set(parsed.keys()) == {"bucket_name", "region"}
+    assert parsed["bucket_name"] == evil   # malicious content stays a plain string value

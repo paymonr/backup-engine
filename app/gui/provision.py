@@ -121,9 +121,11 @@ def run_tofu_apply(bucket, region, admin_key, admin_secret, session_token=None,
         tf_dir = Path(workdir, "opentofu")
         shutil.copytree(module_src, tf_dir)
         shutil.copytree(provisioning_src, Path(workdir, "provisioning"))
-        # tfvars holds ONLY non-secret bucket/region — never any credential.
-        Path(tf_dir, "terraform.tfvars").write_text(
-            f'bucket_name = "{bucket}"\nregion = "{region}"\n'
+        # tfvars as JSON so bucket/region can't break out of an HCL string
+        # literal (injection-safe). tofu auto-loads terraform.tfvars.json.
+        # Holds ONLY non-secret bucket/region — never any credential.
+        Path(tf_dir, "terraform.tfvars.json").write_text(
+            json.dumps({"bucket_name": bucket, "region": region})
         )
         env = _tofu_env(admin_key, admin_secret, session_token)
         for phase, args in (("init", ["init", "-backend=false", "-input=false"]),
