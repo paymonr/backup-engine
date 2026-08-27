@@ -1,0 +1,27 @@
+{
+  "region": "us-east-1",
+  "date": "2026-08-26",
+  "source": "plan-provided figures, 2026-08-26 — re-verify before public release",
+  "storage_gb_month": {
+    "STANDARD": 0.023,
+    "STANDARD_IA": 0.0125,
+    "GLACIER_IR": 0.004,
+    "GLACIER": 0.0036,
+    "DEEP_ARCHIVE": 0.00099
+  },
+  "requests": { "put_per_1k": 0.005, "get_per_1k": 0.0004, "lifecycle_transition_per_1k": 0.05 },
+  "retrieval": {
+    "per_gb": {
+      "STANDARD_IA": { "Standard": 0.01 },
+      "GLACIER_IR": { "Standard": 0.03 },
+      "GLACIER": { "Bulk": 0.0025, "Standard": 0.01, "Expedited": 0.03 },
+      "DEEP_ARCHIVE": { "Bulk": 0.0025, "Standard": 0.02 }
+    },
+    "request_per_1k": { "Bulk": 0.025, "Standard": 0.05, "Expedited": 10.0 }
+  },
+  "data_transfer_out_per_gb": 0.09,
+  "constraints": {
+    "min_billable_object_kb": 128,
+    "min_storage_duration_days": { "STANDARD_IA": 30, "GLACIER_IR": 90, "GLACIER": 90, "DEEP_ARCHIVE": 180 }
+  }
+}
