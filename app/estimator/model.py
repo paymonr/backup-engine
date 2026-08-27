@@ -97,6 +97,27 @@ def rotation_monthly(p: PipelineInputs, scenario: Scenario, prices: PriceTable) 
     rotated_gb_per_month = p.size_gb * (p.change_rate_pct / 100) * p.backups_per_month
     return rotated_gb_per_month * _rate(prices, p.storage_class) * (min_days / 30)
 
+def _retrieval_per_gb(storage_class: str, tier: str, prices: PriceTable) -> float:
+    table = prices.retrieval_per_gb.get(storage_class)
+    if table is None:
+        return 0.0  # warm class (e.g. STANDARD): no retrieval fee
+    if tier in table:
+        return table[tier]
+    if storage_class in ("GLACIER", "DEEP_ARCHIVE"):
+        raise ValueError(f"retrieval tier '{tier}' not available for {storage_class}")
+    return next(iter(table.values()))  # non-tiered cold (IA/GLACIER_IR): single rate
+
+def restore_cost(p: PipelineInputs, scenario: Scenario, prices: PriceTable, fraction: float) -> float:
+    restored_gb = p.size_gb * fraction
+    restored_objects = effective_object_count(p) * fraction
+    cost = restored_gb * prices.data_transfer_out_per_gb + restored_objects * prices.get_per_1k / 1000
+    per_gb = _retrieval_per_gb(p.storage_class, scenario.retrieval_tier, prices)
+    if per_gb:
+        cost += restored_gb * per_gb
+        if p.storage_class in ("GLACIER", "DEEP_ARCHIVE"):
+            cost += restored_objects * prices.retrieval_request_per_1k[scenario.retrieval_tier] / 1000
+    return cost
+
 def _line_items(p: PipelineInputs, scenario: Scenario, prices: PriceTable) -> LineItems:
     return LineItems(
         storage=storage_monthly(p, prices),
@@ -104,7 +125,7 @@ def _line_items(p: PipelineInputs, scenario: Scenario, prices: PriceTable) -> Li
         ingest_monthly=ingest_monthly(p, prices),
         upfront_onetime=upfront_onetime(p, prices),
         rotation_monthly=rotation_monthly(p, scenario, prices),
-        restore_per_event=0.0,   # Task 4
+        restore_per_event=restore_cost(p, scenario, prices, scenario.restore_fraction),
         effective_object_count=effective_object_count(p),
         billed_gb=billed_gb(p, prices),
     )
@@ -117,6 +138,7 @@ def estimate(scenario: Scenario, prices: PriceTable) -> Estimate:
     upfront = sum(li.upfront_onetime for li in pipelines.values())
     annual_restore = sum(li.restore_per_event for li in pipelines.values()) * scenario.restores_per_year
     first_year = 12 * monthly + upfront + annual_restore
-    full_restore = 0.0  # Task 4
+    full_restore = sum(restore_cost(getattr(scenario, name), scenario, prices, 1.0)
+                       for name in ("appdata", "media"))
     return Estimate(prices.date, prices.source, prices.region, pipelines,
                     monthly, first_year, full_restore)

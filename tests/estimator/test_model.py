@@ -4,7 +4,7 @@ import pytest
 from app.estimator.model import (
     PipelineInputs, Scenario, estimate,
     effective_object_count, billed_gb, storage_monthly, versioning_monthly,
-    ingest_monthly, upfront_onetime, rotation_monthly,
+    ingest_monthly, upfront_onetime, rotation_monthly, restore_cost,
 )
 
 def test_effective_object_count_uses_file_count_without_packing():
@@ -74,3 +74,41 @@ def test_estimate_monthly_includes_ingest_and_rotation(prices):
     assert appdata.upfront_onetime > 0
     # media is cold -> rotation > 0
     assert est.pipelines["media"].rotation_monthly > 0
+
+def test_restore_warm_class_has_no_retrieval_fee(prices):
+    p = PipelineInputs(size_gb=10, file_count=100, storage_class="STANDARD")
+    s = Scenario(appdata=p, media=p, restore_fraction=1.0)
+    # only egress + GETs: 10 * 0.10 + 100 * 0.0004/1000
+    expected = 10 * 0.10 + 100 * 0.0004 / 1000
+    assert math.isclose(restore_cost(p, s, prices, 1.0), expected)
+
+def test_restore_deep_archive_bulk_includes_retrieval_and_egress(prices):
+    p = PipelineInputs(size_gb=2000, file_count=50000, storage_class="DEEP_ARCHIVE")
+    s = Scenario(appdata=p, media=p, restore_fraction=1.0, retrieval_tier="Bulk")
+    # egress 2000*0.10=200; GET 50000*0.0004/1000=0.02; retrieval 2000*0.0025=5;
+    # retrieval requests 50000*0.025/1000=1.25 => 206.27
+    assert math.isclose(restore_cost(p, s, prices, 1.0), 206.27)
+
+def test_restore_scales_with_fraction(prices):
+    p = PipelineInputs(size_gb=2000, file_count=50000, storage_class="DEEP_ARCHIVE")
+    s = Scenario(appdata=p, media=p, retrieval_tier="Bulk")
+    assert math.isclose(restore_cost(p, s, prices, 0.5), 206.27 / 2)
+
+def test_unknown_retrieval_tier_raises(prices):
+    p = PipelineInputs(size_gb=2000, file_count=50000, storage_class="DEEP_ARCHIVE")
+    s = Scenario(appdata=p, media=p, retrieval_tier="Warp")
+    with pytest.raises(ValueError) as e:
+        restore_cost(p, s, prices, 1.0)
+    assert "Warp" in str(e.value)
+
+def test_full_restore_total_is_independent_of_restores_per_year(prices):
+    s = Scenario(restores_per_year=0)  # no annualized restore, but full-restore still shown
+    est = estimate(s, prices)
+    assert est.full_restore_total > 0
+
+def test_golden_default_scenario_totals(prices):
+    # Whole-model golden against the fixed test table (all terms live).
+    est = estimate(Scenario(), prices)
+    assert est.monthly_total > 0
+    assert est.first_year_total > est.monthly_total  # upfront + restores add on
+    assert est.full_restore_total > 0
