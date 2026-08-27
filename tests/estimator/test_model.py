@@ -112,3 +112,6 @@ def test_golden_default_scenario_totals(prices):
     assert est.monthly_total > 0
     assert est.first_year_total > est.monthly_total  # upfront + restores add on
     assert est.full_restore_total > 0
+
+def test_public_api_importable():
+    from app.estimator import estimate, Scenario, PipelineInputs, Estimate, load_prices  # noqa: F401

@@ -223,6 +223,19 @@ and the restore runbook). Cold appdata is a Phase-3 feature. A full interactive 
 (per-region price tables, packing/versioning/
 retrieval modeling) is planned for a later phase — see §8 of the design spec linked above.
 
+## Cost estimator
+
+Estimate what a given backup shape will cost on S3 before you commit to a storage class:
+
+    python3 -m app.estimator                 # uses defaults + /config/backup.env if present
+    python3 -m app.estimator --media-size-gb 4000 --media-storage-class DEEP_ARCHIVE --retrieval-tier Bulk
+    python3 -m app.estimator --json           # machine-readable breakdown
+    python3 -m app.estimator --assumptions    # what the model does and does not account for
+
+It reads `AWS_REGION` and the storage classes from `backup.env` when present (flags override),
+runs fully offline against a bundled, dated us-east-1 price table, and prints a per-pipeline
+line-item breakdown plus monthly, first-year, and illustrative full-restore totals.
+
 ## Development
 
 - `shellcheck scripts/*.sh scripts/lib/*.sh setup.sh` — lint.
@@ -231,5 +244,6 @@ retrieval modeling) is planned for a later phase — see §8 of the design spec 
 - `cd opentofu && tofu fmt -check && tofu validate` — module lint/validate.
 - `docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from backup-engine` —
   containerized smoke run against Dockerized MinIO.
+- `python3 -m pytest tests/estimator/` — cost-estimator unit tests.
 
 All of the above run in CI on every push/PR (`.github/workflows/ci.yml`).

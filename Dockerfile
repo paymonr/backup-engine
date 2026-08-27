@@ -60,6 +60,7 @@ RUN set -eux; \
 
 WORKDIR /app
 COPY scripts/ /app/scripts/
+COPY app/ /app/app/
 RUN chmod +x /app/scripts/*.sh
 ENV CACHE_DIR=/cache CONFIG_DIR=/config
 VOLUME ["/backup/appdata", "/backup/media", "/config", "/cache"]
