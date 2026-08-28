@@ -11,7 +11,10 @@ def _within(root: Path, candidate: Path) -> bool:
 
 def safe_resolve(root, rel: str = "") -> Path:
     root = Path(root).resolve()
-    candidate = (root / rel).resolve()  # absolute `rel` replaces root; `..`/symlinks are followed
+    try:
+        candidate = (root / rel).resolve()  # absolute `rel` replaces root; `..`/symlinks are followed
+    except (OSError, RuntimeError) as exc:  # e.g. ELOOP: a looping symlink (RuntimeError on 3.12+)
+        raise PathError("path could not be resolved") from exc
     if not _within(root, candidate):
         raise PathError("path escapes root")
     return candidate
@@ -25,7 +28,7 @@ def list_dirs(root, rel: str = "") -> list[str]:
     for entry in sorted(base.iterdir(), key=lambda p: p.name.lower()):
         try:
             resolved = entry.resolve()
-        except OSError:
+        except (OSError, RuntimeError):  # e.g. ELOOP: a looping symlink (RuntimeError on 3.12+)
             continue
         if resolved.is_dir() and _within(root, resolved):
             out.append(entry.name)

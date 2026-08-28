@@ -43,3 +43,16 @@ def test_list_dirs_skips_escaping_symlink_child(tmp_path):
     outside = tmp_path / "outside"; outside.mkdir()
     os.symlink(outside, root / "books" / "escape")
     assert fsbrowse.list_dirs(root, "books") == []  # escaping symlink skipped
+
+def test_safe_resolve_rejects_symlink_loop(tmp_path):
+    root = _root(tmp_path)
+    loop = root / "loop"
+    os.symlink(loop, loop)  # self-referential symlink -> ELOOP
+    with pytest.raises(PathError):
+        fsbrowse.safe_resolve(root, "loop")
+
+def test_list_dirs_skips_symlink_loop_child(tmp_path):
+    root = _root(tmp_path)
+    loop = root / "books" / "loop"
+    os.symlink(loop, loop)  # self-referential symlink -> ELOOP
+    assert fsbrowse.list_dirs(root, "books") == []  # looping symlink skipped, no crash
