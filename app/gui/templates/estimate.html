@@ -1,0 +1,104 @@
+{% extends "base.html" %}{% block body %}
+{%- macro money(v) -%}{% if v is not none %}${{ "{:,.2f}".format(v) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro val(field, default) -%}{{ request.args.get(field, default) }}{%- endmacro -%}
+{%- macro sel(field, default) -%}
+  {%- set cur = request.args.get(field, default) -%}
+  {% for c in storage_classes %}<option value="{{ c }}"{{ ' selected' if c == cur else '' }}>{{ c }}</option>{% endfor %}
+{%- endmacro -%}
+
+<h1>Cost estimate</h1>
+<p class="hint">
+  Prices: <span data-est="region">{{ est.region if est else 'us-east-1' }}</span>
+  @ <span data-est="price_date">{{ est.price_date if est else '—' }}</span>
+  (<span data-est="price_source">{{ est.price_source if est else '—' }}</span>).
+  Single bundled region for now; decision-support, not billing-accurate.
+</p>
+<p id="est-error" class="warn"{{ '' if error else ' hidden' }}>{{ error or '' }}</p>
+
+<form id="est-form" method="get" action="{{ url_for('gui.estimate_page') }}">
+  <div class="est-grid">
+    <fieldset>
+      <legend>appdata (restic)</legend>
+      <label>Size (GB) <input type="number" step="any" min="0" name="appdata_size_gb" value="{{ val('appdata_size_gb', d.appdata.size_gb) }}"></label>
+      <label>File count <input type="number" step="1" min="0" name="appdata_file_count" value="{{ val('appdata_file_count', d.appdata.file_count) }}"></label>
+      <label>Storage class <select name="appdata_storage_class">{{ sel('appdata_storage_class', d.appdata.storage_class) }}</select></label>
+      <fieldset class="retention">
+        <legend>restic keep-policy (retention)</legend>
+        <label>last <input type="number" step="1" min="0" name="keep_last" value="{{ val('keep_last', d.keep_last) }}"></label>
+        <label>daily <input type="number" step="1" min="0" name="keep_daily" value="{{ val('keep_daily', d.keep_daily) }}"></label>
+        <label>weekly <input type="number" step="1" min="0" name="keep_weekly" value="{{ val('keep_weekly', d.keep_weekly) }}"></label>
+        <label>monthly <input type="number" step="1" min="0" name="keep_monthly" value="{{ val('keep_monthly', d.keep_monthly) }}"></label>
+        <p class="hint">≈ <span data-est="appdata_retention_days">{{ appdata_retention }}</span> days of history retained (drives versioning cost)</p>
+      </fieldset>
+      <details><summary>Advanced</summary>
+        <label>Backups / month <input type="number" step="any" min="0" name="appdata_backups_per_month" value="{{ val('appdata_backups_per_month', d.appdata.backups_per_month) }}"></label>
+        <label>Change rate (%) <input type="number" step="any" min="0" name="appdata_change_rate_pct" value="{{ val('appdata_change_rate_pct', d.appdata.change_rate_pct) }}"></label>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>media (rclone)</legend>
+      <label>Size (GB) <input type="number" step="any" min="0" name="media_size_gb" value="{{ val('media_size_gb', d.media.size_gb) }}"></label>
+      <label>File count <input type="number" step="1" min="0" name="media_file_count" value="{{ val('media_file_count', d.media.file_count) }}"></label>
+      <label>Storage class <select name="media_storage_class">{{ sel('media_storage_class', d.media.storage_class) }}</select></label>
+      <p class="hint">Media is additive — retained until you prune (or mirror mode).</p>
+      <details><summary>Advanced</summary>
+        <label>Backups / month <input type="number" step="any" min="0" name="media_backups_per_month" value="{{ val('media_backups_per_month', d.media.backups_per_month) }}"></label>
+        <label>Change rate (%) <input type="number" step="any" min="0" name="media_change_rate_pct" value="{{ val('media_change_rate_pct', d.media.change_rate_pct) }}"></label>
+        <label><input type="checkbox" name="media_packing" value="1"{{ ' checked' if request.args.get('media_packing') else '' }}> Pack small files</label>
+        <label>Pack member (GB) <input type="number" step="any" min="0" name="media_pack_member_gb" value="{{ val('media_pack_member_gb', d.media.pack_member_gb) }}"></label>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>global</legend>
+      <label>S3 noncurrent-version retention (days) <input type="number" step="1" min="0" name="versioning_retention_days" value="{{ val('versioning_retention_days', d.versioning_retention_days) }}"></label>
+      <label>Retrieval tier
+        <select name="retrieval_tier">
+          {%- set tier = request.args.get('retrieval_tier', d.retrieval_tier) -%}
+          {% for t in retrieval_tiers %}<option value="{{ t }}"{{ ' selected' if t == tier else '' }}>{{ t }}</option>{% endfor %}
+        </select></label>
+      <label>Restore fraction (0–1) <input type="number" step="any" min="0" name="restore_fraction" value="{{ val('restore_fraction', d.restore_fraction) }}"></label>
+      <label>Restores / year <input type="number" step="any" min="0" name="restores_per_year" value="{{ val('restores_per_year', d.restores_per_year) }}"></label>
+    </fieldset>
+  </div>
+  <noscript><p><button type="submit">Recalculate</button></p></noscript>
+  <p class="hint" data-js-only>Costs update live as you change inputs.</p>
+</form>
+
+<table id="est-results">
+  <thead><tr><th>per month unless noted</th><th>appdata</th><th>media</th></tr></thead>
+  <tbody>
+    {% set rows = [('storage','Storage'),('versioning','Versioning'),('ingest_monthly','Ingest'),('rotation_monthly','Rotation (early-delete)'),('upfront_onetime','Upfront (once)'),('restore_per_event','Restore / event')] %}
+    {% for key, label in rows %}
+    <tr><th>{{ label }}</th>
+      <td data-est="pipelines.appdata.{{ key }}" data-fmt="money">{{ money(est.pipelines['appdata'][key] if est else none) }}</td>
+      <td data-est="pipelines.media.{{ key }}" data-fmt="money">{{ money(est.pipelines['media'][key] if est else none) }}</td>
+    </tr>
+    {% endfor %}
+    <tr><th>Billed GB</th>
+      <td data-est="pipelines.appdata.billed_gb" data-fmt="num">{{ "{:,.2f}".format(est.pipelines['appdata'].billed_gb) if est else '—' }}</td>
+      <td data-est="pipelines.media.billed_gb" data-fmt="num">{{ "{:,.2f}".format(est.pipelines['media'].billed_gb) if est else '—' }}</td>
+    </tr>
+    <tr><th>Objects</th>
+      <td data-est="pipelines.appdata.effective_object_count" data-fmt="int">{{ "{:,}".format(est.pipelines['appdata'].effective_object_count) if est else '—' }}</td>
+      <td data-est="pipelines.media.effective_object_count" data-fmt="int">{{ "{:,}".format(est.pipelines['media'].effective_object_count) if est else '—' }}</td>
+    </tr>
+  </tbody>
+</table>
+
+<ul class="totals">
+  <li><strong>Monthly total</strong> <span data-est="monthly_total" data-fmt="money">{{ money(est.monthly_total if est else none) }}</span></li>
+  <li><strong>First-year total</strong> <span data-est="first_year_total" data-fmt="money">{{ money(est.first_year_total if est else none) }}</span></li>
+  <li><strong>Full restore (once)</strong> <span data-est="full_restore_total" data-fmt="money">{{ money(est.full_restore_total if est else none) }}</span></li>
+</ul>
+
+<details><summary>Modeling assumptions</summary>
+<ul>
+  <li>128 KB minimum object size applied as max(size, objects × 128 KB), not per-object.</li>
+  <li>Data-transfer-out uses a single flat first-tier $/GB rate.</li>
+  <li>Rotation charges churned bytes for the full minimum-storage-duration (a conservative early-deletion proxy that overlaps with versioning).</li>
+  <li>Appdata retention is derived from the restic keep-policy as a proxy history window; media is additive.</li>
+</ul>
+</details>
+{% endblock %}

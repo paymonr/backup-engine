@@ -1,7 +1,11 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
-from flask import Blueprint, redirect, url_for, render_template, request, flash, current_app, abort, Response
-from . import config_io, runner, security
+from dataclasses import asdict
+from flask import (Blueprint, redirect, url_for, render_template, request, flash,
+                   current_app, abort, Response, jsonify)
+from . import config_io, runner, security, estimate_io
+from ..estimator.model import estimate, STORAGE_CLASSES, effective_retention_days
+from ..estimator.prices import load_prices
 
 bp = Blueprint("gui", __name__)
 
@@ -57,3 +61,37 @@ def run(pipeline):
 def logs():
     n = request.args.get("tail", default=200, type=int)
     return Response(runner.tail_log(current_app.config["CACHE_DIR"], n), mimetype="text/plain")
+
+def _compute(config_dir, params):
+    scenario = estimate_io.scenario_from_params(params, config_dir)
+    return scenario, estimate(scenario, load_prices(scenario.region))
+
+@bp.get("/estimate")
+def estimate_page():
+    cfg = current_app.config
+    d = estimate_io.form_defaults(cfg["CONFIG_DIR"])
+    est = None
+    error = None
+    appdata_retention = effective_retention_days(
+        keep_last=d["keep_last"], keep_daily=d["keep_daily"],
+        keep_weekly=d["keep_weekly"], keep_monthly=d["keep_monthly"])
+    try:
+        scenario, est = _compute(cfg["CONFIG_DIR"], request.args)
+        appdata_retention = scenario.appdata.versioning_retention_days
+    except ValueError as e:
+        error = str(e)
+    return render_template("estimate.html", d=d, est=est, error=error,
+                           appdata_retention=appdata_retention,
+                           storage_classes=STORAGE_CLASSES,
+                           retrieval_tiers=estimate_io.RETRIEVAL_TIERS)
+
+@bp.get("/estimate.json")
+def estimate_json():
+    cfg = current_app.config
+    try:
+        scenario, est = _compute(cfg["CONFIG_DIR"], request.args)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    payload = asdict(est)
+    payload["appdata_retention_days"] = scenario.appdata.versioning_retention_days
+    return jsonify(payload)
