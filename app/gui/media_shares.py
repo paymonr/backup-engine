@@ -41,3 +41,42 @@ def parse_rules(text: str) -> dict:
             continue
         return {"whole": False, "folders": [], "raw": text}  # non-canonical => custom
     return {"whole": False, "folders": folders, "raw": None}
+
+def _file(shares_dir, name: str) -> Path:
+    if not valid_name(name):
+        raise ValueError("invalid share name")
+    return Path(shares_dir) / f"{name}.txt"
+
+def list_shares(media_root, shares_dir) -> list[dict]:
+    try:
+        names = fsbrowse.list_dirs(media_root, "")
+    except fsbrowse.PathError:
+        names = []
+    out: list[dict] = []
+    for name in names:
+        if not valid_name(name):
+            continue  # unrepresentable share names are skipped, not backed up
+        sel = read_selection(shares_dir, name)
+        enabled = (Path(shares_dir) / f"{name}.txt").exists()
+        out.append({"name": name, "enabled": enabled, "whole": sel["whole"],
+                    "folders": sel["folders"], "custom": sel["raw"] is not None})
+    return out
+
+def read_selection(shares_dir, name) -> dict:
+    f = _file(shares_dir, name)
+    if not f.exists():
+        return {"whole": False, "folders": [], "raw": None}
+    return parse_rules(f.read_text())
+
+def write_selection(shares_dir, name, whole, folders) -> None:
+    f = _file(shares_dir, name)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(generate_rules(whole, folders))
+
+def write_raw(shares_dir, name, text) -> None:
+    f = _file(shares_dir, name)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text if text.endswith("\n") else text + "\n")
+
+def disable(shares_dir, name) -> None:
+    _file(shares_dir, name).unlink(missing_ok=True)

@@ -33,3 +33,46 @@ def test_round_trip_folders():
 def test_parse_custom_rules_flagged_raw():
     got = ms.parse_rules("+ /a/**\n- /a/tmp/**\n- **\n")  # a `-` mid-list is non-canonical
     assert got["raw"] is not None and got["folders"] == []
+
+
+from pathlib import Path
+import pytest
+
+def _tree(tmp_path):
+    root = tmp_path / "media"
+    (root / "comics").mkdir(parents=True)
+    (root / "books").mkdir()
+    shares = tmp_path / "config" / "media-shares"
+    return str(root), str(shares)
+
+def test_list_shares_marks_enabled_by_file_presence(tmp_path):
+    root, shares = _tree(tmp_path)
+    ms.write_selection(shares, "comics", False, ["manga"])
+    got = {s["name"]: s for s in ms.list_shares(root, shares)}
+    assert got["comics"]["enabled"] is True and got["comics"]["folders"] == ["manga"]
+    assert got["books"]["enabled"] is False
+
+def test_write_and_read_selection_round_trip(tmp_path):
+    root, shares = _tree(tmp_path)
+    ms.write_selection(shares, "comics", False, ["manga", "manhwa"])
+    sel = ms.read_selection(shares, "comics")
+    assert sel["whole"] is False and sorted(sel["folders"]) == ["manga", "manhwa"]
+
+def test_write_raw_is_verbatim_and_flagged_custom(tmp_path):
+    root, shares = _tree(tmp_path)
+    ms.write_raw(shares, "comics", "+ /a/**\n- /a/tmp/**\n- **")
+    sel = ms.read_selection(shares, "comics")
+    assert sel["raw"] is not None
+    assert Path(shares, "comics.txt").read_text().endswith("\n")
+
+def test_disable_deletes_file(tmp_path):
+    root, shares = _tree(tmp_path)
+    ms.write_selection(shares, "comics", True, [])
+    ms.disable(shares, "comics")
+    assert not Path(shares, "comics.txt").exists()
+    assert ms.read_selection(shares, "comics") == {"whole": False, "folders": [], "raw": None}
+
+def test_write_rejects_invalid_name(tmp_path):
+    root, shares = _tree(tmp_path)
+    with pytest.raises(ValueError):
+        ms.write_selection(shares, "../evil", True, [])
