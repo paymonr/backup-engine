@@ -1,15 +1,27 @@
 {% extends "base.html" %}
 {% block body %}
+<p class="eyebrow">Provisioning</p>
 <h1>Provision the AWS destination</h1>
-<p>Get from "no bucket" to "runtime key saved and validated". Pick a mode:</p>
-<ul>
-  <li><a href="{{ url_for('gui.provision_manual') }}"><strong>Guided-manual</strong></a> —
-      no admin credentials. We render the exact least-privilege IAM policy + console steps,
-      then validate the key you create.</li>
-  <li><a href="{{ url_for('gui.provision_scripted') }}"><strong>Scripted</strong></a> —
-      run <code>setup.sh</code> from your own shell (admin creds never touch this container).</li>
-  <li><a href="{{ url_for('gui.provision_automated') }}"><strong>Automated</strong></a> —
-      paste transient admin credentials; we run OpenTofu once, save the runtime key, and
-      discard the admin creds.</li>
-</ul>
+<p class="lead">Get from "no bucket" to a validated, least-privilege runtime key. Pick the path that fits how much access you want to hand this container.</p>
+
+<div class="modes">
+  <a class="mode-card" href="{{ url_for('gui.provision_manual') }}">
+    <span class="tag">No admin creds</span>
+    <h3>Guided-manual</h3>
+    <p>We render the exact least-privilege IAM policy and walk you through creating the bucket in the AWS console. You validate the key you make.</p>
+    <span class="go">Walk me through it →</span>
+  </a>
+  <a class="mode-card" href="{{ url_for('gui.provision_scripted') }}">
+    <span class="tag">Your shell</span>
+    <h3>Scripted</h3>
+    <p>Run <code>setup.sh</code> from a shell that already has your admin credentials. They never touch this container.</p>
+    <span class="go">Show the command →</span>
+  </a>
+  <a class="mode-card" href="{{ url_for('gui.provision_automated') }}">
+    <span class="tag">Transient creds</span>
+    <h3>Automated</h3>
+    <p>Paste short-lived admin credentials. We create the bucket with OpenTofu, save the runtime key, and discard the admin creds.</p>
+    <span class="go">Provision for me →</span>
+  </a>
+</div>
 {% endblock %}
