@@ -15,7 +15,7 @@ the AWS destination is provisioned either by the included OpenTofu module or by 
 > **Status:** the Phase-1 engine — appdata backups, media backups, restore for both tiers,
 > scheduling, notifications, and AWS provisioning — is implemented, usable headless, and now has
 > a small ops [GUI](#gui) (config editor + run/status/logs) alongside it. Still deferred: an
-> interactive cost-estimator screen, restore wizard, provisioning wizard, and OIDC login — see
+> interactive cost-estimator screen, restore wizard, and OIDC login — see
 > the [Roadmap](#roadmap).
 
 ## Prerequisites
@@ -268,13 +268,32 @@ Set `GUI_SECRET_KEY` in the environment to a stable random value (e.g.
 container restarts — without it, a new key is generated per process, which invalidates any
 in-flight session/CSRF token on every restart.
 
+### Provisioning wizard
+
+The GUI can set up the AWS destination three ways (**Provision** in the nav):
+
+- **Guided-manual** — no admin credentials. Enter your bucket + region and the wizard
+  renders the exact least-privilege IAM policy (from the canonical
+  `provisioning/iam-policy.json.tmpl`) plus the console/CLI steps. After you create the
+  key, **Test & Validate** performs a real list→put→get→delete against the bucket and only
+  then saves the runtime key (write-only).
+- **Scripted** — a panel showing `./setup.sh <bucket> <region>`; admin credentials stay in
+  your own shell and never reach the container.
+- **Automated** — paste **transient** admin credentials; the wizard runs the bundled
+  OpenTofu module once, reads the runtime key from `tofu output`, saves it, and discards the
+  admin credentials. It is a one-shot create — teardown/update stay in `setup.sh`.
+
+The runtime IAM policy is defined **once** in `provisioning/iam-policy.json.tmpl` and rendered
+into both the OpenTofu module and the GUI, so there is no drift. As always, keep this GUI
+behind a reverse proxy / SSO — the automated mode handles admin credentials, so never expose
+it directly.
+
 ## Roadmap
 
 Planned, not yet built:
 
 - **Restore wizard** — guided both-tier restore in the GUI (incl. the Glacier/Deep Archive thaw flow).
 - **Media-dir picker** — browse the media mount to build `includes-media.txt`.
-- **Provisioning wizard** — the three-mode AWS setup in the GUI.
 - **Cost-estimator screen** — interactive what-if over the `estimate` module.
 - **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.
 - **Per-run history** — a persisted run history beyond the last-run state.

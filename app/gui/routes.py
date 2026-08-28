@@ -1,7 +1,7 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
 from flask import Blueprint, redirect, url_for, render_template, request, flash, current_app, abort, Response
-from . import config_io, runner, security
+from . import config_io, runner, security, provision
 
 bp = Blueprint("gui", __name__)
 
@@ -57,3 +57,97 @@ def run(pipeline):
 def logs():
     n = request.args.get("tail", default=200, type=int)
     return Response(runner.tail_log(current_app.config["CACHE_DIR"], n), mimetype="text/plain")
+
+@bp.get("/provision")
+def provision_home():
+    return render_template("provision_home.html", csrf=security.issue_csrf())
+
+@bp.get("/provision/manual")
+def provision_manual():
+    return render_template("provision_manual.html", csrf=security.issue_csrf(),
+                           bucket="", region="us-east-1", policy=None, console=None, error=None)
+
+@bp.post("/provision/manual/render")
+def provision_manual_render():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    bucket = request.form.get("bucket", "").strip()
+    region = request.form.get("region", "").strip()
+    if not bucket or not region:
+        return render_template("provision_manual.html", csrf=security.issue_csrf(),
+                               bucket=bucket, region=region, policy=None, console=None,
+                               error="Bucket and region are required."), 400
+    return render_template("provision_manual.html", csrf=security.issue_csrf(),
+                           bucket=bucket, region=region,
+                           policy=provision.render_policy(bucket),
+                           console=provision.render_console_steps(bucket, region),
+                           error=None)
+
+@bp.get("/provision/scripted")
+def provision_scripted():
+    return render_template("provision_scripted.html", csrf=security.issue_csrf())
+
+@bp.post("/provision/validate")
+def provision_validate():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    bucket = request.form.get("bucket", "").strip()
+    region = request.form.get("region", "").strip()
+    key = request.form.get("AWS_ACCESS_KEY_ID", "").strip()
+    secret = request.form.get("AWS_SECRET_ACCESS_KEY", "").strip()
+    try:
+        provision.validate_runtime_key(bucket, region, key, secret)
+    except provision.ValidationError as e:
+        return render_template("provision_manual.html", csrf=security.issue_csrf(),
+                               bucket=bucket, region=region, policy=None, console=None,
+                               error=f"Validation failed at the {e.step} step — nothing saved."), 400
+    config_io.write_secrets(cfg["CONFIG_DIR"],
+                            {"AWS_ACCESS_KEY_ID": key, "AWS_SECRET_ACCESS_KEY": secret})
+    config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
+                               {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
+                                "AWS_REGION": region, "S3_BUCKET": bucket})
+    flash("Runtime key validated and saved. Reminder: confirm bucket versioning is ON.")
+    return redirect(url_for("gui.provision_home"))
+
+@bp.get("/provision/automated")
+def provision_automated():
+    return render_template("provision_automated.html", csrf=security.issue_csrf(),
+                           bucket="", region="us-east-1", error=None)
+
+
+@bp.post("/provision/automated")
+def provision_automated_run():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    override = request.form.get("bucket", "").strip()
+    region = request.form.get("region", "").strip() or "us-east-1"
+    admin_key = request.form.get("ADMIN_ACCESS_KEY_ID", "").strip()
+    admin_secret = request.form.get("ADMIN_SECRET_ACCESS_KEY", "").strip()
+    session_token = request.form.get("ADMIN_SESSION_TOKEN", "").strip() or None
+    try:
+        # No override -> auto-name unraid-backup-<account>, read from the admin creds.
+        bucket = override or provision.derive_bucket_name(
+            provision.aws_account_id(region, admin_key, admin_secret, session_token))
+        result = provision.run_tofu_apply(bucket, region, admin_key, admin_secret, session_token)
+    except provision.AccountLookupError:
+        return render_template("provision_automated.html", csrf=security.issue_csrf(),
+                               bucket=override, region=region,
+                               error="Couldn't read your AWS account from those admin "
+                                     "credentials — check the key and try again. Nothing was saved."), 400
+    except provision.TofuError as e:
+        return render_template("provision_automated.html", csrf=security.issue_csrf(),
+                               bucket=override, region=region,
+                               error=f"Automated provisioning failed at tofu {e.phase} — nothing saved."), 400
+    finally:
+        # discard transient admin creds from this frame regardless of outcome
+        admin_key = admin_secret = session_token = None
+    config_io.write_secrets(cfg["CONFIG_DIR"],
+                            {"AWS_ACCESS_KEY_ID": result["AWS_ACCESS_KEY_ID"],
+                             "AWS_SECRET_ACCESS_KEY": result["AWS_SECRET_ACCESS_KEY"]})
+    config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
+                               {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
+                                "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"]})
+    flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key.")
+    return redirect(url_for("gui.provision_home"))

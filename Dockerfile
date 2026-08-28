@@ -23,6 +23,10 @@ ARG RCLONE_SHA256=0e6fa18051e67fc600d803a2dcb10ddedb092247fc6eee61be97f64ec080a1
 # SHA256 ourselves from the verified bytes and pinned it here.
 ARG SUPERCRONIC_SHA256=feefa310da569c81b99e1027b86b27b51e6ee9ab647747b49099645120cfc671
 
+ARG OPENTOFU_VERSION=1.8.5
+# Verified against opentofu's official tofu_${OPENTOFU_VERSION}_SHA256SUMS (linux_amd64.zip).
+ARG OPENTOFU_SHA256=e2951ba6be8ae9427aabbd5c6f243855e8b526cb2ae6bc33a05dae22d7e82632
+
 RUN apk add --no-cache bash ca-certificates curl coreutils tzdata unzip \
       python3 py3-pip aws-cli flock \
     && pip install --no-cache-dir --break-system-packages apprise flask waitress
@@ -58,9 +62,22 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/supercronic; \
     supercronic -version
 
+# opentofu — download, verify sha256, extract, install (automated provisioning runs `tofu` in-container).
+RUN set -eux; \
+    if [ "$TARGETARCH" != "amd64" ]; then echo "unsupported arch: $TARGETARCH (amd64-only in Phase 1)" >&2; exit 1; fi; \
+    curl -fsSL -o /tmp/tofu.zip \
+      "https://github.com/opentofu/opentofu/releases/download/v${OPENTOFU_VERSION}/tofu_${OPENTOFU_VERSION}_linux_${TARGETARCH}.zip"; \
+    echo "${OPENTOFU_SHA256}  /tmp/tofu.zip" | sha256sum -c -; \
+    unzip -j /tmp/tofu.zip tofu -d /usr/local/bin; \
+    chmod 0755 /usr/local/bin/tofu; \
+    rm -f /tmp/tofu.zip; \
+    tofu version
+
 WORKDIR /app
 COPY scripts/ /app/scripts/
 COPY app/ /app/app/
+COPY opentofu/ /app/opentofu/
+COPY provisioning/ /app/provisioning/
 COPY config/backup.env.example /app/config/backup.env.example
 COPY config/secrets.env.example /app/config/secrets.env.example
 RUN chmod +x /app/scripts/*.sh

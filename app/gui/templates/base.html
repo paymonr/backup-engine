@@ -1,12 +1,29 @@
 <!-- app/gui/templates/base.html -->
 <!doctype html>
-<html lang="en"><head>
+<html lang="en" data-theme="dark"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>backup-engine</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head><body>
-<div class="warn">⚠ This GUI has <strong>no authentication</strong>. Put it behind a reverse proxy / SSO — never expose it directly to the internet.</div>
-<nav><a href="{{ url_for('gui.config_page') }}">Config</a> · <a href="{{ url_for('gui.status_page') }}">Run &amp; status</a></nav>
+{% set ep = request.endpoint or '' %}
+<header class="topbar">
+  <a class="brand" href="{{ url_for('gui.config_page') }}" aria-label="backup-engine home">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="4.2" rx="1.2" fill="#ee6b34"/>
+      <rect x="3" y="10.9" width="18" height="4.2" rx="1.2" fill="#2bb6a3"/>
+      <rect x="3" y="16.8" width="18" height="4.2" rx="1.2" fill="#3a434f"/>
+    </svg>
+    <span class="brand-name">backup<b>·</b>engine</span>
+  </a>
+  <nav class="nav">
+    <a href="{{ url_for('gui.config_page') }}" class="{{ 'active' if ep == 'gui.config_page' }}">Config</a>
+    <a href="{{ url_for('gui.provision_home') }}" class="{{ 'active' if ep.startswith('gui.provision') }}">Provision</a>
+    <a href="{{ url_for('gui.status_page') }}" class="{{ 'active' if ep in ('gui.status_page', 'gui.run') }}">Run &amp; status</a>
+  </nav>
+</header>
+<div class="banner">⚠ <strong>No authentication</strong> — put this behind a reverse proxy / SSO. Never expose it directly to the internet.</div>
+<main class="container">
 {% with msgs = get_flashed_messages() %}{% if msgs %}<ul class="flash">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}{% endwith %}
-<main>{% block body %}{% endblock %}</main>
+{% block body %}{% endblock %}
+</main>
 </body></html>
