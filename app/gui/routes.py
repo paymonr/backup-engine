@@ -17,7 +17,6 @@ def config_page():
     fields = [{"key": k, "value": values.get(k, "")} for k in keys if k not in config_io.SECRET_KEYS]
     return render_template("config.html",
                            fields=fields,
-                           includes=config_io.read_includes(cfg["CONFIG_DIR"]),
                            secret_keys=config_io.SECRET_KEYS,
                            secret_status=config_io.secrets_status(cfg["CONFIG_DIR"]),
                            secret_mode=config_io.secrets_mode(cfg["CONFIG_DIR"]),
@@ -31,8 +30,6 @@ def config_save():
     keys = [k for k in config_io.template_keys(cfg["TEMPLATE_PATH"]) if k not in config_io.SECRET_KEYS]
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {k: request.form.get(k, "") for k in keys})
-    if "includes" in request.form:
-        config_io.write_includes(cfg["CONFIG_DIR"], request.form["includes"])
     config_io.write_secrets(cfg["CONFIG_DIR"], {k: request.form.get(k, "") for k in config_io.SECRET_KEYS})
     flash("Configuration saved.")
     return redirect(url_for("gui.config_page"))
