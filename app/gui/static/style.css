@@ -132,6 +132,16 @@ select { appearance: none;
 .alert-warn { background: rgba(232,184,75,.08); border-color: rgba(232,184,75,.3); color: #f0d79a; }
 .alert-error { background: rgba(229,101,122,.09); border-color: rgba(229,101,122,.35); color: #f3a6b2; }
 .alert-ok { background: rgba(55,205,141,.09); border-color: rgba(55,205,141,.32); color: #8fe4bf; }
+.note {
+  background: var(--teal-soft); border: 1px solid rgba(43,182,163,.26);
+  border-left: 3px solid var(--teal); border-radius: var(--radius-sm);
+  padding: .8rem 1rem; margin: 0 0 1.1rem; font-size: .89rem; color: #c3e7e0;
+}
+.note h3 { color: var(--teal); font-size: .74rem; text-transform: uppercase; letter-spacing: .09em; margin: 0 0 .4rem; }
+.note p { margin: .3rem 0; } .note p:last-child { margin-bottom: 0; }
+.note ul { margin: .3rem 0; padding-left: 1.1rem; } .note li { margin: .2rem 0; }
+.note code { background: rgba(0,0,0,.28); color: #d9f2ec; }
+.note a { color: var(--teal); text-decoration: underline; }
 .flash { list-style: none; padding: 0; margin: 0 0 1.1rem; }
 .flash li { padding: .7rem .9rem; border-radius: var(--radius-sm); font-size: .9rem;
   background: rgba(55,205,141,.09); border: 1px solid rgba(55,205,141,.32); color: #8fe4bf; }

@@ -4,6 +4,11 @@
 <h1>Guided-manual setup</h1>
 <p class="lead">No admin credentials leave your browser. Enter your bucket and region, then follow the walkthrough to create everything in the AWS console.</p>
 
+<div class="note">
+  <h3>Before you begin</h3>
+  <p>Sign in to the <a href="https://console.aws.amazon.com/s3/" target="_blank" rel="noopener">AWS console</a> in another tab with an account that can create S3 buckets and IAM users. You'll do three things below: (1) copy a policy, (2) create the bucket + an IAM user in the console, (3) paste that user's key here to validate it. Nothing is saved until validation passes.</p>
+</div>
+
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
 
 <div class="card">
@@ -22,16 +27,17 @@
 
 {% if policy %}
 <div class="card card-step">
-  <h2><span class="stepnum">1.</span> Least-privilege IAM policy</h2>
-  <p class="hint">Grants object read/write only under <code>appdata/*</code> and <code>media/*</code> — never bucket configuration.</p>
+  <h2><span class="stepnum">1.</span> Copy the least-privilege IAM policy</h2>
+  <p class="hint">Grants object read/write only under <code>appdata/*</code> and <code>media/*</code> — never bucket configuration. Copy it now; you'll paste it in step 2 (IAM → Policies → Create policy → JSON tab).</p>
   <pre>{{ policy }}</pre>
 </div>
 
 <div class="card card-step">
   <h2><span class="stepnum">2.</span> Create the bucket &amp; IAM user</h2>
+  <p class="hint">Do these in the AWS console, signed in as an admin. Follow them in order:</p>
   <ol class="steps">{% for s in console.steps %}<li>{{ s }}</li>{% endfor %}</ol>
   <details>
-    <summary>Prefer the CLI?</summary>
+    <summary>Prefer the CLI? (needs admin creds in your shell)</summary>
     <pre>{% for c in console.cli %}{{ c }}
 {% endfor %}</pre>
   </details>
@@ -39,6 +45,7 @@
 
 <div class="card card-step">
   <h2><span class="stepnum">3.</span> Test &amp; Validate the runtime key</h2>
+  <p class="hint">Paste the access key you created in step 2. We do a real list → put → get → delete under <code>appdata/</code> to prove the key works before saving anything.</p>
   <form method="post" action="{{ url_for('gui.provision_validate') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="bucket" value="{{ bucket }}">
@@ -50,6 +57,11 @@
     <div class="actions"><button type="submit" class="btn-primary">Test &amp; Validate</button></div>
   </form>
   <p class="hint">On success the key is saved write-only and the region/bucket are set. Then confirm bucket versioning is <strong>on</strong> — object-only keys can't verify bucket-level settings.</p>
+</div>
+
+<div class="note">
+  <h3>What's next</h3>
+  <p>Once the key validates: set your <code>RESTIC_PASSWORD</code> and choose what to back up in <a href="{{ url_for('gui.config_page') }}">Config</a>, then trigger your first backup from <a href="{{ url_for('gui.status_page') }}">Run &amp; status</a>.</p>
 </div>
 {% endif %}
 {% endblock %}

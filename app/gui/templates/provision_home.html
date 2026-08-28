@@ -4,6 +4,12 @@
 <h1>Provision the AWS destination</h1>
 <p class="lead">Get from "no bucket" to a validated, least-privilege runtime key. Pick the path that fits how much access you want to hand this container.</p>
 
+<div class="note">
+  <h3>Before you begin</h3>
+  <p>You'll need an <strong>AWS account</strong> and access that can create an S3 bucket and an IAM user — either the web console (guided-manual) or admin credentials (scripted / automated). Everything is created in a single region.</p>
+  <p>Unsure which path? <strong>Guided-manual</strong> is the safest — it never sees your admin credentials. All three end the same way: a least-privilege runtime key saved to this container.</p>
+</div>
+
 <div class="modes">
   <a class="mode-card" href="{{ url_for('gui.provision_manual') }}">
     <span class="tag">No admin creds</span>
