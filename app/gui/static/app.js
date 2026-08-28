@@ -10,3 +10,46 @@
   refresh();
   setInterval(refresh, 5000);
 })();
+
+// Media shares: lazy folder tree. Each <ul class="tree" data-root data-selected> hydrates from /shares/browse.
+(function () {
+  var trees = document.querySelectorAll("ul.tree");
+  if (!trees.length) return;
+  function browse(share, path) {
+    return fetch("shares/browse?share=" + encodeURIComponent(share) + "&path=" + encodeURIComponent(path))
+      .then(function (r) { return r.ok ? r.json() : { entries: [] }; })
+      .catch(function () { return { entries: [] }; });
+  }
+  function node(share, entry, selected) {
+    var li = document.createElement("li");
+    var label = document.createElement("label");
+    var cb = document.createElement("input");
+    cb.type = "checkbox"; cb.name = "folder"; cb.value = entry.path;
+    if (selected.indexOf(entry.path) !== -1) cb.checked = true;
+    label.appendChild(cb); label.appendChild(document.createTextNode(" " + entry.name));
+    var toggle = document.createElement("button");
+    toggle.type = "button"; toggle.textContent = "▸"; toggle.className = "expand";
+    var kids = document.createElement("ul"); kids.className = "tree"; kids.hidden = true;
+    var loaded = false;
+    toggle.addEventListener("click", function () {
+      kids.hidden = !kids.hidden;
+      toggle.textContent = kids.hidden ? "▸" : "▾";
+      if (!loaded && !kids.hidden) {
+        loaded = true;
+        browse(share, entry.path).then(function (d) {
+          d.entries.forEach(function (e) { kids.appendChild(node(share, e, selected)); });
+        });
+      }
+    });
+    li.appendChild(toggle); li.appendChild(label); li.appendChild(kids);
+    return li;
+  }
+  trees.forEach(function (ul) {
+    if (!ul.dataset.root) return; // only top-level trees self-hydrate
+    var share = ul.dataset.root;
+    var selected = (ul.dataset.selected || "").split(",").filter(Boolean);
+    browse(share, "").then(function (d) {
+      d.entries.forEach(function (e) { ul.appendChild(node(share, e, selected)); });
+    });
+  });
+})();
