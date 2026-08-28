@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="eyebrow">Provisioning · Automated</p>
+<h1>Automated setup</h1>
+<p class="lead">Paste short-lived admin credentials. We read your AWS account, create the bucket with OpenTofu, save the runtime key, and discard the admin creds.</p>
+
+<div class="alert alert-warn">These admin credentials are <strong>transient</strong>: used for a single <code>tofu apply</code> in this container, never written to disk or logs, and discarded immediately after. Use short-lived keys and delete them afterward.</div>
+
+<div class="note">
+  <h3>How to get short-lived admin credentials</h3>
+  <p>Run <code>aws sts get-session-token --duration-seconds 900</code> with an admin profile, or create a temporary access key on an admin IAM user and <strong>delete it right after</strong>. Paste the resulting key, secret, and (if any) session token below.</p>
+  <h3>What this does</h3>
+  <p>Runs OpenTofu once to create the bucket (versioning + SSE + all public access blocked + lifecycle rules) and a least-privilege IAM user, then saves that user's key here. Your admin creds are discarded when the run finishes.</p>
+</div>
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<div class="card">
+  <form method="post" action="{{ url_for('gui.provision_automated_run') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="region">Region</label>
+    <input id="region" name="region" value="{{ region }}" required>
+    <p class="hint">The bucket is created automatically as <code>unraid-backup-&lt;your-account-id&gt;</code>.</p>
+
+    <label for="ak">Admin AWS_ACCESS_KEY_ID</label>
+    <input id="ak" name="ADMIN_ACCESS_KEY_ID" autocomplete="off" required>
+    <label for="sk">Admin AWS_SECRET_ACCESS_KEY</label>
+    <input id="sk" name="ADMIN_SECRET_ACCESS_KEY" type="password" autocomplete="off" required>
+    <label for="st">Admin AWS_SESSION_TOKEN <small>(optional)</small></label>
+    <input id="st" name="ADMIN_SESSION_TOKEN" type="password" autocomplete="off">
+
+    <details>
+      <summary>Advanced — override the bucket name</summary>
+      <label for="bucket">Bucket name</label>
+      <input id="bucket" name="bucket" value="{{ bucket }}" placeholder="unraid-backup-&lt;account&gt; (leave blank to auto-name)">
+    </details>
+
+    <div class="actions"><button type="submit" class="btn-primary">Provision now</button></div>
+  </form>
+</div>
+{% endblock %}

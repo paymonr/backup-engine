@@ -48,13 +48,13 @@ load_config() {
 
   : "${CACHE_DIR:=/cache}"
   : "${APPDATA_SRC:=/backup/appdata}"
-  : "${MEDIA_SRC:=/backup/media}"
+  : "${MEDIA_ROOT:=/backup/media}"
   : "${APPDATA_STORAGE_CLASS:=STANDARD}"
   : "${MEDIA_STORAGE_CLASS:=DEEP_ARCHIVE}"
   : "${MEDIA_MIRROR:=false}"
   : "${KEEP_LAST:=3}"; : "${KEEP_DAILY:=7}"; : "${KEEP_WEEKLY:=4}"; : "${KEEP_MONTHLY:=6}"
   : "${RCLONE_TRANSFERS:=8}"; : "${RCLONE_BWLIMIT:=}"
-  : "${MEDIA_INCLUDES:=$dir/includes-media.txt}"
+  : "${MEDIA_SHARES_DIR:=$dir/media-shares}"
   : "${LOG_FILE:=$CACHE_DIR/logs/backup-engine.log}"
   : "${NOTIFY_ON_SUCCESS:=false}"
   : "${GUI_ENABLED:=true}"
@@ -64,9 +64,9 @@ load_config() {
     local host="${S3_ENDPOINT:-s3.${AWS_REGION:-}.amazonaws.com}"
     RESTIC_REPOSITORY="s3:${host}/${S3_BUCKET:-}/appdata"
   fi
-  export CACHE_DIR APPDATA_SRC MEDIA_SRC APPDATA_STORAGE_CLASS MEDIA_STORAGE_CLASS \
+  export CACHE_DIR APPDATA_SRC MEDIA_ROOT APPDATA_STORAGE_CLASS MEDIA_STORAGE_CLASS \
     MEDIA_MIRROR KEEP_LAST KEEP_DAILY KEEP_WEEKLY KEEP_MONTHLY \
-    MEDIA_INCLUDES LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY \
+    MEDIA_SHARES_DIR LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY \
     GUI_ENABLED GUI_PORT
 
   # RCLONE_TRANSFERS/RCLONE_BWLIMIT are user-facing config vars that
@@ -97,6 +97,5 @@ validate_appdata() {
 
 validate_media() {
   validate_common
-  [ -d "$MEDIA_SRC" ] || die "media source '$MEDIA_SRC' not found (mount your media root read-only)"
-  [ -f "$MEDIA_INCLUDES" ] || die "media include-list '$MEDIA_INCLUDES' not found (copy includes-media.txt.example)"
+  [ -d "$MEDIA_ROOT" ] || die "media root '$MEDIA_ROOT' not found (mount your shares' parent, e.g. /mnt/user, read-only)"
 }

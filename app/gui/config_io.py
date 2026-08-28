@@ -51,13 +51,6 @@ def write_backup_env(template_path: str, config_dir: str, values: dict[str, str]
             out.append(line)
     Path(config_dir, "backup.env").write_text("\n".join(out) + "\n")
 
-def read_includes(config_dir: str) -> str:
-    p = Path(config_dir, "includes-media.txt")
-    return p.read_text() if p.exists() else ""
-
-def write_includes(config_dir: str, text: str) -> None:
-    Path(config_dir, "includes-media.txt").write_text(text)
-
 def secrets_status(config_dir: str) -> dict[str, bool]:
     p = Path(config_dir, "secrets.env")
     vals = _read_secrets_raw(p)
