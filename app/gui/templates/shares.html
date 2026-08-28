@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% block body %}
+<h1>Media shares</h1>
+<p class="hint">Shares under the media mount. Enable the ones to back up; leave <code>appdata</code> off (it is handled by the appdata pipeline).</p>
+{% for s in shares %}
+<form class="share" method="post" action="{{ url_for('gui.shares_save', name=s.name) }}" data-share="{{ s.name }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2>
+    <label><input type="checkbox" name="enabled" value="1" {{ 'checked' if s.enabled }}> {{ s.name }}</label>
+    <small>&rarr; s3 .../media/{{ s.name }}</small>
+  </h2>
+  {% if s.custom %}
+    <p class="warn">Custom rules — edit as text.</p>
+    <textarea name="raw" rows="4">{{ s.folders_raw }}</textarea>
+    <input type="hidden" name="mode" value="raw">
+  {% else %}
+    <label><input type="checkbox" name="whole" value="1" {{ 'checked' if s.whole }}> Back up the whole share</label>
+    <ul class="tree" data-root="{{ s.name }}" data-selected="{{ s.folders|join(',') }}"></ul>
+  {% endif %}
+  <button type="submit">Save</button>
+</form>
+{% else %}
+<p>No shares found under the media mount.</p>
+{% endfor %}
+{% endblock %}

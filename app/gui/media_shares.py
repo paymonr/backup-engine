@@ -59,7 +59,8 @@ def list_shares(media_root, shares_dir) -> list[dict]:
         sel = read_selection(shares_dir, name)
         enabled = (Path(shares_dir) / f"{name}.txt").exists()
         out.append({"name": name, "enabled": enabled, "whole": sel["whole"],
-                    "folders": sel["folders"], "custom": sel["raw"] is not None})
+                    "folders": sel["folders"], "custom": sel["raw"] is not None,
+                    "folders_raw": sel["raw"] or ""})
     return out
 
 def read_selection(shares_dir, name) -> dict:

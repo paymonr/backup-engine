@@ -1,7 +1,9 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
-from flask import Blueprint, redirect, url_for, render_template, request, flash, current_app, abort, Response
-from . import config_io, runner, security
+from pathlib import Path
+from flask import (Blueprint, redirect, url_for, render_template, request, flash,
+                   current_app, abort, Response, jsonify)
+from . import config_io, runner, security, media_shares, fsbrowse
 
 bp = Blueprint("gui", __name__)
 
@@ -54,3 +56,44 @@ def run(pipeline):
 def logs():
     n = request.args.get("tail", default=200, type=int)
     return Response(runner.tail_log(current_app.config["CACHE_DIR"], n), mimetype="text/plain")
+
+@bp.get("/shares")
+def shares_page():
+    cfg = current_app.config
+    shares = media_shares.list_shares(cfg["MEDIA_ROOT"], cfg["MEDIA_SHARES_DIR"])
+    return render_template("shares.html", shares=shares, csrf=security.issue_csrf())
+
+@bp.get("/shares/browse")
+def shares_browse():
+    cfg = current_app.config
+    share = request.args.get("share", "")
+    rel = request.args.get("path", "")
+    if not media_shares.valid_name(share):
+        abort(404)
+    try:
+        dirs = fsbrowse.list_dirs(Path(cfg["MEDIA_ROOT"]) / share, rel)
+    except fsbrowse.PathError:
+        abort(404)  # no path echo
+    base = rel.strip("/")
+    entries = [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]
+    return jsonify({"entries": entries})
+
+@bp.post("/shares/<name>")
+def shares_save(name):
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    if not media_shares.valid_name(name) or not (Path(cfg["MEDIA_ROOT"]) / name).is_dir():
+        abort(404)
+    sd = cfg["MEDIA_SHARES_DIR"]
+    if not request.form.get("enabled"):
+        media_shares.disable(sd, name)
+        flash(f"Disabled {name}.")
+        return redirect(url_for("gui.shares_page"))
+    if request.form.get("mode") == "raw" and request.form.get("raw") is not None:
+        media_shares.write_raw(sd, name, request.form["raw"])
+    else:
+        media_shares.write_selection(sd, name, bool(request.form.get("whole")),
+                                     request.form.getlist("folder"))
+    flash(f"Saved {name}.")
+    return redirect(url_for("gui.shares_page"))

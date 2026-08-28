@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head><body>
 <div class="warn">⚠ This GUI has <strong>no authentication</strong>. Put it behind a reverse proxy / SSO — never expose it directly to the internet.</div>
-<nav><a href="{{ url_for('gui.config_page') }}">Config</a> · <a href="{{ url_for('gui.status_page') }}">Run &amp; status</a></nav>
+<nav><a href="{{ url_for('gui.config_page') }}">Config</a> · <a href="{{ url_for('gui.shares_page') }}">Media shares</a> · <a href="{{ url_for('gui.status_page') }}">Run &amp; status</a></nav>
 {% with msgs = get_flashed_messages() %}{% if msgs %}<ul class="flash">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}{% endwith %}
 <main>{% block body %}{% endblock %}</main>
 </body></html>
