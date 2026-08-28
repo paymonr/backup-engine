@@ -44,3 +44,18 @@ teardown() { minio_down; }
   rclone --config "$RCLONE_CONFIG" copy "s3:$S3_BUCKET/media/comics" "$out"
   grep -q "chapter-1" "$out/ch1.cbz"
 }
+
+@test "curated share with nested include only uploads the curated subpath" {
+  # Exercises the ancestor-line grammar (leaf "+ /sub/**" plus its ancestor
+  # "+ /sub/" so rclone descends into it, then "- **") against real rclone:
+  # a nested include must upload only that subpath, not excluded siblings.
+  mkdir -p "$MEDIA_ROOT/docs/sub" "$MEDIA_ROOT/docs/excluded"
+  echo "curated-content" >"$MEDIA_ROOT/docs/sub/keep.txt"
+  echo "should-be-excluded" >"$MEDIA_ROOT/docs/excluded/drop.txt"
+  printf '+ /sub/**\n+ /sub/\n- **\n' >"$MEDIA_SHARES_DIR/docs.txt"
+  run bash "$BATS_TEST_DIRNAME/../../scripts/backup-media.sh"
+  [ "$status" -eq 0 ]
+  run rclone --config "$RCLONE_CONFIG" ls "s3:$S3_BUCKET/media/docs"
+  [[ "$output" == *"sub/keep.txt"* ]]
+  [[ "$output" != *"excluded/drop.txt"* ]]
+}
