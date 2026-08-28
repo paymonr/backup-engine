@@ -4,3 +4,16 @@ body { font-family: system-ui, sans-serif; max-width: 900px; margin: 1rem auto; 
 nav { margin: 1rem 0; } .flash { color: #175; } label { display:block; margin:.5rem 0 .15rem; font-weight:600; }
 input, textarea, select { width: 100%; box-sizing: border-box; } textarea { min-height: 8rem; }
 .status-ok { color: #175; } .status-fail { color: #a00; } pre.log { background:#111; color:#ddd; padding:.75rem; overflow:auto; max-height:24rem; }
+.hint { color:#666; font-weight:400; font-size:.9em; margin:.25rem 0; }
+.est-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem; }
+.est-grid > fieldset { border:1px solid #ddd; border-radius:6px; padding:.5rem .75rem; }
+fieldset.retention { margin:.5rem 0; }
+fieldset.retention label { display:inline-block; width:auto; font-weight:400; margin:.15rem .5rem .15rem 0; }
+fieldset.retention input { width:4rem; }
+#est-results { width:100%; border-collapse:collapse; margin:1rem 0; }
+#est-results th, #est-results td { text-align:right; padding:.3rem .5rem; border-bottom:1px solid #eee; }
+#est-results th:first-child, #est-results thead th:first-child { text-align:left; }
+#est-results td { font-variant-numeric:tabular-nums; }
+ul.totals { list-style:none; padding:0; display:flex; gap:1.5rem; flex-wrap:wrap; font-size:1.1em; }
+ul.totals span { font-variant-numeric:tabular-nums; font-weight:700; }
+details summary { cursor:pointer; margin:.5rem 0; }

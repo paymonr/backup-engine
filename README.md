@@ -14,8 +14,8 @@ the AWS destination is provisioned either by the included OpenTofu module or by 
 
 > **Status:** the Phase-1 engine — appdata backups, media backups, restore for both tiers,
 > scheduling, notifications, and AWS provisioning — is implemented, usable headless, and now has
-> a small ops [GUI](#gui) (config editor + run/status/logs) alongside it. Still deferred: an
-> interactive cost-estimator screen, restore wizard, provisioning wizard, and OIDC login — see
+> a small ops [GUI](#gui) (config editor + run/status/logs + cost estimate) alongside it. Still
+> deferred: a restore wizard, provisioning wizard, and OIDC login — see
 > the [Roadmap](#roadmap).
 
 ## Prerequisites
@@ -220,9 +220,9 @@ media on **Deep Archive** runs roughly **$2/mo** in storage vs. roughly **$12/mo
 no-tier backend — at the cost of a slow, egress-billed restore (12–48h thaw + retrieval/egress
 fees, see the runbook above). Appdata defaults to, and should stay on, Standard — it's usually
 much smaller, and a cold class isn't usable there yet in Phase 1 (see the storage-class note above
-and the restore runbook). Cold appdata is a Phase-3 feature. A fully interactive GUI cost
-estimator (multi-region price tables, live what-if) is planned for a later phase; the headless
-`estimate` CLI below is available now.
+and the restore runbook). Cold appdata is a Phase-3 feature. A GUI cost-estimate screen with live
+what-if now ships (see [GUI](#gui)); multi-region price tables are still a later phase. The headless
+`estimate` CLI below is also available.
 
 ## Cost estimator
 
@@ -237,9 +237,14 @@ It reads `AWS_REGION` and the storage classes from `backup.env` when present (fl
 runs fully offline against a bundled, dated us-east-1 price table, and prints a per-pipeline
 line-item breakdown plus monthly, first-year, and illustrative full-restore totals.
 
+The same model backs the live **Cost estimate** screen in the [GUI](#gui): the form is prefilled
+from your `backup.env` (storage classes + restic keep-policy), and the per-pipeline breakdown and
+totals update as you change inputs. Retention is surfaced — the restic keep-policy drives an
+effective appdata history window, and S3 noncurrent-version retention is its own input.
+
 ## GUI
 
-A small web UI (config editor + run/status/logs) ships in the container, served on `GUI_PORT`
+A small web UI (config editor + run/status/logs + a live cost-estimate screen) ships in the container, served on `GUI_PORT`
 (default 8099). Reach it at `http://<host>:8099`.
 
 > ⚠ **No authentication.** The GUI has no login of its own — put it behind your reverse proxy /
@@ -275,7 +280,6 @@ Planned, not yet built:
 - **Restore wizard** — guided both-tier restore in the GUI (incl. the Glacier/Deep Archive thaw flow).
 - **Media-dir picker** — browse the media mount to build `includes-media.txt`.
 - **Provisioning wizard** — the three-mode AWS setup in the GUI.
-- **Cost-estimator screen** — interactive what-if over the `estimate` module.
 - **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.
 - **Per-run history** — a persisted run history beyond the last-run state.
 - **Scheduler liveness / health endpoint** — surface whether the background scheduler (supercronic) is still running, so a silent crash is visible in the GUI.
