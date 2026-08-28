@@ -158,3 +158,54 @@ def test_apply_writes_tfvars_as_injection_safe_json():
     parsed = _json.loads(rec["tfvars"])
     assert set(parsed.keys()) == {"bucket_name", "region"}
     assert parsed["bucket_name"] == evil   # malicious content stays a plain string value
+
+
+class _CP:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_derive_bucket_name():
+    assert provision.derive_bucket_name("123456789012") == "unraid-backup-123456789012"
+
+
+def test_aws_account_id_reads_account_from_sts():
+    def fake(args, *, region, key, secret, session_token=None):
+        assert args[:2] == ["sts", "get-caller-identity"]
+        return _CP(stdout="123456789012\n")
+    assert provision.aws_account_id("us-east-1", "AKIA", "sek", run=fake) == "123456789012"
+
+
+def test_aws_account_id_forwards_session_token():
+    seen = {}
+
+    def fake(args, *, region, key, secret, session_token=None):
+        seen["token"] = session_token
+        return _CP(stdout="123456789012")
+    provision.aws_account_id("us-east-1", "AKIA", "sek", "TOKEN", run=fake)
+    assert seen["token"] == "TOKEN"
+
+
+def test_aws_account_id_raises_and_scrubs_secret_on_failure():
+    def fake(args, *, region, key, secret, session_token=None):
+        return _CP(returncode=1, stderr="AccessDenied for sek")
+    with pytest.raises(provision.AccountLookupError) as ei:
+        provision.aws_account_id("us-east-1", "AKIA", "sek", run=fake)
+    assert "sek" not in ei.value.detail and "***" in ei.value.detail
+
+
+def test_aws_account_id_rejects_non_account_output():
+    def fake(args, *, region, key, secret, session_token=None):
+        return _CP(stdout="not-an-account")
+    with pytest.raises(provision.AccountLookupError):
+        provision.aws_account_id("us-east-1", "AKIA", "sek", run=fake)
+
+
+def test_console_steps_walk_through_bucket_creation():
+    steps = " ".join(provision.render_console_steps("acme", "us-east-1")["steps"]).lower()
+    assert "create bucket" in steps
+    assert "versioning" in steps and "encryption" in steps
+    assert "block public access" in steps and "lifecycle" in steps
+    assert "unraid-backup" in steps  # suggested naming convention

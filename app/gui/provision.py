@@ -6,6 +6,7 @@
 from __future__ import annotations
 import json
 import os
+import re
 import secrets as _secrets
 import shutil
 import subprocess
@@ -48,7 +49,7 @@ def _scrub(text: str, *secret_values: str) -> str:
     return out
 
 
-def _aws_env(region: str, key: str, secret: str) -> dict:
+def _aws_env(region: str, key: str, secret: str, session_token: str | None = None) -> dict:
     env = os.environ.copy()
     env.pop("AWS_PROFILE", None)
     env.update(
@@ -57,15 +58,45 @@ def _aws_env(region: str, key: str, secret: str) -> dict:
         AWS_DEFAULT_REGION=region,
         AWS_EC2_METADATA_DISABLED="true",
     )
+    if session_token:
+        env["AWS_SESSION_TOKEN"] = session_token
+    else:
+        env.pop("AWS_SESSION_TOKEN", None)
     return env
 
 
-def _run_aws(args, *, region, key, secret):
+def _run_aws(args, *, region, key, secret, session_token=None):
     return subprocess.run(
         ["aws", *args],
-        env=_aws_env(region, key, secret),
+        env=_aws_env(region, key, secret, session_token),
         capture_output=True, text=True,
     )
+
+
+class AccountLookupError(Exception):
+    """Raised when the AWS account id can't be read from the given credentials."""
+    def __init__(self, detail: str = ""):
+        super().__init__("could not read the AWS account id")
+        self.detail = detail
+
+
+_ACCOUNT_RE = re.compile(r"^\d{12}$")
+
+
+def aws_account_id(region, key, secret, session_token=None, *, run=_run_aws) -> str:
+    """Read the 12-digit AWS account id for the given (admin) credentials via
+    `sts get-caller-identity`. Raises AccountLookupError (secret-scrubbed) on failure."""
+    cp = run(["sts", "get-caller-identity", "--query", "Account", "--output", "text"],
+             region=region, key=key, secret=secret, session_token=session_token)
+    account = (cp.stdout or "").strip()
+    if cp.returncode != 0 or not _ACCOUNT_RE.match(account):
+        raise AccountLookupError(_scrub(cp.stderr or account, key, secret, session_token or ""))
+    return account
+
+
+def derive_bucket_name(account: str) -> str:
+    """The automated-mode default bucket name for an account (valid S3 name)."""
+    return f"unraid-backup-{account}"
 
 
 def validate_runtime_key(bucket, region, key, secret, *, run=_run_aws) -> None:
@@ -132,11 +163,15 @@ def render_console_steps(bucket: str, region: str) -> dict:
         "aws iam create-access-key --user-name backup-engine-runtime",
     ]
     steps = [
-        "Create the bucket in your region with versioning + default SSE + all public access blocked.",
-        "Add lifecycle rules: expire noncurrent versions and abort incomplete multipart uploads.",
-        "Save the policy JSON above as iam-policy.json, then create an IAM policy from it.",
-        "Create an IAM user and attach that policy.",
-        "Create an access key for the user — that is your runtime key/secret.",
+        f"In the S3 console, click Create bucket. Give it a unique name — e.g. "
+        f"unraid-backup-<your-account-id> — and set Region to {region}.",
+        "Leave Block Public Access fully on (keep all four boxes checked).",
+        "Set Bucket Versioning to Enabled.",
+        "Set Default encryption to SSE-S3 (Amazon S3 managed keys, AES-256).",
+        "Click Create bucket. Then open it → Management → Create lifecycle rule: "
+        "expire noncurrent versions after 30 days and abort incomplete multipart uploads after 7 days.",
+        "In IAM, save the policy above as iam-policy.json and create a customer-managed policy from it.",
+        "Create an IAM user, attach that policy, and create an access key — that pair is your runtime key/secret.",
         "Paste the runtime key/secret below and click Test & Validate.",
     ]
     return {"cli": cli, "steps": steps}

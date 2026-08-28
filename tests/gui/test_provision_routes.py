@@ -131,3 +131,66 @@ def test_automated_failure_saves_nothing(client, dirs, monkeypatch):
 def test_automated_requires_csrf(client):
     r = client.post("/provision/automated", data={"bucket": "b"})
     assert r.status_code == 400
+
+
+def test_manual_form_defaults_region_us_east_1(client):
+    r = client.get("/provision/manual")
+    assert b'value="us-east-1"' in r.data
+
+
+def test_automated_form_shows_auto_naming_and_region_default(client):
+    r = client.get("/provision/automated")
+    assert b"unraid-backup" in r.data
+    assert b'value="us-east-1"' in r.data
+
+
+def test_automated_auto_names_bucket_from_account(client, dirs, monkeypatch):
+    from app.gui import provision
+    monkeypatch.setattr(provision, "aws_account_id", lambda *a, **k: "123456789012")
+    monkeypatch.setattr(provision, "run_tofu_apply",
+                        lambda bucket, *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
+                                                 "AWS_SECRET_ACCESS_KEY": "runsek",
+                                                 "bucket": bucket, "region": "us-east-1"})
+    token = _csrf(client, "/provision/automated")
+    r = client.post("/provision/automated",
+                    data={"csrf": token, "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"},
+                    follow_redirects=True)
+    assert r.status_code == 200
+    be = Path(dirs["config"], "backup.env").read_text()
+    assert "S3_BUCKET=unraid-backup-123456789012" in be
+
+
+def test_automated_override_bucket_skips_account_lookup(client, dirs, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise AssertionError("account lookup must be skipped when an override is provided")
+
+    monkeypatch.setattr(provision, "aws_account_id", boom)
+    monkeypatch.setattr(provision, "run_tofu_apply",
+                        lambda bucket, *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
+                                                 "AWS_SECRET_ACCESS_KEY": "runsek",
+                                                 "bucket": bucket, "region": "us-east-1"})
+    token = _csrf(client, "/provision/automated")
+    client.post("/provision/automated",
+                data={"csrf": token, "bucket": "my-own-bucket", "region": "us-east-1",
+                      "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"},
+                follow_redirects=True)
+    be = Path(dirs["config"], "backup.env").read_text()
+    assert "S3_BUCKET=my-own-bucket" in be
+
+
+def test_automated_account_lookup_failure_saves_nothing(client, dirs, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise provision.AccountLookupError("nope")
+
+    monkeypatch.setattr(provision, "aws_account_id", boom)
+    token = _csrf(client, "/provision/automated")
+    r = client.post("/provision/automated",
+                    data={"csrf": token, "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
+    assert r.status_code == 400
+    assert not Path(dirs["config"], "secrets.env").exists()

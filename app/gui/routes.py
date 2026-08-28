@@ -65,7 +65,7 @@ def provision_home():
 @bp.get("/provision/manual")
 def provision_manual():
     return render_template("provision_manual.html", csrf=security.issue_csrf(),
-                           bucket="", region="", policy=None, console=None, error=None)
+                           bucket="", region="us-east-1", policy=None, console=None, error=None)
 
 @bp.post("/provision/manual/render")
 def provision_manual_render():
@@ -113,7 +113,7 @@ def provision_validate():
 @bp.get("/provision/automated")
 def provision_automated():
     return render_template("provision_automated.html", csrf=security.issue_csrf(),
-                           bucket="", region="", error=None)
+                           bucket="", region="us-east-1", error=None)
 
 
 @bp.post("/provision/automated")
@@ -121,16 +121,24 @@ def provision_automated_run():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400)
     cfg = current_app.config
-    bucket = request.form.get("bucket", "").strip()
-    region = request.form.get("region", "").strip()
+    override = request.form.get("bucket", "").strip()
+    region = request.form.get("region", "").strip() or "us-east-1"
     admin_key = request.form.get("ADMIN_ACCESS_KEY_ID", "").strip()
     admin_secret = request.form.get("ADMIN_SECRET_ACCESS_KEY", "").strip()
     session_token = request.form.get("ADMIN_SESSION_TOKEN", "").strip() or None
     try:
+        # No override -> auto-name unraid-backup-<account>, read from the admin creds.
+        bucket = override or provision.derive_bucket_name(
+            provision.aws_account_id(region, admin_key, admin_secret, session_token))
         result = provision.run_tofu_apply(bucket, region, admin_key, admin_secret, session_token)
+    except provision.AccountLookupError:
+        return render_template("provision_automated.html", csrf=security.issue_csrf(),
+                               bucket=override, region=region,
+                               error="Couldn't read your AWS account from those admin "
+                                     "credentials — check the key and try again. Nothing was saved."), 400
     except provision.TofuError as e:
         return render_template("provision_automated.html", csrf=security.issue_csrf(),
-                               bucket=bucket, region=region,
+                               bucket=override, region=region,
                                error=f"Automated provisioning failed at tofu {e.phase} — nothing saved."), 400
     finally:
         # discard transient admin creds from this frame regardless of outcome
@@ -141,5 +149,5 @@ def provision_automated_run():
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"]})
-    flash("AWS destination provisioned and runtime key saved.")
+    flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key.")
     return redirect(url_for("gui.provision_home"))
