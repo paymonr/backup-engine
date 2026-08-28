@@ -130,3 +130,30 @@ def test_storage_monthly_raises_for_unknown_storage_class(prices):
     p = PipelineInputs(size_gb=10, file_count=5, storage_class="NEBULA")
     with pytest.raises(ValueError):
         storage_monthly(p, prices)
+
+def test_effective_retention_days_reaches_furthest_tier():
+    from app.estimator.model import effective_retention_days
+    # default backup.env policy (last3/daily7/weekly4/monthly6) -> 6 months dominates
+    assert effective_retention_days(keep_last=3, keep_daily=7, keep_weekly=4, keep_monthly=6) == 180
+    # weekly dominates when there is no monthly tier
+    assert effective_retention_days(keep_last=1, keep_daily=7, keep_weekly=4, keep_monthly=0) == 28
+    # keep_last acts as a floor when the dated tiers are all zero
+    assert effective_retention_days(keep_last=5) == 5
+    # never zero
+    assert effective_retention_days() == 1
+
+def test_versioning_monthly_uses_per_pipeline_retention_override(prices):
+    # a per-pipeline versioning_retention_days overrides the scenario-level value
+    p = PipelineInputs(size_gb=20, file_count=5, storage_class="STANDARD",
+                       backups_per_month=30, change_rate_pct=10,
+                       versioning_retention_days=60)
+    s = Scenario(appdata=p, media=p, versioning_retention_days=30)
+    # uses 60, not 30: 20 * 0.10 * (30 * 60 / 30) = 120 GB noncurrent; * 0.02 = 2.40
+    assert math.isclose(versioning_monthly(p, s, prices), 2.40)
+
+def test_versioning_monthly_falls_back_to_scenario_retention(prices):
+    # no per-pipeline override -> unchanged behaviour (scenario-level retention)
+    p = PipelineInputs(size_gb=20, file_count=5, storage_class="STANDARD",
+                       backups_per_month=30, change_rate_pct=10)
+    s = Scenario(appdata=p, media=p, versioning_retention_days=30)
+    assert math.isclose(versioning_monthly(p, s, prices), 1.20)

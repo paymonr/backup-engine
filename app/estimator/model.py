@@ -27,6 +27,11 @@ class PipelineInputs:
     pack_member_gb: float = 5.0
     backups_per_month: float = 30.0
     change_rate_pct: float = 10.0
+    # Optional per-pipeline override for how long noncurrent versions are retained.
+    # None -> fall back to the scenario-level versioning_retention_days. This lets
+    # appdata carry a restic-keep-policy-derived window (effective_retention_days)
+    # while media keeps the scenario's S3 noncurrent-expiry value.
+    versioning_retention_days: int | None = None
 
 @dataclass(frozen=True)
 class Scenario:
@@ -71,6 +76,14 @@ def effective_object_count(p: PipelineInputs) -> int:
         return max(1, ceil(p.size_gb / p.pack_member_gb))
     return p.file_count
 
+def effective_retention_days(keep_last: int = 0, keep_daily: int = 0,
+                             keep_weekly: int = 0, keep_monthly: int = 0) -> int:
+    """Proxy (in days) for the span of history a restic keep-policy retains — the
+    furthest-back reach across the daily/weekly/monthly tiers, with keep_last (a
+    snapshot count) treated as a lower-bound floor. Decision-support only, not a
+    precise restic prune simulation; feeds a pipeline's versioning_retention_days."""
+    return max(keep_last, keep_daily, keep_weekly * 7, keep_monthly * 30, 1)
+
 def billed_gb(p: PipelineInputs, prices: PriceTable) -> float:
     if p.storage_class == "STANDARD":
         return p.size_gb
@@ -81,8 +94,10 @@ def storage_monthly(p: PipelineInputs, prices: PriceTable) -> float:
     return billed_gb(p, prices) * _rate(prices, p.storage_class)
 
 def versioning_monthly(p: PipelineInputs, scenario: Scenario, prices: PriceTable) -> float:
+    retention = (p.versioning_retention_days if p.versioning_retention_days is not None
+                 else scenario.versioning_retention_days)
     noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * (
-        p.backups_per_month * scenario.versioning_retention_days / 30)
+        p.backups_per_month * retention / 30)
     return noncurrent_gb * _rate(prices, p.storage_class)
 
 def ingest_monthly(p: PipelineInputs, prices: PriceTable) -> float:
