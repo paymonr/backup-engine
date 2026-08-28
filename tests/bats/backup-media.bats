@@ -37,6 +37,7 @@ run_media() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-media.sh"; }
   run grep -E '^(copy|sync) ' "$RCLONE_LOG"
   [ "$status" -ne 0 ]   # no copy/sync line
   grep -q '"shares":0' "$CACHE_DIR/state/media.json"
+  grep -q '"duration_s":0' "$CACHE_DIR/state/media.json"  # shape matches the populated-success JSON
 }
 
 @test "configured share whose source is missing -> failure" {

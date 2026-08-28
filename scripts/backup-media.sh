@@ -49,7 +49,7 @@ main() {
   shopt -u nullglob
   if [ "${#files[@]}" -eq 0 ]; then
     log_info "no media shares enabled ($MEDIA_SHARES_DIR) — skipping media backup"
-    printf '{"last_run":"%s","outcome":"success","mode":"%s","shares":0}\n' \
+    printf '{"last_run":"%s","outcome":"success","mode":"%s","shares":0,"duration_s":0}\n' \
       "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$verb" >"$CACHE_DIR/state/media.json"
     notify success "media backup OK" "no shares enabled"
     healthcheck success
