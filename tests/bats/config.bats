@@ -19,7 +19,7 @@ AWS_ACCESS_KEY_ID=AKIA_TEST
 AWS_SECRET_ACCESS_KEY=secret
 RESTIC_PASSWORD=hunter2
 EOF
-  : >"$CFG/includes-media.txt"
+  mkdir -p "$CFG/media-shares"
 }
 
 @test "load_config derives RESTIC_REPOSITORY from region+bucket" {
@@ -41,6 +41,8 @@ EOF
   [ "$MEDIA_STORAGE_CLASS" = "DEEP_ARCHIVE" ]
   [ "$MEDIA_MIRROR" = "false" ]
   [ "$APPDATA_STORAGE_CLASS" = "STANDARD" ]
+  [ "$MEDIA_ROOT" = "/backup/media" ]
+  [ "$MEDIA_SHARES_DIR" = "$CFG/media-shares" ]
 }
 
 @test "load_config dies when secrets.env missing" {
