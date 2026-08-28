@@ -76,3 +76,23 @@ def test_write_rejects_invalid_name(tmp_path):
     root, shares = _tree(tmp_path)
     with pytest.raises(ValueError):
         ms.write_selection(shares, "../evil", True, [])
+
+def test_write_selection_rejects_newline_folder(tmp_path):
+    root, shares = _tree(tmp_path)
+    with pytest.raises(ValueError):
+        ms.write_selection(shares, "comics", False, ["manga\nevil"])
+
+def test_write_selection_rejects_carriage_return_folder(tmp_path):
+    root, shares = _tree(tmp_path)
+    with pytest.raises(ValueError):
+        ms.write_selection(shares, "comics", False, ["manga\revil"])
+
+def test_write_selection_rejects_dotdot_segment_folder(tmp_path):
+    root, shares = _tree(tmp_path)
+    with pytest.raises(ValueError):
+        ms.write_selection(shares, "comics", False, ["../etc"])
+
+def test_write_selection_rejects_absolute_folder(tmp_path):
+    root, shares = _tree(tmp_path)
+    with pytest.raises(ValueError):
+        ms.write_selection(shares, "comics", False, ["/etc/passwd"])

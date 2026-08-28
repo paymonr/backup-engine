@@ -87,6 +87,16 @@ def shares_save(name):
     cfg = current_app.config
     if not media_shares.valid_name(name):
         abort(404)
+    sd = cfg["MEDIA_SHARES_DIR"]
+    if not request.form.get("enabled"):
+        # Disable must work even if MEDIA_ROOT/<name> is no longer a directory
+        # (unmounted/removed share) — it's the recovery path for a share that
+        # would otherwise make every backup-media.sh run fail with no way to
+        # remove it from the GUI. Only the enable path below needs the source
+        # dir to exist.
+        media_shares.disable(sd, name)
+        flash(f"Disabled {name}.")
+        return redirect(url_for("gui.shares_page"))
     try:
         # safe_resolve rejects an escaping-symlink share so a symlink target
         # outside MEDIA_ROOT can never be enabled for backup.
@@ -95,15 +105,13 @@ def shares_save(name):
         abort(404)
     if not share_dir.is_dir():
         abort(404)
-    sd = cfg["MEDIA_SHARES_DIR"]
-    if not request.form.get("enabled"):
-        media_shares.disable(sd, name)
-        flash(f"Disabled {name}.")
-        return redirect(url_for("gui.shares_page"))
-    if request.form.get("mode") == "raw" and request.form.get("raw") is not None:
-        media_shares.write_raw(sd, name, request.form["raw"])
-    else:
-        media_shares.write_selection(sd, name, bool(request.form.get("whole")),
-                                     request.form.getlist("folder"))
+    try:
+        if request.form.get("mode") == "raw" and request.form.get("raw") is not None:
+            media_shares.write_raw(sd, name, request.form["raw"])
+        else:
+            media_shares.write_selection(sd, name, bool(request.form.get("whole")),
+                                         request.form.getlist("folder"))
+    except ValueError:
+        abort(400)  # no path echo
     flash(f"Saved {name}.")
     return redirect(url_for("gui.shares_page"))

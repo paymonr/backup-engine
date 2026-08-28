@@ -13,6 +13,17 @@ _ANCESTOR_RE = re.compile(r"^\+ /.+/$")      # "+ /manga/"  (helper line)
 def valid_name(name: str) -> bool:
     return bool(_NAME_RE.match(name or "")) and name not in (".", "..")
 
+def _validate_folder(f: str) -> None:
+    # Defense-in-depth: a folder value only ever becomes a filter-file line
+    # (via generate_rules), but reject anything that could inject an extra
+    # rule line or reach outside the share before it gets that far.
+    if "\n" in f or "\r" in f:
+        raise ValueError(f"folder value contains a newline: {f!r}")
+    if f.startswith("/"):
+        raise ValueError(f"folder value must be relative, not absolute: {f!r}")
+    if ".." in f.split("/"):
+        raise ValueError(f"folder value must not contain '..': {f!r}")
+
 def generate_rules(whole: bool, folders: list[str]) -> str:
     clean = [f.strip("/") for f in folders if f and f.strip("/")]
     if whole or not clean:
@@ -70,6 +81,8 @@ def read_selection(shares_dir, name) -> dict:
     return parse_rules(f.read_text())
 
 def write_selection(shares_dir, name, whole, folders) -> None:
+    for folder in folders:
+        _validate_folder(folder)
     f = _file(shares_dir, name)
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(generate_rules(whole, folders))

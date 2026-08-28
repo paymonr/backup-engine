@@ -1,4 +1,5 @@
 import os
+import shutil
 import pytest
 from pathlib import Path
 from app.gui import create_app
@@ -91,3 +92,26 @@ def test_save_requires_csrf(client):
 def test_save_unknown_share_is_404(client):
     token = _csrf(client)
     assert client.post("/shares/nope", data={"csrf": token, "enabled": "1"}).status_code == 404
+
+def test_save_rejects_newline_in_folder(client, app):
+    # media_shares.write_selection must reject a folder value containing a
+    # newline before it is ever written into the rclone filter file.
+    token = _csrf(client)
+    r = client.post("/shares/comics", data={"csrf": token, "enabled": "1", "folder": ["manga\nevil"]})
+    assert r.status_code == 400
+    assert not Path(app.config["MEDIA_SHARES_DIR"], "comics.txt").exists()
+
+def test_save_enable_requires_dir_but_disable_survives_missing_source(client, app):
+    # Enabling still requires an existing source dir under MEDIA_ROOT. But once
+    # a share is enabled, its source dir may later vanish (unmounted/removed);
+    # disabling it (deleting the orphaned filter file) must still succeed so the
+    # GUI stays the recovery path even when backup-media.sh would now fail.
+    token = _csrf(client)
+    client.post("/shares/comics", data={"csrf": token, "enabled": "1", "whole": "1"})
+    assert Path(app.config["MEDIA_SHARES_DIR"], "comics.txt").exists()
+    shutil.rmtree(Path(app.config["MEDIA_ROOT"]) / "comics")
+    r_enable = client.post("/shares/comics", data={"csrf": token, "enabled": "1", "whole": "1"})
+    assert r_enable.status_code == 404
+    r_disable = client.post("/shares/comics", data={"csrf": token})  # enabled absent => disable
+    assert r_disable.status_code in (302, 303)
+    assert not Path(app.config["MEDIA_SHARES_DIR"], "comics.txt").exists()
