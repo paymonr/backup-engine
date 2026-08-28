@@ -1,6 +1,5 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
-from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import config_io, runner, security, media_shares, fsbrowse
@@ -71,7 +70,10 @@ def shares_browse():
     if not media_shares.valid_name(share):
         abort(404)
     try:
-        dirs = fsbrowse.list_dirs(Path(cfg["MEDIA_ROOT"]) / share, rel)
+        # Resolve the share segment through safe_resolve too: a symlink directly
+        # under MEDIA_ROOT must not let the browse root escape confinement.
+        share_root = fsbrowse.safe_resolve(cfg["MEDIA_ROOT"], share)
+        dirs = fsbrowse.list_dirs(share_root, rel)
     except fsbrowse.PathError:
         abort(404)  # no path echo
     base = rel.strip("/")
@@ -83,7 +85,15 @@ def shares_save(name):
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400)
     cfg = current_app.config
-    if not media_shares.valid_name(name) or not (Path(cfg["MEDIA_ROOT"]) / name).is_dir():
+    if not media_shares.valid_name(name):
+        abort(404)
+    try:
+        # safe_resolve rejects an escaping-symlink share so a symlink target
+        # outside MEDIA_ROOT can never be enabled for backup.
+        share_dir = fsbrowse.safe_resolve(cfg["MEDIA_ROOT"], name)
+    except fsbrowse.PathError:
+        abort(404)
+    if not share_dir.is_dir():
         abort(404)
     sd = cfg["MEDIA_SHARES_DIR"]
     if not request.form.get("enabled"):

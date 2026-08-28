@@ -1,3 +1,4 @@
+import os
 import pytest
 from pathlib import Path
 from app.gui import create_app
@@ -43,6 +44,29 @@ def test_browse_rejects_traversal_without_echo(client):
 
 def test_browse_rejects_bad_share_name(client):
     assert client.get("/shares/browse?share=../evil&path=").status_code == 404
+
+def test_browse_rejects_escaping_symlink_share(client, app):
+    # A symlink DIRECTLY under MEDIA_ROOT whose name passes valid_name must not
+    # let the browse root escape MEDIA_ROOT (confinement, spec §7 invariant 1).
+    media = Path(app.config["MEDIA_ROOT"])
+    outside = media.parent / "outside"
+    (outside / "topsecret").mkdir(parents=True)
+    os.symlink(outside, media / "evil")
+    r = client.get("/shares/browse?share=evil&path=")
+    assert r.status_code == 404
+    assert b"topsecret" not in r.data  # no path echo either
+
+def test_save_rejects_escaping_symlink_share(client, app):
+    # Enabling a symlink-share would make backup-media.sh rclone outside-root data
+    # to S3; the escaping symlink must be rejected before any file is written.
+    media = Path(app.config["MEDIA_ROOT"])
+    outside = media.parent / "outside2"
+    outside.mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, media / "evil2")
+    token = _csrf(client)
+    r = client.post("/shares/evil2", data={"csrf": token, "enabled": "1", "whole": "1"})
+    assert r.status_code == 404
+    assert not Path(app.config["MEDIA_SHARES_DIR"], "evil2.txt").exists()
 
 def test_save_enable_writes_file(client, app):
     token = _csrf(client)
