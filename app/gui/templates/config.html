@@ -1,23 +1,37 @@
 {% extends "base.html" %}{% block body %}
+<p class="eyebrow">Configuration</p>
 <h1>Configuration</h1>
+<p class="lead">Edit <code>backup.env</code> and write-only secrets. Choose what media to back up under <a href="{{ url_for('gui.shares_page') }}">Media shares</a>.</p>
+
 <form method="post" action="{{ url_for('gui.config_save') }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <h2>backup.env</h2>
-  {% for f in fields %}
-    <label for="{{ f.key }}">{{ f.key }}</label>
-    <input id="{{ f.key }}" name="{{ f.key }}" value="{{ f.value }}">
-  {% endfor %}
-  <h2>Secrets <small>(write-only — leave blank to keep current)</small></h2>
-  <p>Mode: {{ secret_mode or "file not present" }}{% if secret_mode and secret_mode != "600" %} <strong>(should be 600)</strong>{% endif %}</p>
-  {% for k in secret_keys %}
-    <label for="{{ k }}">{{ k }} — {{ "set" if secret_status[k] else "not set" }}</label>
-    <input id="{{ k }}" name="{{ k }}" type="password" autocomplete="new-password" placeholder="{{ '••••• (unchanged)' if secret_status[k] else 'not set' }}">
-  {% endfor %}
-  <p><button type="submit">Save</button></p>
-</form>
-<details><summary>Prefer to create secrets by hand?</summary>
-<pre>cp config/secrets.env.example /config/secrets.env
+
+  <div class="card">
+    <h2>backup.env</h2>
+    <div class="field-row">
+    {% for f in fields %}
+      <div><label for="{{ f.key }}">{{ f.key }}</label>
+        <input id="{{ f.key }}" name="{{ f.key }}" value="{{ f.value }}"></div>
+    {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Secrets <small>— write-only, leave blank to keep current</small></h2>
+    <p class="hint">File mode: {{ secret_mode or "not present" }}{% if secret_mode and secret_mode != "600" %} <strong style="color:var(--warn)">(should be 600)</strong>{% endif %}</p>
+    {% for k in secret_keys %}
+      <label for="{{ k }}">{{ k }} <small>— {{ "set" if secret_status[k] else "not set" }}</small></label>
+      <input id="{{ k }}" name="{{ k }}" type="password" autocomplete="new-password"
+             placeholder="{{ '••••• (unchanged)' if secret_status[k] else 'not set' }}">
+    {% endfor %}
+    <details>
+      <summary>Prefer to create secrets by hand?</summary>
+      <pre>cp config/secrets.env.example /config/secrets.env
 chmod 600 /config/secrets.env
-$EDITOR /config/secrets.env   # set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, RESTIC_PASSWORD</pre>
-</details>
+$EDITOR /config/secrets.env   # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, RESTIC_PASSWORD</pre>
+    </details>
+  </div>
+
+  <div class="actions"><button type="submit" class="btn-primary">Save configuration</button></div>
+</form>
 {% endblock %}
