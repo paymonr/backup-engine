@@ -5,8 +5,8 @@ A single configuration-driven Docker container ships two things to S3:
 
 - **appdata** — the [Appdata Backup plugin](https://forums.unraid.net/topic/137710-plugin-appdatabackup/)'s
   archives, via `restic` (encrypted, deduplicated, point-in-time snapshots) → S3 Standard.
-- **media** — selected large, mostly-static collections (comics/books/etc.), via `rclone` → S3
-  **Glacier Deep Archive** (cheapest cold storage).
+- **media** — selected large, mostly-static shares (comics/books/etc.), chosen per share in the
+  GUI, via `rclone` → S3 **Glacier Deep Archive** (cheapest cold storage).
 
 Reusable and not tied to any one setup: all user-specific values live in mounted config files;
 the AWS destination is provisioned either by the included OpenTofu module or by hand (see
@@ -38,8 +38,10 @@ the AWS destination is provisioned either by the included OpenTofu module or by 
    `backup-engine.xml`**). Review the four required paths and fix them if your shares
    differ from the defaults:
    - `Appdata backups (ro)` → your Appdata Backup plugin's output directory
-   - `Media root (ro)` → your media share (curated further via `includes-media.txt`)
-   - `Config` → where `backup.env` / `secrets.env` / `includes-media.txt` live
+   - `Media shares root (ro)` → parent of your shares (e.g. `/mnt/user`); choose what to back up in
+     the GUI → Media shares
+   - `Config` → where `backup.env` / `secrets.env` / per-share `media-shares/<share>.txt` filter
+     files live
    - `Cache/state` → restic cache, logs, run-state, lockfiles
 3. Populate the config files (see [Configure](#configure)) **before** starting the container —
    `entrypoint.sh` validates on boot and refuses to run with missing/invalid config.
@@ -52,16 +54,16 @@ git clone https://github.com/paymonr/backup-engine.git
 cd backup-engine
 cp config/backup.env.example config/backup.env
 cp config/secrets.env.example config/secrets.env
-cp config/includes-media.txt.example config/includes-media.txt
 chmod 600 config/secrets.env
-$EDITOR config/backup.env config/secrets.env config/includes-media.txt   # see Configure below
+$EDITOR config/backup.env config/secrets.env   # see Configure below
 
 docker compose up -d
 ```
 
-`docker-compose.yml` bind-mounts `/mnt/appdata_system/appdata_backups` and `/mnt/user/media`
-read-only, `./config` and `./cache` read-write, and publishes the (Phase 2) GUI port `8099` — edit
-the source paths to match your host.
+`docker-compose.yml` bind-mounts `/mnt/appdata_system/appdata_backups` and `/mnt/user` (parent of
+your shares) read-only, `./config` and `./cache` read-write, and publishes the (Phase 2) GUI port
+`8099` — edit the source paths to match your host. Which shares/subdirs actually ship is chosen
+afterward in the GUI's Media shares screen, not by editing a config file.
 
 ## Provision the destination
 
@@ -146,9 +148,11 @@ Three files live under the `Config` path (`/config` in the container):
 |---|---|---|
 | `backup.env` | Non-secret settings: AWS region/bucket, storage classes, schedules, retention, paths | `config/backup.env.example` |
 | `secrets.env` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `RESTIC_PASSWORD` — `chmod 600`, never commit | `config/secrets.env.example` |
-| `includes-media.txt` | rclone filter rules selecting which media subdirs to ship (first match wins) | `config/includes-media.txt.example` |
+| `media-shares/` | GUI-managed: one rclone filter file per enabled share, `media-shares/<share>.txt` (presence enables the share; first match wins within the file) | `config/media-shares/comics.txt.example` |
 
-Copy each `.example` file, drop the suffix, and edit. Key knobs in `backup.env`:
+Copy `backup.env.example` and `secrets.env.example`, drop the `.example` suffix, and edit. Media
+shares aren't hand-edited files to copy — enable/curate them from the GUI's Media shares screen
+(see [GUI](#gui)), which writes `media-shares/<share>.txt` for you. Key knobs in `backup.env`:
 
 - `APPDATA_STORAGE_CLASS` / `MEDIA_STORAGE_CLASS` — per-pipeline S3 storage class. Media defaults
   to `DEEP_ARCHIVE` (cheapest) and cold works fine there — it's plain objects. Appdata defaults to,
@@ -195,12 +199,18 @@ orchestration for appdata is a Phase-3 feature.
 
 ### Media (rclone) — including the Deep Archive thaw flow
 
+Each enabled share ships to its own S3 prefix, `media/<share>/…` (e.g. the `comics` share lands
+under `media/comics/…`), so restore is scoped per share — pass a prefix starting with the share
+name (optionally narrowed to a subpath within it, as in the example below).
+
 Deep Archive objects aren't readable until thawed. Two-step restore:
 
 ```bash
 # 1. Request a thaw for everything under a prefix (defaults to Bulk tier —
 #    cheapest, ~48h; use --tier Standard for ~12h or --tier Expedited for
 #    faster-but-pricier). Add --dry-run to preview without issuing requests.
+#    "comics/some-series" = share "comics", subpath "some-series"; pass
+#    just "comics" to thaw/restore the whole share.
 restore.sh media thaw comics/some-series --tier Standard
 
 # 2. Wait for the thaw window (12-48h depending on tier), then download —
@@ -247,8 +257,17 @@ A small web UI (config editor + run/status/logs) ships in the container, served 
 > disable it and run scheduler-only/headless.
 
 - **Config editor** — edits `backup.env` (regenerated from the bundled `backup.env.example`
-  template) and `includes-media.txt`. Secret fields (AWS keys, restic password) are **write-only**:
-  they never display existing values; leave a field blank to keep it, fill it to overwrite.
+  template). Secret fields (AWS keys, restic password) are **write-only**: they never display
+  existing values; leave a field blank to keep it, fill it to overwrite.
+- **Media shares** — lists every share found directly under `MEDIA_ROOT` (the single read-only
+  mount, e.g. `/mnt/user` — the whole array, mounted read-only, so the container can see every
+  share without a mount per share) and lets you enable each one whole or curated to specific
+  subfolders, or disable it again. A share is **excluded by default**: it's just a name in the list
+  until you enable it, and disabling one deletes its filter file rather than leaving an empty/stale
+  one behind. Enabling writes `config/media-shares/<share>.txt`, one rclone filter file per
+  enabled share — that's the file `backup-media.sh` looks for, and its presence is what makes the
+  share ship (see [Configure](#configure) and the [Restore runbook](#restore-runbook) for the
+  resulting `media/<share>/…` S3 layout).
 - **Run & status** — trigger an appdata/media backup now, see the last-run outcome per pipeline,
   and watch the live log tail.
 
@@ -273,7 +292,6 @@ in-flight session/CSRF token on every restart.
 Planned, not yet built:
 
 - **Restore wizard** — guided both-tier restore in the GUI (incl. the Glacier/Deep Archive thaw flow).
-- **Media-dir picker** — browse the media mount to build `includes-media.txt`.
 - **Provisioning wizard** — the three-mode AWS setup in the GUI.
 - **Cost-estimator screen** — interactive what-if over the `estimate` module.
 - **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.

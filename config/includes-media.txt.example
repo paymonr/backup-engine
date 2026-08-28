@@ -1,6 +1,0 @@
-# rclone filter rules for the media pipeline (order matters; first match wins).
-# Include the curated, hard-to-reacquire collections; exclude everything else.
-+ /comics/**
-+ /books/**
-+ /lightnovels/**
-- **

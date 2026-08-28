@@ -9,15 +9,13 @@ S3_BUCKET=b
 APPDATA_SCHEDULE=0 3 * * *
 MEDIA_SCHEDULE=0 4 * * 0
 APPDATA_SRC=$BATS_TEST_TMPDIR/adata
-MEDIA_SRC=$BATS_TEST_TMPDIR/media
-MEDIA_INCLUDES=$CFG/includes-media.txt
+MEDIA_ROOT=$BATS_TEST_TMPDIR/media
 EOF
   cat >"$CFG/secrets.env" <<EOF
 AWS_ACCESS_KEY_ID=k
 AWS_SECRET_ACCESS_KEY=s
 RESTIC_PASSWORD=p
 EOF
-  : >"$CFG/includes-media.txt"
   mkdir -p "$BATS_TEST_TMPDIR/adata" "$BATS_TEST_TMPDIR/media"
   echo x >"$BATS_TEST_TMPDIR/adata/f"
   export CONFIG_DIR="$CFG"
