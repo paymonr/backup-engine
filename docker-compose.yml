@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     volumes:
       - /mnt/appdata_system/appdata_backups:/backup/appdata:ro
-      - /mnt/user/media:/backup/media:ro
+      - /mnt/user:/backup/media:ro   # parent of your shares; pick which to back up in the GUI
       - ./config:/config
       - ./cache:/cache
     ports:

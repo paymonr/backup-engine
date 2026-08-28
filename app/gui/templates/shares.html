@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% block body %}
+<p class="eyebrow">Media</p>
+<h1>Media shares</h1>
+<p class="lead">Shares found under your media mount. Enable the ones you want backed up — whole, or curated to specific subfolders.</p>
+
+<div class="note">
+  <h3>Tip</h3>
+  <p>Leave <code>appdata</code> off here — it's backed up separately by the appdata pipeline. Each enabled share ships to <code>s3://…/media/&lt;share&gt;</code>.</p>
+</div>
+
+{% for s in shares %}
+<form class="card share" method="post" action="{{ url_for('gui.shares_save', name=s.name) }}" data-share="{{ s.name }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="share-head">
+    <label><input type="checkbox" name="enabled" value="1" {{ 'checked' if s.enabled }}> {{ s.name }}</label>
+    <span class="arrow">→ s3 …/media/{{ s.name }}</span>
+  </div>
+  {% if s.custom %}
+    <p class="hint">Custom rclone rules — edit as text.</p>
+    <textarea name="raw" rows="4">{{ s.folders_raw }}</textarea>
+    <input type="hidden" name="mode" value="raw">
+  {% else %}
+    <label class="inline"><input type="checkbox" name="whole" value="1" {{ 'checked' if s.whole }}> Back up the whole share</label>
+    <ul class="tree" data-root="{{ s.name }}" data-selected="{{ s.folders|join(',') }}"></ul>
+    <p class="hint">Expand to pick subfolders — selections are kept even if you don't expand them.</p>
+  {% endif %}
+  <div class="actions"><button type="submit" class="btn-primary">Save {{ s.name }}</button></div>
+</form>
+{% else %}
+<div class="card"><p style="margin:0;color:var(--muted)">No shares found under the media mount.</p></div>
+{% endfor %}
+{% endblock %}

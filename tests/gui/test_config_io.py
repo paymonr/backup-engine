@@ -23,10 +23,6 @@ def test_write_backup_env_ignores_blank_values(template_path, dirs):
     # blank S3_ENDPOINT stays as the template's commented line, not an empty assignment
     assert "\nS3_ENDPOINT=\n" not in out
 
-def test_includes_round_trip(dirs):
-    cio.write_includes(dirs["config"], "+ /comics/**\n- **\n")
-    assert cio.read_includes(dirs["config"]) == "+ /comics/**\n- **\n"
-
 def test_secrets_are_write_only(dirs):
     cio.write_secrets(dirs["config"], {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "shh", "RESTIC_PASSWORD": "pw"})
     status = cio.secrets_status(dirs["config"])

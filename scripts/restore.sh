@@ -49,9 +49,9 @@ appdata() {
   esac
 }
 
-# media reads FROM S3, not from the local MEDIA_SRC tree — validate AWS
-# config only; do NOT call validate_media (it requires a local MEDIA_SRC and
-# an include-list, neither of which restore needs).
+# media reads FROM S3, not from the local MEDIA_ROOT tree — validate AWS
+# config only; do NOT call validate_media (it requires a local MEDIA_ROOT,
+# which restore doesn't need).
 media() {
   _load
   validate_common
