@@ -15,6 +15,7 @@
   {% else %}
     <label><input type="checkbox" name="whole" value="1" {{ 'checked' if s.whole }}> Back up the whole share</label>
     <ul class="tree" data-root="{{ s.name }}" data-selected="{{ s.folders|join(',') }}"></ul>
+    <p class="hint">Subfolder selections are kept even if you don't expand them.</p>
   {% endif %}
   <button type="submit">Save</button>
 </form>
