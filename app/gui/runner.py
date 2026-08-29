@@ -5,10 +5,8 @@ import json
 import os
 import subprocess
 
-PIPELINES: dict[str, str] = {"appdata": "backup-appdata.sh", "media": "backup-media.sh"}
-
-def read_state(cache_dir: str, pipeline: str) -> dict | None:
-    p = Path(cache_dir, "state", f"{pipeline}.json")
+def read_state(cache_dir: str, name: str) -> dict | None:
+    p = Path(cache_dir, "state", f"{name}.json")
     if not p.exists():
         return None
     try:
@@ -22,12 +20,9 @@ def tail_log(cache_dir: str, n: int = 200) -> str:
         return ""
     return "\n".join(p.read_text(errors="replace").splitlines()[-n:])
 
-def trigger_backup(scripts_dir: str, pipeline: str, env: dict | None = None) -> None:
-    if pipeline not in PIPELINES:
-        raise ValueError(f"unknown pipeline '{pipeline}'")
-    script = str(Path(scripts_dir, PIPELINES[pipeline]))
+def trigger_job(scripts_dir: str, name: str, env: dict | None = None) -> None:
     subprocess.Popen(
-        ["bash", script],
+        ["bash", str(Path(scripts_dir, "backup-job.sh")), name],
         env=env or os.environ.copy(),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
