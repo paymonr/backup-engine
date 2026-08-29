@@ -7,7 +7,7 @@
 # shell and export them. Unlike a plain `source`/`.`, this treats the whole
 # remainder of a line as the literal value (no word-splitting, no pathname
 # expansion, no command execution), so unquoted values containing spaces or
-# glob characters — e.g. a cron expression like `APPDATA_SCHEDULE=0 3 * * *`
+# glob characters — e.g. a cron expression like `0 3 * * *`
 # — survive intact instead of bash parsing "3 * * *" as a command line.
 # Blank lines and lines starting with `#` are skipped. A value wrapped in
 # matching quotes is taken verbatim; otherwise a trailing ` #comment` is
@@ -62,10 +62,11 @@ load_config() {
     GUI_ENABLED GUI_PORT
 
   # RCLONE_TRANSFERS/RCLONE_BWLIMIT are user-facing config vars that
-  # backup-media.sh reads in-process to build its --transfers/--bwlimit CLI
-  # flags — they must stay ordinary (non-exported) shell vars. rclone ALSO
-  # reads these exact names as its own environment-variable overrides for
-  # those same flags, unconditionally, regardless of what's on the CLI. The
+  # backup-job.sh (archive jobs) reads in-process to build its
+  # --transfers/--bwlimit CLI flags — they must stay ordinary (non-exported)
+  # shell vars. rclone ALSO reads these exact names as its own
+  # environment-variable overrides for those same flags, unconditionally,
+  # regardless of what's on the CLI. The
   # shipped default leaves RCLONE_BWLIMIT unset/blank; if it's exported,
   # rclone sees RCLONE_BWLIMIT="" and hard-fails every run ("CRITICAL:
   # Invalid value when setting --bwlimit ... empty string") before copying

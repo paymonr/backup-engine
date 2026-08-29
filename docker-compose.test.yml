@@ -14,7 +14,7 @@ services:
       CONFIG_DIR: /config
     volumes:
       - ./tests/fixtures/config:/config
-      - ./tests/fixtures/appdata:/backup/appdata:ro
+      - ./tests/fixtures/appdata:/backup/media/appdata:ro
       - backup-engine-cache:/cache
 volumes:
   backup-engine-cache:

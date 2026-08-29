@@ -1,7 +1,0 @@
-# Example per-share rclone filter file: config/media-shares/comics.txt
-# Presence of <share>.txt enables the share "comics" -> s3://<bucket>/media/comics.
-# Whole share:  + /**
-# Curated (GUI-generated shape; ancestor "+ /dir/" lines let rclone descend):
-+ /manga/**
-+ /manga/
-- **
