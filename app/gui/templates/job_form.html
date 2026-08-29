@@ -16,6 +16,7 @@
   <div class="card"><h2>3 · How often?</h2>
     <label>Schedule (cron) <input name="schedule" value="{{ job.schedule if job else '0 3 * * *' }}" required></label>
     <p class="hint">e.g. <code>0 3 * * *</code> = daily 3am, <code>0 4 * * 0</code> = weekly Sun 4am. Or run on demand from the Jobs list.</p>
+    <p class="hint">Versioned jobs share one restic repo, so give each a <strong>different minute</strong> — two firing the same minute collide on the repo lock (one fails and recovers next run).</p>
     <label class="inline"><input type="checkbox" name="enabled" value="1" {{ 'checked' if not job or job.enabled }}> Enabled (scheduled)</label>
   </div>
   <div class="card"><h2>4 · Storage &amp; retention</h2>

@@ -183,8 +183,13 @@ def job_save():
         job["mirror"] = bool(f.get("mirror"))
     try:
         jobs_io.upsert(cfg["CONFIG_DIR"], job, source_root=cfg["SOURCE_ROOT"])
+    except jobs_io.JobsFileError as e:
+        # The on-disk jobs.json is corrupt: don't clobber the user's bytes, and
+        # don't 500 — tell them to fix the file (message has no path echo).
+        flash(str(e))
+        return redirect(url_for("gui.jobs_page"))
     except ValueError:
-        abort(400)  # no echo of paths
+        abort(400)  # normal validation failure; no echo of paths
     flash(f"Saved job {job['name']}.")
     return redirect(url_for("gui.jobs_page"))
 
@@ -203,7 +208,13 @@ def job_run(name):
 def job_delete(name):
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400)
-    jobs_io.delete(current_app.config["CONFIG_DIR"], name)
+    try:
+        jobs_io.delete(current_app.config["CONFIG_DIR"], name)
+    except jobs_io.JobsFileError as e:
+        # Corrupt jobs.json: surface a flash rather than a 500, and leave the
+        # file untouched (delete builds on _load_strict, which raised).
+        flash(str(e))
+        return redirect(url_for("gui.jobs_page"))
     flash(f"Deleted {name}.")
     return redirect(url_for("gui.jobs_page"))
 

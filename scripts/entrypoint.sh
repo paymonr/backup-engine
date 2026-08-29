@@ -23,7 +23,10 @@ prepare() {
 
 emit_crontab() {
   local ct="$CACHE_DIR/crontab"; : >"$ct"
-  CONFIG_DIR="${CONFIG_DIR:-/config}" python3 -m app.gui.jobs_io --list 2>/dev/null | \
+  # No `2>/dev/null`: jobs_io.load() now exits 0 on a corrupt/mis-shaped jobs.json
+  # (emitting nothing, so pipefail no longer aborts PID 1) and writes ONE diagnostic
+  # to stderr — let it reach the container log instead of swallowing why no jobs ran.
+  CONFIG_DIR="${CONFIG_DIR:-/config}" python3 -m app.gui.jobs_io --list | \
   while IFS=$'\t' read -r enabled schedule name; do
     [ "$enabled" = "1" ] || continue
     printf '%s %s %s\n' "$schedule" "$HERE/backup-job.sh" "$name" >>"$ct"

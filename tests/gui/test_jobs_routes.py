@@ -79,3 +79,30 @@ def test_run_and_delete(client, app, monkeypatch):
 
 def test_nav_has_jobs(client):
     assert b"/jobs" in client.get("/jobs").data
+
+# --- final-fix R-final-1: a corrupt jobs.json must not 500 the read/schedule path,
+# and the write path must not clobber the user's bytes (surface a flash, not a 500). ---
+def _corrupt(app):
+    p = pathlib.Path(app.config["CONFIG_DIR"], "jobs.json")
+    p.write_text("{ this is not valid json")
+    return p
+
+def test_jobs_page_200_on_corrupt_file(client, app):
+    _corrupt(app)
+    assert client.get("/jobs").status_code == 200   # not 500
+
+def test_job_save_on_corrupt_file_flashes_not_500(client, app):
+    p = _corrupt(app)
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs", data={"csrf": t, "name": "movies", "type": "archive",
+                                   "source": "media/movies", "schedule": "0 4 * * 0",
+                                   "storage_class": "STANDARD", "enabled": "1"})
+    assert r.status_code in (302, 303)              # flash + redirect, not 500/bare 400
+    assert p.read_text() == "{ this is not valid json"   # user's bytes untouched
+
+def test_job_delete_on_corrupt_file_flashes_not_500(client, app):
+    p = _corrupt(app)
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs/movies/delete", data={"csrf": t})
+    assert r.status_code in (302, 303)
+    assert p.read_text() == "{ this is not valid json"

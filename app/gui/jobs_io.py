@@ -21,12 +21,58 @@ def valid_name(s: str) -> bool:
 def _path(config_dir) -> Path:
     return Path(config_dir, JOBS_FILE)
 
+class JobsFileError(ValueError):
+    """The on-disk jobs.json exists but can't be parsed. Raised only on the WRITE
+    path (upsert/delete) so a save never clobbers the user's (unparseable but
+    hand-fixable) bytes. A ValueError subclass so existing `except ValueError`
+    write-path handlers still catch it, while routes can catch it specifically."""
+
+def _parse_jobs(text: str) -> list[dict]:
+    # Parse jobs.json text into a list of job dicts, or raise ValueError with a
+    # human reason. Shape errors (top-level not a dict, `jobs` not a list, or a
+    # non-dict entry) are treated like a parse error: the file as a whole is
+    # unusable, so callers degrade to "no jobs" rather than crash downstream on
+    # `j.get(...)` / `j["name"]`.
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"invalid JSON ({e.msg}, line {e.lineno} column {e.colno})")
+    if not isinstance(data, dict):
+        raise ValueError("top-level value is not an object")
+    jobs = data.get("jobs", [])
+    if not isinstance(jobs, list):
+        raise ValueError('"jobs" is not a list')
+    if not all(isinstance(j, dict) for j in jobs):
+        raise ValueError('"jobs" contains a non-object entry')
+    return list(jobs)
+
 def load(config_dir) -> list[dict]:
+    # Fail-SAFE READ path (crontab render, Jobs page, get/run/restore): a missing
+    # file is empty (silent); a present-but-corrupt file emits ONE stderr diagnostic
+    # and returns [] instead of raising — a whole-file parse error must degrade to
+    # "no jobs" (drop everything), never brick container boot or 500 the GUI. Pure
+    # (no writes). The write path uses _load_strict() so it never clobbers.
     p = _path(config_dir)
     if not p.exists():
         return []
-    data = json.loads(p.read_text())
-    return list(data.get("jobs", []))
+    try:
+        return _parse_jobs(p.read_text())
+    except ValueError as e:
+        print(f"jobs.json: {e} — ignoring (no jobs loaded)", file=sys.stderr)
+        return []
+
+def _load_strict(config_dir) -> list[dict]:
+    # WRITE path reader (upsert/delete): a missing file is empty, but a present
+    # file that fails to parse RAISES so the caller aborts instead of overwriting
+    # the user's bytes with a save built on the swallowed-empty load().
+    p = _path(config_dir)
+    if not p.exists():
+        return []
+    try:
+        return _parse_jobs(p.read_text())
+    except ValueError:
+        raise JobsFileError("jobs.json is not valid JSON; fix or remove it before "
+                            "editing jobs")
 
 def get(config_dir, name) -> dict | None:
     return next((j for j in load(config_dir) if j.get("name") == name), None)
@@ -74,12 +120,12 @@ def validate(job: dict, source_root, *, require_exists: bool = True) -> dict:
 
 def upsert(config_dir, job: dict, *, source_root) -> None:
     job = validate(job, source_root)
-    jobs = [j for j in load(config_dir) if j.get("name") != job["name"]]
+    jobs = [j for j in _load_strict(config_dir) if j.get("name") != job["name"]]
     jobs.append(job)
     _path(config_dir).write_text(json.dumps({"jobs": jobs}, indent=2) + "\n")
 
 def delete(config_dir, name) -> None:
-    jobs = [j for j in load(config_dir) if j.get("name") != name]
+    jobs = [j for j in _load_strict(config_dir) if j.get("name") != name]
     _path(config_dir).write_text(json.dumps({"jobs": jobs}, indent=2) + "\n")
 
 def emit_shell(job: dict) -> str:

@@ -42,6 +42,69 @@ def test_delete(tmp_path):
 def test_load_absent_is_empty(tmp_path):
     assert jobs_io.load(_cfg(tmp_path)) == []
 
+# --- final-fix R-final-1: load() is fail-SAFE on a corrupt/mis-shaped jobs.json ---
+# A whole-FILE parse error must degrade to "no jobs" (so the crontab render and the
+# Jobs page don't brick/500), emitting ONE stderr diagnostic — NOT raise.
+def test_load_returns_empty_and_warns_on_invalid_json(tmp_path, capsys):
+    cfg = _cfg(tmp_path)
+    Path(cfg, "jobs.json").write_text("{ this is not valid json")
+    assert jobs_io.load(cfg) == []            # does not raise
+    assert "jobs.json" in capsys.readouterr().err
+
+def test_load_returns_empty_and_warns_on_jobs_not_a_list(tmp_path, capsys):
+    cfg = _cfg(tmp_path)
+    Path(cfg, "jobs.json").write_text(json.dumps({"jobs": "x"}))
+    assert jobs_io.load(cfg) == []
+    assert "jobs.json" in capsys.readouterr().err
+
+def test_load_returns_empty_and_warns_on_non_dict_entries(tmp_path, capsys):
+    cfg = _cfg(tmp_path)
+    Path(cfg, "jobs.json").write_text(json.dumps({"jobs": [1, 2]}))
+    assert jobs_io.load(cfg) == []
+    assert "jobs.json" in capsys.readouterr().err
+
+def test_load_returns_empty_and_warns_on_non_dict_toplevel(tmp_path, capsys):
+    cfg = _cfg(tmp_path)
+    Path(cfg, "jobs.json").write_text(json.dumps([1, 2, 3]))
+    assert jobs_io.load(cfg) == []
+    assert "jobs.json" in capsys.readouterr().err
+
+def test_main_list_on_corrupt_file_exits_0_prints_nothing(tmp_path, monkeypatch, capsys):
+    # emit_crontab pipes `--list` under `set -euo pipefail`: a non-zero here bricks
+    # container boot. A corrupt file must exit 0 with no stdout (empty crontab).
+    cfg = _cfg(tmp_path)
+    Path(cfg, "jobs.json").write_text("{ not json")
+    monkeypatch.setenv("CONFIG_DIR", cfg)
+    rc = jobs_io._main(["--list"])
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+def test_main_get_on_corrupt_file_returns_3(tmp_path, monkeypatch, capsys):
+    # <job> on a corrupt file -> get() None -> existing "no such job" -> exit 3, so
+    # backup-job.sh's `if ! def=$(...)` _fail's cleanly (unchanged behaviour).
+    cfg = _cfg(tmp_path)
+    Path(cfg, "jobs.json").write_text("{ not json")
+    monkeypatch.setenv("CONFIG_DIR", cfg)
+    assert jobs_io._main(["somejob"]) == 3
+
+def test_upsert_raises_and_preserves_bytes_on_corrupt_file(tmp_path):
+    # WRITE path is fail-LOUD-without-clobber: never overwrite the user's
+    # (unparseable but hand-fixable) bytes with a write built on the swallowed [].
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    raw = "{ this is not valid json"
+    Path(cfg, "jobs.json").write_text(raw)
+    with pytest.raises(ValueError):
+        jobs_io.upsert(cfg, _job(), source_root=root)
+    assert Path(cfg, "jobs.json").read_text() == raw   # untouched
+
+def test_delete_raises_and_preserves_bytes_on_corrupt_file(tmp_path):
+    cfg = _cfg(tmp_path)
+    raw = "{ this is not valid json"
+    Path(cfg, "jobs.json").write_text(raw)
+    with pytest.raises(ValueError):
+        jobs_io.delete(cfg, "movies")
+    assert Path(cfg, "jobs.json").read_text() == raw
+
 def test_validate_rejects_bad_name(tmp_path):
     with pytest.raises(ValueError):
         jobs_io.validate(_job(name="../evil"), _root(tmp_path))

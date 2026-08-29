@@ -199,7 +199,10 @@ restore.sh appdata restore latest /cache/restore/appdata
 ```
 
 All versioned jobs share one restic repo (`s3:<bucket>/appdata`), tag-scoped by job name, so
-`list` / `restore latest` only ever see that job's own snapshots. Keep versioned jobs on
+`list` / `restore latest` only ever see that job's own snapshots. Because they share that one
+repo, schedule versioned jobs at **different minutes** — two firing the same minute collide on
+the restic repo lock; one fails loudly and recovers on its next run, but staggering avoids the
+churn. Keep versioned jobs on
 `storage_class: STANDARD`. A cold class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) is not usable for
 a versioned job in Phase 1: restic needs to read the repository's `config`/`keys` objects for
 *every* operation, including `restore.sh <job> list`, not just the final data read, so a cold

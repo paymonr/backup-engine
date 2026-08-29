@@ -66,6 +66,18 @@ EOF
   [ "$(wc -l <"$CACHE_DIR/crontab")" -eq 1 ]
 }
 
+# final-fix R-final-1: a corrupt jobs.json must NOT brick boot. load() exits 0 (empty
+# schedule) and emits a diagnostic; with `2>/dev/null` gone from emit_crontab the
+# diagnostic is visible in the container log/stderr, and pipefail no longer aborts PID 1.
+@test "entrypoint --emit-crontab tolerates a corrupt jobs.json (exit 0, empty crontab, diagnostic visible)" {
+  printf '%s' '{ this is not valid json' >"$CFG/jobs.json"
+  run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
+  [ "$status" -eq 0 ]
+  [ -f "$CACHE_DIR/crontab" ]
+  [ ! -s "$CACHE_DIR/crontab" ]
+  [[ "$output" == *"jobs.json"* ]]
+}
+
 @test "entrypoint renders rclone.conf and password file" {
   write_jobs_json
   bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
