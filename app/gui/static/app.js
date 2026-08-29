@@ -11,21 +11,23 @@
   setInterval(refresh, 5000);
 })();
 
-// Media shares: lazy folder tree. Each <ul class="tree" data-root data-selected> hydrates from /shares/browse.
+// Media: one confined folder tree over MEDIA_ROOT (#media-tree). Check any
+// folder(s) at any depth to back up; hydrates lazily from /media/browse.
 (function () {
-  var trees = document.querySelectorAll("ul.tree");
-  if (!trees.length) return;
-  function browse(share, path) {
-    return fetch("shares/browse?share=" + encodeURIComponent(share) + "&path=" + encodeURIComponent(path))
+  var root = document.getElementById("media-tree");
+  if (!root) return;
+  var form = root.closest("form");
+  var selected = (root.dataset.selected || "").split(",").filter(Boolean);
+  var pending = {};   // selected path -> hidden stand-in input, retired when its checkbox appears
+  function browse(path) {
+    return fetch("media/browse?path=" + encodeURIComponent(path))
       .then(function (r) { return r.ok ? r.json() : { entries: [] }; })
       .catch(function () { return { entries: [] }; });
   }
-  // node() materializes one tree entry. `pending` maps a still-unmaterialized
-  // selected path to the hidden <input> standing in for it (see below); once
-  // the real checkbox for that path exists, the hidden input is removed so
-  // the checkbox alone governs submission (and unticking it works).
-  function node(share, entry, selected, pending) {
+  function node(entry) {
     var li = document.createElement("li");
+    var toggle = document.createElement("button");
+    toggle.type = "button"; toggle.textContent = "▸"; toggle.className = "expand";
     var label = document.createElement("label");
     var cb = document.createElement("input");
     cb.type = "checkbox"; cb.name = "folder"; cb.value = entry.path;
@@ -37,8 +39,6 @@
       }
     }
     label.appendChild(cb); label.appendChild(document.createTextNode(" " + entry.name));
-    var toggle = document.createElement("button");
-    toggle.type = "button"; toggle.textContent = "▸"; toggle.className = "expand";
     var kids = document.createElement("ul"); kids.className = "tree"; kids.hidden = true;
     var loaded = false;
     toggle.addEventListener("click", function () {
@@ -46,34 +46,25 @@
       toggle.textContent = kids.hidden ? "▸" : "▾";
       if (!loaded && !kids.hidden) {
         loaded = true;
-        browse(share, entry.path).then(function (d) {
-          d.entries.forEach(function (e) { kids.appendChild(node(share, e, selected, pending)); });
+        browse(entry.path).then(function (d) {
+          d.entries.forEach(function (e) { kids.appendChild(node(e)); });
         });
       }
     });
     li.appendChild(toggle); li.appendChild(label); li.appendChild(kids);
     return li;
   }
-  trees.forEach(function (ul) {
-    if (!ul.dataset.root) return; // only top-level trees self-hydrate
-    var share = ul.dataset.root;
-    var selected = (ul.dataset.selected || "").split(",").filter(Boolean);
-    // Preserve-then-reconcile: only top-level nodes render on load, so a
-    // selected nested path (e.g. "manga/raw") whose checkbox never
-    // materializes would otherwise be silently dropped from the submit and
-    // the share would revert to whole-share on save. Stand in with a hidden
-    // input for every selected path up front; node() retires the stand-in
-    // once (if) the real checkbox for that path is expanded into view.
-    var pending = {};
-    selected.forEach(function (p) {
-      var hidden = document.createElement("input");
-      hidden.type = "hidden"; hidden.name = "folder"; hidden.value = p;
-      pending[p] = hidden;
-      ul.appendChild(hidden);
-    });
-    browse(share, "").then(function (d) {
-      d.entries.forEach(function (e) { ul.appendChild(node(share, e, selected, pending)); });
-    });
+  // Preserve unexpanded selections: stand in with a hidden input for every
+  // selected path up front so a pick that's never expanded into view isn't
+  // dropped on save; node() retires the stand-in once its checkbox appears.
+  selected.forEach(function (p) {
+    var hidden = document.createElement("input");
+    hidden.type = "hidden"; hidden.name = "folder"; hidden.value = p;
+    pending[p] = hidden;
+    (form || root).appendChild(hidden);
+  });
+  browse("").then(function (d) {
+    d.entries.forEach(function (e) { root.appendChild(node(e)); });
   });
 })();
 

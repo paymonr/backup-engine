@@ -1,22 +1,20 @@
-# app/gui/media_shares.py — the ONLY reader/writer of MEDIA_SHARES_DIR (per-share
-# rclone filter files). Enumerates shares under MEDIA_ROOT and translates folder
-# selections <-> rclone filter rules. Never writes under MEDIA_ROOT (read-only there).
+# app/gui/media_shares.py — the ONLY reader/writer of the media include-list
+# (config/media-includes.txt): one rclone filter over MEDIA_ROOT that selects
+# which folders get backed up. Translates the GUI folder selection <-> rclone
+# filter rules. Never writes under MEDIA_ROOT (that mount is read-only).
 from __future__ import annotations
 import re
 from pathlib import Path
-from . import fsbrowse
 
-_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_LEAF_RE = re.compile(r"^\+ (/.+)/\*\*$")   # "+ /manga/raw/**"
-_ANCESTOR_RE = re.compile(r"^\+ /.+/$")      # "+ /manga/"  (helper line)
+INCLUDES_FILE = "media-includes.txt"
 
-def valid_name(name: str) -> bool:
-    return bool(_NAME_RE.match(name or "")) and name not in (".", "..")
+_LEAF_RE = re.compile(r"^\+ (/.+)/\*\*$")   # "+ /movies/**" or "+ /a/b/**"
+_ANCESTOR_RE = re.compile(r"^\+ /.+/$")      # "+ /a/"  (helper line so rclone descends)
 
 def _validate_folder(f: str) -> None:
-    # Defense-in-depth: a folder value only ever becomes a filter-file line
-    # (via generate_rules), but reject anything that could inject an extra
-    # rule line or reach outside the share before it gets that far.
+    # A folder value only ever becomes a filter-file line (via generate_rules),
+    # but reject anything that could inject an extra rule line or escape the root
+    # before it gets that far.
     if "\n" in f or "\r" in f:
         raise ValueError(f"folder value contains a newline: {f!r}")
     if f.startswith("/"):
@@ -25,9 +23,14 @@ def _validate_folder(f: str) -> None:
         raise ValueError(f"folder value must not contain '..': {f!r}")
 
 def generate_rules(whole: bool, folders: list[str]) -> str:
-    clean = [f.strip("/") for f in folders if f and f.strip("/")]
-    if whole or not clean:
+    """rclone --filter-from rules for the selection. whole -> everything; an empty
+    selection -> nothing (default-exclude); otherwise include each chosen folder
+    (with ancestor lines so rclone descends) and exclude the rest."""
+    if whole:
         return "+ /**\n"
+    clean = [f.strip("/") for f in folders if f and f.strip("/")]
+    if not clean:
+        return "- **\n"
     leaves: list[str] = []
     ancestors: set[str] = set()
     for f in clean:
@@ -40,7 +43,7 @@ def generate_rules(whole: bool, folders: list[str]) -> str:
 
 def parse_rules(text: str) -> dict:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if not lines or lines == ["+ /**"]:
+    if lines == ["+ /**"]:
         return {"whole": True, "folders": [], "raw": None}
     folders: list[str] = []
     for ln in lines:
@@ -53,44 +56,19 @@ def parse_rules(text: str) -> dict:
         return {"whole": False, "folders": [], "raw": text}  # non-canonical => custom
     return {"whole": False, "folders": folders, "raw": None}
 
-def _file(shares_dir, name: str) -> Path:
-    if not valid_name(name):
-        raise ValueError("invalid share name")
-    return Path(shares_dir) / f"{name}.txt"
+def _path(config_dir) -> Path:
+    return Path(config_dir, INCLUDES_FILE)
 
-def list_shares(media_root, shares_dir) -> list[dict]:
-    try:
-        names = fsbrowse.list_dirs(media_root, "")
-    except fsbrowse.PathError:
-        names = []
-    out: list[dict] = []
-    for name in names:
-        if not valid_name(name):
-            continue  # unrepresentable share names are skipped, not backed up
-        sel = read_selection(shares_dir, name)
-        enabled = (Path(shares_dir) / f"{name}.txt").exists()
-        out.append({"name": name, "enabled": enabled, "whole": sel["whole"],
-                    "folders": sel["folders"], "custom": sel["raw"] is not None,
-                    "folders_raw": sel["raw"] or ""})
-    return out
-
-def read_selection(shares_dir, name) -> dict:
-    f = _file(shares_dir, name)
+def read_selection(config_dir) -> dict:
+    f = _path(config_dir)
     if not f.exists():
         return {"whole": False, "folders": [], "raw": None}
     return parse_rules(f.read_text())
 
-def write_selection(shares_dir, name, whole, folders) -> None:
+def write_selection(config_dir, whole, folders) -> None:
     for folder in folders:
         _validate_folder(folder)
-    f = _file(shares_dir, name)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(generate_rules(whole, folders))
+    _path(config_dir).write_text(generate_rules(whole, folders))
 
-def write_raw(shares_dir, name, text) -> None:
-    f = _file(shares_dir, name)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(text if text.endswith("\n") else text + "\n")
-
-def disable(shares_dir, name) -> None:
-    _file(shares_dir, name).unlink(missing_ok=True)
+def write_raw(config_dir, text) -> None:
+    _path(config_dir).write_text(text if text.endswith("\n") else text + "\n")

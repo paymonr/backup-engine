@@ -18,7 +18,7 @@
   <nav class="nav">
     <a href="{{ url_for('gui.config_page') }}" class="{{ 'active' if ep == 'gui.config_page' }}">Config</a>
     <a href="{{ url_for('gui.provision_home') }}" class="{{ 'active' if ep.startswith('gui.provision') }}">Provision</a>
-    <a href="{{ url_for('gui.shares_page') }}" class="{{ 'active' if ep.startswith('gui.shares') }}">Media shares</a>
+    <a href="{{ url_for('gui.media_page') }}" class="{{ 'active' if ep.startswith('gui.media') }}">Media</a>
     <a href="{{ url_for('gui.status_page') }}" class="{{ 'active' if ep in ('gui.status_page', 'gui.run') }}">Run &amp; status</a>
     <a href="{{ url_for('gui.estimate_page') }}" class="{{ 'active' if ep.startswith('gui.estimate') }}">Cost estimate</a>
   </nav>
@@ -28,4 +28,5 @@
 {% with msgs = get_flashed_messages() %}{% if msgs %}<ul class="flash">{% for m in msgs %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}{% endwith %}
 {% block body %}{% endblock %}
 </main>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
 </body></html>

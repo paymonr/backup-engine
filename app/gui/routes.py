@@ -153,65 +153,43 @@ def provision_automated_run():
     flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key.")
     return redirect(url_for("gui.provision_home"))
 
-@bp.get("/shares")
-def shares_page():
+@bp.get("/media")
+def media_page():
     cfg = current_app.config
-    shares = media_shares.list_shares(cfg["MEDIA_ROOT"], cfg["MEDIA_SHARES_DIR"])
-    return render_template("shares.html", shares=shares, csrf=security.issue_csrf())
+    return render_template("media.html",
+                           sel=media_shares.read_selection(cfg["CONFIG_DIR"]),
+                           media_root=cfg["MEDIA_ROOT"],
+                           csrf=security.issue_csrf())
 
-@bp.get("/shares/browse")
-def shares_browse():
+@bp.get("/media/browse")
+def media_browse():
     cfg = current_app.config
-    share = request.args.get("share", "")
     rel = request.args.get("path", "")
-    if not media_shares.valid_name(share):
-        abort(404)
     try:
-        # Resolve the share segment through safe_resolve too: a symlink directly
-        # under MEDIA_ROOT must not let the browse root escape confinement.
-        share_root = fsbrowse.safe_resolve(cfg["MEDIA_ROOT"], share)
-        dirs = fsbrowse.list_dirs(share_root, rel)
+        # Every browsed path is confined to MEDIA_ROOT via safe_resolve/list_dirs.
+        dirs = fsbrowse.list_dirs(cfg["MEDIA_ROOT"], rel)
     except fsbrowse.PathError:
         abort(404)  # no path echo
     base = rel.strip("/")
     entries = [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]
     return jsonify({"entries": entries})
 
-@bp.post("/shares/<name>")
-def shares_save(name):
+@bp.post("/media")
+def media_save():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400)
     cfg = current_app.config
-    if not media_shares.valid_name(name):
-        abort(404)
-    sd = cfg["MEDIA_SHARES_DIR"]
-    if not request.form.get("enabled"):
-        # Disable must work even if MEDIA_ROOT/<name> is no longer a directory
-        # (unmounted/removed share) — it's the recovery path for a share that
-        # would otherwise make every backup-media.sh run fail with no way to
-        # remove it from the GUI. Only the enable path below needs the source
-        # dir to exist.
-        media_shares.disable(sd, name)
-        flash(f"Disabled {name}.")
-        return redirect(url_for("gui.shares_page"))
-    try:
-        # safe_resolve rejects an escaping-symlink share so a symlink target
-        # outside MEDIA_ROOT can never be enabled for backup.
-        share_dir = fsbrowse.safe_resolve(cfg["MEDIA_ROOT"], name)
-    except fsbrowse.PathError:
-        abort(404)
-    if not share_dir.is_dir():
-        abort(404)
     try:
         if request.form.get("mode") == "raw" and request.form.get("raw") is not None:
-            media_shares.write_raw(sd, name, request.form["raw"])
+            media_shares.write_raw(cfg["CONFIG_DIR"], request.form["raw"])
         else:
-            media_shares.write_selection(sd, name, bool(request.form.get("whole")),
+            media_shares.write_selection(cfg["CONFIG_DIR"],
+                                         bool(request.form.get("whole")),
                                          request.form.getlist("folder"))
     except ValueError:
         abort(400)  # no path echo
-    flash(f"Saved {name}.")
-    return redirect(url_for("gui.shares_page"))
+    flash("Media selection saved.")
+    return redirect(url_for("gui.media_page"))
 
 def _compute(config_dir, params):
     scenario = estimate_io.scenario_from_params(params, config_dir)

@@ -54,7 +54,7 @@ load_config() {
   : "${MEDIA_MIRROR:=false}"
   : "${KEEP_LAST:=3}"; : "${KEEP_DAILY:=7}"; : "${KEEP_WEEKLY:=4}"; : "${KEEP_MONTHLY:=6}"
   : "${RCLONE_TRANSFERS:=8}"; : "${RCLONE_BWLIMIT:=}"
-  : "${MEDIA_SHARES_DIR:=$dir/media-shares}"
+  : "${MEDIA_INCLUDES:=$dir/media-includes.txt}"
   : "${LOG_FILE:=$CACHE_DIR/logs/backup-engine.log}"
   : "${NOTIFY_ON_SUCCESS:=false}"
   : "${GUI_ENABLED:=true}"
@@ -66,7 +66,7 @@ load_config() {
   fi
   export CACHE_DIR APPDATA_SRC MEDIA_ROOT APPDATA_STORAGE_CLASS MEDIA_STORAGE_CLASS \
     MEDIA_MIRROR KEEP_LAST KEEP_DAILY KEEP_WEEKLY KEEP_MONTHLY \
-    MEDIA_SHARES_DIR LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY \
+    MEDIA_INCLUDES LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY \
     GUI_ENABLED GUI_PORT
 
   # RCLONE_TRANSFERS/RCLONE_BWLIMIT are user-facing config vars that

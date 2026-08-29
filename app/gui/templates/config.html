@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block body %}
 <p class="eyebrow">Configuration</p>
 <h1>Configuration</h1>
-<p class="lead">Edit <code>backup.env</code> and write-only secrets. Choose what media to back up under <a href="{{ url_for('gui.shares_page') }}">Media shares</a>.</p>
+<p class="lead">Edit <code>backup.env</code> and write-only secrets. Choose what media to back up under <a href="{{ url_for('gui.media_page') }}">Media</a>.</p>
 
 <form method="post" action="{{ url_for('gui.config_save') }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">

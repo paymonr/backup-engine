@@ -34,7 +34,7 @@ main() {
   : "${MEDIA_STORAGE_CLASS:=DEEP_ARCHIVE}"
   : "${RCLONE_TRANSFERS:=8}"
   : "${RCLONE_BWLIMIT:=}"
-  : "${MEDIA_SHARES_DIR:=${CONFIG_DIR:-/config}/media-shares}"
+  : "${MEDIA_INCLUDES:=${CONFIG_DIR:-/config}/media-includes.txt}"
 
   : "${RCLONE_CONFIG:=$CACHE_DIR/rclone.conf}"
   export RCLONE_CONFIG
@@ -44,45 +44,37 @@ main() {
   local verb="copy"
   [ "$MEDIA_MIRROR" = "true" ] && verb="sync"
 
-  shopt -s nullglob
-  local files=("$MEDIA_SHARES_DIR"/*.txt)
-  shopt -u nullglob
-  if [ "${#files[@]}" -eq 0 ]; then
-    log_info "no media shares enabled ($MEDIA_SHARES_DIR) — skipping media backup"
-    printf '{"last_run":"%s","outcome":"success","mode":"%s","shares":0,"duration_s":0}\n' \
+  # Nothing picked (no include-list, or it includes nothing) -> skip, success.
+  if [ ! -f "$MEDIA_INCLUDES" ] || ! grep -q '^+' "$MEDIA_INCLUDES"; then
+    log_info "no media selected ($MEDIA_INCLUDES) — skipping media backup"
+    printf '{"last_run":"%s","outcome":"success","mode":"%s","selected":false,"duration_s":0}\n' \
       "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$verb" >"$CACHE_DIR/state/media.json"
-    notify success "media backup OK" "no shares enabled"
+    notify success "media backup OK" "no media selected"
     healthcheck success
     return 0
   fi
 
   local start; start="$(date +%s)"
-  local file name src
-  for file in "${files[@]}"; do
-    name="$(basename "$file" .txt)"
-    src="$MEDIA_ROOT/$name"
-    [ -d "$src" ] || _fail "media share '$name' source '$src' missing"
-    local args=(
-      "$verb" "$src" "s3:$S3_BUCKET/media/$name"
-      --filter-from "$file"
-      --s3-storage-class "$MEDIA_STORAGE_CLASS"
-      --transfers "$RCLONE_TRANSFERS"
-      --stats-one-line --stats 30s -v
-    )
-    [ -n "$RCLONE_BWLIMIT" ] && args+=(--bwlimit "$RCLONE_BWLIMIT")
-    log_info "rclone $verb $src -> s3:$S3_BUCKET/media/$name (class=$MEDIA_STORAGE_CLASS)"
-    if ! rclone "${args[@]}"; then
-      _fail "rclone $verb failed for share '$name'"
-    fi
-    rclone check "$src" "s3:$S3_BUCKET/media/$name" --filter-from "$file" --size-only || \
-      log_warn "rclone check reported differences for '$name' (size-only; expected during in-flight deltas)"
-  done
+  local args=(
+    "$verb" "$MEDIA_ROOT" "s3:$S3_BUCKET/media"
+    --filter-from "$MEDIA_INCLUDES"
+    --s3-storage-class "$MEDIA_STORAGE_CLASS"
+    --transfers "$RCLONE_TRANSFERS"
+    --stats-one-line --stats 30s -v
+  )
+  [ -n "$RCLONE_BWLIMIT" ] && args+=(--bwlimit "$RCLONE_BWLIMIT")
+  log_info "rclone $verb $MEDIA_ROOT -> s3:$S3_BUCKET/media (class=$MEDIA_STORAGE_CLASS, filter=$MEDIA_INCLUDES)"
+  if ! rclone "${args[@]}"; then
+    _fail "rclone $verb failed"
+  fi
+  rclone check "$MEDIA_ROOT" "s3:$S3_BUCKET/media" --filter-from "$MEDIA_INCLUDES" --size-only || \
+    log_warn "rclone check reported differences (size-only; expected during in-flight deltas)"
 
   local dur=$(( $(date +%s) - start ))
-  printf '{"last_run":"%s","outcome":"success","mode":"%s","shares":%d,"duration_s":%d}\n' \
-    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$verb" "${#files[@]}" "$dur" >"$CACHE_DIR/state/media.json"
-  log_info "media backup complete ($verb, ${#files[@]} shares, ${dur}s)"
-  notify success "media backup OK" "$verb finished ${#files[@]} shares in ${dur}s"
+  printf '{"last_run":"%s","outcome":"success","mode":"%s","selected":true,"duration_s":%d}\n' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$verb" "$dur" >"$CACHE_DIR/state/media.json"
+  log_info "media backup complete ($verb, ${dur}s)"
+  notify success "media backup OK" "$verb finished in ${dur}s"
   healthcheck success
 }
 

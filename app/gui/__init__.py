@@ -17,10 +17,6 @@ def create_app(config: dict | None = None) -> Flask:
     )
     if config:
         app.config.update(config)
-    app.config.setdefault(
-        "MEDIA_SHARES_DIR",
-        os.environ.get("MEDIA_SHARES_DIR") or os.path.join(app.config["CONFIG_DIR"], "media-shares"),
-    )
     from .routes import bp
     app.register_blueprint(bp)
     return app

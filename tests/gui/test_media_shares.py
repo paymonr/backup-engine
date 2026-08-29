@@ -1,98 +1,72 @@
-from app.gui import media_shares as ms
-
-def test_valid_name():
-    assert ms.valid_name("comics") and ms.valid_name("tv-shows_2024.old")
-    assert not ms.valid_name("..") and not ms.valid_name("a/b") and not ms.valid_name("a b")
-
-def test_generate_whole_share():
-    assert ms.generate_rules(True, []) == "+ /**\n"
-    assert ms.generate_rules(False, []) == "+ /**\n"  # no folders => whole
-
-def test_generate_single_folder_includes_ancestor_dir():
-    out = ms.generate_rules(False, ["manga"])
-    lines = out.splitlines()
-    assert "+ /manga/**" in lines      # contents
-    assert "+ /manga/" in lines        # the dir itself, so rclone descends
-    assert lines[-1] == "- **"         # catch-all exclude last
-
-def test_generate_nested_folder_emits_all_ancestors():
-    lines = ms.generate_rules(False, ["manga/raw"]).splitlines()
-    assert "+ /manga/raw/**" in lines
-    assert "+ /manga/" in lines and "+ /manga/raw/" in lines
-    assert lines[-1] == "- **"
-
-def test_round_trip_whole():
-    assert ms.parse_rules(ms.generate_rules(True, [])) == {"whole": True, "folders": [], "raw": None}
-    assert ms.parse_rules("") == {"whole": True, "folders": [], "raw": None}
-
-def test_round_trip_folders():
-    got = ms.parse_rules(ms.generate_rules(False, ["manga", "manhwa"]))
-    assert got["whole"] is False and got["raw"] is None
-    assert sorted(got["folders"]) == ["manga", "manhwa"]
-
-def test_parse_custom_rules_flagged_raw():
-    got = ms.parse_rules("+ /a/**\n- /a/tmp/**\n- **\n")  # a `-` mid-list is non-canonical
-    assert got["raw"] is not None and got["folders"] == []
-
-
 from pathlib import Path
 import pytest
+from app.gui import media_shares as ms
 
-def _tree(tmp_path):
-    root = tmp_path / "media"
-    (root / "comics").mkdir(parents=True)
-    (root / "books").mkdir()
-    shares = tmp_path / "config" / "media-shares"
-    return str(root), str(shares)
+# ---- rule grammar ----
 
-def test_list_shares_marks_enabled_by_file_presence(tmp_path):
-    root, shares = _tree(tmp_path)
-    ms.write_selection(shares, "comics", False, ["manga"])
-    got = {s["name"]: s for s in ms.list_shares(root, shares)}
-    assert got["comics"]["enabled"] is True and got["comics"]["folders"] == ["manga"]
-    assert got["books"]["enabled"] is False
+def test_generate_whole():
+    assert ms.generate_rules(True, []) == "+ /**\n"
 
-def test_write_and_read_selection_round_trip(tmp_path):
-    root, shares = _tree(tmp_path)
-    ms.write_selection(shares, "comics", False, ["manga", "manhwa"])
-    sel = ms.read_selection(shares, "comics")
-    assert sel["whole"] is False and sorted(sel["folders"]) == ["manga", "manhwa"]
+def test_generate_empty_selection_is_nothing():
+    assert ms.generate_rules(False, []) == "- **\n"
+
+def test_generate_single_folder_includes_ancestor_dir():
+    lines = ms.generate_rules(False, ["Movies"]).splitlines()
+    assert "+ /Movies/**" in lines and "+ /Movies/" in lines
+    assert lines[-1] == "- **"
+
+def test_generate_nested_folder_emits_all_ancestors():
+    lines = ms.generate_rules(False, ["media/movies"]).splitlines()
+    assert "+ /media/movies/**" in lines
+    assert "+ /media/" in lines and "+ /media/movies/" in lines
+    assert lines[-1] == "- **"
+
+def test_roundtrip_whole():
+    assert ms.parse_rules(ms.generate_rules(True, [])) == {"whole": True, "folders": [], "raw": None}
+
+def test_roundtrip_nothing():
+    assert ms.parse_rules(ms.generate_rules(False, [])) == {"whole": False, "folders": [], "raw": None}
+
+def test_roundtrip_folders():
+    got = ms.parse_rules(ms.generate_rules(False, ["Movies", "Photos/2024"]))
+    assert got["whole"] is False and got["raw"] is None
+    assert sorted(got["folders"]) == ["Movies", "Photos/2024"]
+
+def test_parse_custom_rules_flagged_raw():
+    got = ms.parse_rules("+ /a/**\n- /a/tmp/**\n- **\n")  # a mid-list exclude is non-canonical
+    assert got["raw"] is not None and got["folders"] == []
+
+# ---- single include-list I/O ----
+
+def _cfg(tmp_path):
+    c = tmp_path / "config"; c.mkdir(); return str(c)
+
+def test_write_read_selection_round_trip(tmp_path):
+    cfg = _cfg(tmp_path)
+    ms.write_selection(cfg, False, ["Movies", "Photos"])
+    sel = ms.read_selection(cfg)
+    assert sel["whole"] is False and sorted(sel["folders"]) == ["Movies", "Photos"]
+    assert Path(cfg, "media-includes.txt").exists()
+
+def test_read_absent_is_nothing(tmp_path):
+    assert ms.read_selection(_cfg(tmp_path)) == {"whole": False, "folders": [], "raw": None}
+
+def test_write_whole(tmp_path):
+    cfg = _cfg(tmp_path)
+    ms.write_selection(cfg, True, ["ignored"])
+    assert Path(cfg, "media-includes.txt").read_text() == "+ /**\n"
 
 def test_write_raw_is_verbatim_and_flagged_custom(tmp_path):
-    root, shares = _tree(tmp_path)
-    ms.write_raw(shares, "comics", "+ /a/**\n- /a/tmp/**\n- **")
-    sel = ms.read_selection(shares, "comics")
-    assert sel["raw"] is not None
-    assert Path(shares, "comics.txt").read_text().endswith("\n")
+    cfg = _cfg(tmp_path)
+    ms.write_raw(cfg, "+ /x/**\n- /x/tmp/**\n- **")
+    assert Path(cfg, "media-includes.txt").read_text().endswith("\n")
+    assert ms.read_selection(cfg)["raw"] is not None
 
-def test_disable_deletes_file(tmp_path):
-    root, shares = _tree(tmp_path)
-    ms.write_selection(shares, "comics", True, [])
-    ms.disable(shares, "comics")
-    assert not Path(shares, "comics.txt").exists()
-    assert ms.read_selection(shares, "comics") == {"whole": False, "folders": [], "raw": None}
-
-def test_write_rejects_invalid_name(tmp_path):
-    root, shares = _tree(tmp_path)
+def test_write_rejects_traversal_and_newline(tmp_path):
+    cfg = _cfg(tmp_path)
     with pytest.raises(ValueError):
-        ms.write_selection(shares, "../evil", True, [])
-
-def test_write_selection_rejects_newline_folder(tmp_path):
-    root, shares = _tree(tmp_path)
+        ms.write_selection(cfg, False, ["../evil"])
     with pytest.raises(ValueError):
-        ms.write_selection(shares, "comics", False, ["manga\nevil"])
-
-def test_write_selection_rejects_carriage_return_folder(tmp_path):
-    root, shares = _tree(tmp_path)
+        ms.write_selection(cfg, False, ["x\ny"])
     with pytest.raises(ValueError):
-        ms.write_selection(shares, "comics", False, ["manga\revil"])
-
-def test_write_selection_rejects_dotdot_segment_folder(tmp_path):
-    root, shares = _tree(tmp_path)
-    with pytest.raises(ValueError):
-        ms.write_selection(shares, "comics", False, ["../etc"])
-
-def test_write_selection_rejects_absolute_folder(tmp_path):
-    root, shares = _tree(tmp_path)
-    with pytest.raises(ValueError):
-        ms.write_selection(shares, "comics", False, ["/etc/passwd"])
+        ms.write_selection(cfg, False, ["/absolute"])
