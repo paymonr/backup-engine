@@ -11,18 +11,26 @@
   setInterval(refresh, 5000);
 })();
 
-// Media: one confined folder tree over MEDIA_ROOT (#media-tree). Check any
-// folder(s) at any depth to back up; hydrates lazily from /media/browse.
+// Job source: one confined folder tree over SOURCE_ROOT (#source-tree), single-
+// select — a job has exactly one source. Checking a folder writes its path into
+// #source-input (the posted name="source" field) and #source-shown, and
+// unchecks any previously-checked node. Hydrates lazily from jobs/browse.
 (function () {
-  var root = document.getElementById("media-tree");
+  var root = document.getElementById("source-tree");
   if (!root) return;
-  var form = root.closest("form");
-  var selected = (root.dataset.selected || "").split(",").filter(Boolean);
-  var pending = {};   // selected path -> hidden stand-in input, retired when its checkbox appears
+  var sourceInput = document.getElementById("source-input");
+  var sourceShown = document.getElementById("source-shown");
+  var selected = root.dataset.selected || "";
+  var checkboxes = [];
   function browse(path) {
-    return fetch("media/browse?path=" + encodeURIComponent(path))
+    return fetch("jobs/browse?path=" + encodeURIComponent(path))
       .then(function (r) { return r.ok ? r.json() : { entries: [] }; })
       .catch(function () { return { entries: [] }; });
+  }
+  function select(cb) {
+    checkboxes.forEach(function (other) { if (other !== cb) other.checked = false; });
+    if (sourceInput) sourceInput.value = cb.checked ? cb.value : "";
+    if (sourceShown) sourceShown.textContent = cb.checked ? cb.value : "(none)";
   }
   function node(entry) {
     var li = document.createElement("li");
@@ -30,14 +38,10 @@
     toggle.type = "button"; toggle.textContent = "▸"; toggle.className = "expand";
     var label = document.createElement("label");
     var cb = document.createElement("input");
-    cb.type = "checkbox"; cb.name = "folder"; cb.value = entry.path;
-    if (selected.indexOf(entry.path) !== -1) {
-      cb.checked = true;
-      if (pending[entry.path]) {
-        pending[entry.path].parentNode.removeChild(pending[entry.path]);
-        delete pending[entry.path];
-      }
-    }
+    cb.type = "checkbox"; cb.value = entry.path;
+    checkboxes.push(cb);
+    if (entry.path === selected) cb.checked = true;
+    cb.addEventListener("change", function () { select(cb); });
     label.appendChild(cb); label.appendChild(document.createTextNode(" " + entry.name));
     var kids = document.createElement("ul"); kids.className = "tree"; kids.hidden = true;
     var loaded = false;
@@ -54,15 +58,6 @@
     li.appendChild(toggle); li.appendChild(label); li.appendChild(kids);
     return li;
   }
-  // Preserve unexpanded selections: stand in with a hidden input for every
-  // selected path up front so a pick that's never expanded into view isn't
-  // dropped on save; node() retires the stand-in once its checkbox appears.
-  selected.forEach(function (p) {
-    var hidden = document.createElement("input");
-    hidden.type = "hidden"; hidden.name = "folder"; hidden.value = p;
-    pending[p] = hidden;
-    (form || root).appendChild(hidden);
-  });
   browse("").then(function (d) {
     d.entries.forEach(function (e) { root.appendChild(node(e)); });
   });

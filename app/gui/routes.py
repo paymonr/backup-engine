@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
-from . import config_io, runner, security, provision, media_shares, fsbrowse, estimate_io
+from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io
 from ..estimator.model import estimate, STORAGE_CLASSES, effective_retention_days
 from ..estimator.prices import load_prices
 
@@ -11,7 +11,7 @@ bp = Blueprint("gui", __name__)
 
 @bp.get("/")
 def index():
-    return redirect(url_for("gui.config_page"))
+    return redirect(url_for("gui.jobs_page"))
 
 @bp.get("/config")
 def config_page():
@@ -37,22 +37,6 @@ def config_save():
     config_io.write_secrets(cfg["CONFIG_DIR"], {k: request.form.get(k, "") for k in config_io.SECRET_KEYS})
     flash("Configuration saved.")
     return redirect(url_for("gui.config_page"))
-
-@bp.get("/status")
-def status_page():
-    cfg = current_app.config
-    states = {p: runner.read_state(cfg["CACHE_DIR"], p) for p in runner.PIPELINES}
-    return render_template("status.html", states=states, csrf=security.issue_csrf())
-
-@bp.post("/run/<pipeline>")
-def run(pipeline):
-    if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
-    if pipeline not in runner.PIPELINES:
-        abort(404)
-    runner.trigger_backup(current_app.config["SCRIPTS_DIR"], pipeline)
-    flash(f"Started {pipeline} backup.")
-    return redirect(url_for("gui.status_page"))
 
 @bp.get("/logs")
 def logs():
@@ -153,43 +137,75 @@ def provision_automated_run():
     flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key.")
     return redirect(url_for("gui.provision_home"))
 
-@bp.get("/media")
-def media_page():
+@bp.get("/jobs")
+def jobs_page():
     cfg = current_app.config
-    return render_template("media.html",
-                           sel=media_shares.read_selection(cfg["CONFIG_DIR"]),
-                           media_root=cfg["MEDIA_ROOT"],
-                           csrf=security.issue_csrf())
+    jobs = jobs_io.load(cfg["CONFIG_DIR"])
+    rows = [{**j, "state": runner.read_state(cfg["CACHE_DIR"], j["name"])} for j in jobs]
+    return render_template("jobs.html", jobs=rows, csrf=security.issue_csrf())
 
-@bp.get("/media/browse")
-def media_browse():
+@bp.get("/jobs/new")
+def job_new():
+    return render_template("job_form.html", job=None, source_root=current_app.config["SOURCE_ROOT"],
+                           storage_classes=jobs_io.STORAGE_CLASSES, csrf=security.issue_csrf())
+
+@bp.get("/jobs/<name>/edit")
+def job_edit(name):
+    job = jobs_io.get(current_app.config["CONFIG_DIR"], name)
+    if job is None:
+        abort(404)
+    return render_template("job_form.html", job=job, source_root=current_app.config["SOURCE_ROOT"],
+                           storage_classes=jobs_io.STORAGE_CLASSES, csrf=security.issue_csrf())
+
+@bp.get("/jobs/browse")
+def jobs_browse():
     cfg = current_app.config
-    rel = request.args.get("path", "")
     try:
-        # Every browsed path is confined to MEDIA_ROOT via safe_resolve/list_dirs.
-        dirs = fsbrowse.list_dirs(cfg["MEDIA_ROOT"], rel)
+        # Every browsed path is confined to SOURCE_ROOT via safe_resolve/list_dirs.
+        dirs = fsbrowse.list_dirs(cfg["SOURCE_ROOT"], request.args.get("path", ""))
     except fsbrowse.PathError:
         abort(404)  # no path echo
-    base = rel.strip("/")
-    entries = [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]
-    return jsonify({"entries": entries})
+    base = request.args.get("path", "").strip("/")
+    return jsonify({"entries": [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]})
 
-@bp.post("/media")
-def media_save():
+@bp.post("/jobs")
+def job_save():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400)
     cfg = current_app.config
+    f = request.form
+    job = {"name": f.get("name", "").strip(), "type": f.get("type", ""),
+           "source": f.get("source", "").strip(), "schedule": f.get("schedule", "").strip(),
+           "enabled": bool(f.get("enabled")), "storage_class": f.get("storage_class", "STANDARD")}
+    if job["type"] == "versioned":
+        job["keep"] = {k: f.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+    else:
+        job["mirror"] = bool(f.get("mirror"))
     try:
-        if request.form.get("mode") == "raw" and request.form.get("raw") is not None:
-            media_shares.write_raw(cfg["CONFIG_DIR"], request.form["raw"])
-        else:
-            media_shares.write_selection(cfg["CONFIG_DIR"],
-                                         bool(request.form.get("whole")),
-                                         request.form.getlist("folder"))
+        jobs_io.upsert(cfg["CONFIG_DIR"], job, source_root=cfg["SOURCE_ROOT"])
     except ValueError:
-        abort(400)  # no path echo
-    flash("Media selection saved.")
-    return redirect(url_for("gui.media_page"))
+        abort(400)  # no echo of paths
+    flash(f"Saved job {job['name']}.")
+    return redirect(url_for("gui.jobs_page"))
+
+@bp.post("/jobs/<name>/run")
+def job_run(name):
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
+        abort(404)
+    runner.trigger_job(cfg["SCRIPTS_DIR"], name)
+    flash(f"Started {name}.")
+    return redirect(url_for("gui.jobs_page"))
+
+@bp.post("/jobs/<name>/delete")
+def job_delete(name):
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    jobs_io.delete(current_app.config["CONFIG_DIR"], name)
+    flash(f"Deleted {name}.")
+    return redirect(url_for("gui.jobs_page"))
 
 def _compute(config_dir, params):
     scenario = estimate_io.scenario_from_params(params, config_dir)

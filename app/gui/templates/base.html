@@ -7,7 +7,7 @@
 </head><body>
 {% set ep = request.endpoint or '' %}
 <header class="topbar">
-  <a class="brand" href="{{ url_for('gui.config_page') }}" aria-label="backup-engine home">
+  <a class="brand" href="{{ url_for('gui.jobs_page') }}" aria-label="backup-engine home">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <rect x="3" y="5" width="18" height="4.2" rx="1.2" fill="#ee6b34"/>
       <rect x="3" y="10.9" width="18" height="4.2" rx="1.2" fill="#2bb6a3"/>
@@ -16,10 +16,9 @@
     <span class="brand-name">backup<b>·</b>engine</span>
   </a>
   <nav class="nav">
+    <a href="{{ url_for('gui.jobs_page') }}" class="{{ 'active' if ep.startswith('gui.job') }}">Jobs</a>
     <a href="{{ url_for('gui.config_page') }}" class="{{ 'active' if ep == 'gui.config_page' }}">Config</a>
     <a href="{{ url_for('gui.provision_home') }}" class="{{ 'active' if ep.startswith('gui.provision') }}">Provision</a>
-    <a href="{{ url_for('gui.media_page') }}" class="{{ 'active' if ep.startswith('gui.media') }}">Media</a>
-    <a href="{{ url_for('gui.status_page') }}" class="{{ 'active' if ep in ('gui.status_page', 'gui.run') }}">Run &amp; status</a>
     <a href="{{ url_for('gui.estimate_page') }}" class="{{ 'active' if ep.startswith('gui.estimate') }}">Cost estimate</a>
   </nav>
 </header>
