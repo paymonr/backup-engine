@@ -1,6 +1,12 @@
-import json, pytest
+import json, shlex, pytest
 from pathlib import Path
 from app.gui import jobs_io
+
+def _write_raw(cfg, jobs):
+    # Simulate a hand-edited / non-GUI-written jobs.json that bypasses upsert()'s
+    # write-time validate(). This is the untrusted input the run/schedule path must
+    # re-validate.
+    Path(cfg, "jobs.json").write_text(json.dumps({"jobs": jobs}))
 
 def _root(tmp_path):
     r = tmp_path / "src"; (r / "media" / "movies").mkdir(parents=True); (r / "appdata").mkdir()
@@ -86,6 +92,105 @@ def test_main_list_on_missing_jobs_file_prints_nothing(tmp_path, monkeypatch, ca
     rc = jobs_io._main(["--list"])
     assert rc == 0
     assert capsys.readouterr().out == ""
+
+# --- Task 10 security: name charset self-containment (regex \Z, not $) ---
+def test_valid_name_rejects_trailing_newline():
+    # Python `$` also matches just before a trailing newline, so "a\n" would sneak
+    # through the charset gate and reach restic --tag / rclone media/<name>/ / the
+    # crontab name field. \Z (end-of-string) must reject it.
+    assert jobs_io.valid_name("a\n") is False
+    assert jobs_io.valid_name("appdata") is True
+    assert jobs_io.valid_name("a b") is False and jobs_io.valid_name("a/b") is False
+
+# --- Task 10 security: schedule must be a clean single-space 5-field cron ---
+def test_validate_rejects_tab_in_schedule(tmp_path):
+    # A tab passes len(sched.split())==5 but corrupts the --list TSV that the
+    # entrypoint reads with IFS=$'\t' -> mis-columned/hijacked crontab line.
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_job(schedule="0\t3 * * *"), root)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_job(schedule="0  3 * * *"), root)  # double space too
+
+# --- Task 10 security: the CLI re-validates untrusted jobs.json at RUN time ---
+def test_main_emit_rejects_traversing_source(tmp_path, monkeypatch, capsys):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    _write_raw(cfg, [{"name": "evil", "type": "archive", "source": "../../etc",
+                      "schedule": "0 4 * * 0", "enabled": True,
+                      "storage_class": "STANDARD", "mirror": False}])
+    monkeypatch.setenv("CONFIG_DIR", cfg); monkeypatch.setenv("SOURCE_ROOT", root)
+    rc = jobs_io._main(["evil"])
+    assert rc != 0
+    assert "JOB_SOURCE" not in capsys.readouterr().out
+
+def test_main_emit_rejects_bad_name_and_schedule(tmp_path, monkeypatch, capsys):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    _write_raw(cfg, [{"name": "a b", "type": "archive", "source": "media/movies",
+                      "schedule": "0 4 * * 0", "enabled": True,
+                      "storage_class": "STANDARD", "mirror": False}])
+    monkeypatch.setenv("CONFIG_DIR", cfg); monkeypatch.setenv("SOURCE_ROOT", root)
+    assert jobs_io._main(["a b"]) != 0 and capsys.readouterr().out == ""
+
+def test_main_emit_accepts_valid_job(tmp_path, monkeypatch, capsys):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    _write_raw(cfg, [{"name": "movies", "type": "archive", "source": "media/movies",
+                      "schedule": "0 4 * * 0", "enabled": True,
+                      "storage_class": "DEEP_ARCHIVE", "mirror": False}])
+    monkeypatch.setenv("CONFIG_DIR", cfg); monkeypatch.setenv("SOURCE_ROOT", root)
+    rc = jobs_io._main(["movies"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "JOB_SOURCE=media/movies" in out and "JOB_NAME=movies" in out
+
+def test_main_emit_allows_confined_but_absent_source(tmp_path, monkeypatch, capsys):
+    # restore.sh shares this <job> emit path and MUST run on a fresh/rebuilt machine
+    # where the local source is absent (it restores FROM S3). Confinement is enforced,
+    # but existence is NOT — the backup path's own `[ -d "$src" ]` guards that. So a
+    # confined-but-missing source still emits (else restore breaks on a fresh box).
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    _write_raw(cfg, [{"name": "appdata", "type": "versioned", "source": "appdata_gone",
+                      "schedule": "0 3 * * *", "enabled": True, "storage_class": "STANDARD",
+                      "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}])
+    monkeypatch.setenv("CONFIG_DIR", cfg); monkeypatch.setenv("SOURCE_ROOT", root)
+    rc = jobs_io._main(["appdata"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "JOB_SOURCE=appdata_gone" in out
+
+def test_main_list_drops_invalid_jobs_keeps_valid(tmp_path, monkeypatch, capsys):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    _write_raw(cfg, [
+        {"name": "evil", "type": "archive", "source": "../../etc", "schedule": "0 4 * * 0",
+         "enabled": True, "storage_class": "STANDARD", "mirror": False},
+        {"name": "a b", "type": "archive", "source": "media/movies", "schedule": "0 4 * * 0",
+         "enabled": True, "storage_class": "STANDARD", "mirror": False},
+        {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * 0",
+         "enabled": True, "storage_class": "STANDARD", "mirror": False},
+    ])
+    monkeypatch.setenv("CONFIG_DIR", cfg); monkeypatch.setenv("SOURCE_ROOT", root)
+    rc = jobs_io._main(["--list"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "evil" not in out and "a b" not in out           # traversal + charset dropped
+    assert out.strip() == "1\t0 5 * * 0\tmovies"            # only the valid job scheduled
+
+def test_main_list_does_not_require_source_to_exist(tmp_path, monkeypatch, capsys):
+    # RULING: --list validates confinement/name/schedule but NOT dir existence, so a
+    # transiently-unmounted (but confined) source still schedules; run-time re-checks it.
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    _write_raw(cfg, [{"name": "movies", "type": "archive", "source": "media/not_yet_mounted",
+                      "schedule": "0 4 * * 0", "enabled": True,
+                      "storage_class": "STANDARD", "mirror": False}])
+    monkeypatch.setenv("CONFIG_DIR", cfg); monkeypatch.setenv("SOURCE_ROOT", root)
+    assert jobs_io._main(["--list"]) == 0
+    assert capsys.readouterr().out.strip() == "1\t0 4 * * 0\tmovies"
+
+def test_emit_shell_quotes_metacharacters():
+    # Item (3): a value with shell metacharacters (bypassing validate) round-trips as a
+    # single inert literal when the runner eval's the emitted assignment.
+    payload = "x; touch /pwned $(id) `id`"
+    s = jobs_io.emit_shell({"name": "x", "type": "archive", "source": payload,
+                            "storage_class": "STANDARD", "mirror": False})
+    line = next(l for l in s.splitlines() if l.startswith("JOB_SOURCE="))
+    assert shlex.split(line) == [f"JOB_SOURCE={payload}"]
 
 def test_emit_shell_is_injection_safe(tmp_path):
     # a name/source can only be the validated charset/path; emit uses single-quote escaping.

@@ -53,7 +53,15 @@ def test_create_requires_csrf(client):
     assert client.post("/jobs", data={"name": "x"}).status_code == 400
 
 def test_browse_confined_404(client):
-    assert client.get("/jobs/browse?path=../../etc").status_code == 404
+    r = client.get("/jobs/browse?path=../../etc")
+    assert r.status_code == 404
+    assert b"etc" not in r.data  # the 404 body must not echo the attempted path
+
+def test_run_and_delete_require_csrf(client):
+    # CSRF is verified before any lookup/side effect, so a missing token is 400
+    # regardless of whether the job exists.
+    assert client.post("/jobs/movies/run", data={}).status_code == 400
+    assert client.post("/jobs/movies/delete", data={}).status_code == 400
 
 def test_run_and_delete(client, app, monkeypatch):
     from app.gui import runner

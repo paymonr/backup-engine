@@ -50,3 +50,30 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   run_job ghost
   [ "$status" -ne 0 ]
 }
+
+# --- Task 10 security: the REAL jobs_io CLI re-validates untrusted jobs.json ---
+# These bypass the stub (JOBS_IO_CMD -> the real python module) so backup-job.sh
+# exercises run-time source confinement, not just the write path.
+@test "hand-written jobs.json escaping the mount to an existing dir is refused (no rclone)" {
+  export PYTHONPATH="$BATS_TEST_DIRNAME/../.."
+  export JOBS_IO_CMD="python3 -m app.gui.jobs_io"
+  export CONFIG_DIR="$BATS_TEST_TMPDIR/config"; mkdir -p "$CONFIG_DIR"
+  # a real dir OUTSIDE SOURCE_ROOT — `[ -d ]` alone would happily accept it
+  mkdir -p "$BATS_TEST_TMPDIR/secret"; echo topsecret >"$BATS_TEST_TMPDIR/secret/creds"
+  printf '%s\n' '{"jobs":[{"name":"evil","type":"archive","source":"../secret","schedule":"0 4 * * 0","enabled":true,"storage_class":"STANDARD","mirror":false}]}' >"$CONFIG_DIR/jobs.json"
+  run_job evil
+  [ "$status" -ne 0 ]
+  [ ! -s "$RCLONE_LOG" ]   # data OUTSIDE the mount must never be copied
+  [ ! -s "$RESTIC_LOG" ]
+  grep -q '"outcome":"failure"' "$CACHE_DIR/state/evil.json"
+}
+
+@test "valid jobs.json runs through the real jobs_io CLI (archive -> rclone copy)" {
+  export PYTHONPATH="$BATS_TEST_DIRNAME/../.."
+  export JOBS_IO_CMD="python3 -m app.gui.jobs_io"
+  export CONFIG_DIR="$BATS_TEST_TMPDIR/config"; mkdir -p "$CONFIG_DIR"
+  printf '%s\n' '{"jobs":[{"name":"movies","type":"archive","source":"media/movies","schedule":"0 4 * * 0","enabled":true,"storage_class":"DEEP_ARCHIVE","mirror":false}]}' >"$CONFIG_DIR/jobs.json"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
+}

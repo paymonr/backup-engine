@@ -16,12 +16,16 @@ EOF
 }
 
 write_jobs_json() {
+  # Full, valid job defs (the schema the GUI always writes). The crontab-render
+  # path (jobs_io --list) now re-validates confinement/name/schedule/type/class on
+  # this untrusted-at-read-time file, so minimal name/schedule stubs no longer
+  # qualify — a malformed job is dropped from the schedule rather than emitted.
   cat >"$CFG/jobs.json" <<'EOF'
 {
   "jobs": [
-    {"name": "movies", "schedule": "0 4 * * 0", "enabled": true},
-    {"name": "appdata", "schedule": "0 3 * * *", "enabled": true},
-    {"name": "scratch", "schedule": "0 2 * * *", "enabled": false}
+    {"name": "movies", "type": "archive", "source": "movies", "schedule": "0 4 * * 0", "enabled": true, "storage_class": "STANDARD", "mirror": false},
+    {"name": "appdata", "type": "versioned", "source": "appdata", "schedule": "0 3 * * *", "enabled": true, "storage_class": "STANDARD", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}},
+    {"name": "scratch", "type": "archive", "source": "scratch", "schedule": "0 2 * * *", "enabled": false, "storage_class": "STANDARD", "mirror": false}
   ]
 }
 EOF
@@ -42,6 +46,24 @@ EOF
   [ "$status" -eq 0 ]
   [ -f "$CACHE_DIR/crontab" ]
   [ ! -s "$CACHE_DIR/crontab" ]
+}
+
+# Task 10 security: schedule-time confinement — a hand-edited jobs.json whose
+# source escapes the mount is dropped from the crontab, never scheduled.
+@test "entrypoint --emit-crontab drops a job whose source escapes the mount" {
+  cat >"$CFG/jobs.json" <<'EOF'
+{
+  "jobs": [
+    {"name": "good", "type": "archive", "source": "movies", "schedule": "0 4 * * 0", "enabled": true, "storage_class": "STANDARD", "mirror": false},
+    {"name": "evil", "type": "archive", "source": "../../etc", "schedule": "0 5 * * *", "enabled": true, "storage_class": "STANDARD", "mirror": false}
+  ]
+}
+EOF
+  run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
+  [ "$status" -eq 0 ]
+  grep -q "backup-job.sh good" "$CACHE_DIR/crontab"
+  ! grep -q "evil" "$CACHE_DIR/crontab"
+  [ "$(wc -l <"$CACHE_DIR/crontab")" -eq 1 ]
 }
 
 @test "entrypoint renders rclone.conf and password file" {
