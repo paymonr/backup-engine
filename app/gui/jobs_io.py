@@ -81,9 +81,15 @@ def emit_shell(job: dict) -> str:
     return "\n".join(lines) + "\n"
 
 def _main(argv: list[str]) -> int:
+    config_dir = os.environ.get("CONFIG_DIR", "/config")
+    if argv == ["--list"]:
+        for job in load(config_dir):
+            enabled = "1" if job.get("enabled") else "0"
+            print(f"{enabled}\t{job.get('schedule', '')}\t{job.get('name', '')}")
+        return 0
     if len(argv) != 1:
-        print("usage: python3 -m app.gui.jobs_io <job-name>", file=sys.stderr); return 2
-    job = get(os.environ.get("CONFIG_DIR", "/config"), argv[0])
+        print("usage: python3 -m app.gui.jobs_io <job-name> | --list", file=sys.stderr); return 2
+    job = get(config_dir, argv[0])
     if job is None:
         print(f"no such job: {argv[0]}", file=sys.stderr); return 3
     sys.stdout.write(emit_shell(job)); return 0

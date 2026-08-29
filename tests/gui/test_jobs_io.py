@@ -67,6 +67,26 @@ def test_emit_shell_versioned_keep(tmp_path):
     s = jobs_io.emit_shell(j)
     assert "JOB_TYPE=versioned" in s and "JOB_KEEP_LAST=3" in s and "JOB_KEEP_MONTHLY=6" in s
 
+def test_main_list_prints_enabled_schedule_name_per_job(tmp_path, monkeypatch, capsys):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="movies", schedule="0 4 * * 0", enabled=True), source_root=root)
+    jobs_io.upsert(cfg, _job(name="appdata", type="versioned", source="appdata",
+                              schedule="0 3 * * *", enabled=False), source_root=root)
+    monkeypatch.setenv("CONFIG_DIR", cfg)
+    rc = jobs_io._main(["--list"])
+    assert rc == 0
+    lines = capsys.readouterr().out.strip("\n").split("\n")
+    assert sorted(lines) == sorted([
+        "1\t0 4 * * 0\tmovies",
+        "0\t0 3 * * *\tappdata",
+    ])
+
+def test_main_list_on_missing_jobs_file_prints_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CONFIG_DIR", _cfg(tmp_path))
+    rc = jobs_io._main(["--list"])
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
 def test_emit_shell_is_injection_safe(tmp_path):
     # a name/source can only be the validated charset/path; emit uses single-quote escaping.
     # shlex.quote only wraps strings containing shell-special characters, so a name drawn from

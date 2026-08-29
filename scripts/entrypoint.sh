@@ -22,10 +22,12 @@ prepare() {
 }
 
 emit_crontab() {
-  local ct="$CACHE_DIR/crontab"
-  : >"$ct"
-  [ -n "${APPDATA_SCHEDULE:-}" ] && printf '%s %s\n' "$APPDATA_SCHEDULE" "$HERE/backup-appdata.sh" >>"$ct"
-  [ -n "${MEDIA_SCHEDULE:-}" ] && printf '%s %s\n' "$MEDIA_SCHEDULE" "$HERE/backup-media.sh" >>"$ct"
+  local ct="$CACHE_DIR/crontab"; : >"$ct"
+  CONFIG_DIR="${CONFIG_DIR:-/config}" python3 -m app.gui.jobs_io --list 2>/dev/null | \
+  while IFS=$'\t' read -r enabled schedule name; do
+    [ "$enabled" = "1" ] || continue
+    printf '%s %s %s\n' "$schedule" "$HERE/backup-job.sh" "$name" >>"$ct"
+  done
   log_info "wrote crontab:"; cat "$ct"
 }
 
@@ -36,11 +38,7 @@ main() {
     --emit-crontab) return 0 ;;   # for tests / inspection
   esac
   if [ -n "${RUN_ONCE:-}" ]; then
-    case "$RUN_ONCE" in
-      appdata) exec "$HERE/backup-appdata.sh" ;;
-      media) exec "$HERE/backup-media.sh" ;;
-      *) die "RUN_ONCE must be 'appdata' or 'media'" ;;
-    esac
+    exec "$HERE/backup-job.sh" "$RUN_ONCE"
   fi
   if [ "${GUI_ENABLED:-true}" != "false" ]; then
     log_info "starting scheduler (background) + GUI on port ${GUI_PORT:-8099}"
