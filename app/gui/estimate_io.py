@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Mapping
-from . import config_io, jobs_io, dirsize, fsbrowse
+from . import config_io, jobs_io
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days, estimate,
 )
@@ -194,17 +194,13 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
     else:
         job["mirror"] = bool(params.get("mirror"))
 
-    # Size/count precedence: explicit size_gb/file_count params -> dir_size() of the
-    # picked source folder (when it's given and resolves) -> the module defaults.
-    fallback_gb, fallback_files = _DEFAULT_SIZE_GB, _DEFAULT_FILES
-    if source:
-        try:
-            d = dirsize.dir_size(source_root, source)
-            fallback_gb, fallback_files = d["bytes"] / (1024 ** 3), d["count"]
-        except fsbrowse.PathError:
-            pass  # unresolved/escaping source -> fall back to the module defaults
-    size_gb = _num(params, "size_gb", fallback_gb, label="size")
-    file_count = int(_num(params, "file_count", fallback_files, label="file count"))
+    # Size/count precedence: explicit size_gb/file_count params -> module defaults.
+    # The estimate NEVER walks the filesystem here — it has to be instant on every
+    # keystroke. A picked source folder's real size is fetched separately (async) by
+    # /jobs/source-size and threaded back in via the size_gb field, so it still flows
+    # through this same param, just without blocking the live recompute.
+    size_gb = _num(params, "size_gb", _DEFAULT_SIZE_GB, label="size")
+    file_count = int(_num(params, "file_count", _DEFAULT_FILES, label="file count"))
 
     candidate = _job_inputs(job, size_gb=size_gb, file_count=file_count,
                             scenario_retention=None, override=None)

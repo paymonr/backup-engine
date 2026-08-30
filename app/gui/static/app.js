@@ -130,7 +130,10 @@
   var errEl = document.getElementById("job-cost-error");
   var sizeInput = document.getElementById("size-gb-input");
   var sourceTree = document.getElementById("source-tree");
+  var sizingEl = document.getElementById("job-cost-sizing");
   var timer;
+
+  function sizing(on) { if (sizingEl) sizingEl.hidden = !on; }
 
   function money(v) {
     if (v === null || v === undefined) return "—";
@@ -166,14 +169,20 @@
       var t = ev.target;
       if (!t || t.type !== "checkbox") return;
       var path = t.checked ? t.value : "";
-      if (!path) { sizeInput.value = ""; schedule(); return; }
+      if (!path) { sizeInput.value = ""; sizing(false); schedule(); return; }
+      // The estimate is NEVER blocked on the folder walk: recompute right away with
+      // the current/default size, show a "sizing…" hint, and fetch the real folder
+      // size async. When it returns, seed #size-gb-input and recompute once more.
+      sizeInput.value = "";
+      sizing(true);
+      schedule();
       fetch("/jobs/source-size?path=" + encodeURIComponent(path))
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
-          sizeInput.value = d ? String(d.bytes / (1024 * 1024 * 1024)) : "";
-          schedule();
+          sizing(false);
+          if (d) { sizeInput.value = String(d.bytes / (1024 * 1024 * 1024)); schedule(); }
         })
-        .catch(function () {});
+        .catch(function () { sizing(false); });
     });
   }
 

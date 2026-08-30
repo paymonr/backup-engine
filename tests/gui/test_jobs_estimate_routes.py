@@ -146,12 +146,25 @@ def test_jobs_estimate_non_us_east_1_region_no_500(dirs, template_path, source_r
     assert r.get_json()["this_job_monthly"] >= 0
 
 
-def test_jobs_estimate_sizes_from_source_folder_when_no_size_gb(client):
-    # No explicit size_gb -> the candidate is sized from dir_size(source).
-    small = client.get("/jobs/estimate.json", query_string={
-        "name": "photos", "type": "archive", "source": "appdata",
-        "storage_class": "STANDARD", "schedule": "0 4 * * 0"}).get_json()
-    big = client.get("/jobs/estimate.json", query_string={
+def test_jobs_estimate_never_walks_source_uses_default(client):
+    # FIX: the wizard estimate must NEVER touch the filesystem (it has to be instant
+    # on every keystroke). With a source= but NO size_gb it uses _DEFAULT_SIZE_GB,
+    # NOT the picked folder's real on-disk bytes -- the real size is fetched
+    # separately, async, by /jobs/source-size and threaded back via size_gb.
+    from app.gui.estimate_io import _DEFAULT_SIZE_GB
+    walked = client.get("/jobs/estimate.json", query_string={
         "name": "photos", "type": "archive", "source": "movies",
         "storage_class": "STANDARD", "schedule": "0 4 * * 0"}).get_json()
-    assert big["this_job_monthly"] >= small["this_job_monthly"]
+    default_sized = client.get("/jobs/estimate.json", query_string={
+        "name": "photos", "type": "archive", "source": "movies",
+        "storage_class": "STANDARD", "schedule": "0 4 * * 0",
+        "size_gb": str(_DEFAULT_SIZE_GB)}).get_json()
+    # Uses the DEFAULT size, matching an explicit size_gb=_DEFAULT_SIZE_GB request...
+    assert walked["this_job_monthly"] == pytest.approx(default_sized["this_job_monthly"])
+    # ...and NOT the near-zero cost the folder's ~1000-byte real size would produce
+    # (which is what a filesystem walk would have used).
+    tiny = client.get("/jobs/estimate.json", query_string={
+        "name": "photos", "type": "archive", "source": "movies",
+        "storage_class": "STANDARD", "schedule": "0 4 * * 0",
+        "size_gb": str(1000 / 1024 ** 3)}).get_json()
+    assert walked["this_job_monthly"] != pytest.approx(tiny["this_job_monthly"])

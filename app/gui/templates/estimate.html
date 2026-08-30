@@ -16,7 +16,7 @@
     <li class="med"><span class="lbl">First year</span><span data-est="first_year_total" data-fmt="money">{{ money(est.first_year_total if est else none) }}</span></li>
     <li class="med"><span class="lbl">Full restore (once)</span><span data-est="full_restore_total" data-fmt="money">{{ money(est.full_restore_total if est else none) }}</span></li>
   </ul>
-  <p class="hint">Prices: <span data-est="region">{{ est.region if est else 'us-east-1' }}</span> @ <span data-est="price_date">{{ est.price_date if est else '—' }}</span>. <span data-js-only>Updates live.</span></p>
+  <p class="hint">Prices: <span data-est="region">{{ est.region if est else 'us-east-1' }}</span> @ <span data-est="price_date">{{ est.price_date if est else '—' }}</span>. Updates live.</p>
   <p id="est-error" class="alert alert-error"{{ '' if error else ' hidden' }}>{{ error or '' }}</p>
 </div>
 

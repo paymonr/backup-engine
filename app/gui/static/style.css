@@ -1,12 +1,13 @@
-/* app/gui/static/style.css — backup-engine control panel (Impeccable: light, clinical, sharp) */
+/* app/gui/static/style.css — backup-engine control panel (Impeccable: dark, clinical, sharp) */
 :root {
-  /* Impeccable — light, clinical, sharp. Sober palette, high contrast. */
-  --bg: #FAFAFB; --surface: #FFFFFF; --surface-2: #F4F5F7;
-  --border: #E3E6EA; --border-strong: #CDD2D9;
-  --ink: #14181F; --muted: #545C68; --faint: #636B77;
-  --accent: #1F6FEB; --accent-hover: #195fce; --accent-ink: #FFFFFF; --accent-bg: #EAF1FE;
-  --ok: #1A7F5A; --ok-bg: #E9F6EF; --warn: #9A6700; --warn-bg: #FFF6E5; --warn-border: #EAD9A6;
-  --danger: #B42318; --danger-bg: #FCEDEC; --danger-border: #f3c4bf;
+  color-scheme: dark;  /* native form controls, scrollbars, and UA chrome render dark */
+  /* Impeccable — dark, clinical, sharp. Sober palette, high contrast (WCAG AA). */
+  --bg: #0E1116; --surface: #161A21; --surface-2: #1E232B;
+  --border: #2A313B; --border-strong: #3A434F;
+  --ink: #E6EAF0; --muted: #AAB2BF; --faint: #8A93A0;
+  --accent: #4C8DFF; --accent-hover: #6AA1FF; --accent-ink: #0B0E13; --accent-bg: #16233B;
+  --ok: #46C08A; --ok-bg: #10241B; --warn: #E0B15A; --warn-bg: #2A2412; --warn-border: #4A3F22;
+  --danger: #F0616B; --danger-bg: #2A1417; --danger-border: #5A2A2E;
   --radius: 6px; --radius-sm: 4px;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -54,6 +55,10 @@ summary:hover { color: var(--ink); }
 .hint { color: var(--faint); font-size: .85rem; } .muted { color: var(--muted); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-6); margin: 0 0 var(--sp-4); }
 .card-hero { background: var(--surface); border-color: var(--border-strong); }
+/* Wizard cost card pins as the form scrolls under it (job_form.html only — NOT all
+   .card-hero: the estimate page reuses .card-hero and must not stick). Its opaque
+   --surface bg + border let content scroll cleanly beneath. */
+#job-cost { position: sticky; top: var(--sp-2); z-index: 5; }
 .actions { display: flex; gap: var(--sp-3); align-items: center; margin-top: var(--sp-4); }
 .btn { display: inline-flex; align-items: center; gap: .45rem; font: inherit; font-weight: 560;
   padding: .5rem .9rem; border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
