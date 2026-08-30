@@ -7,7 +7,7 @@
 # shell and export them. Unlike a plain `source`/`.`, this treats the whole
 # remainder of a line as the literal value (no word-splitting, no pathname
 # expansion, no command execution), so unquoted values containing spaces or
-# glob characters — e.g. a cron expression like `APPDATA_SCHEDULE=0 3 * * *`
+# glob characters — e.g. a cron expression like `0 3 * * *`
 # — survive intact instead of bash parsing "3 * * *" as a command line.
 # Blank lines and lines starting with `#` are skipped. A value wrapped in
 # matching quotes is taken verbatim; otherwise a trailing ` #comment` is
@@ -47,14 +47,8 @@ load_config() {
   _load_env_file "$dir/secrets.env"
 
   : "${CACHE_DIR:=/cache}"
-  : "${APPDATA_SRC:=/backup/appdata}"
-  : "${MEDIA_ROOT:=/backup/media}"
-  : "${APPDATA_STORAGE_CLASS:=STANDARD}"
-  : "${MEDIA_STORAGE_CLASS:=DEEP_ARCHIVE}"
-  : "${MEDIA_MIRROR:=false}"
-  : "${KEEP_LAST:=3}"; : "${KEEP_DAILY:=7}"; : "${KEEP_WEEKLY:=4}"; : "${KEEP_MONTHLY:=6}"
+  : "${SOURCE_ROOT:=/backup/media}"
   : "${RCLONE_TRANSFERS:=8}"; : "${RCLONE_BWLIMIT:=}"
-  : "${MEDIA_SHARES_DIR:=$dir/media-shares}"
   : "${LOG_FILE:=$CACHE_DIR/logs/backup-engine.log}"
   : "${NOTIFY_ON_SUCCESS:=false}"
   : "${GUI_ENABLED:=true}"
@@ -64,16 +58,15 @@ load_config() {
     local host="${S3_ENDPOINT:-s3.${AWS_REGION:-}.amazonaws.com}"
     RESTIC_REPOSITORY="s3:${host}/${S3_BUCKET:-}/appdata"
   fi
-  export CACHE_DIR APPDATA_SRC MEDIA_ROOT APPDATA_STORAGE_CLASS MEDIA_STORAGE_CLASS \
-    MEDIA_MIRROR KEEP_LAST KEEP_DAILY KEEP_WEEKLY KEEP_MONTHLY \
-    MEDIA_SHARES_DIR LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY \
+  export CACHE_DIR SOURCE_ROOT LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY \
     GUI_ENABLED GUI_PORT
 
   # RCLONE_TRANSFERS/RCLONE_BWLIMIT are user-facing config vars that
-  # backup-media.sh reads in-process to build its --transfers/--bwlimit CLI
-  # flags — they must stay ordinary (non-exported) shell vars. rclone ALSO
-  # reads these exact names as its own environment-variable overrides for
-  # those same flags, unconditionally, regardless of what's on the CLI. The
+  # backup-job.sh (archive jobs) reads in-process to build its
+  # --transfers/--bwlimit CLI flags — they must stay ordinary (non-exported)
+  # shell vars. rclone ALSO reads these exact names as its own
+  # environment-variable overrides for those same flags, unconditionally,
+  # regardless of what's on the CLI. The
   # shipped default leaves RCLONE_BWLIMIT unset/blank; if it's exported,
   # rclone sees RCLONE_BWLIMIT="" and hard-fails every run ("CRITICAL:
   # Invalid value when setting --bwlimit ... empty string") before copying
@@ -87,15 +80,7 @@ validate_common() {
   require_env AWS_REGION S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 }
 
-validate_appdata() {
+validate_source() {
   validate_common
-  require_env RESTIC_PASSWORD RESTIC_REPOSITORY
-  if [ ! -d "$APPDATA_SRC" ] || [ -z "$(ls -A "$APPDATA_SRC" 2>/dev/null)" ]; then
-    die "appdata source '$APPDATA_SRC' missing or empty — install/configure the Appdata Backup plugin (appdata.backup) and confirm its archive directory is mounted read-only here"
-  fi
-}
-
-validate_media() {
-  validate_common
-  [ -d "$MEDIA_ROOT" ] || die "media root '$MEDIA_ROOT' not found (mount your shares' parent, e.g. /mnt/user, read-only)"
+  [ -d "$SOURCE_ROOT" ] || die "source root '$SOURCE_ROOT' not found (mount /mnt/user read-only)"
 }

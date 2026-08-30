@@ -19,7 +19,6 @@ AWS_ACCESS_KEY_ID=AKIA_TEST
 AWS_SECRET_ACCESS_KEY=secret
 RESTIC_PASSWORD=hunter2
 EOF
-  mkdir -p "$CFG/media-shares"
 }
 
 @test "load_config derives RESTIC_REPOSITORY from region+bucket" {
@@ -38,11 +37,7 @@ EOF
 @test "load_config applies media defaults" {
   write_min_config
   load_config "$CFG"
-  [ "$MEDIA_STORAGE_CLASS" = "DEEP_ARCHIVE" ]
-  [ "$MEDIA_MIRROR" = "false" ]
-  [ "$APPDATA_STORAGE_CLASS" = "STANDARD" ]
-  [ "$MEDIA_ROOT" = "/backup/media" ]
-  [ "$MEDIA_SHARES_DIR" = "$CFG/media-shares" ]
+  [ "$SOURCE_ROOT" = "/backup/media" ]
 }
 
 @test "load_config dies when secrets.env missing" {
@@ -51,15 +46,6 @@ EOF
   run load_config "$CFG"
   [ "$status" -eq 1 ]
   [[ "$output" == *"secrets.env"* ]]
-}
-
-@test "validate_appdata fails fast naming the plugin when source empty" {
-  write_min_config
-  load_config "$CFG"
-  export APPDATA_SRC="$BATS_TEST_TMPDIR/does-not-exist"
-  run validate_appdata
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"Appdata Backup plugin"* ]]
 }
 
 @test "validate_common names all missing creds" {

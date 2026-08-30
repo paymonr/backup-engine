@@ -1,22 +1,26 @@
 # backup-engine
 
 Off-site, encrypted AWS S3 backups for an Unraid server — the off-site leg of a 3-2-1 strategy.
-A single configuration-driven Docker container ships two things to S3:
+A single configuration-driven Docker container backs up any number of user-defined **jobs**, each
+one folder chosen under a single read-only source mount. Each job is one of:
 
-- **appdata** — the [Appdata Backup plugin](https://forums.unraid.net/topic/137710-plugin-appdatabackup/)'s
-  archives, via `restic` (encrypted, deduplicated, point-in-time snapshots) → S3 Standard.
-- **media** — selected large, mostly-static shares (comics/books/etc.), chosen per share in the
-  GUI, via `rclone` → S3 **Glacier Deep Archive** (cheapest cold storage).
+- **versioned** — via `restic` (encrypted, deduplicated, point-in-time snapshots) into one shared
+  S3 repo, tag-scoped per job. Good for anything you want history/rollback on, e.g. the
+  [Appdata Backup plugin](https://forums.unraid.net/topic/137710-plugin-appdatabackup/)'s archives.
+- **archive** — via `rclone` into its own S3 prefix, typically to **Glacier Deep Archive**
+  (cheapest cold storage) for large, mostly-static shares (comics/books/media/etc.).
+
+Jobs are created, scheduled, and run from the GUI's Jobs screen.
 
 Reusable and not tied to any one setup: all user-specific values live in mounted config files;
 the AWS destination is provisioned either by the included OpenTofu module or by hand (see
 [Provision the destination](#provision-the-destination) below).
 
-> **Status:** the Phase-1 engine — appdata backups, media backups, restore for both tiers,
-> scheduling, notifications, and AWS provisioning — is implemented, usable headless, and now has
-> a small ops [GUI](#gui) (config editor + run/status/logs) alongside it. Still deferred: an
-> interactive cost-estimator screen, restore wizard, and OIDC login — see
-> the [Roadmap](#roadmap).
+> **Status:** the Phase-1 engine — an N-job model (versioned/archive, any number of jobs),
+> per-job restore, scheduling, notifications, and AWS provisioning — is implemented, usable
+> headless, and now has a [GUI](#gui) alongside it — config editor, AWS provisioning wizard, a
+> Jobs screen (create/edit/run-now/status), and a live cost estimate. Still deferred: a restore
+> wizard and OIDC login — see the [Roadmap](#roadmap).
 
 ## Prerequisites
 
@@ -35,13 +39,11 @@ the AWS destination is provisioned either by the included OpenTofu module or by 
    this repo's template directly: **Apps → Template Repositories**, add
    `https://github.com/paymonr/backup-engine`.
 2. Install **backup-engine** from Apps (or **Docker → Add Container → select
-   `backup-engine.xml`**). Review the four required paths and fix them if your shares
-   differ from the defaults:
-   - `Appdata backups (ro)` → your Appdata Backup plugin's output directory
-   - `Media shares root (ro)` → parent of your shares (e.g. `/mnt/user`); choose what to back up in
-     the GUI → Media shares
-   - `Config` → where `backup.env` / `secrets.env` / per-share `media-shares/<share>.txt` filter
-     files live
+   `backup-engine.xml`**). Review the three required paths and fix them if your setup
+   differs from the defaults:
+   - `Source root (ro)` → parent of everything you might back up (e.g. `/mnt/user`); create
+     backup jobs for folders under it in the GUI → Jobs
+   - `Config` → where `backup.env` / `secrets.env` / `jobs.json` (GUI-managed) live
    - `Cache/state` → restic cache, logs, run-state, lockfiles
 3. Populate the config files (see [Configure](#configure)) **before** starting the container —
    `entrypoint.sh` validates on boot and refuses to run with missing/invalid config.
@@ -60,10 +62,10 @@ $EDITOR config/backup.env config/secrets.env   # see Configure below
 docker compose up -d
 ```
 
-`docker-compose.yml` bind-mounts `/mnt/appdata_system/appdata_backups` and `/mnt/user` (parent of
-your shares) read-only, `./config` and `./cache` read-write, and publishes the (Phase 2) GUI port
-`8099` — edit the source paths to match your host. Which shares/subdirs actually ship is chosen
-afterward in the GUI's Media shares screen, not by editing a config file.
+`docker-compose.yml` bind-mounts `/mnt/user` (parent of everything you might back up) read-only,
+`./config` and `./cache` read-write, and publishes the (Phase 2) GUI port `8099` — edit the
+source path to match your host. Which folders actually ship, and how (versioned vs. archive), is
+chosen afterward by creating jobs in the GUI's Jobs screen, not by editing a config file.
 
 ## Provision the destination
 
@@ -142,48 +144,53 @@ part of the Phase-1 headless engine — see the [Roadmap](#roadmap).
 
 ## Configure
 
-Three files live under the `Config` path (`/config` in the container):
+Two files plus one GUI-managed file live under the `Config` path (`/config` in the container):
 
 | File | Purpose | Committed template |
 |---|---|---|
-| `backup.env` | Non-secret settings: AWS region/bucket, storage classes, schedules, retention, paths | `config/backup.env.example` |
+| `backup.env` | Non-secret global settings: AWS region/bucket, `SOURCE_ROOT`, rclone/notify/GUI knobs | `config/backup.env.example` |
 | `secrets.env` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `RESTIC_PASSWORD` — `chmod 600`, never commit | `config/secrets.env.example` |
-| `media-shares/` | GUI-managed: one rclone filter file per enabled share, `media-shares/<share>.txt` (presence enables the share; first match wins within the file) | `config/media-shares/comics.txt.example` |
+| `jobs.json` | GUI-managed: your backup jobs — name, type, source folder, schedule, storage class, retention/mirror | `config/jobs.json.example` (reference/hand-editing only) |
 
-Copy `backup.env.example` and `secrets.env.example`, drop the `.example` suffix, and edit. Media
-shares aren't hand-edited files to copy — enable/curate them from the GUI's Media shares screen
-(see [GUI](#gui)), which writes `media-shares/<share>.txt` for you. Key knobs in `backup.env`:
+Copy `backup.env.example` and `secrets.env.example`, drop the `.example` suffix, and edit.
+`jobs.json` isn't a hand-edited file to copy — create and edit jobs from the GUI's Jobs screen
+(see [GUI](#gui)), which writes it for you; `config/jobs.json.example` is there for reference (or
+if you'd rather hand-edit it directly — see `app/gui/jobs_io.py` for the exact schema it validates
+against). Key knobs in `backup.env` (all global; everything per-job lives in `jobs.json`):
 
-- `APPDATA_STORAGE_CLASS` / `MEDIA_STORAGE_CLASS` — per-pipeline S3 storage class. Media defaults
-  to `DEEP_ARCHIVE` (cheapest) and cold works fine there — it's plain objects. Appdata defaults to,
-  and should stay on, `STANDARD`: a cold class (`GLACIER`/`DEEP_ARCHIVE`) is **not usable** for
-  appdata in Phase 1 — `restic` has to read the repository's `config`/`keys` objects on every run,
-  and it can't do that against a cold repo without a thaw first. That thaw-then-run orchestration
-  is a Phase-3 feature. Both pipelines write directly in the chosen class on first upload — no
-  Standard-then-lifecycle round-trip, so no extra transition charges.
-- `MEDIA_MIRROR` — `false` (default) is additive (`rclone copy`, never deletes from S3); `true`
-  switches to an exact mirror (`rclone sync`). Bucket versioning is your backstop either way.
-- `APPDATA_SCHEDULE` / `MEDIA_SCHEDULE` — cron expressions (via `supercronic`).
-- `KEEP_LAST` / `KEEP_DAILY` / `KEEP_WEEKLY` / `KEEP_MONTHLY` — restic retention.
+- `SOURCE_ROOT` — the single read-only mount everything is backed up from (e.g. `/mnt/user`); a
+  job's `source` is a folder path relative to it (e.g. `appdata`, `movies`).
 - `S3_ENDPOINT` — leave unset for AWS; set (with a `http://` or `https://` scheme) to point the
   engine at an S3-compatible backend instead (MinIO, B2, R2, etc.).
+- `RCLONE_TRANSFERS` / `RCLONE_BWLIMIT` — archive-job rclone tuning (parallel transfers; optional
+  bandwidth cap, e.g. `20M`).
 - `APPRISE_URLS` / `NOTIFY_ON_SUCCESS` — failure notifications always fire when set; success
   notifications are opt-in.
 
+Per-job settings — schedule, storage class, retention (restic keep-policy for versioned jobs), and
+mirror mode (archive jobs) — are set per job in the GUI's Jobs create/edit wizard and stored in
+`config/jobs.json`. A cold storage class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for
+archive jobs — they're plain objects. For versioned jobs it's discouraged: `restic` has to read
+the repository's `config`/`keys` objects on every run, and it can't do that against a cold repo
+without a thaw first — that thaw-then-run orchestration is a Phase-3 feature (see the
+[Restore runbook](#restore-runbook)). Jobs write directly in their chosen class on first upload —
+no Standard-then-lifecycle round-trip, so no extra transition charges.
+
 The container validates all of this on start (and before each run) and fails fast with a specific
-error — e.g. a missing Appdata Backup plugin output directory — rather than silently skipping a
-backup.
+error — e.g. a missing source root — rather than silently skipping a backup.
 
 ## Restore runbook
 
-Both tiers restore via `scripts/restore.sh`, run inside the container
-(`docker exec -it backup-engine /app/scripts/restore.sh ...`) or with the same image/config
-locally.
+Every job restores via `scripts/restore.sh <job> ...`, run inside the container
+(`docker exec -it backup-engine /app/scripts/restore.sh <job> ...`) or with the same image/config
+locally. The subcommand depends on the job's type (read from `config/jobs.json`); use the job's
+real name, not a pipeline name — e.g. `appdata` or `movies`, the two example jobs in
+[`config/jobs.json.example`](config/jobs.json.example).
 
-### Appdata (restic)
+### Versioned jobs (restic)
 
 ```bash
-# list snapshots
+# list snapshots tagged for this job
 restore.sh appdata list
 
 # restore a snapshot (or "latest") to a target directory, then unpack the
@@ -191,17 +198,23 @@ restore.sh appdata list
 restore.sh appdata restore latest /cache/restore/appdata
 ```
 
-Keep `APPDATA_STORAGE_CLASS=STANDARD`. A cold class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) is not
-usable for appdata in Phase 1: restic needs to read the repository's `config`/`keys` objects for
-*every* operation, including `restore.sh appdata list`, not just the final data read, so a cold
-repo can't be driven through a manual thaw the way media can. Automated thaw-then-restore
-orchestration for appdata is a Phase-3 feature.
+All versioned jobs share one restic repo (`s3:<bucket>/appdata`), tag-scoped by job name, so
+`list` / `restore latest` only ever see that job's own snapshots. Because they share that one
+repo, schedule versioned jobs at **different minutes** — two firing the same minute collide on
+the restic repo lock; one fails loudly and recovers on its next run, but staggering avoids the
+churn. Keep versioned jobs on
+`storage_class: STANDARD`. A cold class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) is not usable for
+a versioned job in Phase 1: restic needs to read the repository's `config`/`keys` objects for
+*every* operation, including `restore.sh <job> list`, not just the final data read, so a cold
+repo can't be driven through a manual thaw the way an archive job can. Automated thaw-then-restore
+orchestration for versioned jobs is a Phase-3 feature.
 
-### Media (rclone) — including the Deep Archive thaw flow
+### Archive jobs (rclone) — including the Deep Archive thaw flow
 
-Each enabled share ships to its own S3 prefix, `media/<share>/…` (e.g. the `comics` share lands
-under `media/comics/…`), so restore is scoped per share — pass a prefix starting with the share
-name (optionally narrowed to a subpath within it, as in the example below).
+Each archive job ships to its own S3 prefix, `media/<job>/…` (e.g. a job named `movies` lands
+under `media/movies/…`), so restore is scoped per job — `<prefix>` is a required, non-empty
+subpath *within* that job's prefix (a subfolder name or an exact file path), not the job name
+itself.
 
 Deep Archive objects aren't readable until thawed. Two-step restore:
 
@@ -209,13 +222,13 @@ Deep Archive objects aren't readable until thawed. Two-step restore:
 # 1. Request a thaw for everything under a prefix (defaults to Bulk tier —
 #    cheapest, ~48h; use --tier Standard for ~12h or --tier Expedited for
 #    faster-but-pricier). Add --dry-run to preview without issuing requests.
-#    "comics/some-series" = share "comics", subpath "some-series"; pass
-#    just "comics" to thaw/restore the whole share.
-restore.sh media thaw comics/some-series --tier Standard
+#    <prefix> is a subpath within the "movies" job's own media/movies/…
+#    destination, e.g. a subfolder ("some-series") or an exact file.
+restore.sh movies thaw some-series --tier Standard
 
 # 2. Wait for the thaw window (12-48h depending on tier), then download —
 #    this will only succeed for objects that have finished thawing.
-restore.sh media download comics/some-series /cache/restore/media
+restore.sh movies download some-series /cache/restore/movies
 ```
 
 `thaw` walks every object under the given prefix and issues an S3 Glacier restore request
@@ -228,11 +241,12 @@ copyable yet.
 Storage class is the main lever. Illustrative pricing (us-east-1, subject to change): ~2 TB of
 media on **Deep Archive** runs roughly **$2/mo** in storage vs. roughly **$12/mo** on a flat,
 no-tier backend — at the cost of a slow, egress-billed restore (12–48h thaw + retrieval/egress
-fees, see the runbook above). Appdata defaults to, and should stay on, Standard — it's usually
-much smaller, and a cold class isn't usable there yet in Phase 1 (see the storage-class note above
-and the restore runbook). Cold appdata is a Phase-3 feature. A fully interactive GUI cost
-estimator (multi-region price tables, live what-if) is planned for a later phase; the headless
-`estimate` CLI below is available now.
+fees, see the runbook above). Versioned jobs (e.g. appdata) should stay on Standard — they're
+usually much smaller, and a cold class isn't usable there yet in Phase 1 (see the
+[Configure](#configure) storage-class note and the restore runbook). Cold versioned jobs are a
+Phase-3 feature. A GUI cost-estimate screen with live
+what-if now ships (see [GUI](#gui)); multi-region price tables are still a later phase. The headless
+`estimate` CLI below is also available.
 
 ## Cost estimator
 
@@ -247,9 +261,14 @@ It reads `AWS_REGION` and the storage classes from `backup.env` when present (fl
 runs fully offline against a bundled, dated us-east-1 price table, and prints a per-pipeline
 line-item breakdown plus monthly, first-year, and illustrative full-restore totals.
 
+The same model backs the live **Cost estimate** screen in the [GUI](#gui): the form is prefilled
+from your `backup.env` (storage classes + restic keep-policy), and the per-pipeline breakdown and
+totals update as you change inputs. Retention is surfaced — the restic keep-policy drives an
+effective appdata history window, and S3 noncurrent-version retention is its own input.
+
 ## GUI
 
-A small web UI (config editor + run/status/logs) ships in the container, served on `GUI_PORT`
+A small web UI (config editor + run/status/logs + a live cost-estimate screen) ships in the container, served on `GUI_PORT`
 (default 8099). Reach it at `http://<host>:8099`.
 
 > ⚠ **No authentication.** The GUI has no login of its own — put it behind your reverse proxy /
@@ -259,17 +278,15 @@ A small web UI (config editor + run/status/logs) ships in the container, served 
 - **Config editor** — edits `backup.env` (regenerated from the bundled `backup.env.example`
   template). Secret fields (AWS keys, restic password) are **write-only**: they never display
   existing values; leave a field blank to keep it, fill it to overwrite.
-- **Media shares** — lists every share found directly under `MEDIA_ROOT` (the single read-only
-  mount, e.g. `/mnt/user` — the whole array, mounted read-only, so the container can see every
-  share without a mount per share) and lets you enable each one whole or curated to specific
-  subfolders, or disable it again. A share is **excluded by default**: it's just a name in the list
-  until you enable it, and disabling one deletes its filter file rather than leaving an empty/stale
-  one behind. Enabling writes `config/media-shares/<share>.txt`, one rclone filter file per
-  enabled share — that's the file `backup-media.sh` looks for, and its presence is what makes the
-  share ship (see [Configure](#configure) and the [Restore runbook](#restore-runbook) for the
-  resulting `media/<share>/…` S3 layout).
-- **Run & status** — trigger an appdata/media backup now, see the last-run outcome per pipeline,
-  and watch the live log tail.
+- **Jobs** — lists every backup job, with a create/edit wizard. Each job picks one source folder
+  from a confined browser over `SOURCE_ROOT` (the single read-only mount, e.g. `/mnt/user` —
+  mounted once, so the container can see everything without a mount per folder), an intent
+  (**versioned**, via restic, or **archive**, via rclone), a cron schedule, and — depending on
+  type — restic retention (keep last/daily/weekly/monthly) or archive mirror mode. Saving writes
+  `config/jobs.json`. Each job's row also has **Run now** (trigger it immediately) and its
+  last-run outcome; **Edit**/**Delete** manage the job (see [Configure](#configure) and the
+  [Restore runbook](#restore-runbook) for the resulting `appdata` (shared repo) /
+  `media/<job>/…` S3 layout).
 
 > **First run:** copy *both* example files — `backup.env.example` **and** `secrets.env.example` —
 > into `/config` before starting the container. The engine's `entrypoint.sh` (`prepare()` /
@@ -311,8 +328,7 @@ it directly.
 
 Planned, not yet built:
 
-- **Restore wizard** — guided both-tier restore in the GUI (incl. the Glacier/Deep Archive thaw flow).
-- **Cost-estimator screen** — interactive what-if over the `estimate` module.
+- **Restore wizard** — guided per-job restore in the GUI (incl. the Glacier/Deep Archive thaw flow).
 - **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.
 - **Per-run history** — a persisted run history beyond the last-run state.
 - **Scheduler liveness / health endpoint** — surface whether the background scheduler (supercronic) is still running, so a silent crash is visible in the GUI.

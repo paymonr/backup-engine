@@ -85,6 +85,7 @@ small { color: var(--muted); font-weight: 400; }
 .card > :first-child { margin-top: 0; }
 .card > :last-child { margin-bottom: 0; }
 .card-step { border-left: 2px solid var(--accent); }
+.card-hero { border-left: 3px solid var(--accent); }
 .stepnum { color: var(--accent); font-variant-numeric: tabular-nums; }
 
 /* ---- forms ---- */
@@ -220,6 +221,20 @@ button.expand {
   display: inline-flex; align-items: center; justify-content: center;
 }
 button.expand:hover { color: var(--text); background: var(--raised); }
+
+/* ---- cost estimate ---- */
+.totals { display: flex; gap: 2.2rem; flex-wrap: wrap; align-items: baseline; margin: 0; padding: 0; list-style: none; }
+.totals li .lbl { display: block; font-size: .7rem; text-transform: uppercase; letter-spacing: .1em; color: var(--faint); margin-bottom: .25rem; }
+.totals .big span { font-size: 2.3rem; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1; }
+.totals .med span { font-size: 1.35rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.pipeline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.2rem 1.6rem; }
+.pipeline-grid h3 { color: var(--teal); }
+.retention-mini { display: flex; flex-wrap: wrap; gap: .3rem 1rem; align-items: flex-end; }
+.retention-mini label { display: block; width: auto; margin: 0; font-weight: 450; font-size: .82rem; color: var(--muted); }
+.retention-mini input { width: 4.2rem; margin-top: .2rem; }
+[data-js-only] { color: var(--teal); }
+#est-results td { text-align: right; font-variant-numeric: tabular-nums; }
+#est-results th:first-child, #est-results thead th:first-child { text-align: left; }
 
 /* ---- misc ---- */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

@@ -1,14 +1,17 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
+from dataclasses import asdict
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
-from . import config_io, runner, security, provision, media_shares, fsbrowse
+from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io
+from ..estimator.model import estimate, STORAGE_CLASSES, effective_retention_days
+from ..estimator.prices import load_prices
 
 bp = Blueprint("gui", __name__)
 
 @bp.get("/")
 def index():
-    return redirect(url_for("gui.config_page"))
+    return redirect(url_for("gui.jobs_page"))
 
 @bp.get("/config")
 def config_page():
@@ -34,22 +37,6 @@ def config_save():
     config_io.write_secrets(cfg["CONFIG_DIR"], {k: request.form.get(k, "") for k in config_io.SECRET_KEYS})
     flash("Configuration saved.")
     return redirect(url_for("gui.config_page"))
-
-@bp.get("/status")
-def status_page():
-    cfg = current_app.config
-    states = {p: runner.read_state(cfg["CACHE_DIR"], p) for p in runner.PIPELINES}
-    return render_template("status.html", states=states, csrf=security.issue_csrf())
-
-@bp.post("/run/<pipeline>")
-def run(pipeline):
-    if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
-    if pipeline not in runner.PIPELINES:
-        abort(404)
-    runner.trigger_backup(current_app.config["SCRIPTS_DIR"], pipeline)
-    flash(f"Started {pipeline} backup.")
-    return redirect(url_for("gui.status_page"))
 
 @bp.get("/logs")
 def logs():
@@ -150,62 +137,117 @@ def provision_automated_run():
     flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key.")
     return redirect(url_for("gui.provision_home"))
 
-@bp.get("/shares")
-def shares_page():
+@bp.get("/jobs")
+def jobs_page():
     cfg = current_app.config
-    shares = media_shares.list_shares(cfg["MEDIA_ROOT"], cfg["MEDIA_SHARES_DIR"])
-    return render_template("shares.html", shares=shares, csrf=security.issue_csrf())
+    jobs = jobs_io.load(cfg["CONFIG_DIR"])
+    rows = [{**j, "state": runner.read_state(cfg["CACHE_DIR"], j["name"])} for j in jobs]
+    return render_template("jobs.html", jobs=rows, csrf=security.issue_csrf())
 
-@bp.get("/shares/browse")
-def shares_browse():
-    cfg = current_app.config
-    share = request.args.get("share", "")
-    rel = request.args.get("path", "")
-    if not media_shares.valid_name(share):
+@bp.get("/jobs/new")
+def job_new():
+    return render_template("job_form.html", job=None, source_root=current_app.config["SOURCE_ROOT"],
+                           storage_classes=jobs_io.STORAGE_CLASSES, csrf=security.issue_csrf())
+
+@bp.get("/jobs/<name>/edit")
+def job_edit(name):
+    job = jobs_io.get(current_app.config["CONFIG_DIR"], name)
+    if job is None:
         abort(404)
+    return render_template("job_form.html", job=job, source_root=current_app.config["SOURCE_ROOT"],
+                           storage_classes=jobs_io.STORAGE_CLASSES, csrf=security.issue_csrf())
+
+@bp.get("/jobs/browse")
+def jobs_browse():
+    cfg = current_app.config
     try:
-        # Resolve the share segment through safe_resolve too: a symlink directly
-        # under MEDIA_ROOT must not let the browse root escape confinement.
-        share_root = fsbrowse.safe_resolve(cfg["MEDIA_ROOT"], share)
-        dirs = fsbrowse.list_dirs(share_root, rel)
+        # Every browsed path is confined to SOURCE_ROOT via safe_resolve/list_dirs.
+        dirs = fsbrowse.list_dirs(cfg["SOURCE_ROOT"], request.args.get("path", ""))
     except fsbrowse.PathError:
         abort(404)  # no path echo
-    base = rel.strip("/")
-    entries = [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]
-    return jsonify({"entries": entries})
+    base = request.args.get("path", "").strip("/")
+    return jsonify({"entries": [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]})
 
-@bp.post("/shares/<name>")
-def shares_save(name):
+@bp.post("/jobs")
+def job_save():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400)
     cfg = current_app.config
-    if not media_shares.valid_name(name):
-        abort(404)
-    sd = cfg["MEDIA_SHARES_DIR"]
-    if not request.form.get("enabled"):
-        # Disable must work even if MEDIA_ROOT/<name> is no longer a directory
-        # (unmounted/removed share) — it's the recovery path for a share that
-        # would otherwise make every backup-media.sh run fail with no way to
-        # remove it from the GUI. Only the enable path below needs the source
-        # dir to exist.
-        media_shares.disable(sd, name)
-        flash(f"Disabled {name}.")
-        return redirect(url_for("gui.shares_page"))
+    f = request.form
+    job = {"name": f.get("name", "").strip(), "type": f.get("type", ""),
+           "source": f.get("source", "").strip(), "schedule": f.get("schedule", "").strip(),
+           "enabled": bool(f.get("enabled")), "storage_class": f.get("storage_class", "STANDARD")}
+    if job["type"] == "versioned":
+        job["keep"] = {k: f.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+    else:
+        job["mirror"] = bool(f.get("mirror"))
     try:
-        # safe_resolve rejects an escaping-symlink share so a symlink target
-        # outside MEDIA_ROOT can never be enabled for backup.
-        share_dir = fsbrowse.safe_resolve(cfg["MEDIA_ROOT"], name)
-    except fsbrowse.PathError:
-        abort(404)
-    if not share_dir.is_dir():
-        abort(404)
-    try:
-        if request.form.get("mode") == "raw" and request.form.get("raw") is not None:
-            media_shares.write_raw(sd, name, request.form["raw"])
-        else:
-            media_shares.write_selection(sd, name, bool(request.form.get("whole")),
-                                         request.form.getlist("folder"))
+        jobs_io.upsert(cfg["CONFIG_DIR"], job, source_root=cfg["SOURCE_ROOT"])
+    except jobs_io.JobsFileError as e:
+        # The on-disk jobs.json is corrupt: don't clobber the user's bytes, and
+        # don't 500 — tell them to fix the file (message has no path echo).
+        flash(str(e))
+        return redirect(url_for("gui.jobs_page"))
     except ValueError:
-        abort(400)  # no path echo
-    flash(f"Saved {name}.")
-    return redirect(url_for("gui.shares_page"))
+        abort(400)  # normal validation failure; no echo of paths
+    flash(f"Saved job {job['name']}.")
+    return redirect(url_for("gui.jobs_page"))
+
+@bp.post("/jobs/<name>/run")
+def job_run(name):
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
+        abort(404)
+    runner.trigger_job(cfg["SCRIPTS_DIR"], name)
+    flash(f"Started {name}.")
+    return redirect(url_for("gui.jobs_page"))
+
+@bp.post("/jobs/<name>/delete")
+def job_delete(name):
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    try:
+        jobs_io.delete(current_app.config["CONFIG_DIR"], name)
+    except jobs_io.JobsFileError as e:
+        # Corrupt jobs.json: surface a flash rather than a 500, and leave the
+        # file untouched (delete builds on _load_strict, which raised).
+        flash(str(e))
+        return redirect(url_for("gui.jobs_page"))
+    flash(f"Deleted {name}.")
+    return redirect(url_for("gui.jobs_page"))
+
+def _compute(config_dir, params):
+    scenario = estimate_io.scenario_from_params(params, config_dir)
+    return scenario, estimate(scenario, load_prices(scenario.region))
+
+@bp.get("/estimate")
+def estimate_page():
+    cfg = current_app.config
+    d = estimate_io.form_defaults(cfg["CONFIG_DIR"])
+    est = None
+    error = None
+    appdata_retention = effective_retention_days(
+        keep_last=d["keep_last"], keep_daily=d["keep_daily"],
+        keep_weekly=d["keep_weekly"], keep_monthly=d["keep_monthly"])
+    try:
+        scenario, est = _compute(cfg["CONFIG_DIR"], request.args)
+        appdata_retention = scenario.appdata.versioning_retention_days
+    except ValueError as e:
+        error = str(e)
+    return render_template("estimate.html", d=d, est=est, error=error,
+                           appdata_retention=appdata_retention,
+                           storage_classes=STORAGE_CLASSES,
+                           retrieval_tiers=estimate_io.RETRIEVAL_TIERS)
+
+@bp.get("/estimate.json")
+def estimate_json():
+    cfg = current_app.config
+    try:
+        scenario, est = _compute(cfg["CONFIG_DIR"], request.args)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    payload = asdict(est)
+    payload["appdata_retention_days"] = scenario.appdata.versioning_retention_days
+    return jsonify(payload)

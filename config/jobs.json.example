@@ -1,0 +1,22 @@
+{
+  "jobs": [
+    {
+      "name": "appdata",
+      "type": "versioned",
+      "source": "appdata",
+      "schedule": "0 3 * * *",
+      "enabled": true,
+      "storage_class": "STANDARD",
+      "keep": { "last": 3, "daily": 7, "weekly": 4, "monthly": 6 }
+    },
+    {
+      "name": "movies",
+      "type": "archive",
+      "source": "movies",
+      "schedule": "0 4 * * 0",
+      "enabled": true,
+      "storage_class": "DEEP_ARCHIVE",
+      "mirror": false
+    }
+  ]
+}

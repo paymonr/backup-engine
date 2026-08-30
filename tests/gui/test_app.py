@@ -11,10 +11,10 @@ def app(dirs, template_path):
 def client(app):
     return app.test_client()
 
-def test_index_redirects_to_config(client):
+def test_index_redirects_to_jobs(client):
     r = client.get("/")
     assert r.status_code in (301, 302)
-    assert "/config" in r.headers["Location"]
+    assert "/jobs" in r.headers["Location"]
 
 def test_no_auth_banner_present(client):
     r = client.get("/config")

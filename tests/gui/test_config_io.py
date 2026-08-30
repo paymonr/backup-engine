@@ -5,7 +5,7 @@ def test_template_keys_include_optional_commented_keys(template_path):
     keys = cio.template_keys(template_path)
     assert "AWS_REGION" in keys and "S3_BUCKET" in keys
     assert "S3_ENDPOINT" in keys          # commented-out optional key in the example
-    assert "APPDATA_STORAGE_CLASS" in keys
+    assert "SOURCE_ROOT" in keys
 
 def test_write_backup_env_regenerates_from_template_preserving_comments(template_path, dirs):
     cio.write_backup_env(template_path, dirs["config"], {"AWS_REGION": "us-west-2", "S3_BUCKET": "mybucket"})
@@ -83,5 +83,5 @@ def test_write_backup_env_neutralizes_newline_in_value(template_path, dirs):
 
 def test_parse_env_strips_real_inline_comment_keeping_embedded_spaces(dirs):
     from app.gui.config_io import _parse_env
-    vals = _parse_env("APPDATA_SCHEDULE=0 3 * * *      # nightly\n")
-    assert vals["APPDATA_SCHEDULE"] == "0 3 * * *"
+    vals = _parse_env("NIGHTLY_CRON=0 3 * * *      # nightly\n")
+    assert vals["NIGHTLY_CRON"] == "0 3 * * *"

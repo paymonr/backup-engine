@@ -10,17 +10,13 @@ def create_app(config: dict | None = None) -> Flask:
         CACHE_DIR=os.environ.get("CACHE_DIR", "/cache"),
         SCRIPTS_DIR=os.environ.get("SCRIPTS_DIR", "/app/scripts"),
         TEMPLATE_PATH=os.environ.get("BACKUP_ENV_TEMPLATE", "/app/config/backup.env.example"),
-        MEDIA_ROOT=os.environ.get("MEDIA_ROOT", "/backup/media"),
+        SOURCE_ROOT=os.environ.get("SOURCE_ROOT", "/backup/media"),
         SECRET_KEY=os.environ.get("GUI_SECRET_KEY") or os.urandom(32),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
     )
     if config:
         app.config.update(config)
-    app.config.setdefault(
-        "MEDIA_SHARES_DIR",
-        os.environ.get("MEDIA_SHARES_DIR") or os.path.join(app.config["CONFIG_DIR"], "media-shares"),
-    )
     from .routes import bp
     app.register_blueprint(bp)
     return app
