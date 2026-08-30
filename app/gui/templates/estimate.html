@@ -12,7 +12,7 @@
 
 <div class="card card-hero">
   <ul class="totals">
-    <li class="big"><span class="lbl">Per month</span><span data-est="monthly_total" data-fmt="money">{{ money(est.monthly_total if est else none) }}</span></li>
+    <li class="med"><span class="lbl">Per month</span><span data-est="monthly_total" data-fmt="money">{{ money(est.monthly_total if est else none) }}</span></li>
     <li class="med"><span class="lbl">First year</span><span data-est="first_year_total" data-fmt="money">{{ money(est.first_year_total if est else none) }}</span></li>
     <li class="med"><span class="lbl">Full restore (once)</span><span data-est="full_restore_total" data-fmt="money">{{ money(est.full_restore_total if est else none) }}</span></li>
   </ul>
@@ -40,7 +40,7 @@
   {% endif %}
   <form method="post" action="{{ url_for('gui.costs_refresh') }}" class="actions">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button type="submit">Refresh usage</button>
+    <button type="submit" class="btn btn-primary">Refresh usage</button>
   </form>
 
   {% if billing.connected %}
@@ -75,8 +75,8 @@
         <input id="ce_tag" name="COST_EXPLORER_TAG" placeholder="key=value" value="{{ billing.tag or '' }}"></div>
     </div>
     <div class="actions">
-      <button type="submit" class="btn-primary">Connect</button>
-      <button type="submit" name="disconnect" value="1">Disconnect</button>
+      <button type="submit" class="btn btn-primary">Connect</button>
+      <button type="submit" name="disconnect" value="1" class="btn btn-danger">Disconnect</button>
     </div>
   </form>
 </div>
@@ -107,16 +107,14 @@
     <h2>What are you backing up?</h2>
     <p class="hint">Sizes start from your last measured usage (or a modest default for a job that hasn't run yet). Versioned jobs keep history per their restic keep-policy; archive jobs use the S3 old-version window below.</p>
     {% for j in d.jobs %}
-    <div class="pipeline-grid job-inputs">
-      <div>
-        <h3>{{ j.name }} <small>— {{ j.engine }}</small></h3>
-        <label>Size (GB)</label><input type="number" step="any" min="0" name="{{ j.name }}_size_gb" value="{{ val(j.name + '_size_gb', j.size_gb) }}">
-        <label>Storage class</label><select name="{{ j.name }}_storage_class">{{ sel(j.name + '_storage_class', j.storage_class) }}</select>
-        <label>File count</label><input type="number" step="1" min="0" name="{{ j.name }}_file_count" value="{{ val(j.name + '_file_count', j.file_count) }}">
-      </div>
-      <div>
-        <label>Backups / month</label><input type="number" step="any" min="0" name="{{ j.name }}_backups_per_month" value="{{ val(j.name + '_backups_per_month', j.backups_per_month) }}">
-        <label>Change rate (%)</label><input type="number" step="any" min="0" name="{{ j.name }}_change_rate_pct" value="{{ val(j.name + '_change_rate_pct', j.change_rate_pct) }}">
+    <div class="job-inputs">
+      <h3>{{ j.name }} <small>— {{ j.engine }}</small></h3>
+      <div class="field-row">
+        <div><label>Size (GB)</label><input type="number" step="any" min="0" name="{{ j.name }}_size_gb" value="{{ val(j.name + '_size_gb', j.size_gb) }}"></div>
+        <div><label>Storage class</label><select name="{{ j.name }}_storage_class">{{ sel(j.name + '_storage_class', j.storage_class) }}</select></div>
+        <div><label>File count</label><input type="number" step="1" min="0" name="{{ j.name }}_file_count" value="{{ val(j.name + '_file_count', j.file_count) }}"></div>
+        <div><label>Backups / month</label><input type="number" step="any" min="0" name="{{ j.name }}_backups_per_month" value="{{ val(j.name + '_backups_per_month', j.backups_per_month) }}"></div>
+        <div><label>Change rate (%)</label><input type="number" step="any" min="0" name="{{ j.name }}_change_rate_pct" value="{{ val(j.name + '_change_rate_pct', j.change_rate_pct) }}"></div>
       </div>
     </div>
     {% endfor %}
@@ -134,7 +132,7 @@
     </div>
   </div>
 
-  <noscript><div class="actions"><button type="submit" class="btn-primary">Recalculate</button></div></noscript>
+  <noscript><div class="actions"><button type="submit" class="btn btn-primary">Recalculate</button></div></noscript>
 </form>
 
 <details>
