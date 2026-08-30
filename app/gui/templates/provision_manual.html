@@ -4,8 +4,8 @@
 <h1>Guided-manual setup</h1>
 <p class="lead">No admin credentials leave your browser. Enter your bucket and region, then follow the walkthrough to create everything in the AWS console.</p>
 
-<div class="note">
-  <h3>Before you begin</h3>
+<div class="card">
+  <h2>Before you begin</h2>
   <p>Sign in to the <a href="https://console.aws.amazon.com/s3/" target="_blank" rel="noopener">AWS console</a> in another tab with an account that can create S3 buckets and IAM users. You'll do three things below: (1) copy a policy, (2) create the bucket + an IAM user in the console, (3) paste that user's key here to validate it. Nothing is saved until validation passes.</p>
 </div>
 
@@ -21,21 +21,21 @@
         <input id="region" name="region" value="{{ region }}" required></div>
     </div>
     <p class="hint">Tip: name it <code>unraid-backup-&lt;your-account-id&gt;</code> to match the automated mode.</p>
-    <div class="actions"><button type="submit" class="btn-primary">Render policy &amp; steps</button></div>
+    <div class="actions"><button type="submit" class="btn btn-primary">Render policy &amp; steps</button></div>
   </form>
 </div>
 
 {% if policy %}
-<div class="card card-step">
-  <h2><span class="stepnum">1.</span> Copy the least-privilege IAM policy</h2>
+<div class="card">
+  <h2>1 · Copy the least-privilege IAM policy</h2>
   <p class="hint">Grants object read/write only under <code>appdata/*</code> and <code>media/*</code> — never bucket configuration. Copy it now; you'll paste it in step 2 (IAM → Policies → Create policy → JSON tab).</p>
   <pre>{{ policy }}</pre>
 </div>
 
-<div class="card card-step">
-  <h2><span class="stepnum">2.</span> Create the bucket &amp; IAM user</h2>
+<div class="card">
+  <h2>2 · Create the bucket &amp; IAM user</h2>
   <p class="hint">Do these in the AWS console, signed in as an admin. Follow them in order:</p>
-  <ol class="steps">{% for s in console.steps %}<li>{{ s }}</li>{% endfor %}</ol>
+  <ol>{% for s in console.steps %}<li>{{ s }}</li>{% endfor %}</ol>
   <details>
     <summary>Prefer the CLI? (needs admin creds in your shell)</summary>
     <pre>{% for c in console.cli %}{{ c }}
@@ -43,8 +43,8 @@
   </details>
 </div>
 
-<div class="card card-step">
-  <h2><span class="stepnum">3.</span> Test &amp; Validate the runtime key</h2>
+<div class="card">
+  <h2>3 · Test &amp; Validate the runtime key</h2>
   <p class="hint">Paste the access key you created in step 2. We do a real list → put → get → delete under <code>appdata/</code> to prove the key works before saving anything.</p>
   <form method="post" action="{{ url_for('gui.provision_validate') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -54,13 +54,13 @@
     <input id="ak" name="AWS_ACCESS_KEY_ID" autocomplete="off" required>
     <label for="sk">AWS_SECRET_ACCESS_KEY</label>
     <input id="sk" name="AWS_SECRET_ACCESS_KEY" type="password" autocomplete="off" required>
-    <div class="actions"><button type="submit" class="btn-primary">Test &amp; Validate</button></div>
+    <div class="actions"><button type="submit" class="btn btn-primary">Test &amp; Validate</button></div>
   </form>
   <p class="hint">On success the key is saved write-only and the region/bucket are set. Then confirm bucket versioning is <strong>on</strong> — object-only keys can't verify bucket-level settings.</p>
 </div>
 
-<div class="note">
-  <h3>What's next</h3>
+<div class="card">
+  <h2>What's next</h2>
   <p>Once the key validates: set your <code>RESTIC_PASSWORD</code> in <a href="{{ url_for('gui.config_page') }}">Config</a>, then create your first backup job from <a href="{{ url_for('gui.jobs_page') }}">Jobs</a>.</p>
 </div>
 {% endif %}
