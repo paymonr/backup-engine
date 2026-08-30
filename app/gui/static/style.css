@@ -5,7 +5,7 @@
   --border: #E3E6EA; --border-strong: #CDD2D9;
   --ink: #14181F; --muted: #545C68; --faint: #636B77;
   --accent: #1F6FEB; --accent-hover: #195fce; --accent-ink: #FFFFFF; --accent-bg: #EAF1FE;
-  --ok: #1A7F5A; --ok-bg: #E9F6EF; --warn: #9A6700; --warn-bg: #FFF6E5;
+  --ok: #1A7F5A; --ok-bg: #E9F6EF; --warn: #9A6700; --warn-bg: #FFF6E5; --warn-border: #EAD9A6;
   --danger: #B42318; --danger-bg: #FCEDEC; --danger-border: #f3c4bf;
   --radius: 6px; --radius-sm: 4px;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -73,6 +73,8 @@ label.inline input { width: auto; }
 .field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-4); }
 fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--sp-4); }
 legend { color: var(--muted); font-size: .85rem; padding: 0 .4rem; }
+/* .retention — versioned-retention fieldset (job_form.html); spaces it from the field above */
+.retention { margin-top: var(--sp-2); }
 .table-scroll { overflow-x: auto; }
 .row-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; justify-content: flex-end; }
 .row-actions form { margin: 0; }
@@ -103,7 +105,8 @@ th { color: var(--muted); font-weight: 560; font-size: .82rem; }
 .flash { list-style: none; padding: 0; margin: 0 0 var(--sp-4); }
 .flash li, .alert { background: var(--accent-bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .6rem .8rem; }
 .alert-error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
-.alert-warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+.alert-warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+.text-warn { color: var(--warn); }
 /* ---- provisioning mode picker (provision_home.html) ---- */
 .modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-4); margin: var(--sp-4) 0 var(--sp-6); }
 .mode-card { display: block; color: var(--ink); }
