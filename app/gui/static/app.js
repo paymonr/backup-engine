@@ -113,3 +113,15 @@
   form.addEventListener("input", function () { clearTimeout(timer); timer = setTimeout(update, 250); });
   form.addEventListener("change", function () { clearTimeout(timer); timer = setTimeout(update, 250); });
 })();
+
+// Current spend: "Refresh usage" / "Connect AWS billing" are plain CSRF-protected
+// form POSTs (the server does the work) — just guard against a double submit.
+(function () {
+  var forms = document.querySelectorAll('form[action$="/costs/refresh"], form[action$="/costs/billing"]');
+  for (var i = 0; i < forms.length; i++) {
+    forms[i].addEventListener("submit", function (ev) {
+      var buttons = ev.target.querySelectorAll('button[type="submit"]');
+      for (var j = 0; j < buttons.length; j++) buttons[j].disabled = true;
+    });
+  }
+})();

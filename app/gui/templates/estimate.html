@@ -21,6 +21,67 @@
 </div>
 
 <div class="card">
+  <h2>Current spend <small>— real bucket usage, priced now</small></h2>
+  {% if current.available is defined and not current.available %}
+  <p class="muted">No usage data yet — refresh to measure what's actually in the bucket (uses the existing runtime key's ListBucket permission; no new access).</p>
+  {% else %}
+  <p class="hint">As of <span>{{ current.fetched_at or '—' }}</span>.</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Prefix</th><th class="num">Size (GB)</th><th>Class</th><th class="num">Monthly (priced now)</th></tr></thead>
+    <tbody>
+      {% for p in current.prefixes %}
+      <tr><th>{{ p.label }}</th><td class="num">{{ "{:,.2f}".format(p.gb) }}</td><td>{{ p.class }}</td><td class="num">{{ money(p.monthly) }}</td></tr>
+      {% endfor %}
+    </tbody>
+    <tfoot><tr><th>Total</th><td></td><td></td><td class="num">{{ money(current.total_monthly) }}</td></tr></tfoot>
+  </table>
+  </div>
+  {% endif %}
+  <form method="post" action="{{ url_for('gui.costs_refresh') }}" class="actions">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit">Refresh usage</button>
+  </form>
+
+  {% if billing.connected %}
+    {% if billing.error %}
+    <p class="alert alert-error">Cost Explorer error: {{ billing.error }}</p>
+    {% else %}
+    <h3>AWS invoice <small>— Cost Explorer</small></h3>
+    <p class="hint">Cost Explorer reports account-wide S3 spend unless a cost-allocation tag is set.{% if billing.tag %} Scoped to tag <code>{{ billing.tag }}</code>.{% endif %}</p>
+    <ul class="totals">
+      {% for m in billing.months %}<li><span class="lbl">{{ m.month }}</span><span>{{ money(m.amount) }}</span></li>{% endfor %}
+      {% if billing.forecast %}<li class="med"><span class="lbl">Forecast {{ billing.forecast.month }}</span><span>{{ money(billing.forecast.amount) }}</span></li>{% endif %}
+    </ul>
+    {% endif %}
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Connect AWS billing <small>— optional, read-only Cost Explorer</small></h2>
+  <p class="hint">A SEPARATE, read-only credential (<code>ce:GetCostAndUsage</code>, <code>ce:GetCostForecast</code>) — never the runtime backup key. Write-only: leave a field blank to keep its current value. Status: <strong>{{ "connected" if billing.connected else "not connected" }}</strong>.</p>
+  <form method="post" action="{{ url_for('gui.costs_billing') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="field-row">
+      <div><label for="ce_key">Access key ID</label>
+        <input id="ce_key" name="COST_EXPLORER_ACCESS_KEY_ID" type="password" autocomplete="new-password"
+               placeholder="{{ '••••• (unchanged)' if billing.connected else 'not set' }}"></div>
+      <div><label for="ce_secret">Secret access key</label>
+        <input id="ce_secret" name="COST_EXPLORER_SECRET_ACCESS_KEY" type="password" autocomplete="new-password"
+               placeholder="{{ '••••• (unchanged)' if billing.connected else 'not set' }}"></div>
+      <div><label for="ce_token">Session token <small>(optional)</small></label>
+        <input id="ce_token" name="COST_EXPLORER_SESSION_TOKEN" type="password" autocomplete="new-password" placeholder="optional"></div>
+      <div><label for="ce_tag">Cost-allocation tag <small>(optional)</small></label>
+        <input id="ce_tag" name="COST_EXPLORER_TAG" placeholder="key=value" value="{{ billing.tag or '' }}"></div>
+    </div>
+    <div class="actions">
+      <button type="submit" class="btn-primary">Connect</button>
+      <button type="submit" name="disconnect" value="1">Disconnect</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
   <h2>Where it goes <small>— per job, per month unless noted</small></h2>
   {% set fields = [('storage','Storage'),('versioning','Versioning'),('ingest_monthly','Ingest'),('rotation_monthly','Rotation'),('upfront_onetime','Upfront (once)'),('restore_per_event','Restore / event')] %}
   <div class="table-scroll">

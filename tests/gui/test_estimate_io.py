@@ -103,6 +103,15 @@ def test_params_packing_requires_positive_member(tmp_path):
         estimate_io.scenario_from_params(
             {"movies_packing": "1", "movies_pack_member_gb": "0"}, _cfg(tmp_path, [AJOB]), SRC)
 
+def test_params_thread_cached_usage_into_base_sizes(tmp_path):
+    # scenario_from_params(..., usage=...) forwards to the internal scenario_from_jobs
+    # call, so the modeled per-job breakdown reflects real measured sizes when a form
+    # param doesn't already override that job's size.
+    real_usage = {"appdata": {"bytes": 30 * 1024 ** 3, "count": 42}}
+    s = estimate_io.scenario_from_params({}, _cfg(tmp_path, [VJOB]), SRC, usage=real_usage)
+    assert _by_name(s)["appdata"].size_gb == 30 and _by_name(s)["appdata"].file_count == 42
+
+
 def test_dotted_job_name_params_are_not_split(tmp_path):
     # A job name containing '.' must be used verbatim as the field prefix.
     dotted = {**VJOB, "name": "app.data"}

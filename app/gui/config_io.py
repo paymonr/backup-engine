@@ -4,6 +4,15 @@ from pathlib import Path
 import re
 
 SECRET_KEYS: tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "RESTIC_PASSWORD")
+# Cost Explorer creds are a SEPARATE, optional, read-only credential set — never
+# the runtime key, and never looped by config.html (which only loops SECRET_KEYS).
+# Managed exclusively on the Cost page via read_cost_explorer_creds/clear_cost_explorer_creds.
+COST_EXPLORER_KEYS: tuple[str, ...] = (
+    "COST_EXPLORER_ACCESS_KEY_ID", "COST_EXPLORER_SECRET_ACCESS_KEY", "COST_EXPLORER_SESSION_TOKEN",
+)
+# Both groups share one secrets.env file; write_secrets/clear_cost_explorer_creds must
+# rebuild the file from this UNION so writing one group never drops the other.
+_MANAGED_KEYS: tuple[str, ...] = SECRET_KEYS + COST_EXPLORER_KEYS
 _KEY_RE = re.compile(r"^\s*#?\s*([A-Z0-9_]+)=")
 _INLINE_COMMENT = re.compile(r"\s#.*$")
 
@@ -63,13 +72,42 @@ def secrets_mode(config_dir: str) -> str | None:
 def write_secrets(config_dir: str, values: dict[str, str]) -> None:
     p = Path(config_dir, "secrets.env")
     existing = _read_secrets_raw(p)
-    for k in SECRET_KEYS:
+    for k in _MANAGED_KEYS:
         v = values.get(k, "")
         if v != "":
             if "\n" in v or "\r" in v:
                 raise ValueError("secret value must not contain a newline")
             existing[k] = v
     body = "# backup-engine secrets — managed by the GUI (mode 600).\n"
-    body += "".join(f"{k}={existing[k]}\n" for k in SECRET_KEYS if k in existing)
+    body += "".join(f"{k}={existing[k]}\n" for k in _MANAGED_KEYS if k in existing)
+    p.write_text(body)
+    p.chmod(0o600)
+
+def read_cost_explorer_creds(config_dir: str) -> dict[str, str] | None:
+    """Optional, read-only Cost Explorer creds mapped to the AWS_* keys billing.py
+    expects. Returns None unless BOTH the key id and secret are present+non-empty
+    (a partially-filled connect attempt is treated as not-connected). Never logged
+    or handed to a template."""
+    vals = _read_secrets_raw(Path(config_dir, "secrets.env"))
+    key = vals.get("COST_EXPLORER_ACCESS_KEY_ID", "")
+    secret = vals.get("COST_EXPLORER_SECRET_ACCESS_KEY", "")
+    if not key or not secret:
+        return None
+    creds = {"AWS_ACCESS_KEY_ID": key, "AWS_SECRET_ACCESS_KEY": secret}
+    token = vals.get("COST_EXPLORER_SESSION_TOKEN", "")
+    if token:
+        creds["AWS_SESSION_TOKEN"] = token
+    return creds
+
+def clear_cost_explorer_creds(config_dir: str) -> None:
+    """Disconnect: drop the CE keys from secrets.env, keeping the core secrets
+    (the write_secrets 'blank keeps existing' guard has no way to express
+    delete, so this rewrites `existing` directly instead)."""
+    p = Path(config_dir, "secrets.env")
+    existing = _read_secrets_raw(p)
+    for k in COST_EXPLORER_KEYS:
+        existing.pop(k, None)
+    body = "# backup-engine secrets — managed by the GUI (mode 600).\n"
+    body += "".join(f"{k}={existing[k]}\n" for k in _MANAGED_KEYS if k in existing)
     p.write_text(body)
     p.chmod(0o600)

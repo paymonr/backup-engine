@@ -3,6 +3,7 @@
 # params -> per-job overrides, and prefills form defaults. Contains NO cost math
 # itself (that lives in app.estimator.model).
 from __future__ import annotations
+from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Mapping
 from . import config_io, jobs_io
@@ -10,6 +11,7 @@ from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days,
 )
 from ..estimator.schedule import backups_per_month
+from ..estimator import usage, billing
 
 RETRIEVAL_TIERS: tuple[str, ...] = ("Bulk", "Standard", "Expedited")
 
@@ -124,10 +126,13 @@ def _apply_job_params(j: JobInputs, params: Mapping) -> JobInputs:
     )
 
 
-def scenario_from_params(params: Mapping, config_dir, source_root) -> Scenario:
+def scenario_from_params(params: Mapping, config_dir, source_root, *, usage=None) -> Scenario:
     """Live what-if: the saved jobs.json Scenario with GUI form params overlaid per
-    job (name-prefixed) plus the scenario-level globals."""
-    base = scenario_from_jobs(config_dir, source_root)
+    job (name-prefixed) plus the scenario-level globals. `usage` (cached usage's
+    `data` dict, keyed like scenario_from_jobs expects) threads real measured sizes
+    into the per-job breakdown when available; back-compat default None falls back
+    to the per-job defaults exactly as before."""
+    base = scenario_from_jobs(config_dir, source_root, usage=usage)
     tier = params.get("retrieval_tier") or base.retrieval_tier
     if tier not in RETRIEVAL_TIERS:
         raise ValueError(f"unknown retrieval tier '{tier}'")
@@ -168,3 +173,66 @@ def form_defaults(config_dir, source_root) -> dict:
             for j in base.jobs
         ],
     }
+
+
+# --- Current spend: real bucket usage priced now + optional Cost Explorer -------
+
+# The versioned aggregate ("appdata") is one shared restic repo across every
+# versioned job — cold storage classes aren't usable for restic yet, so it is
+# always priced at STANDARD regardless of any individual job's chosen class.
+_APPDATA_LABEL = "all versioned jobs (shared repo)"
+
+
+def current_costs(config_dir, cache_dir, prices) -> dict:
+    """Price the last refreshed `usage.collect_usage` snapshot at today's rates —
+    "what you're spending already", independent of the live what-if form. Prefixes
+    with no successful measurement (never refreshed, or that one `rclone size`
+    call failed) are left out rather than zeroing the whole result; the whole
+    thing reports unavailable only when there is nothing usable at all."""
+    cached = usage.load_cached(cache_dir)
+    data = (cached or {}).get("data") or {}
+    jobs_by_name = {j["name"]: j for j in jobs_io.load(config_dir)}
+    prefixes = []
+    for prefix, u in data.items():
+        if not u:
+            continue
+        gb = u["bytes"] / (1024 ** 3)
+        if prefix == "appdata":
+            cls, label = "STANDARD", _APPDATA_LABEL
+        else:
+            name = prefix.split("/", 1)[1] if "/" in prefix else prefix
+            job = jobs_by_name.get(name)
+            cls = (job or {}).get("storage_class", "STANDARD")
+            label = name
+        rate = prices.storage_gb_month.get(cls, 0.0)
+        prefixes.append({
+            "prefix": prefix, "label": label, "bytes": u["bytes"],
+            "gb": gb, "class": cls, "monthly": gb * rate,
+        })
+    if not prefixes:
+        return {"available": False}
+    fetched_at = (cached or {}).get("fetched_at")
+    fetched_str = (datetime.fromtimestamp(fetched_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                  if fetched_at else None)
+    return {
+        "fetched_at": fetched_str,
+        "prefixes": prefixes,
+        "total_monthly": sum(p["monthly"] for p in prefixes),
+    }
+
+
+def billing_view(config_dir) -> dict:
+    """Optional Cost Explorer invoice + forecast via the SEPARATE read-only CE
+    credential. Never returns the creds themselves. `{"connected": False}` when no
+    (complete) CE credential is stored; `{"connected": True, "error": ...}` when
+    stored but the CE call itself fails (bad creds, no CE permission, etc)."""
+    creds = config_io.read_cost_explorer_creds(config_dir)
+    if creds is None:
+        return {"connected": False}
+    tag = config_io.read_backup_env(config_dir).get("COST_EXPLORER_TAG") or None
+    try:
+        months = billing.monthly_costs(creds, tag=tag)
+        fc = billing.forecast(creds)
+    except billing.BillingError as e:
+        return {"connected": True, "error": str(e)}
+    return {"connected": True, "months": months, "forecast": fc, "tag": tag}
