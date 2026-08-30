@@ -100,17 +100,23 @@ def test_backup_new_changed_removed_and_catalog_upload(tmp_path):
     s1 = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
                        bucket="bkt", rclone_config="/cfg", now=now1, runner=r1)
     assert s1 == {"uploaded": 1, "deleted": 0, "pruned": 0}
-    key1 = f"media/j/a.txt@{now1}"
-    puts = [c for c in r1.calls if "copyto" in c and f"s3:bkt/{key1}" in c]
+    key1_prefix = f"media/j/a.txt@{now1}-"  # <ts>-<uuid8>, exact suffix is random
+    puts = [c for c in r1.calls
+            if "copyto" in c and any(a.startswith(f"s3:bkt/{key1_prefix}") for a in c)]
     assert puts, r1.calls
     put = puts[0]
     assert put[put.index("--s3-storage-class") + 1] == "DEEP_ARCHIVE"
-    # catalog reflects the new current version at that exact key
+    # catalog reflects the new current version at that (collision-resistant) key
     conn = catalog.open_catalog(str(cache / "j.sqlite"))
-    assert catalog.current(conn)["a.txt"]["key"] == key1
+    key1 = catalog.current(conn)["a.txt"]["key"]
+    assert key1.startswith(key1_prefix)
     conn.close()
-    # catalog uploaded for durability at the end
-    assert any("s3:bkt/media/j/_catalog/catalog.sqlite" in c for c in r1.calls)
+    # catalog uploaded for durability at the end, forced to STANDARD (the PUT is
+    # the call carrying --s3-storage-class; the earlier GET/download has none)
+    cat_puts = [c for c in r1.calls
+                if "s3:bkt/media/j/_catalog/catalog.sqlite" in c and "--s3-storage-class" in c]
+    assert cat_puts, r1.calls
+    assert cat_puts[0][cat_puts[0].index("--s3-storage-class") + 1] == "STANDARD"
 
     # --- changed file -> DISTINCT new version-key, old becomes non-current ---
     (src / "a.txt").write_bytes(b"hello, world!!")  # different size
@@ -120,10 +126,12 @@ def test_backup_new_changed_removed_and_catalog_upload(tmp_path):
     s2 = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
                        bucket="bkt", rclone_config="/cfg", now=now2, runner=r2)
     assert s2["uploaded"] == 1
-    key2 = f"media/j/a.txt@{now2}"
-    assert any(f"s3:bkt/{key2}" in c for c in r2.calls)
+    key2_prefix = f"media/j/a.txt@{now2}-"
+    assert any(any(a.startswith(f"s3:bkt/{key2_prefix}") for a in c) for c in r2.calls)
     conn = catalog.open_catalog(str(cache / "j.sqlite"))
-    assert catalog.current(conn)["a.txt"]["key"] == key2
+    key2 = catalog.current(conn)["a.txt"]["key"]
+    assert key2.startswith(key2_prefix)
+    assert key2 != key1  # distinct version-key from the first upload
     assert len(catalog.versions(conn, "a.txt")) == 2  # both versions retained
     conn.close()
 
@@ -135,8 +143,12 @@ def test_backup_new_changed_removed_and_catalog_upload(tmp_path):
                           bucket="bkt", rclone_config="/cfg", now=now3, runner=r3)
     assert s3sum["deleted"] == 1
     assert s3sum["uploaded"] == 0
-    # nothing uploaded to a version-key on a pure-delete run (catalog upload aside)
-    assert not any("copyto" in c and any("@1_000" in a for a in c) for c in r3.calls)
+    # a delete-only run pushes NO version-key object (only the catalog upload,
+    # whose key has no '@'): assert no copyto targets an @-versioned job key.
+    assert not any(
+        "copyto" in c and any(a.startswith("s3:bkt/media/j/") and "@" in a for a in c)
+        for c in r3.calls
+    )
     conn = catalog.open_catalog(str(cache / "j.sqlite"))
     assert "a.txt" not in catalog.current(conn)
     conn.close()
@@ -218,6 +230,65 @@ def test_prune_refuses_key_outside_job_prefix(tmp_path):
                       bucket="bkt", rclone_config="/c", now=now, runner=r)
     # the out-of-prefix key was NEVER deleted from S3
     assert not any("media/OTHERJOB/secret@1" in j for j in joined(r.calls))
+
+
+def test_same_second_change_yields_distinct_keys_no_aliasing(tmp_path):
+    # Two backups in the SAME wall-clock second, with a size change between them,
+    # must NOT share a version-key (that would let pruning the old row delete the
+    # object the current row still points at).
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"one")
+    os.utime(src / "a.txt", (10, 10))
+    cache = tmp_path / "cache"
+    job = make_job(retention_days=1)
+    now = 1_000_000  # identical for both runs
+
+    vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                  bucket="bkt", rclone_config="/c", now=now, runner=StubRunner())
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    k1 = catalog.current(conn)["a.txt"]["key"]
+    conn.close()
+
+    (src / "a.txt").write_bytes(b"two-different-length")  # size change
+    os.utime(src / "a.txt", (11, 11))
+    vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                  bucket="bkt", rclone_config="/c", now=now, runner=StubRunner())
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    keys = [v["key"] for v in catalog.versions(conn, "a.txt")]
+    k2 = catalog.current(conn)["a.txt"]["key"]
+    conn.close()
+
+    assert k1.startswith(f"media/j/a.txt@{now}-") and k2.startswith(f"media/j/a.txt@{now}-")
+    assert k1 != k2               # distinct despite the identical second
+    assert len(set(keys)) == 2    # no two rows share an object
+
+
+def test_prune_never_deletes_object_a_current_row_shares(tmp_path):
+    # Belt-and-suspenders: even if two rows somehow shared a key, pruning the old
+    # one must NOT s3.delete the object the current row still references.
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    shared = "media/j/a.txt@1000-deadbeef"
+    catalog.record_version(conn, "a.txt", shared, 3, 10.0, "STANDARD", 100.0)   # old, non-current
+    catalog.record_version(conn, "a.txt", shared, 5, 11.0, "STANDARD", 100.0)   # current, SAME crafted key
+    conn.close()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"hello")
+    os.utime(src / "a.txt", (11, 11))  # size 5, mtime 11 -> matches current -> unchanged
+
+    job = make_job(retention_days=1)
+    now = 1_000_000  # old row (uploaded_at 100) < before(913600) -> prunable
+    r = StubRunner()
+    s = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                      bucket="bkt", rclone_config="/c", now=now, runner=r)
+    assert s["pruned"] == 1                              # old row removed from catalog
+    assert not any(shared in j for j in joined(r.calls))  # object NEVER deleted from S3
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    assert catalog.current(conn)["a.txt"]["key"] == shared  # current version intact
+    conn.close()
 
 
 def test_backup_attempts_catalog_download_and_survives_failure(tmp_path):

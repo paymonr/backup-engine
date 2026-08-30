@@ -11,13 +11,17 @@
 # durability.
 #
 # Version-key scheme (consistent across backup/restore/prune/integration):
-#     media/<job>/<relpath>@<int(now)>
-# where <relpath> is the file path relative to the job source. The current
-# version of a path is the newest by uploaded_at (catalog.record_version keeps
-# is_current in sync).
+#     media/<job>/<relpath>@<int(now)>-<uuid4 hex[:8]>
+# where <relpath> is the file path relative to the job source. The trailing
+# random suffix makes keys collision-resistant: two backups in the SAME second
+# that both re-upload a path get DISTINCT keys, so pruning an old version can
+# never s3.delete the object a newer version still points at. Restore/prune read
+# the exact stored key, so the suffix is free. The current version of a path is
+# the newest by uploaded_at (catalog.record_version keeps is_current in sync).
 from __future__ import annotations
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 from app.engine import catalog, s3
@@ -71,7 +75,9 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
         uploaded = 0
         for entry in d["new"] + d["changed"]:
             rel = entry["path"]
-            key = f"{prefix}{rel}@{ts}"  # media/<job>/<relpath>@<int(now)>
+            # media/<job>/<relpath>@<int(now)>-<uuid4 hex[:8]>; the suffix
+            # guarantees a distinct object per version even within one second.
+            key = f"{prefix}{rel}@{ts}-{uuid.uuid4().hex[:8]}"
             local = str(Path(source_root) / rel)
             s3.put(local, key, storage_class,
                    bucket=bucket, rclone_config=rclone_config, runner=runner)
@@ -91,7 +97,10 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
         pruned = 0
         for row in catalog.prunable(conn, before):
             key = row["key"]
-            if key:  # tombstone rows have key=None -> nothing in S3 to delete
+            # tombstone rows have key=None -> nothing in S3 to delete. And never
+            # s3.delete an object a live (is_current=1) row still points at --
+            # belt-and-suspenders against any key ever being shared across rows.
+            if key and not catalog.is_current_key(conn, key):
                 # Load-bearing safety: never delete an object outside this job's
                 # own prefix, whatever a (possibly corrupted/crafted) row claims.
                 if not key.startswith(prefix):

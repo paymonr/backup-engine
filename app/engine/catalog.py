@@ -147,6 +147,15 @@ def prunable(conn: sqlite3.Connection, before_ts) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def is_current_key(conn: sqlite3.Connection, key) -> bool:
+    """True if some is_current=1 row still references this exact storage key.
+    Prune uses this as a belt-and-suspenders guard: it must never s3.delete an
+    object a live version still points at (e.g. if two rows ever shared a key)."""
+    return conn.execute(
+        "SELECT 1 FROM versions WHERE key = ? AND is_current = 1 LIMIT 1", (key,)
+    ).fetchone() is not None
+
+
 def delete_version(conn: sqlite3.Connection, id) -> None:
     """Remove a version row from the catalog (after its storage object, if
     any, has been deleted by the caller)."""
