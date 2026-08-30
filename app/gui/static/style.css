@@ -59,12 +59,26 @@ label { display: block; font-weight: 520; color: var(--ink); margin: 0 0 var(--s
 input, select, textarea { font: inherit; width: 100%; max-width: 26rem; padding: .5rem .6rem;
   background: var(--surface); color: var(--ink); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
-label.inline { display: inline-flex; align-items: center; gap: .5rem; font-weight: 460; }
+label.inline { display: flex; align-items: center; gap: .5rem; font-weight: 460; }
 label.inline input { width: auto; }
 .field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-4); }
 fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--sp-4); }
 legend { color: var(--muted); font-size: .85rem; padding: 0 .4rem; }
 .table-scroll { overflow-x: auto; }
+.row-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; justify-content: flex-end; }
+.row-actions form { margin: 0; }
+/* .tree — confined folder picker (#source-tree in job_form.html): the root <ul>
+   is the scroll box; JS appends nested <ul class="tree"> per expanded folder,
+   matched by the descendant rule below so only the outer list gets the box. */
+.tree { list-style: none; margin: 0; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); max-height: 320px; overflow: auto; background: var(--surface); }
+.tree .tree { border: 0; padding: 0 0 0 1.1rem; margin-top: .1rem; max-height: none; overflow: visible; background: transparent; }
+.tree li { margin: .1rem 0; }
+.tree label { display: inline-flex; align-items: center; gap: .4rem; font-weight: 460; margin: 0; }
+.tree label input { width: auto; }
+.tree .expand { appearance: none; background: transparent; border: 0; cursor: pointer; width: 1.1rem;
+  color: var(--muted); font: inherit; line-height: 1; padding: 0; }
+.tree .expand:hover { color: var(--ink); }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: .55rem .6rem; border-bottom: 1px solid var(--border); }
 th { color: var(--muted); font-weight: 560; font-size: .82rem; }

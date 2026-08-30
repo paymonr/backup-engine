@@ -34,10 +34,12 @@
     <label>Storage class <select name="storage_class">{% for c in storage_classes %}<option value="{{c}}" {{ 'selected' if job and job.storage_class==c }}>{{c}}</option>{% endfor %}</select></label>
     <fieldset class="retention"><legend>Versioned retention (keep)</legend>
       {% set k = job.keep if job and job.keep else {'last':3,'daily':7,'weekly':4,'monthly':6} %}
-      <label>last <input type="number" min="0" name="keep_last" value="{{ k.last }}"></label>
-      <label>daily <input type="number" min="0" name="keep_daily" value="{{ k.daily }}"></label>
-      <label>weekly <input type="number" min="0" name="keep_weekly" value="{{ k.weekly }}"></label>
-      <label>monthly <input type="number" min="0" name="keep_monthly" value="{{ k.monthly }}"></label>
+      <div class="field-row">
+        <label>last <input type="number" min="0" name="keep_last" value="{{ k.last }}"></label>
+        <label>daily <input type="number" min="0" name="keep_daily" value="{{ k.daily }}"></label>
+        <label>weekly <input type="number" min="0" name="keep_weekly" value="{{ k.weekly }}"></label>
+        <label>monthly <input type="number" min="0" name="keep_monthly" value="{{ k.monthly }}"></label>
+      </div>
     </fieldset>
     <label class="inline"><input type="checkbox" name="mirror" value="1" {{ 'checked' if job and job.mirror }}> Mirror (archive: delete removed files too)</label>
   </div>
@@ -45,6 +47,6 @@
     <label>Job name <input name="name" value="{{ job.name if job else '' }}" {{ 'readonly' if job }} required placeholder="nightly-configs"></label>
     <p class="hint">Letters, digits, dot, dash, underscore. Used as the S3 prefix / restic tag.</p>
   </div>
-  <div class="actions"><button type="submit" class="btn-primary">Save job</button> <a class="btn" href="{{ url_for('gui.jobs_page') }}">Cancel</a></div>
+  <div class="actions"><button type="submit" class="btn btn-primary">Save job</button> <a class="btn" href="{{ url_for('gui.jobs_page') }}">Cancel</a></div>
 </form>
 {% endblock %}
