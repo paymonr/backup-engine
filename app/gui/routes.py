@@ -1,13 +1,20 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
 from dataclasses import asdict
+from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
-from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io
-from ..estimator.model import estimate, STORAGE_CLASSES, effective_retention_days
+from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io, dirsize, attributions
+from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
+from ..estimator import usage
 
 bp = Blueprint("gui", __name__)
+
+@bp.get("/about")
+def about_page():
+    return render_template("about.html", third_party=attributions.THIRD_PARTY,
+                           version=current_app.config.get("VERSION", "0.1.0-dev"))
 
 @bp.get("/")
 def index():
@@ -168,6 +175,36 @@ def jobs_browse():
     base = request.args.get("path", "").strip("/")
     return jsonify({"entries": [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]})
 
+@bp.get("/jobs/source-size")
+def jobs_source_size():
+    cfg = current_app.config
+    try:
+        # Confined via dirsize.dir_size -> fsbrowse.safe_resolve; same no-echo 404
+        # contract as /jobs/browse above. The wizard only ever passes FOLDER paths.
+        d = dirsize.dir_size(cfg["SOURCE_ROOT"], request.args.get("path", ""))
+    except fsbrowse.PathError:
+        abort(404)  # no path echo
+    return jsonify(d)
+
+@bp.get("/jobs/estimate.json")
+def jobs_estimate_json():
+    # Live wizard cost: GET, side-effect-free -> no CSRF needed.
+    cfg = current_app.config
+    region = estimate_io._region(cfg["CONFIG_DIR"])
+    try:
+        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    except Exception:
+        # Belt-and-suspenders: load_prices no longer raises for an un-bundled region
+        # (it falls back to us-east-1), but any future pricing failure must degrade
+        # the wizard to "—" rather than 500.
+        return jsonify({"this_job_monthly": None, "new_total_monthly": None,
+                        "price_source": None, "price_date": None})
+    try:
+        result = estimate_io.wizard_estimate(request.args, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"], prices)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({**result, "price_source": prices.source, "price_date": prices.date})
+
 @bp.post("/jobs")
 def job_save():
     if not security.verify_csrf(request.form.get("csrf", "")):
@@ -218,36 +255,86 @@ def job_delete(name):
     flash(f"Deleted {name}.")
     return redirect(url_for("gui.jobs_page"))
 
-def _compute(config_dir, params):
-    scenario = estimate_io.scenario_from_params(params, config_dir)
-    return scenario, estimate(scenario, load_prices(scenario.region))
+def _compute(cfg, params):
+    cached = usage.load_cached(cfg["CACHE_DIR"])
+    scenario = estimate_io.scenario_from_params(params, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"],
+                                                usage=(cached or {}).get("data"))
+    prices = load_prices(scenario.region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    return scenario, estimate(scenario, prices)
 
 @bp.get("/estimate")
 def estimate_page():
     cfg = current_app.config
-    d = estimate_io.form_defaults(cfg["CONFIG_DIR"])
+    d = estimate_io.form_defaults(cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"])
     est = None
     error = None
-    appdata_retention = effective_retention_days(
-        keep_last=d["keep_last"], keep_daily=d["keep_daily"],
-        keep_weekly=d["keep_weekly"], keep_monthly=d["keep_monthly"])
     try:
-        scenario, est = _compute(cfg["CONFIG_DIR"], request.args)
-        appdata_retention = scenario.appdata.versioning_retention_days
+        _scn, est = _compute(cfg, request.args)
     except ValueError as e:
         error = str(e)
+    # Current spend is independent of the (possibly invalid) live what-if params —
+    # it prices the last refreshed real usage, so compute it off the saved region.
+    # Guard the pricing load: with FIX 1 load_prices no longer raises for an
+    # un-bundled region, but a total pricing failure must degrade current-spend to
+    # "unavailable" rather than 500 the whole page.
+    region = estimate_io._region(cfg["CONFIG_DIR"])
+    try:
+        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    except Exception:
+        prices = None
+    current = (estimate_io.current_costs(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices)
+               if prices is not None else {"available": False})
+    billing = estimate_io.billing_view(cfg["CONFIG_DIR"])
     return render_template("estimate.html", d=d, est=est, error=error,
-                           appdata_retention=appdata_retention,
                            storage_classes=STORAGE_CLASSES,
-                           retrieval_tiers=estimate_io.RETRIEVAL_TIERS)
+                           retrieval_tiers=estimate_io.RETRIEVAL_TIERS,
+                           current=current, billing=billing,
+                           csrf=security.issue_csrf())
 
 @bp.get("/estimate.json")
 def estimate_json():
     cfg = current_app.config
     try:
-        scenario, est = _compute(cfg["CONFIG_DIR"], request.args)
+        _scn, est = _compute(cfg, request.args)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    payload = asdict(est)
-    payload["appdata_retention_days"] = scenario.appdata.versioning_retention_days
-    return jsonify(payload)
+    return jsonify(asdict(est))
+
+@bp.post("/costs/refresh")
+def costs_refresh():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    bucket = config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_BUCKET", "").strip()
+    if not bucket:
+        flash("Set an S3 bucket in Config before refreshing usage.")
+        return redirect(url_for("gui.estimate_page"))
+    jobs = jobs_io.load(cfg["CONFIG_DIR"])
+    archive_jobs = [j["name"] for j in jobs if j.get("type") == "archive"]
+    has_versioned = any(j.get("type") == "versioned" for j in jobs)
+    # The container's rendered rclone.conf already carries the runtime key +
+    # endpoint (scripts/lib/rclone-conf.sh) — no creds needed here, and none new.
+    rclone_config = str(Path(cfg["CACHE_DIR"], "rclone.conf"))
+    data = usage.collect_usage(bucket, archive_jobs, has_versioned, rclone_config=rclone_config)
+    usage.save_cached(cfg["CACHE_DIR"], data)
+    flash("Usage refreshed.")
+    return redirect(url_for("gui.estimate_page"))
+
+@bp.post("/costs/billing")
+def costs_billing():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400)
+    cfg = current_app.config
+    if request.form.get("disconnect"):
+        config_io.clear_cost_explorer_creds(cfg["CONFIG_DIR"])
+        flash("Disconnected AWS billing.")
+        return redirect(url_for("gui.estimate_page"))
+    config_io.write_secrets(cfg["CONFIG_DIR"],
+                            {k: request.form.get(k, "") for k in config_io.COST_EXPLORER_KEYS})
+    tag = request.form.get("COST_EXPLORER_TAG", "").strip()
+    if tag:
+        config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
+                                   {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
+                                    "COST_EXPLORER_TAG": tag})
+    flash("Connected AWS billing.")
+    return redirect(url_for("gui.estimate_page"))

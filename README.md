@@ -244,32 +244,100 @@ no-tier backend — at the cost of a slow, egress-billed restore (12–48h thaw 
 fees, see the runbook above). Versioned jobs (e.g. appdata) should stay on Standard — they're
 usually much smaller, and a cold class isn't usable there yet in Phase 1 (see the
 [Configure](#configure) storage-class note and the restore runbook). Cold versioned jobs are a
-Phase-3 feature. A GUI cost-estimate screen with live
-what-if now ships (see [GUI](#gui)); multi-region price tables are still a later phase. The headless
-`estimate` CLI below is also available.
+Phase-3 feature. For real numbers on your own jobs — what you're actually spending today, a
+per-job breakdown, and a live what-if — see [Cost estimator](#cost-estimator) below.
 
 ## Cost estimator
 
-Estimate what a given backup shape will cost on S3 before you commit to a storage class:
+Two ways to see what your jobs cost: a headless CLI (fully offline, bundled prices) and a live
+GUI page (real-time AWS prices by default, plus what you're actually spending today).
 
-    python3 -m app.estimator                 # uses defaults + /config/backup.env if present
-    python3 -m app.estimator --media-size-gb 4000 --media-storage-class DEEP_ARCHIVE --retrieval-tier Bulk
+### CLI
+
+    python3 -m app.estimator                 # prices your saved config/jobs.json (+ backup.env for region)
+    python3 -m app.estimator --region us-west-2 --retrieval-tier Bulk
     python3 -m app.estimator --json           # machine-readable breakdown
     python3 -m app.estimator --assumptions    # what the model does and does not account for
 
-It reads `AWS_REGION` and the storage classes from `backup.env` when present (flags override),
-runs fully offline against a bundled, dated us-east-1 price table, and prints a per-pipeline
-line-item breakdown plus monthly, first-year, and illustrative full-restore totals.
+It reads `config/jobs.json` (your saved jobs — sizes come from last-measured usage where
+available, else a modest per-job default) and `AWS_REGION` from `backup.env` (flags override),
+runs fully offline against a bundled, dated **us-east-1** price table, and prints a per-job
+line-item breakdown plus monthly, first-year, and illustrative full-restore totals. Only us-east-1
+is bundled, so for another `--region`/`AWS_REGION` the CLI reuses those us-east-1 rates as a
+labeled approximation (region-independent policy constants apply as-is). The CLI never fetches
+live prices — see [Live pricing](#live-pricing) below for where that happens.
 
-The same model backs the live **Cost estimate** screen in the [GUI](#gui): the form is prefilled
-from your `backup.env` (storage classes + restic keep-policy), and the per-pipeline breakdown and
-totals update as you change inputs. Retention is surfaced — the restic keep-policy drives an
-effective appdata history window, and S3 noncurrent-version retention is its own input.
+### GUI — the Cost estimate page
+
+The same per-job cost model backs the GUI's **Cost estimate** page (`/estimate`, "Cost estimate"
+in the nav), in three parts:
+
+- **Current spend** — what you're actually paying today: each job's real S3 usage, measured via
+  `rclone size` against the runtime key's *existing* `s3:ListBucket` permission (no IAM change,
+  no new access), priced at current rates. Nothing is measured on page load; click **Refresh
+  usage** to remeasure on demand — the page shows when usage was last refreshed. When
+  [Cost Explorer is connected](#connect-aws-billing-optional) this section also shows the true
+  AWS **invoice** for the last few months and a **forecast** for next month, straight from AWS
+  billing.
+- **Where it goes** — the per-job breakdown (storage, versioning, ingest, rotation, upfront,
+  restore-per-event) from the same cost model as the CLI.
+- **What are you backing up? / Restore & retention assumptions** — the future/what-if inputs.
+  Change any job's size, storage class, file count, backup frequency, change rate, retention, or
+  restore assumptions, and the hero totals (per month / first year / full restore) update live.
+
+The **job create/edit wizard** shows live cost too — "This job" and "New total" (every other
+saved job plus this one) update as you pick a folder, storage class, and retention, so you see
+the cost impact before you save.
+
+#### Live pricing
+
+By default the Cost estimate page (both current-spend and what-if numbers) is priced from
+**AWS's public S3 Price List Bulk API** — a public endpoint, **no AWS credentials needed**.
+Rates are fetched for the target region from the public API, cached under the cache path, and
+refreshed roughly weekly; on any network or parse failure — or when live pricing is disabled —
+it falls back to the bundled table (`app/estimator/prices/us-east-1.json`, the same one the CLI
+always uses). Only us-east-1 is bundled, so for a region the bundled table doesn't cover the
+**offline** fallback reuses the us-east-1 **rates** as a labeled approximation (the price table's
+`source` says so); the policy **constants** — minimum billable object size, minimum storage
+durations — are region-independent and apply as-is. So the page still works offline or against any
+region, but off us-east-1 the offline numbers are approximate until a live fetch supplies that
+region's real rates. Set `PRICES_LIVE=false` in the environment to force the bundled table only.
+
+#### Connect AWS billing (optional)
+
+Cost Explorer is **off by default** and entirely **opt-in** — the page works fine without it,
+just with modeled numbers instead of your true invoice. Connect it from the Cost estimate page's
+"Connect AWS billing" form:
+
+- It's a **separate, read-only** AWS credential — `COST_EXPLORER_ACCESS_KEY_ID` /
+  `COST_EXPLORER_SECRET_ACCESS_KEY` / optional `COST_EXPLORER_SESSION_TOKEN` — **never the
+  runtime backup key**, and it needs only `ce:GetCostAndUsage` / `ce:GetCostForecast`. The
+  least-privilege runtime IAM policy (see
+  [Provision the destination](#provision-the-destination)) is unchanged. The same fields can be
+  set by hand in `secrets.env` too (see
+  [`config/secrets.env.example`](config/secrets.env.example)), though the form is the normal way in.
+- Stored **write-only**, like the other secret fields on the config editor — the form never
+  redisplays it; leave a field blank to keep it, fill it to replace it, or use **Disconnect** to
+  clear it.
+- Cost Explorer's S3 total is **account-wide** — every S3 bucket on the account, not just this
+  one — unless you set a **cost-allocation tag** (the form's optional tag field, `key=value`,
+  stored as `COST_EXPLORER_TAG` in `backup.env`) that's actually applied to this bucket.
+
+#### Honest limitations
+
+- **Versioned jobs share one restic repo** (`s3:<bucket>/appdata`, tag-scoped per job — see the
+  [Restore runbook](#restore-runbook)), so "Current spend" can't attribute real usage to an
+  individual versioned job — every versioned job shows as **one aggregate line** ("all versioned
+  jobs (shared repo)"). The "Where it goes" *estimate* breakdown still shows one row per job.
+- Cost Explorer's S3 total is account-wide unless a cost-allocation tag scopes it (above).
+- This is **decision-support, not billing-accurate** — a modeling aid for comparing storage
+  classes and job shapes, not a substitute for your AWS bill.
 
 ## GUI
 
-A small web UI (config editor + run/status/logs + a live cost-estimate screen) ships in the container, served on `GUI_PORT`
-(default 8099). Reach it at `http://<host>:8099`.
+A small web UI (config editor + run/status/logs + a job-aware [Cost estimate](#cost-estimator)
+page) ships in the container, served on `GUI_PORT` (default 8099). Reach it at
+`http://<host>:8099`.
 
 > ⚠ **No authentication.** The GUI has no login of its own — put it behind your reverse proxy /
 > SSO and never expose it directly to the internet. Set `GUI_ENABLED=false` in `backup.env` to
@@ -282,9 +350,11 @@ A small web UI (config editor + run/status/logs + a live cost-estimate screen) s
   from a confined browser over `SOURCE_ROOT` (the single read-only mount, e.g. `/mnt/user` —
   mounted once, so the container can see everything without a mount per folder), an intent
   (**versioned**, via restic, or **archive**, via rclone), a cron schedule, and — depending on
-  type — restic retention (keep last/daily/weekly/monthly) or archive mirror mode. Saving writes
-  `config/jobs.json`. Each job's row also has **Run now** (trigger it immediately) and its
-  last-run outcome; **Edit**/**Delete** manage the job (see [Configure](#configure) and the
+  type — restic retention (keep last/daily/weekly/monthly) or archive mirror mode. As you fill in
+  the wizard, a live cost panel shows what **this job** would add and the **new total** across
+  every saved job (see [Cost estimator](#cost-estimator)). Saving writes `config/jobs.json`. Each
+  job's row also has **Run now** (trigger it immediately) and its last-run outcome;
+  **Edit**/**Delete** manage the job (see [Configure](#configure) and the
   [Restore runbook](#restore-runbook) for the resulting `appdata` (shared repo) /
   `media/<job>/…` S3 layout).
 
@@ -332,6 +402,22 @@ Planned, not yet built:
 - **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.
 - **Per-run history** — a persisted run history beyond the last-run state.
 - **Scheduler liveness / health endpoint** — surface whether the background scheduler (supercronic) is still running, so a silent crash is visible in the GUI.
+
+## Third-party software
+
+backup-engine bundles and invokes these open-source tools — thanks to their authors and
+maintainers. Each is redistributed under its own license (the full license texts ship with the
+tools in the container image). The GUI's **About** page (footer link) shows the same list.
+
+| Component | Role | License |
+|---|---|---|
+| [restic](https://restic.net) | versioned & encrypted snapshot engine | BSD-2-Clause |
+| [rclone](https://rclone.org) | archive / sync engine | MIT |
+| [supercronic](https://github.com/aptible/supercronic) | in-container cron scheduler | MIT |
+| [AWS CLI](https://github.com/aws/aws-cli) | S3 usage + Cost Explorer calls | Apache-2.0 |
+| [OpenTofu](https://opentofu.org) | provisioning (bucket + least-privilege IAM) | MPL-2.0 |
+| [Flask](https://flask.palletsprojects.com) | web GUI framework | BSD-3-Clause |
+| [Waitress](https://github.com/Pylons/waitress) | production WSGI server | ZPL-2.1 |
 
 ## Development
 

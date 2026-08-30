@@ -8,7 +8,9 @@
   <Project>https://github.com/paymonr/backup-engine</Project>
   <Overview>Off-site, encrypted AWS S3 backups for Unraid: define backup jobs — versioned via restic, archive via rclone (e.g. Glacier Deep Archive) — for any folder under one read-only source mount. The off-site leg of a 3-2-1 strategy.
 
-Before starting this container, provision an AWS destination (bucket + least-privilege IAM user) with the included OpenTofu module or the scripted `setup.sh` — see the README — then populate backup.env / secrets.env under the Config path below, and create backup jobs (versioned via restic / archive via rclone) in the GUI → Jobs.</Overview>
+Before starting this container, provision an AWS destination (bucket + least-privilege IAM user) with the included OpenTofu module or the scripted `setup.sh` — see the README — then populate backup.env / secrets.env under the Config path below, and create backup jobs (versioned via restic / archive via rclone) in the GUI → Jobs.
+
+The GUI's Cost estimate page shows a job-aware view of what you're spending — real bucket usage priced at live AWS rates (no credentials needed), a per-job breakdown, and a live what-if — plus an optional connection to AWS Cost Explorer for the true invoice/forecast, via a separate, read-only credential you enter on that page (never the runtime backup key).</Overview>
   <Category>Backup:</Category>
   <WebUI>http://[IP]:[PORT:8099]/</WebUI>
   <Config Name="Source root (ro)" Target="/backup/media" Default="/mnt/user" Mode="ro" Type="Path" Display="always" Required="true">Parent of everything you might back up (read-only). Create backup jobs in the GUI → Jobs.</Config>

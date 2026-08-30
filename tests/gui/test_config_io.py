@@ -85,3 +85,56 @@ def test_parse_env_strips_real_inline_comment_keeping_embedded_spaces(dirs):
     from app.gui.config_io import _parse_env
     vals = _parse_env("NIGHTLY_CRON=0 3 * * *      # nightly\n")
     assert vals["NIGHTLY_CRON"] == "0 3 * * *"
+
+
+# --- RULING R-7-1: Cost Explorer creds share secrets.env with the core secrets
+# without corrupting either group. -------------------------------------------
+
+def test_write_secrets_of_one_group_preserves_the_other(dirs):
+    cio.write_secrets(dirs["config"], {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "shh",
+                                       "RESTIC_PASSWORD": "pw"})
+    cio.write_secrets(dirs["config"], {"COST_EXPLORER_ACCESS_KEY_ID": "CEKEY",
+                                       "COST_EXPLORER_SECRET_ACCESS_KEY": "CESECRET"})
+    raw = cio._read_secrets_raw(Path(dirs["config"], "secrets.env"))
+    assert raw["AWS_ACCESS_KEY_ID"] == "AKIA" and raw["RESTIC_PASSWORD"] == "pw"
+    assert raw["COST_EXPLORER_ACCESS_KEY_ID"] == "CEKEY"
+    # writing core secrets again must not drop the CE keys either
+    cio.write_secrets(dirs["config"], {"RESTIC_PASSWORD": "pw2"})
+    raw = cio._read_secrets_raw(Path(dirs["config"], "secrets.env"))
+    assert raw["COST_EXPLORER_ACCESS_KEY_ID"] == "CEKEY"
+    assert raw["RESTIC_PASSWORD"] == "pw2"
+
+
+def test_read_cost_explorer_creds_none_unless_both_keys_present(dirs):
+    assert cio.read_cost_explorer_creds(dirs["config"]) is None
+    cio.write_secrets(dirs["config"], {"COST_EXPLORER_ACCESS_KEY_ID": "CEKEY"})
+    assert cio.read_cost_explorer_creds(dirs["config"]) is None   # secret still missing
+
+
+def test_read_cost_explorer_creds_maps_to_aws_keys(dirs):
+    cio.write_secrets(dirs["config"], {"COST_EXPLORER_ACCESS_KEY_ID": "CEKEY",
+                                       "COST_EXPLORER_SECRET_ACCESS_KEY": "CESECRET",
+                                       "COST_EXPLORER_SESSION_TOKEN": "TOK"})
+    creds = cio.read_cost_explorer_creds(dirs["config"])
+    assert creds == {"AWS_ACCESS_KEY_ID": "CEKEY", "AWS_SECRET_ACCESS_KEY": "CESECRET",
+                     "AWS_SESSION_TOKEN": "TOK"}
+
+
+def test_read_cost_explorer_creds_omits_token_when_unset(dirs):
+    cio.write_secrets(dirs["config"], {"COST_EXPLORER_ACCESS_KEY_ID": "CEKEY",
+                                       "COST_EXPLORER_SECRET_ACCESS_KEY": "CESECRET"})
+    creds = cio.read_cost_explorer_creds(dirs["config"])
+    assert "AWS_SESSION_TOKEN" not in creds
+
+
+def test_clear_cost_explorer_creds_removes_ce_keeps_core(dirs):
+    cio.write_secrets(dirs["config"], {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "shh",
+                                       "RESTIC_PASSWORD": "pw",
+                                       "COST_EXPLORER_ACCESS_KEY_ID": "CEKEY",
+                                       "COST_EXPLORER_SECRET_ACCESS_KEY": "CESECRET"})
+    cio.clear_cost_explorer_creds(dirs["config"])
+    raw = cio._read_secrets_raw(Path(dirs["config"], "secrets.env"))
+    assert "COST_EXPLORER_ACCESS_KEY_ID" not in raw and "COST_EXPLORER_SECRET_ACCESS_KEY" not in raw
+    assert raw["AWS_ACCESS_KEY_ID"] == "AKIA" and raw["RESTIC_PASSWORD"] == "pw"
+    assert cio.secrets_mode(dirs["config"]) == "600"
+    assert cio.read_cost_explorer_creds(dirs["config"]) is None

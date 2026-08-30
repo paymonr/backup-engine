@@ -27,12 +27,19 @@ class JobsFileError(ValueError):
     hand-fixable) bytes. A ValueError subclass so existing `except ValueError`
     write-path handlers still catch it, while routes can catch it specifically."""
 
-def _parse_jobs(text: str) -> list[dict]:
+def _parse_jobs(text: str, *, drop_invalid_names: bool = False) -> list[dict]:
     # Parse jobs.json text into a list of job dicts, or raise ValueError with a
     # human reason. Shape errors (top-level not a dict, `jobs` not a list, or a
     # non-dict entry) are treated like a parse error: the file as a whole is
     # unusable, so callers degrade to "no jobs" rather than crash downstream on
     # `j.get(...)` / `j["name"]`.
+    #
+    # drop_invalid_names=True (the fail-SAFE read path only, via load()) additionally
+    # DROPS any dict entry whose "name" fails valid_name() — a nameless/invalid-named
+    # entry can't be keyed or rendered (routes do j["name"], estimate_io does
+    # j['name']), so it would 500 /jobs, /estimate, /costs/refresh. The WRITE path
+    # (_load_strict) leaves entries untouched so a save never silently discards the
+    # user's hand-edited bytes; upsert()/validate() reject a bad new job loudly.
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
@@ -44,6 +51,9 @@ def _parse_jobs(text: str) -> list[dict]:
         raise ValueError('"jobs" is not a list')
     if not all(isinstance(j, dict) for j in jobs):
         raise ValueError('"jobs" contains a non-object entry')
+    if drop_invalid_names:
+        jobs = [j for j in jobs
+                if isinstance(j.get("name"), str) and valid_name(j["name"])]
     return list(jobs)
 
 def load(config_dir) -> list[dict]:
@@ -56,7 +66,7 @@ def load(config_dir) -> list[dict]:
     if not p.exists():
         return []
     try:
-        return _parse_jobs(p.read_text())
+        return _parse_jobs(p.read_text(), drop_invalid_names=True)
     except ValueError as e:
         print(f"jobs.json: {e} — ignoring (no jobs loaded)", file=sys.stderr)
         return []
