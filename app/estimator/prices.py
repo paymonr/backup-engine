@@ -37,9 +37,17 @@ class PriceTable:
             min_storage_duration_days=con["min_storage_duration_days"],
         )
 
-def load_prices(region: str, prices_dir: Path | None = None) -> PriceTable:
+def load_prices(region: str, prices_dir: Path | None = None, *,
+                cache_dir: str | None = None, live: bool = False) -> PriceTable:
     base = prices_dir or _MODULE_PRICES_DIR
     path = base / f"{region}.json"
     if not path.is_file():
         raise ValueError(f"no bundled price table for region '{region}' (looked for {path})")
-    return PriceTable.from_dict(json.loads(path.read_text()))
+    bundled = PriceTable.from_dict(json.loads(path.read_text()))
+    if not live:
+        return bundled
+    try:
+        from . import pricing_live
+        return pricing_live.load_live(region, cache_dir, bundled)
+    except Exception:  # any network/parse failure -> bundled
+        return bundled

@@ -1,0 +1,198 @@
+{
+  "formatVersion": "v1.0",
+  "disclaimer": "This is a TRIMMED sample for tests, not a real AWS offer file.",
+  "offerCode": "AmazonS3",
+  "version": "20260801000000",
+  "publicationDate": "2026-08-01T00:00:00Z",
+  "products": {
+    "STANDARD_SKU": {
+      "sku": "STANDARD_SKU",
+      "productFamily": "Storage",
+      "attributes": {
+        "servicecode": "AmazonS3",
+        "location": "US East (N. Virginia)",
+        "locationType": "AWS Region",
+        "storageClass": "General Purpose",
+        "volumeType": "Standard",
+        "usagetype": "TimedStorage-ByteHrs",
+        "operation": ""
+      }
+    },
+    "DEEP_ARCHIVE_SKU": {
+      "sku": "DEEP_ARCHIVE_SKU",
+      "productFamily": "Storage",
+      "attributes": {
+        "servicecode": "AmazonS3",
+        "location": "US East (N. Virginia)",
+        "locationType": "AWS Region",
+        "storageClass": "Deep Archive",
+        "volumeType": "Glacier Deep Archive",
+        "usagetype": "TimedStorage-GDA-ByteHrs",
+        "operation": ""
+      }
+    },
+    "TIER1_REQUEST_SKU": {
+      "sku": "TIER1_REQUEST_SKU",
+      "productFamily": "API Request",
+      "attributes": {
+        "servicecode": "AmazonS3",
+        "location": "US East (N. Virginia)",
+        "locationType": "AWS Region",
+        "group": "S3-API-Tier1",
+        "groupDescription": "PUT, COPY, POST, or LIST Requests",
+        "usagetype": "Requests-Tier1",
+        "operation": "PutObject"
+      }
+    },
+    "TIER2_REQUEST_SKU": {
+      "sku": "TIER2_REQUEST_SKU",
+      "productFamily": "API Request",
+      "attributes": {
+        "servicecode": "AmazonS3",
+        "location": "US East (N. Virginia)",
+        "locationType": "AWS Region",
+        "group": "S3-API-Tier2",
+        "groupDescription": "GET and all other Requests",
+        "usagetype": "Requests-Tier2",
+        "operation": "GetObject"
+      }
+    },
+    "RETRIEVAL_SKU": {
+      "sku": "RETRIEVAL_SKU",
+      "productFamily": "Data Retrieval",
+      "attributes": {
+        "servicecode": "AmazonS3",
+        "location": "US East (N. Virginia)",
+        "locationType": "AWS Region",
+        "group": "S3-Glacier-Retrieval-Bulk",
+        "groupDescription": "Bulk retrieval from Glacier Deep Archive",
+        "usagetype": "Retrieval-GDA-Bulk",
+        "operation": ""
+      }
+    },
+    "DATA_TRANSFER_SKU": {
+      "sku": "DATA_TRANSFER_SKU",
+      "productFamily": "Data Transfer",
+      "attributes": {
+        "servicecode": "AmazonS3",
+        "location": "US East (N. Virginia)",
+        "locationType": "AWS Region",
+        "transferType": "AWS Outbound",
+        "usagetype": "DataTransfer-Out-Bytes",
+        "operation": ""
+      }
+    }
+  },
+  "terms": {
+    "OnDemand": {
+      "STANDARD_SKU": {
+        "STANDARD_SKU.JRTCKXETXF": {
+          "offerTermCode": "JRTCKXETXF",
+          "sku": "STANDARD_SKU",
+          "effectiveDate": "2026-08-01T00:00:00Z",
+          "priceDimensions": {
+            "STANDARD_SKU.JRTCKXETXF.6YS6EN2CT7": {
+              "rateCode": "STANDARD_SKU.JRTCKXETXF.6YS6EN2CT7",
+              "description": "$0.023 per GB - first 50 TB / month of storage used",
+              "beginRange": "0",
+              "endRange": "51200",
+              "unit": "GB-Mo",
+              "pricePerUnit": { "USD": "0.0230000000" }
+            }
+          },
+          "termAttributes": {}
+        }
+      },
+      "DEEP_ARCHIVE_SKU": {
+        "DEEP_ARCHIVE_SKU.JRTCKXETXF": {
+          "offerTermCode": "JRTCKXETXF",
+          "sku": "DEEP_ARCHIVE_SKU",
+          "effectiveDate": "2026-08-01T00:00:00Z",
+          "priceDimensions": {
+            "DEEP_ARCHIVE_SKU.JRTCKXETXF.6YS6EN2CT7": {
+              "rateCode": "DEEP_ARCHIVE_SKU.JRTCKXETXF.6YS6EN2CT7",
+              "description": "$0.00099 per GB - storage in Glacier Deep Archive",
+              "beginRange": "0",
+              "endRange": "Inf",
+              "unit": "GB-Mo",
+              "pricePerUnit": { "USD": "0.0009900000" }
+            }
+          },
+          "termAttributes": {}
+        }
+      },
+      "TIER1_REQUEST_SKU": {
+        "TIER1_REQUEST_SKU.JRTCKXETXF": {
+          "offerTermCode": "JRTCKXETXF",
+          "sku": "TIER1_REQUEST_SKU",
+          "effectiveDate": "2026-08-01T00:00:00Z",
+          "priceDimensions": {
+            "TIER1_REQUEST_SKU.JRTCKXETXF.6YS6EN2CT7": {
+              "rateCode": "TIER1_REQUEST_SKU.JRTCKXETXF.6YS6EN2CT7",
+              "description": "$0.005 per 1,000 PUT, COPY, POST, or LIST requests",
+              "beginRange": "0",
+              "endRange": "Inf",
+              "unit": "Requests",
+              "pricePerUnit": { "USD": "0.0000050000" }
+            }
+          },
+          "termAttributes": {}
+        }
+      },
+      "TIER2_REQUEST_SKU": {
+        "TIER2_REQUEST_SKU.JRTCKXETXF": {
+          "offerTermCode": "JRTCKXETXF",
+          "sku": "TIER2_REQUEST_SKU",
+          "effectiveDate": "2026-08-01T00:00:00Z",
+          "priceDimensions": {
+            "TIER2_REQUEST_SKU.JRTCKXETXF.6YS6EN2CT7": {
+              "rateCode": "TIER2_REQUEST_SKU.JRTCKXETXF.6YS6EN2CT7",
+              "description": "$0.0004 per 1,000 GET and all other requests",
+              "beginRange": "0",
+              "endRange": "Inf",
+              "unit": "Requests",
+              "pricePerUnit": { "USD": "0.0000004000" }
+            }
+          },
+          "termAttributes": {}
+        }
+      },
+      "RETRIEVAL_SKU": {
+        "RETRIEVAL_SKU.JRTCKXETXF": {
+          "offerTermCode": "JRTCKXETXF",
+          "sku": "RETRIEVAL_SKU",
+          "effectiveDate": "2026-08-01T00:00:00Z",
+          "priceDimensions": {
+            "RETRIEVAL_SKU.JRTCKXETXF.6YS6EN2CT7": {
+              "rateCode": "RETRIEVAL_SKU.JRTCKXETXF.6YS6EN2CT7",
+              "description": "$0.0025 per GB - Bulk retrieval from Glacier Deep Archive",
+              "beginRange": "0",
+              "endRange": "Inf",
+              "unit": "GB",
+              "pricePerUnit": { "USD": "0.0025000000" }
+            }
+          },
+          "termAttributes": {}
+        }
+      },
+      "DATA_TRANSFER_SKU": {
+        "DATA_TRANSFER_SKU.JRTCKXETXF": {
+          "offerTermCode": "JRTCKXETXF",
+          "sku": "DATA_TRANSFER_SKU",
+          "effectiveDate": "2026-08-01T00:00:00Z",
+          "priceDimensions": {
+            "DATA_TRANSFER_SKU.JRTCKXETXF.6YS6EN2CT7": {
+              "rateCode": "DATA_TRANSFER_SKU.JRTCKXETXF.6YS6EN2CT7",
+              "description": "$0.09 per GB - first 10 TB / month data transfer out",
+              "beginRange": "0",
+              "endRange": "10240",
+              "unit": "GB",
+              "pricePerUnit": { "USD": "0.0900000000" }
+            }
+          },
+          "termAttributes": {}
+        }
+      }
+    }
+  }
+}
