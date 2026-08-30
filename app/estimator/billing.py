@@ -48,12 +48,20 @@ def monthly_costs(creds, *, months=3, tag=None, runner=subprocess.run) -> list[d
         # rc!=0 path with a BillingError so billing_view catches it instead of a
         # bare JSONDecodeError 500ing the estimate page.
         raise BillingError("cost explorer returned malformed JSON") from e
-    out = []
-    for r in data.get("ResultsByTime", []):
-        m = r["TimePeriod"]["Start"][:7]
-        amt = float(r["Total"]["UnblendedCost"]["Amount"])
-        out.append({"month": m, "amount": amt})
-    return out
+    try:
+        out = []
+        for r in data.get("ResultsByTime", []):
+            m = r["TimePeriod"]["Start"][:7]
+            amt = float(r["Total"]["UnblendedCost"]["Amount"])
+            out.append({"month": m, "amount": amt})
+        return out
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        # rc==0 and valid JSON, but the wrong SHAPE: a JSON array/scalar makes
+        # data.get(...) raise AttributeError; a missing/renamed key raises KeyError;
+        # a non-numeric Amount raises ValueError; indexing a non-subscriptable value
+        # raises TypeError. Mirror the malformed-JSON path with a BillingError so
+        # billing_view catches it instead of a bare exception 500ing /estimate.
+        raise BillingError("cost explorer returned an unexpected response shape") from e
 
 def forecast(creds, *, runner=subprocess.run) -> dict | None:
     this_month = _month_start(date.today())

@@ -37,6 +37,24 @@ def test_forecast_malformed_rc0_stdout_returns_none():
         return types.SimpleNamespace(returncode=0, stdout="<html>not json</html>", stderr="")
     assert billing.forecast({"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "B"}, runner=run) is None
 
+def test_wrong_shape_array_raises_billingerror():
+    # rc==0, valid JSON, but a top-level ARRAY: data.get(...) raises AttributeError.
+    # Must surface as BillingError (billing_view only catches that), not a bare
+    # AttributeError 500ing the estimate page.
+    def run(cmd, env=None, **kw):
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps([1, 2, 3]), stderr="")
+    with pytest.raises(billing.BillingError):
+        billing.monthly_costs({"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "B"}, runner=run)
+
+def test_wrong_shape_dict_raises_billingerror():
+    # rc==0, valid JSON dict, but ResultsByTime entries lack the expected keys ->
+    # KeyError while dereffing -> BillingError (not a bare KeyError).
+    def run(cmd, env=None, **kw):
+        return types.SimpleNamespace(
+            returncode=0, stdout=json.dumps({"ResultsByTime": [{"wrong": "shape"}]}), stderr="")
+    with pytest.raises(billing.BillingError):
+        billing.monthly_costs({"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "B"}, runner=run)
+
 def test_error_raises_billingerror():
     def run(cmd, env=None, **kw):
         return types.SimpleNamespace(returncode=255, stdout="", stderr="AccessDenied")

@@ -69,6 +69,26 @@ def test_load_returns_empty_and_warns_on_non_dict_toplevel(tmp_path, capsys):
     assert jobs_io.load(cfg) == []
     assert "jobs.json" in capsys.readouterr().err
 
+# --- final-fix R-final-2: load() drops a dict entry with no/invalid "name" ---
+# A nameless (or bad-named) dict entry can't be keyed/rendered (routes do j["name"],
+# estimate_io does j['name']) -> load() must DROP it (fail-safe read path) so /jobs,
+# /estimate, /costs/refresh don't 500. The WRITE path (_load_strict) is unchanged.
+def test_load_drops_nameless_entry(tmp_path):
+    cfg = _cfg(tmp_path)
+    Path(cfg, "jobs.json").write_text(json.dumps(
+        {"jobs": [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}]}))
+    assert jobs_io.load(cfg) == []            # entry dropped, does not raise
+
+def test_load_keeps_valid_drops_invalid_named_entries(tmp_path):
+    cfg = _cfg(tmp_path)
+    Path(cfg, "jobs.json").write_text(json.dumps({"jobs": [
+        {"type": "archive", "source": "x", "schedule": "0 4 * * 0"},                    # no name
+        {"name": "a b", "type": "archive", "source": "x", "schedule": "0 4 * * 0"},     # bad name
+        {"name": None, "type": "archive", "source": "x", "schedule": "0 4 * * 0"},      # null name
+        {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * 0"},
+    ]}))
+    assert [j["name"] for j in jobs_io.load(cfg)] == ["movies"]  # only the valid one survives
+
 def test_main_list_on_corrupt_file_exits_0_prints_nothing(tmp_path, monkeypatch, capsys):
     # emit_crontab pipes `--list` under `set -euo pipefail`: a non-zero here bricks
     # container boot. A corrupt file must exit 0 with no stdout (empty crontab).

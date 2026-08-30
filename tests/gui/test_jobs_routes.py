@@ -43,6 +43,13 @@ def test_create_job_then_lists(client, app):
     assert jobs[0]["name"] == "movies" and jobs[0]["type"] == "archive"
     assert b"movies" in client.get("/jobs").data
 
+def test_jobs_page_nameless_entry_no_500(client, app):
+    # Regression (FIX 2): a hand-edited nameless jobs.json entry must not 500 /jobs
+    # (jobs_page does j["name"]) — jobs_io.load drops it on the fail-safe read path.
+    pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").write_text(
+        json.dumps({"jobs": [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}]}))
+    assert client.get("/jobs").status_code == 200
+
 def test_create_rejects_bad_source(client):
     t = _csrf(client, "/jobs/new")
     assert client.post("/jobs", data={"csrf": t, "name": "x", "type": "archive",

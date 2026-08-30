@@ -186,7 +186,14 @@ def jobs_estimate_json():
     # Live wizard cost: GET, side-effect-free -> no CSRF needed.
     cfg = current_app.config
     region = estimate_io._region(cfg["CONFIG_DIR"])
-    prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    try:
+        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    except Exception:
+        # Belt-and-suspenders: load_prices no longer raises for an un-bundled region
+        # (it falls back to us-east-1), but any future pricing failure must degrade
+        # the wizard to "—" rather than 500.
+        return jsonify({"this_job_monthly": None, "new_total_monthly": None,
+                        "price_source": None, "price_date": None})
     try:
         result = estimate_io.wizard_estimate(request.args, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"], prices)
     except ValueError as e:
@@ -262,9 +269,16 @@ def estimate_page():
         error = str(e)
     # Current spend is independent of the (possibly invalid) live what-if params —
     # it prices the last refreshed real usage, so compute it off the saved region.
+    # Guard the pricing load: with FIX 1 load_prices no longer raises for an
+    # un-bundled region, but a total pricing failure must degrade current-spend to
+    # "unavailable" rather than 500 the whole page.
     region = estimate_io._region(cfg["CONFIG_DIR"])
-    prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
-    current = estimate_io.current_costs(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices)
+    try:
+        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    except Exception:
+        prices = None
+    current = (estimate_io.current_costs(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices)
+               if prices is not None else {"available": False})
     billing = estimate_io.billing_view(cfg["CONFIG_DIR"])
     return render_template("estimate.html", d=d, est=est, error=error,
                            storage_classes=STORAGE_CLASSES,

@@ -262,8 +262,10 @@ GUI page (real-time AWS prices by default, plus what you're actually spending to
 It reads `config/jobs.json` (your saved jobs — sizes come from last-measured usage where
 available, else a modest per-job default) and `AWS_REGION` from `backup.env` (flags override),
 runs fully offline against a bundled, dated **us-east-1** price table, and prints a per-job
-line-item breakdown plus monthly, first-year, and illustrative full-restore totals. The CLI never
-fetches live prices — see [Live pricing](#live-pricing) below for where that happens.
+line-item breakdown plus monthly, first-year, and illustrative full-restore totals. Only us-east-1
+is bundled, so for another `--region`/`AWS_REGION` the CLI reuses those us-east-1 rates as a
+labeled approximation (region-independent policy constants apply as-is). The CLI never fetches
+live prices — see [Live pricing](#live-pricing) below for where that happens.
 
 ### GUI — the Cost estimate page
 
@@ -291,11 +293,15 @@ the cost impact before you save.
 
 By default the Cost estimate page (both current-spend and what-if numbers) is priced from
 **AWS's public S3 Price List Bulk API** — a public endpoint, **no AWS credentials needed**.
-Rates are fetched per-region, cached under the cache path, and refreshed roughly weekly; on any
-network or parse failure it falls back to the bundled table (`app/estimator/prices/us-east-1.json`,
-the same one the CLI always uses), so the page still works offline or against a region the
-bundled table doesn't cover. Set `PRICES_LIVE=false` in the environment to force the bundled
-table only.
+Rates are fetched for the target region from the public API, cached under the cache path, and
+refreshed roughly weekly; on any network or parse failure — or when live pricing is disabled —
+it falls back to the bundled table (`app/estimator/prices/us-east-1.json`, the same one the CLI
+always uses). Only us-east-1 is bundled, so for a region the bundled table doesn't cover the
+**offline** fallback reuses the us-east-1 **rates** as a labeled approximation (the price table's
+`source` says so); the policy **constants** — minimum billable object size, minimum storage
+durations — are region-independent and apply as-is. So the page still works offline or against any
+region, but off us-east-1 the offline numbers are approximate until a live fetch supplies that
+region's real rates. Set `PRICES_LIVE=false` in the environment to force the bundled table only.
 
 #### Connect AWS billing (optional)
 

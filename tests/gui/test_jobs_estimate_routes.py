@@ -129,6 +129,23 @@ def test_jobs_estimate_no_source_size_gb_uses_default(client):
     assert r.get_json()["this_job_monthly"] >= 0
 
 
+def test_jobs_estimate_non_us_east_1_region_no_500(dirs, template_path, source_root):
+    # Regression (FIX 1): /jobs/estimate.json called load_prices unguarded, so a
+    # non-us-east-1 AWS_REGION 500'd the wizard. It must return 200 now (us-east-1
+    # fallback for the un-bundled region; PRICES_LIVE=False keeps it offline).
+    pathlib.Path(dirs["config"], "backup.env").write_text("AWS_REGION=eu-west-1\n")
+    _seed_jobs(dirs["config"], [VJOB, AJOB])
+    app = create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
+                      "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
+                      "SOURCE_ROOT": str(source_root), "PRICES_LIVE": False,
+                      "SECRET_KEY": "test", "TESTING": True})
+    r = app.test_client().get("/jobs/estimate.json", query_string={
+        "name": "photos", "type": "archive", "source": "movies",
+        "storage_class": "DEEP_ARCHIVE", "schedule": "0 4 * * 0", "size_gb": "500"})
+    assert r.status_code == 200
+    assert r.get_json()["this_job_monthly"] >= 0
+
+
 def test_jobs_estimate_sizes_from_source_folder_when_no_size_gb(client):
     # No explicit size_gb -> the candidate is sized from dir_size(source).
     small = client.get("/jobs/estimate.json", query_string={

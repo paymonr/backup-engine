@@ -135,6 +135,19 @@ def test_refresh_with_malformed_jobs_json_is_not_500(client, dirs, monkeypatch):
     assert r.status_code in (302, 303)
 
 
+def test_refresh_with_nameless_jobs_entry_is_not_500(client, dirs, monkeypatch):
+    # Regression (FIX 2): costs_refresh iterates jobs (j["name"], j.get("type")). A
+    # hand-edited nameless entry must not 500 — jobs_io.load drops it (fail-safe).
+    from app.gui import routes
+    pathlib.Path(dirs["config"], "backup.env").write_text("S3_BUCKET=mybucket\nAWS_REGION=us-east-1\n")
+    pathlib.Path(dirs["config"], "jobs.json").write_text(
+        json.dumps({"jobs": [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}, AJOB]}))
+    monkeypatch.setattr(routes.usage, "collect_usage", lambda *a, **k: {})
+    t = _csrf(client)
+    r = client.post("/costs/refresh", data={"csrf": t})
+    assert r.status_code in (302, 303)
+
+
 def test_refresh_without_bucket_flashes_and_does_not_call_collect_usage(client, dirs, monkeypatch):
     from app.gui import routes
     called = {"n": 0}

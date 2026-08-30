@@ -83,3 +83,18 @@ def test_estimate_json_empty_jobs_zero_totals(dirs, template_path, tmp_path):
 def test_nav_has_estimate_link(client):
     r = client.get("/config")
     assert b"/estimate" in r.data
+
+def test_estimate_page_non_us_east_1_region_no_500(dirs, template_path, tmp_path):
+    # Regression (FIX 1): only us-east-1.json is bundled. A normal, GUI-editable
+    # non-us-east-1 AWS_REGION must not 500 /estimate — load_prices falls back to
+    # the us-east-1 table for the un-bundled region (offline, PRICES_LIVE=False).
+    pathlib.Path(dirs["config"], "backup.env").write_text("AWS_REGION=eu-west-1\n")
+    app = _make_app(dirs, template_path, tmp_path, [VJOB, AJOB])
+    assert app.test_client().get("/estimate").status_code == 200
+
+def test_estimate_page_nameless_jobs_entry_no_500(dirs, template_path, tmp_path):
+    # Regression (FIX 2): a hand-edited nameless jobs.json entry must not 500 the
+    # page — jobs_io.load drops it (fail-safe read path).
+    app = _make_app(dirs, template_path, tmp_path,
+                    [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}, AJOB])
+    assert app.test_client().get("/estimate").status_code == 200
