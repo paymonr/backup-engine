@@ -3,7 +3,7 @@
   var el = document.getElementById("log");
   if (!el) return;
   function refresh() {
-    fetch("logs?tail=200").then(function (r) { return r.text(); })
+    fetch("/logs?tail=200").then(function (r) { return r.text(); })
       .then(function (t) { el.textContent = t || "(log empty)"; el.scrollTop = el.scrollHeight; })
       .catch(function () {});
   }
@@ -23,7 +23,7 @@
   var selected = root.dataset.selected || "";
   var checkboxes = [];
   function browse(path) {
-    return fetch("jobs/browse?path=" + encodeURIComponent(path))
+    return fetch("/jobs/browse?path=" + encodeURIComponent(path))
       .then(function (r) { return r.ok ? r.json() : { entries: [] }; })
       .catch(function () { return { entries: [] }; });
   }
@@ -97,7 +97,7 @@
   }
   function update() {
     var qs = new URLSearchParams(new FormData(form)).toString();
-    fetch("estimate.json?" + qs)
+    fetch("/estimate.json?" + qs)
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
         if (res.ok) {
