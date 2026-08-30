@@ -114,6 +114,72 @@
   form.addEventListener("change", function () { clearTimeout(timer); timer = setTimeout(update, 250); });
 })();
 
+// Wizard live cost (job_form.html): recompute "this job" + "new total" as the
+// create/edit form changes, and look up a picked source folder's real size so an
+// un-backed-up job's estimate reflects it. Guarded by the wizard's cost card so
+// this never runs on other pages; does not touch the source-tree IIFE above or
+// the /estimate page's own IIFE below — absolute paths since this template is
+// served from both /jobs/new and /jobs/<name>/edit (different path depths).
+(function () {
+  var card = document.getElementById("job-cost");
+  var form = document.getElementById("job-form");
+  if (!card || !form) return;
+  var thisEl = document.getElementById("job-cost-this");
+  var totalEl = document.getElementById("job-cost-total");
+  var dateEl = document.getElementById("job-cost-date");
+  var errEl = document.getElementById("job-cost-error");
+  var sizeInput = document.getElementById("size-gb-input");
+  var sourceTree = document.getElementById("source-tree");
+  var timer;
+
+  function money(v) {
+    if (v === null || v === undefined) return "—";
+    return "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function paint(data) {
+    thisEl.textContent = money(data && data.this_job_monthly);
+    totalEl.textContent = money(data && data.new_total_monthly);
+    if (dateEl) dateEl.textContent = (data && data.price_date) || "—";
+  }
+  function update() {
+    var qs = new URLSearchParams(new FormData(form)).toString();
+    fetch("/jobs/estimate.json?" + qs)
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (res.ok) {
+          if (errEl) { errEl.hidden = true; errEl.textContent = ""; }
+          paint(res.j);
+        } else {
+          if (errEl) { errEl.hidden = false; errEl.textContent = res.j.error || "invalid input"; }
+          paint({});
+        }
+      })
+      .catch(function () {});
+  }
+  function schedule() { clearTimeout(timer); timer = setTimeout(update, 250); }
+
+  form.addEventListener("input", schedule);
+  form.addEventListener("change", schedule);
+
+  if (sourceTree && sizeInput) {
+    sourceTree.addEventListener("change", function (ev) {
+      var t = ev.target;
+      if (!t || t.type !== "checkbox") return;
+      var path = t.checked ? t.value : "";
+      if (!path) { sizeInput.value = ""; schedule(); return; }
+      fetch("/jobs/source-size?path=" + encodeURIComponent(path))
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          sizeInput.value = d ? String(d.bytes / (1024 * 1024 * 1024)) : "";
+          schedule();
+        })
+        .catch(function () {});
+    });
+  }
+
+  update();
+})();
+
 // Current spend: "Refresh usage" / "Connect AWS billing" are plain CSRF-protected
 // form POSTs (the server does the work) — just guard against a double submit.
 (function () {

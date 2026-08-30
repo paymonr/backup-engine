@@ -4,7 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
-from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io
+from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io, dirsize
 from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
 from ..estimator import usage
@@ -169,6 +169,29 @@ def jobs_browse():
         abort(404)  # no path echo
     base = request.args.get("path", "").strip("/")
     return jsonify({"entries": [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]})
+
+@bp.get("/jobs/source-size")
+def jobs_source_size():
+    cfg = current_app.config
+    try:
+        # Confined via dirsize.dir_size -> fsbrowse.safe_resolve; same no-echo 404
+        # contract as /jobs/browse above. The wizard only ever passes FOLDER paths.
+        d = dirsize.dir_size(cfg["SOURCE_ROOT"], request.args.get("path", ""))
+    except fsbrowse.PathError:
+        abort(404)  # no path echo
+    return jsonify(d)
+
+@bp.get("/jobs/estimate.json")
+def jobs_estimate_json():
+    # Live wizard cost: GET, side-effect-free -> no CSRF needed.
+    cfg = current_app.config
+    region = estimate_io._region(cfg["CONFIG_DIR"])
+    prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    try:
+        result = estimate_io.wizard_estimate(request.args, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"], prices)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({**result, "price_source": prices.source, "price_date": prices.date})
 
 @bp.post("/jobs")
 def job_save():

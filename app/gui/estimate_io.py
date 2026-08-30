@@ -6,9 +6,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Mapping
-from . import config_io, jobs_io
+from . import config_io, jobs_io, dirsize, fsbrowse
 from ..estimator.model import (
-    JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days,
+    JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days, estimate,
 )
 from ..estimator.schedule import backups_per_month
 from ..estimator import usage, billing
@@ -172,6 +172,51 @@ def form_defaults(config_dir, source_root) -> dict:
             }
             for j in base.jobs
         ],
+    }
+
+
+def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
+    """Live cost for the job create/edit WIZARD: prices a CANDIDATE job built from
+    the in-progress form params (not yet saved), plus what the total across every
+    saved job becomes with this candidate added in — replacing any existing job of
+    the same name so editing a job doesn't double-count it. `prices` is loaded by
+    the caller (route) so this stays pure/testable (no pricing I/O in here)."""
+    name = str(params.get("name", "")).strip()
+    engine = params.get("type") or "versioned"
+    source = str(params.get("source", "")).strip()
+    cls = params.get("storage_class") or "STANDARD"
+    if cls not in STORAGE_CLASSES:
+        raise ValueError(f"unknown storage class '{cls}'")
+    job = {"name": name, "type": engine, "source": source,
+           "schedule": params.get("schedule", ""), "storage_class": cls}
+    if engine == "versioned":
+        job["keep"] = {k: params.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+    else:
+        job["mirror"] = bool(params.get("mirror"))
+
+    # Size/count precedence: explicit size_gb/file_count params -> dir_size() of the
+    # picked source folder (when it's given and resolves) -> the module defaults.
+    fallback_gb, fallback_files = _DEFAULT_SIZE_GB, _DEFAULT_FILES
+    if source:
+        try:
+            d = dirsize.dir_size(source_root, source)
+            fallback_gb, fallback_files = d["bytes"] / (1024 ** 3), d["count"]
+        except fsbrowse.PathError:
+            pass  # unresolved/escaping source -> fall back to the module defaults
+    size_gb = _num(params, "size_gb", fallback_gb, label="size")
+    file_count = int(_num(params, "file_count", fallback_files, label="file count"))
+
+    candidate = _job_inputs(job, size_gb=size_gb, file_count=file_count,
+                            scenario_retention=None, override=None)
+
+    base = scenario_from_jobs(config_dir, source_root)
+    this_scn = replace(base, jobs=(candidate,))
+    others = tuple(j for j in base.jobs if j.name != name)
+    total_scn = replace(base, jobs=others + (candidate,))
+
+    return {
+        "this_job_monthly": estimate(this_scn, prices).monthly_total,
+        "new_total_monthly": estimate(total_scn, prices).monthly_total,
     }
 
 
