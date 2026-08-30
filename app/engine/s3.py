@@ -72,3 +72,17 @@ def download_catalog(job, local, *, bucket, rclone_config, runner=subprocess.run
     tolerate a fresh (never-uploaded) job should catch S3Error."""
     get(catalog_key(job), local,
         bucket=bucket, rclone_config=rclone_config, runner=runner)
+
+
+def thaw(key, *, bucket, tier="Bulk", days=7, runner=subprocess.run) -> None:
+    """Issue a Glacier/Deep Archive restore-object request for `key`, mirroring
+    scripts/restore.sh's archive-job thaw (`aws s3api restore-object --bucket
+    ... --key ... --restore-request Days=<days>,GlacierJobParameters={Tier=<tier>}`).
+    Uses the `aws` CLI directly, not rclone -- rclone has no restore-object
+    equivalent. Does not block: the object only becomes downloadable once AWS
+    finishes the thaw (hours for Glacier Bulk, up to ~48h for Deep Archive)."""
+    _run(runner, [
+        "aws", "s3api", "restore-object",
+        "--bucket", bucket, "--key", key,
+        "--restore-request", f"Days={days},GlacierJobParameters={{Tier={tier}}}",
+    ])
