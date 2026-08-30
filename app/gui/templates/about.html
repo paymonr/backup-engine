@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% block body %}
+<p class="eyebrow">About</p>
+<h1>backup·engine</h1>
+<p class="lead">Off-site, encrypted AWS S3 backups for Unraid — the off-site leg of a 3-2-1 strategy. Version <code>{{ version }}</code>.</p>
+
+<div class="card">
+  <h2>Third-party software</h2>
+  <p class="hint">backup-engine bundles and invokes these open-source tools — thanks to their authors and maintainers. Each is redistributed under its own license; the full license texts ship alongside the tools in the container image.</p>
+  <ul class="attributions">
+    {% for c in third_party %}
+    <li>
+      <a href="{{ c.url }}" target="_blank" rel="noopener noreferrer">{{ c.name }}</a>
+      <span class="hint"> — {{ c.role }}</span>
+      <code>{{ c.license }}</code>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="card">
+  <h2>Project</h2>
+  <p><a href="https://github.com/paymonr/backup-engine" target="_blank" rel="noopener noreferrer">github.com/paymonr/backup-engine</a></p>
+</div>
+{% endblock %}

@@ -4,12 +4,17 @@ from dataclasses import asdict
 from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
-from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io, dirsize
+from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io, dirsize, attributions
 from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
 from ..estimator import usage
 
 bp = Blueprint("gui", __name__)
+
+@bp.get("/about")
+def about_page():
+    return render_template("about.html", third_party=attributions.THIRD_PARTY,
+                           version=current_app.config.get("VERSION", "0.1.0-dev"))
 
 @bp.get("/")
 def index():

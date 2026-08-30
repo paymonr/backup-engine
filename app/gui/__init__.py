@@ -11,6 +11,7 @@ def create_app(config: dict | None = None) -> Flask:
         SCRIPTS_DIR=os.environ.get("SCRIPTS_DIR", "/app/scripts"),
         TEMPLATE_PATH=os.environ.get("BACKUP_ENV_TEMPLATE", "/app/config/backup.env.example"),
         SOURCE_ROOT=os.environ.get("SOURCE_ROOT", "/backup/media"),
+        VERSION=os.environ.get("VERSION", "0.1.0-dev"),
         # Live pricing is OPT-IN: production reads live rates, but tests override
         # this to False so the estimate routes never hit the network.
         PRICES_LIVE=os.environ.get("PRICES_LIVE", "true") != "false",

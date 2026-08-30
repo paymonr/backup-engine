@@ -403,6 +403,22 @@ Planned, not yet built:
 - **Per-run history** — a persisted run history beyond the last-run state.
 - **Scheduler liveness / health endpoint** — surface whether the background scheduler (supercronic) is still running, so a silent crash is visible in the GUI.
 
+## Third-party software
+
+backup-engine bundles and invokes these open-source tools — thanks to their authors and
+maintainers. Each is redistributed under its own license (the full license texts ship with the
+tools in the container image). The GUI's **About** page (footer link) shows the same list.
+
+| Component | Role | License |
+|---|---|---|
+| [restic](https://restic.net) | versioned & encrypted snapshot engine | BSD-2-Clause |
+| [rclone](https://rclone.org) | archive / sync engine | MIT |
+| [supercronic](https://github.com/aptible/supercronic) | in-container cron scheduler | MIT |
+| [AWS CLI](https://github.com/aws/aws-cli) | S3 usage + Cost Explorer calls | Apache-2.0 |
+| [OpenTofu](https://opentofu.org) | provisioning (bucket + least-privilege IAM) | MPL-2.0 |
+| [Flask](https://flask.palletsprojects.com) | web GUI framework | BSD-3-Clause |
+| [Waitress](https://github.com/Pylons/waitress) | production WSGI server | ZPL-2.1 |
+
 ## Development
 
 - `shellcheck scripts/*.sh scripts/lib/*.sh setup.sh` — lint.

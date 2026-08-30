@@ -247,3 +247,12 @@ button.expand:hover { color: var(--text); background: var(--raised); }
   .nav { margin-left: 0; }
   .container { padding: 1.2rem 1rem 3rem; }
 }
+
+/* About page + shared footer */
+.footer { max-width: 960px; margin: 0 auto; padding: 1.4rem; text-align: center; border-top: 1px solid var(--border); }
+.footer a { color: var(--faint); font-size: .85rem; }
+.footer a:hover { color: var(--muted); }
+.attributions { list-style: none; padding: 0; margin: .6rem 0 0; }
+.attributions li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; padding: .55rem 0; border-bottom: 1px solid var(--border); }
+.attributions li:last-child { border-bottom: 0; }
+.attributions .hint { flex: 1; }
