@@ -77,13 +77,22 @@
     if (kind === "int") return n.toLocaleString();
     return String(v);
   }
-  function dig(obj, path) {
-    return path.split(".").reduce(function (o, k) { return (o == null) ? undefined : o[k]; }, obj);
-  }
   function paint(data) {
+    // Scalar top-level fields (monthly_total, region, …): a direct key lookup.
     var cells = document.querySelectorAll("[data-est]");
     for (var i = 0; i < cells.length; i++) {
-      cells[i].textContent = fmt(dig(data, cells[i].getAttribute("data-est")), cells[i].getAttribute("data-fmt"));
+      var key = cells[i].getAttribute("data-est");
+      cells[i].textContent = fmt(data == null ? undefined : data[key], cells[i].getAttribute("data-fmt"));
+    }
+    // Per-job breakdown cells: data.jobs[<name>][<field>] — a DIRECT object lookup
+    // by the job name, never a split on ".", since job names may contain dots.
+    var jobs = (data && data.jobs) || {};
+    var jobCells = document.querySelectorAll("[data-job]");
+    for (var k = 0; k < jobCells.length; k++) {
+      var el = jobCells[k];
+      var li = jobs[el.getAttribute("data-job")];
+      var v = li ? li[el.getAttribute("data-field")] : undefined;
+      el.textContent = fmt(v, el.getAttribute("data-fmt"));
     }
   }
   function update() {

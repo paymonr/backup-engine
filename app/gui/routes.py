@@ -4,7 +4,7 @@ from dataclasses import asdict
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io
-from ..estimator.model import estimate, STORAGE_CLASSES, effective_retention_days
+from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
 
 bp = Blueprint("gui", __name__)
@@ -218,26 +218,22 @@ def job_delete(name):
     flash(f"Deleted {name}.")
     return redirect(url_for("gui.jobs_page"))
 
-def _compute(config_dir, params):
-    scenario = estimate_io.scenario_from_params(params, config_dir)
-    return scenario, estimate(scenario, load_prices(scenario.region))
+def _compute(cfg, params):
+    scenario = estimate_io.scenario_from_params(params, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"])
+    prices = load_prices(scenario.region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    return scenario, estimate(scenario, prices)
 
 @bp.get("/estimate")
 def estimate_page():
     cfg = current_app.config
-    d = estimate_io.form_defaults(cfg["CONFIG_DIR"])
+    d = estimate_io.form_defaults(cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"])
     est = None
     error = None
-    appdata_retention = effective_retention_days(
-        keep_last=d["keep_last"], keep_daily=d["keep_daily"],
-        keep_weekly=d["keep_weekly"], keep_monthly=d["keep_monthly"])
     try:
-        scenario, est = _compute(cfg["CONFIG_DIR"], request.args)
-        appdata_retention = scenario.appdata.versioning_retention_days
+        _scn, est = _compute(cfg, request.args)
     except ValueError as e:
         error = str(e)
     return render_template("estimate.html", d=d, est=est, error=error,
-                           appdata_retention=appdata_retention,
                            storage_classes=STORAGE_CLASSES,
                            retrieval_tiers=estimate_io.RETRIEVAL_TIERS)
 
@@ -245,9 +241,7 @@ def estimate_page():
 def estimate_json():
     cfg = current_app.config
     try:
-        scenario, est = _compute(cfg["CONFIG_DIR"], request.args)
+        _scn, est = _compute(cfg, request.args)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    payload = asdict(est)
-    payload["appdata_retention_days"] = scenario.appdata.versioning_retention_days
-    return jsonify(payload)
+    return jsonify(asdict(est))

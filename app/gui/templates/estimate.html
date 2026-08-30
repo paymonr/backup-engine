@@ -8,7 +8,7 @@
 
 <p class="eyebrow">Cost estimate</p>
 <h1>What will this cost?</h1>
-<p class="lead">A steady-state monthly estimate over your saved config. Change anything below and the numbers update live — decision-support, not billing-accurate.</p>
+<p class="lead">A steady-state monthly estimate over your saved jobs. Change anything below and the numbers update live — decision-support, not billing-accurate.</p>
 
 <div class="card card-hero">
   <ul class="totals">
@@ -16,72 +16,62 @@
     <li class="med"><span class="lbl">First year</span><span data-est="first_year_total" data-fmt="money">{{ money(est.first_year_total if est else none) }}</span></li>
     <li class="med"><span class="lbl">Full restore (once)</span><span data-est="full_restore_total" data-fmt="money">{{ money(est.full_restore_total if est else none) }}</span></li>
   </ul>
-  <p class="hint">Prices: <span data-est="region">{{ est.region if est else 'us-east-1' }}</span> @ <span data-est="price_date">{{ est.price_date if est else '—' }}</span> · ≈ <span data-est="appdata_retention_days">{{ appdata_retention }}</span>-day appdata history retained. <span data-js-only>Updates live.</span></p>
+  <p class="hint">Prices: <span data-est="region">{{ est.region if est else 'us-east-1' }}</span> @ <span data-est="price_date">{{ est.price_date if est else '—' }}</span>. <span data-js-only>Updates live.</span></p>
   <p id="est-error" class="alert alert-error"{{ '' if error else ' hidden' }}>{{ error or '' }}</p>
 </div>
 
 <div class="card">
-  <h2>Where it goes <small>— per month unless noted</small></h2>
+  <h2>Where it goes <small>— per job, per month unless noted</small></h2>
+  {% set fields = [('storage','Storage'),('versioning','Versioning'),('ingest_monthly','Ingest'),('rotation_monthly','Rotation'),('upfront_onetime','Upfront (once)'),('restore_per_event','Restore / event')] %}
+  <div class="table-scroll">
   <table id="est-results">
-    <thead><tr><th></th><th class="num">appdata</th><th class="num">media</th></tr></thead>
+    <thead><tr><th>Job</th>{% for key, label in fields %}<th class="num">{{ label }}</th>{% endfor %}</tr></thead>
     <tbody>
-      {% set rows = [('storage','Storage'),('versioning','Versioning'),('ingest_monthly','Ingest'),('rotation_monthly','Rotation (early-delete)'),('upfront_onetime','Upfront (once)'),('restore_per_event','Restore / event')] %}
-      {% for key, label in rows %}
-      <tr><th>{{ label }}</th>
-        <td data-est="pipelines.appdata.{{ key }}" data-fmt="money">{{ money(est.pipelines['appdata'][key] if est else none) }}</td>
-        <td data-est="pipelines.media.{{ key }}" data-fmt="money">{{ money(est.pipelines['media'][key] if est else none) }}</td>
+      {% for j in d.jobs %}
+      <tr>
+        <th>{{ j.name }} <small>{{ j.engine }}</small></th>
+        {% for key, label in fields %}
+        <td class="num" data-job="{{ j.name }}" data-field="{{ key }}" data-fmt="money">{{ money(est.jobs[j.name][key] if est and j.name in est.jobs else none) }}</td>
+        {% endfor %}
       </tr>
       {% endfor %}
+      {% if not d.jobs %}<tr><td colspan="{{ fields|length + 1 }}" class="muted">No jobs configured yet — <a href="{{ url_for('gui.job_new') }}">add one</a> to see an estimate.</td></tr>{% endif %}
     </tbody>
   </table>
+  </div>
 </div>
 
 <form id="est-form" method="get" action="{{ url_for('gui.estimate_page') }}">
   <div class="card">
     <h2>What are you backing up?</h2>
-    <div class="pipeline-grid">
+    <p class="hint">Sizes start from your last measured usage (or a modest default for a job that hasn't run yet). Versioned jobs keep history per their restic keep-policy; archive jobs use the S3 old-version window below.</p>
+    {% for j in d.jobs %}
+    <div class="pipeline-grid job-inputs">
       <div>
-        <h3>appdata <small>— configs, databases</small></h3>
-        <label>Size (GB)</label><input type="number" step="any" min="0" name="appdata_size_gb" value="{{ val('appdata_size_gb', d.appdata.size_gb) }}">
-        <label>Storage class</label><select name="appdata_storage_class">{{ sel('appdata_storage_class', d.appdata.storage_class) }}</select>
-        <label>File count</label><input type="number" step="1" min="0" name="appdata_file_count" value="{{ val('appdata_file_count', d.appdata.file_count) }}">
+        <h3>{{ j.name }} <small>— {{ j.engine }}</small></h3>
+        <label>Size (GB)</label><input type="number" step="any" min="0" name="{{ j.name }}_size_gb" value="{{ val(j.name + '_size_gb', j.size_gb) }}">
+        <label>Storage class</label><select name="{{ j.name }}_storage_class">{{ sel(j.name + '_storage_class', j.storage_class) }}</select>
+        <label>File count</label><input type="number" step="1" min="0" name="{{ j.name }}_file_count" value="{{ val(j.name + '_file_count', j.file_count) }}">
       </div>
       <div>
-        <h3>media <small>— movies, photos (bulk)</small></h3>
-        <label>Size (GB)</label><input type="number" step="any" min="0" name="media_size_gb" value="{{ val('media_size_gb', d.media.size_gb) }}">
-        <label>Storage class</label><select name="media_storage_class">{{ sel('media_storage_class', d.media.storage_class) }}</select>
-        <label>File count</label><input type="number" step="1" min="0" name="media_file_count" value="{{ val('media_file_count', d.media.file_count) }}">
+        <label>Backups / month</label><input type="number" step="any" min="0" name="{{ j.name }}_backups_per_month" value="{{ val(j.name + '_backups_per_month', j.backups_per_month) }}">
+        <label>Change rate (%)</label><input type="number" step="any" min="0" name="{{ j.name }}_change_rate_pct" value="{{ val(j.name + '_change_rate_pct', j.change_rate_pct) }}">
       </div>
     </div>
+    {% endfor %}
+    {% if not d.jobs %}<p class="muted">No jobs yet — <a href="{{ url_for('gui.job_new') }}">add one</a>.</p>{% endif %}
   </div>
 
   <div class="card">
-    <h2>How much history do you keep?</h2>
-    <p class="hint">appdata's restic keep-policy sets how much version history is retained (≈ <span data-est="appdata_retention_days">{{ appdata_retention }}</span> days). More history = more storage.</p>
-    <div class="retention-mini">
-      <div><label>keep last</label><input type="number" step="1" min="0" name="keep_last" value="{{ val('keep_last', d.keep_last) }}"></div>
-      <div><label>daily</label><input type="number" step="1" min="0" name="keep_daily" value="{{ val('keep_daily', d.keep_daily) }}"></div>
-      <div><label>weekly</label><input type="number" step="1" min="0" name="keep_weekly" value="{{ val('keep_weekly', d.keep_weekly) }}"></div>
-      <div><label>monthly</label><input type="number" step="1" min="0" name="keep_monthly" value="{{ val('keep_monthly', d.keep_monthly) }}"></div>
-      <div><label>S3 old-version days</label><input type="number" step="1" min="0" name="versioning_retention_days" value="{{ val('versioning_retention_days', d.versioning_retention_days) }}"></div>
-    </div>
-  </div>
-
-  <details>
-    <summary>Fine-tune — backups, change rate, restore, packing</summary>
+    <h2>Restore &amp; retention assumptions</h2>
     <div class="field-row">
-      <div><label>appdata backups / month</label><input type="number" step="any" min="0" name="appdata_backups_per_month" value="{{ val('appdata_backups_per_month', d.appdata.backups_per_month) }}"></div>
-      <div><label>appdata change rate (%)</label><input type="number" step="any" min="0" name="appdata_change_rate_pct" value="{{ val('appdata_change_rate_pct', d.appdata.change_rate_pct) }}"></div>
-      <div><label>media backups / month</label><input type="number" step="any" min="0" name="media_backups_per_month" value="{{ val('media_backups_per_month', d.media.backups_per_month) }}"></div>
-      <div><label>media change rate (%)</label><input type="number" step="any" min="0" name="media_change_rate_pct" value="{{ val('media_change_rate_pct', d.media.change_rate_pct) }}"></div>
+      <div><label>S3 old-version days</label><input type="number" step="1" min="0" name="versioning_retention_days" value="{{ val('versioning_retention_days', d.versioning_retention_days) }}"></div>
       <div><label>restore fraction (0–1)</label><input type="number" step="any" min="0" name="restore_fraction" value="{{ val('restore_fraction', d.restore_fraction) }}"></div>
       <div><label>restores / year</label><input type="number" step="any" min="0" name="restores_per_year" value="{{ val('restores_per_year', d.restores_per_year) }}"></div>
       <div><label>retrieval tier</label>
         <select name="retrieval_tier">{% set tier = request.args.get('retrieval_tier', d.retrieval_tier) %}{% for t in retrieval_tiers %}<option value="{{ t }}"{{ ' selected' if t == tier else '' }}>{{ t }}</option>{% endfor %}</select></div>
     </div>
-    <label class="inline"><input type="checkbox" name="media_packing" value="1"{{ ' checked' if request.args.get('media_packing') else '' }}> Pack small media files</label>
-    <label>media pack member (GB)</label><input type="number" step="any" min="0" name="media_pack_member_gb" value="{{ val('media_pack_member_gb', d.media.pack_member_gb) }}">
-  </details>
+  </div>
 
   <noscript><div class="actions"><button type="submit" class="btn-primary">Recalculate</button></div></noscript>
 </form>
@@ -92,7 +82,7 @@
     <li>128 KB minimum object size applied as max(size, objects × 128 KB), not per-object.</li>
     <li>Data-transfer-out uses a single flat first-tier $/GB rate.</li>
     <li>Rotation charges churned bytes for the full minimum-storage-duration (a conservative early-deletion proxy).</li>
-    <li>Appdata retention is derived from the restic keep-policy as a proxy history window; media is additive.</li>
+    <li>A versioned job's retention is derived from its restic keep-policy; an archive job uses the S3 old-version window.</li>
     <li>Single bundled price table (us-east-1); every figure is stamped with its capture date.</li>
   </ul>
 </details>
