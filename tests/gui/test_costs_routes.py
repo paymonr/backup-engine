@@ -120,6 +120,21 @@ def test_refresh_calls_collect_usage_and_saves_cache(client, dirs, monkeypatch):
     assert cached["data"]["appdata"] == {"bytes": 9, "count": 2}
 
 
+def test_refresh_with_malformed_jobs_json_is_not_500(client, dirs, monkeypatch):
+    # A hand-broken config/jobs.json must not 500 the refresh: jobs_io.load is the
+    # fail-safe read path (returns [] on a whole-file parse error), so costs_refresh
+    # degrades to "no jobs" and still redirects. Regression guard for Task 7's
+    # parked corrupt-jobs.json concern.
+    from app.gui import routes
+    pathlib.Path(dirs["config"], "backup.env").write_text("S3_BUCKET=mybucket\nAWS_REGION=us-east-1\n")
+    pathlib.Path(dirs["config"], "jobs.json").write_text("{ not valid json ")
+    monkeypatch.setattr(routes.usage, "collect_usage", lambda *a, **k: {})
+    t = _csrf(client)
+    r = client.post("/costs/refresh", data={"csrf": t})
+    assert r.status_code != 500
+    assert r.status_code in (302, 303)
+
+
 def test_refresh_without_bucket_flashes_and_does_not_call_collect_usage(client, dirs, monkeypatch):
     from app.gui import routes
     called = {"n": 0}

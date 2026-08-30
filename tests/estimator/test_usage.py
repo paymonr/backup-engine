@@ -23,6 +23,20 @@ def test_prefix_error_is_none():
     got = usage.collect_usage("b", ["ghost"], False, runner=_runner({}))
     assert got["media/ghost"] is None
 
+def _null_runner(cmd, **kw):
+    # rclone size --json returning null for a field (seen in the wild on empty/odd
+    # prefixes): int(None) raises TypeError, which the guard must also swallow.
+    return types.SimpleNamespace(
+        returncode=0, stdout=json.dumps({"count": None, "bytes": None}), stderr="")
+
+def test_size_null_fields_returns_none_not_typeerror():
+    assert usage._size("b", "media/x", rclone_config=None, runner=_null_runner) is None
+
+def test_collect_usage_null_fields_is_none_not_crash():
+    got = usage.collect_usage("b", ["movies"], True, runner=_null_runner)
+    assert got["media/movies"] is None
+    assert got["appdata"] is None
+
 def test_cache_roundtrip(tmp_path):
     usage.save_cached(str(tmp_path), {"appdata": {"bytes": 1, "count": 1}})
     loaded = usage.load_cached(str(tmp_path))

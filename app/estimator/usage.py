@@ -21,7 +21,10 @@ def _size(bucket: str, prefix: str, *, rclone_config, runner) -> dict | None:
     try:
         d = json.loads(p.stdout)
         return {"bytes": int(d["bytes"]), "count": int(d["count"])}
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):
+        # ValueError: bad JSON / non-numeric field; KeyError: missing field;
+        # TypeError: field present but null -> int(None). Any shape we can't read
+        # as a usable size degrades this prefix to None, never crashes the refresh.
         return None
 
 def collect_usage(bucket, archive_jobs, has_versioned, *, rclone_config=None,

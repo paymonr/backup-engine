@@ -41,7 +41,13 @@ def monthly_costs(creds, *, months=3, tag=None, runner=subprocess.run) -> list[d
     p = runner(cmd, capture_output=True, text=True, env=_env(creds), timeout=60)
     if p.returncode != 0:
         raise BillingError(p.stderr.strip() or "cost explorer call failed")
-    data = json.loads(p.stdout)
+    try:
+        data = json.loads(p.stdout)
+    except json.JSONDecodeError as e:
+        # rc==0 but unparseable stdout (truncated/HTML error page/etc): mirror the
+        # rc!=0 path with a BillingError so billing_view catches it instead of a
+        # bare JSONDecodeError 500ing the estimate page.
+        raise BillingError("cost explorer returned malformed JSON") from e
     out = []
     for r in data.get("ResultsByTime", []):
         m = r["TimePeriod"]["Start"][:7]
@@ -59,8 +65,10 @@ def forecast(creds, *, runner=subprocess.run) -> dict | None:
     p = runner(cmd, capture_output=True, text=True, env=_env(creds), timeout=60)
     if p.returncode != 0:
         return None
-    data = json.loads(p.stdout)
     try:
+        # json.loads inside the try: JSONDecodeError is a ValueError, so malformed
+        # rc==0 stdout degrades this best-effort forecast to None (never escapes).
+        data = json.loads(p.stdout)
         return {"month": start.isoformat()[:7], "amount": float(data["Total"]["Amount"])}
     except (KeyError, ValueError):
         return None

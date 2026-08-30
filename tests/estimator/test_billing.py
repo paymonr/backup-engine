@@ -29,8 +29,25 @@ def test_forecast_parses():
                            runner=_runner(FC_OUT, cap))
     assert got == {"month": "2026-09", "amount": 13.0}
 
+def test_forecast_malformed_rc0_stdout_returns_none():
+    # forecast is best-effort (None on any failure). rc==0 + non-JSON stdout must
+    # yield None, not a bare JSONDecodeError — billing_view calls forecast after
+    # monthly_costs and only catches BillingError, so an escaping decode error 500s.
+    def run(cmd, env=None, **kw):
+        return types.SimpleNamespace(returncode=0, stdout="<html>not json</html>", stderr="")
+    assert billing.forecast({"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "B"}, runner=run) is None
+
 def test_error_raises_billingerror():
     def run(cmd, env=None, **kw):
         return types.SimpleNamespace(returncode=255, stdout="", stderr="AccessDenied")
+    with pytest.raises(billing.BillingError):
+        billing.monthly_costs({"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "B"}, runner=run)
+
+def test_malformed_rc0_stdout_raises_billingerror():
+    # rc==0 but stdout is not JSON must raise BillingError (mirror the rc!=0 path),
+    # never a bare JSONDecodeError — billing_view only catches BillingError, so an
+    # unwrapped decode error would 500 the estimate page.
+    def run(cmd, env=None, **kw):
+        return types.SimpleNamespace(returncode=0, stdout="<html>not json</html>", stderr="")
     with pytest.raises(billing.BillingError):
         billing.monthly_costs({"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "B"}, runner=run)
