@@ -29,7 +29,9 @@ _GLOBAL_DEFAULTS = {
 }
 
 # A versioned job churns more between backups than a bulk archive job.
-_ENGINE_CHANGE = {"versioned": 10.0, "archive": 1.0}
+# versioned-files is per-file incremental versioning (like "versioned"), just
+# without a shared restic repo -- same churn assumption.
+_ENGINE_CHANGE = {"versioned": 10.0, "archive": 1.0, "versioned-files": 10.0}
 
 
 def _region(config_dir: str) -> str:
@@ -53,9 +55,11 @@ def _num(params: Mapping, key: str, fallback, *, label: str) -> float:
 
 
 def _size_for(job: dict, usage) -> tuple[float, int]:
-    """bytes/count from cached usage: archive -> media/<name>; versioned -> the
-    appdata aggregate. Falls back to module defaults for an un-backed-up job."""
-    key = f"media/{job['name']}" if job.get("type") == "archive" else "appdata"
+    """bytes/count from cached usage: versioned -> the shared appdata restic
+    aggregate; archive AND versioned-files -> their own media/<name> S3 prefix
+    (both write to a per-job prefix, not the shared repo). Falls back to
+    module defaults for an un-backed-up job."""
+    key = "appdata" if job.get("type") == "versioned" else f"media/{job['name']}"
     u = (usage or {}).get(key)
     if u:
         return u["bytes"] / (1024 ** 3), int(u["count"])
@@ -68,6 +72,10 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
         keep = job.get("keep") or {}
         retention = effective_retention_days(**{f"keep_{k}": int(keep.get(k, 0))
                                                 for k in ("last", "daily", "weekly", "monthly")})
+    elif engine == "versioned-files":
+        # retention_days is the job's own versioning-retention window (jobs_io
+        # validates/defaults it to 90) -- used directly, no keep-policy proxy.
+        retention = int(job.get("retention_days", 90))
     else:
         retention = None  # falls back to the scenario noncurrent-retention window
     o = override or {}
@@ -191,6 +199,8 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
            "schedule": params.get("schedule", ""), "storage_class": cls}
     if engine == "versioned":
         job["keep"] = {k: params.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+    elif engine == "versioned-files":
+        job["retention_days"] = params.get("retention_days", 90)
     else:
         job["mirror"] = bool(params.get("mirror"))
 
