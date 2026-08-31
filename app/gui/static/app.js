@@ -63,6 +63,66 @@
   });
 })();
 
+// Friendly schedule builder: drives the real name="schedule" field (#sched-input).
+(function () {
+  var input = document.getElementById("sched-input");
+  var builder = document.getElementById("sched-builder");
+  if (!input || !builder) return;
+  var freq = document.getElementById("sched-freq");
+  var time = document.getElementById("sched-time");
+  var dow = document.getElementById("sched-dow");
+  var dom = document.getElementById("sched-dom");
+  var dowWrap = document.getElementById("sched-dow-wrap");
+  var domWrap = document.getElementById("sched-dom-wrap");
+  var human = document.getElementById("sched-human");
+  var preview = document.getElementById("sched-preview");
+  var rawBtn = document.getElementById("sched-advanced-toggle");
+  var simpleBtn = document.getElementById("sched-simple-toggle");
+  var raw = document.getElementById("sched-raw");
+  var DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  function two(n) { return (n < 10 ? "0" : "") + n; }
+  function build() {
+    var hm = (time.value || "03:00").split(":");
+    var mm = parseInt(hm[0].length ? hm[1] : "0", 10) || 0;
+    var hh = parseInt(hm[0], 10) || 0;
+    dowWrap.hidden = freq.value !== "weekly";
+    domWrap.hidden = freq.value !== "monthly";
+    var cron, txt;
+    if (freq.value === "hourly") { cron = mm + " * * * *"; txt = "hourly at :" + two(mm); }
+    else if (freq.value === "daily") { cron = mm + " " + hh + " * * *"; txt = "daily at " + two(hh) + ":" + two(mm); }
+    else if (freq.value === "weekly") { cron = mm + " " + hh + " * * " + dow.value; txt = "every " + DOW[parseInt(dow.value, 10)] + " at " + two(hh) + ":" + two(mm); }
+    else { var d = Math.min(28, Math.max(1, parseInt(dom.value, 10) || 1)); cron = mm + " " + hh + " " + d + " * *"; txt = "day " + d + " at " + two(hh) + ":" + two(mm); }
+    preview.textContent = cron; human.textContent = txt;
+    input.value = cron;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  function parse(cron) {
+    var f = (cron || "").split(/\s+/);
+    if (f.length !== 5) return false;
+    var mm = f[0], hh = f[1], d = f[2], mon = f[3], w = f[4];
+    if (!/^\d+$/.test(mm) || mon !== "*") return false;
+    if (hh === "*" && d === "*" && w === "*") { freq.value = "hourly"; time.value = "00:" + two(+mm); return true; }
+    if (!/^\d+$/.test(hh)) return false;
+    time.value = two(+hh) + ":" + two(+mm);
+    if (d === "*" && w === "*") { freq.value = "daily"; return true; }
+    if (d === "*" && /^[0-6]$/.test(w)) { freq.value = "weekly"; dow.value = w; return true; }
+    if (/^([1-9]|1\d|2[0-8])$/.test(d) && w === "*") { freq.value = "monthly"; dom.value = d; return true; }
+    return false;
+  }
+  function showAdvanced(on) { builder.hidden = on; raw.style.display = on ? "" : "none"; if (simpleBtn) simpleBtn.hidden = !on; }
+
+  if (parse(input.value)) { showAdvanced(false); build(); }
+  else { showAdvanced(true); }  // unparseable -> keep the raw field visible
+
+  freq.addEventListener("change", build);
+  time.addEventListener("input", build);
+  dow.addEventListener("change", build);
+  dom.addEventListener("input", build);
+  if (rawBtn) rawBtn.addEventListener("click", function () { showAdvanced(true); });
+  if (simpleBtn) simpleBtn.addEventListener("click", function () { if (parse(input.value)) { showAdvanced(false); build(); } });
+})();
+
 // Cost estimate: recompute live as inputs change (server owns the cost model).
 (function () {
   var form = document.getElementById("est-form");

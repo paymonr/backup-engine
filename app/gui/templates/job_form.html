@@ -28,8 +28,28 @@
     <p class="hint">Selected: <code id="source-shown">{{ job.source if job else '(none)' }}</code></p>
   </div>
   <div class="card"><h2>3 · How often?</h2>
-    <label>Schedule (cron) <input name="schedule" value="{{ job.schedule if job else '0 3 * * *' }}" required></label>
-    <p class="hint">e.g. <code>0 3 * * *</code> = daily 3am, <code>0 4 * * 0</code> = weekly Sun 4am. Or run on demand from the Jobs list.</p>
+    <div class="sched-builder" id="sched-builder" hidden>
+      <div class="field-row">
+        <label>Frequency
+          <select id="sched-freq">
+            <option value="hourly">Hourly</option>
+            <option value="daily" selected>Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
+        </label>
+        <label>At <input type="time" id="sched-time" value="03:00"></label>
+        <label id="sched-dow-wrap" hidden>On
+          <select id="sched-dow"><option value="0">Sun</option><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option></select>
+        </label>
+        <label id="sched-dom-wrap" hidden>Day <input type="number" id="sched-dom" min="1" max="28" value="1"></label>
+      </div>
+      <p class="hint">Runs <span id="sched-human">daily at 03:00</span> — cron <code id="sched-preview">0 3 * * *</code>. <button type="button" class="btn btn-ghost" id="sched-advanced-toggle">Advanced</button></p>
+    </div>
+    <div id="sched-raw">
+      <label>Schedule (cron) <input name="schedule" id="sched-input" value="{{ job.schedule if job else '0 3 * * *' }}" required></label>
+      <p class="hint">e.g. <code>0 3 * * *</code> = daily 3am, <code>0 4 * * 0</code> = weekly Sun 4am. Or run on demand from the Jobs list. <button type="button" class="btn btn-ghost" id="sched-simple-toggle" hidden>Use the builder</button></p>
+    </div>
     <p class="hint">Versioned jobs share one restic repo, so give each a <strong>different minute</strong> — two firing the same minute collide on the repo lock (one fails and recovers next run).</p>
     <label class="inline"><input type="checkbox" name="enabled" value="1" {{ 'checked' if not job or job.enabled }}> Enabled (scheduled)</label>
   </div>

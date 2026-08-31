@@ -80,6 +80,10 @@ fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); pad
 legend { color: var(--muted); font-size: .85rem; padding: 0 .4rem; }
 /* .retention — versioned-retention fieldset (job_form.html); spaces it from the field above */
 .retention { margin-top: var(--sp-2); }
+/* .sched-builder — friendly schedule builder over the raw cron field (job_form.html, 3 · How often?) */
+.sched-builder .field-row { align-items: end; }
+.sched-builder { margin-bottom: var(--sp-2); }
+#sched-raw { margin-top: var(--sp-1); }
 .table-scroll { overflow-x: auto; }
 /* .class-panel — storage-class comparison <details> in job_form.html (4 · Storage & retention) */
 .class-panel { margin: var(--sp-2) 0; }

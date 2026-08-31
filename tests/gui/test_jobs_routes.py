@@ -34,6 +34,11 @@ def test_new_form_renders_source_tree(client):
     # media picker's #media-tree, per task-7's single-select job-source tree).
     r = client.get("/jobs/new"); assert r.status_code == 200 and b"source-tree" in r.data
 
+def test_wizard_has_schedule_builder_and_schedule_field(client):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert 'class="sched-builder"' in body
+    assert 'name="schedule"' in body   # the posted field survives
+
 def test_create_job_then_lists(client, app):
     t = _csrf(client, "/jobs/new")
     r = client.post("/jobs", data={"csrf": t, "name": "movies", "type": "archive",
