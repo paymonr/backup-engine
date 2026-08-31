@@ -83,8 +83,8 @@
 
   function two(n) { return (n < 10 ? "0" : "") + n; }
   function build() {
-    var hm = (time.value || "03:00").split(":");
-    var mm = parseInt(hm[0].length ? hm[1] : "0", 10) || 0;
+    var hm = (time.value || "03:00").split(":");  // native time input -> "HH:MM"
+    var mm = parseInt(hm[1], 10) || 0;
     var hh = parseInt(hm[0], 10) || 0;
     dowWrap.hidden = freq.value !== "weekly";
     domWrap.hidden = freq.value !== "monthly";
@@ -101,9 +101,13 @@
     var f = (cron || "").split(/\s+/);
     if (f.length !== 5) return false;
     var mm = f[0], hh = f[1], d = f[2], mon = f[3], w = f[4];
-    if (!/^\d+$/.test(mm) || mon !== "*") return false;
+    // Range-check minute/hour so an out-of-range value (e.g. "0 24 * * *", savable
+    // via the unrestricted Advanced field) does NOT match here -- otherwise the
+    // native time input would blank "24:00" and build() would silently rewrite
+    // the schedule to the 03:00 default on load. Out-of-range stays in Advanced.
+    if (!/^\d+$/.test(mm) || +mm > 59 || mon !== "*") return false;
     if (hh === "*" && d === "*" && w === "*") { freq.value = "hourly"; time.value = "00:" + two(+mm); return true; }
-    if (!/^\d+$/.test(hh)) return false;
+    if (!/^\d+$/.test(hh) || +hh > 23) return false;
     time.value = two(+hh) + ":" + two(+mm);
     if (d === "*" && w === "*") { freq.value = "daily"; return true; }
     if (d === "*" && /^[0-6]$/.test(w)) { freq.value = "weekly"; dow.value = w; return true; }
