@@ -61,3 +61,21 @@ def test_advice_edit_warmup_change_is_warn():
 def test_advice_no_transition_note_when_class_unchanged():
     a = sa.class_advice("archive", "STANDARD", "0 3 * * *", "STANDARD", P)
     assert not any("future" in x["text"].lower() for x in a)
+
+def test_advice_restic_on_retrieval_billed_instant_class_warns():
+    # restic re-reads its repo every run; STANDARD_IA/GLACIER_IR bill retrieval on
+    # each read -> per-run retrieval charge (spec §2). WARN, not a block.
+    for cls in ("STANDARD_IA", "GLACIER_IR"):
+        a = sa.class_advice("versioned", cls, "0 3 * * *", None, P)
+        assert any(x["level"] == "warn" and "every run" in x["text"].lower()
+                   and "retrieval" in x["text"].lower() for x in a), cls
+
+def test_advice_restic_on_standard_has_no_retrieval_warning():
+    # STANDARD has no retrieval fee -> no per-run retrieval warning
+    a = sa.class_advice("versioned", "STANDARD", "0 3 * * *", None, P)
+    assert not any("every run" in x["text"].lower() for x in a)
+
+def test_advice_non_versioned_no_restic_retrieval_warning():
+    # archive/versioned-files don't re-read a whole repo each run -> no restic note
+    a = sa.class_advice("archive", "STANDARD_IA", "0 3 * * *", None, P)
+    assert not any("re-reads its repository" in x["text"] for x in a)

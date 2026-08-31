@@ -69,6 +69,19 @@ def class_advice(job_type: str, storage_class: str, schedule: str,
             "(STANDARD, STANDARD_IA, GLACIER_IR) or switch this to Versioned "
             "files, which stores cold natively.")})
 
+    # 1b. restic re-reads its repository on EVERY run. An instant class that still
+    #     bills a per-GB retrieval fee (STANDARD_IA / GLACIER_IR) therefore charges
+    #     retrieval on every run — often more than the cheaper storage saves (spec
+    #     §2). STANDARD has no retrieval fee; cold classes are the danger above.
+    #     Data-driven: instant (not cold) AND a non-empty retrieval table.
+    elif job_type == "versioned" and prices.retrieval_per_gb.get(storage_class):
+        out.append({"level": "warn", "text": (
+            "Snapshots use restic, which re-reads its repository every run. {} bills "
+            "a per-GB retrieval fee on each read, so every run incurs retrieval "
+            "charges — often more than the cheaper storage saves. STANDARD has no "
+            "retrieval fee; use it for snapshots, or use Archive / Versioned files "
+            "for a cheaper class.").format(storage_class)})
+
     # 2. Minimum-duration / early-deletion note (any class with a minimum).
     if min_days:
         out.append({"level": "info", "text": (
