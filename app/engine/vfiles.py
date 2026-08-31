@@ -35,6 +35,7 @@ import uuid
 from pathlib import Path
 
 from app.engine import catalog, s3
+from app.gui.jobs_io import valid_name
 
 _SECONDS_PER_DAY = 86400
 
@@ -52,6 +53,14 @@ class PruneScopeError(Exception):
 
 def _job_prefix(job_name: str) -> str:
     return f"media/{job_name}/"
+
+
+def _has_dotdot(key: str) -> bool:
+    """True if any '/'-separated segment of `key` is exactly '..'. Such a key
+    could traverse OUT of the job prefix even while textually startswith()-ing
+    it (e.g. 'media/<job>/../otherjob/x' starts with 'media/<job>/' yet points
+    elsewhere), so the scope guard must reject it, not just the startswith miss."""
+    return ".." in key.split("/")
 
 
 def _open_or_fetch_catalog(job_name, cache_dir, *, bucket, rclone_config, runner):
@@ -121,17 +130,24 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
         pruned = 0
         for row in catalog.prunable(conn, before):
             key = row["key"]
-            # tombstone rows have key=None -> nothing in S3 to delete. And never
-            # s3.delete an object a live (is_current=1) row still points at --
-            # belt-and-suspenders against any key ever being shared across rows.
-            if key and not catalog.is_current_key(conn, key):
-                # Load-bearing safety: never delete an object outside this job's
-                # own prefix, whatever a (possibly corrupted/crafted) row claims.
-                if not key.startswith(prefix):
+            # tombstone rows have key=None -> nothing in S3 to delete.
+            if key:
+                # Load-bearing scope guard, checked FIRST -- before the
+                # is_current check -- so an out-of-scope key is REFUSED whatever
+                # a (possibly corrupted/crafted) row claims, even one a crafted
+                # is_current row also points at. The engine must NEVER delete an
+                # object outside this job's own media/<job>/ prefix. Reject both
+                # a prefix miss AND any '..' segment (which could traverse out of
+                # the prefix while still textually starting with it).
+                if not key.startswith(prefix) or _has_dotdot(key):
                     raise PruneScopeError(
                         f"refusing to delete key outside {prefix!r}: {key!r}"
                     )
-                s3.delete(key, bucket=bucket, rclone_config=rclone_config, runner=runner)
+                # Never s3.delete an object a live (is_current=1) row still points
+                # at -- belt-and-suspenders against any key ever being shared
+                # across rows.
+                if not catalog.is_current_key(conn, key):
+                    s3.delete(key, bucket=bucket, rclone_config=rclone_config, runner=runner)
             catalog.delete_version(conn, row["id"])
             pruned += 1
     finally:
@@ -272,6 +288,14 @@ def _main(argv: list[str]) -> int:
                             help="Glacier/Deep Archive thaw tier (cold storage classes only)")
 
     args = parser.parse_args(argv)
+
+    # Defense-in-depth: the job name feeds the S3 key prefix (media/<job>/), the
+    # prune scope guard, AND the local cache filename (<job>.sqlite). jobs_io's
+    # _main re-validates it upstream at run time, but a direct/hand-edited invoke
+    # must not be able to smuggle a '/' or '..' through the name and make keys or
+    # cache paths escape. Refuse loudly here before any of that is derived.
+    if not valid_name(args.job):
+        parser.error(f"invalid job name: {args.job!r}")
 
     def _require_env(name: str) -> str:
         val = os.environ.get(name)

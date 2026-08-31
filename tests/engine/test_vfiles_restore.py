@@ -3,6 +3,7 @@
 # captures the exact argv rclone/aws would have been shelled with. Catalogs are
 # seeded directly via app.engine.catalog (no backup() call needed) so each test
 # controls the exact version history under test.
+import sqlite3
 import types
 
 import pytest
@@ -261,6 +262,21 @@ def test_restore_attempts_catalog_download_and_survives_failure(tmp_path):
         "s3:bkt/media/j/_catalog/catalog.sqlite", str(cache / "j.sqlite"),
     ]
     assert out == []  # empty catalog -> empty list
+
+
+def test_restore_corrupt_catalog_fails_safe(tmp_path):
+    # A corrupt/malformed catalog.sqlite must fail safe on restore too: raise on
+    # open, issue no S3 fetch (restore never deletes, but it must not crash into
+    # a partial/garbage recovery either).
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "j.sqlite").write_bytes(b"not a sqlite database, just garbage")
+    job = make_job()
+    r = StubRunner()
+    with pytest.raises(sqlite3.DatabaseError):
+        vfiles.restore(job, path="a.txt", target=str(tmp_path / "out"),
+                        cache_dir=str(cache), bucket="bkt", rclone_config="/cfg", runner=r)
+    assert not any("copyto" in c for c in r.calls)
 
 
 def test_restore_reuses_local_catalog_without_download(tmp_path):

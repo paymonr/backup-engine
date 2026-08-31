@@ -83,6 +83,37 @@ def test_backup_invalid_retention_days_exits_2(monkeypatch):
     assert exc.value.code == 2
 
 
+@pytest.mark.parametrize("bad", ["../evil", "..", "a/b", "foo/../bar", "with space", ""])
+def test_backup_rejects_invalid_job_name(monkeypatch, bad):
+    # Defense-in-depth: a hand-edited jobs.json (or a direct invoke) must not be
+    # able to smuggle a name that escapes the media/<job>/ key prefix or the
+    # <job>.sqlite cache path. The CLI refuses (exit 2) before backup() runs.
+    _set_common_env(monkeypatch)
+
+    def fake_backup(job, **kwargs):
+        raise AssertionError("backup() must not run for an invalid job name")
+
+    monkeypatch.setattr(vfiles, "backup", fake_backup)
+
+    with pytest.raises(SystemExit) as exc:
+        vfiles._main(["backup", bad])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("bad", ["../evil", "..", "a/b"])
+def test_restore_rejects_invalid_job_name(monkeypatch, bad):
+    _set_common_env(monkeypatch)
+
+    def fake_restore(job, **kwargs):
+        raise AssertionError("restore() must not run for an invalid job name")
+
+    monkeypatch.setattr(vfiles, "restore", fake_restore)
+
+    with pytest.raises(SystemExit) as exc:
+        vfiles._main(["restore", bad, "list"])
+    assert exc.value.code == 2
+
+
 def test_restore_list_passes_path_none(monkeypatch):
     _set_common_env(monkeypatch)
     captured = {}

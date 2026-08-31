@@ -3,6 +3,7 @@
 # captures the exact argv rclone would have been shelled with, and every case
 # uses a temp source tree + temp cache_dir. The stub NEVER touches S3.
 import os
+import sqlite3
 import types
 
 import pytest
@@ -230,6 +231,79 @@ def test_prune_refuses_key_outside_job_prefix(tmp_path):
                       bucket="bkt", rclone_config="/c", now=now, runner=r)
     # the out-of-prefix key was NEVER deleted from S3
     assert not any("media/OTHERJOB/secret@1" in j for j in joined(r.calls))
+
+
+def test_prune_refuses_dotdot_traversal_key(tmp_path):
+    # A crafted key that STARTS WITH media/<job>/ but contains a '..' segment
+    # would traverse out of the job prefix ("media/j/../otherjob/x"). startswith
+    # alone accepts it, so the guard must reject '..' segments explicitly and
+    # never s3.delete it.
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    catalog.record_version(conn, "p", "media/j/../otherjob/secret@1", 1, 1.0, "STANDARD", 1.0)
+    catalog.record_version(conn, "p", "media/j/p@2", 1, 1.0, "STANDARD", 2.0)  # current, in-prefix
+    conn.close()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "p").write_bytes(b"x")
+    os.utime(src / "p", (1, 1))  # unchanged vs current -> no upload
+
+    job = make_job(retention_days=1)
+    now = 1_000_000  # bad row (uploaded_at 1.0) is prunable
+    r = StubRunner()
+    with pytest.raises(vfiles.PruneScopeError):
+        vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                      bucket="bkt", rclone_config="/c", now=now, runner=r)
+    # the traversal key was NEVER handed to s3.delete
+    assert not any("otherjob/secret" in j for j in joined(r.calls))
+
+
+def test_prune_refuses_out_of_prefix_key_even_when_marked_current(tmp_path):
+    # Hardening: the scope guard runs BEFORE the is_current check, so an
+    # out-of-prefix key is refused even if a crafted is_current=1 row ALSO
+    # points at it (which would otherwise short-circuit the old guard and let
+    # the row be pruned silently). Must raise PruneScopeError.
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    evil = "media/OTHERJOB/secret@1"
+    catalog.record_version(conn, "p", evil, 1, 1.0, "STANDARD", 1.0)   # old, non-current -> prunable
+    catalog.record_version(conn, "p", evil, 1, 1.0, "STANDARD", 2.0)   # current, SAME out-of-prefix key
+    conn.close()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "p").write_bytes(b"x")
+    os.utime(src / "p", (1, 1))  # unchanged vs current -> no upload
+
+    job = make_job(retention_days=1)
+    now = 1_000_000  # old row (uploaded_at 1.0) is prunable
+    r = StubRunner()
+    with pytest.raises(vfiles.PruneScopeError):
+        vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                      bucket="bkt", rclone_config="/c", now=now, runner=r)
+    assert not any("media/OTHERJOB/secret@1" in j for j in joined(r.calls))
+
+
+def test_corrupt_catalog_fails_safe_without_deleting(tmp_path):
+    # A corrupt/malformed catalog.sqlite must degrade safely: backup raises on
+    # open (before the prune loop) and NEVER issues an s3.delete or a catalog
+    # upload that would overwrite the durable copy with the corrupt bytes.
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "j.sqlite").write_bytes(b"not a sqlite database, just garbage")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"hello")
+
+    job = make_job(retention_days=1)
+    r = StubRunner()
+    with pytest.raises(sqlite3.DatabaseError):
+        vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                      bucket="bkt", rclone_config="/c", now=1_000_000, runner=r)
+    # no deletion and no upload happened -- the run aborted before touching S3
+    assert not any("deletefile" in c for c in r.calls)
+    assert not any("copyto" in c for c in r.calls)
 
 
 def test_same_second_change_yields_distinct_keys_no_aliasing(tmp_path):
