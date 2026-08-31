@@ -16,6 +16,7 @@
   <div class="card"><h2>1 · What kind of backup?</h2>
     <label class="inline"><input type="radio" name="type" value="versioned" {{ 'checked' if not job or job.type=='versioned' }}> Versioned &amp; encrypted <small>— configs, databases, docs (snapshots, restore any point in time)</small></label>
     <label class="inline"><input type="radio" name="type" value="archive" {{ 'checked' if job and job.type=='archive' }}> Bulk archive <small>— media, large static files (cheap cold storage)</small></label>
+    <label class="inline"><input type="radio" name="type" value="versioned-files" {{ 'checked' if job and job.type=='versioned-files' }}> Versioned files <small>— incremental + keeps old versions (any storage class, incl. Deep Archive)</small></label>
   </div>
   <div class="card"><h2>2 · Which folder?</h2>
     <p class="hint">Browse <code>{{ source_root }}</code> and pick one folder.</p>
@@ -42,6 +43,10 @@
       </div>
     </fieldset>
     <label class="inline"><input type="checkbox" name="mirror" value="1" {{ 'checked' if job and job.mirror }}> Mirror (archive: delete removed files too)</label>
+    <label>Keep old versions for
+      <input type="number" min="0" name="retention_days" value="{{ job.retention_days if job and job.type=='versioned-files' else 90 }}">
+      days <small>(versioned files: how long a replaced/deleted version is kept before it's pruned)</small>
+    </label>
   </div>
   <div class="card"><h2>5 · Name it</h2>
     <label>Job name <input name="name" value="{{ job.name if job else '' }}" {{ 'readonly' if job }} required placeholder="nightly-configs"></label>

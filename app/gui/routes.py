@@ -216,6 +216,8 @@ def job_save():
            "enabled": bool(f.get("enabled")), "storage_class": f.get("storage_class", "STANDARD")}
     if job["type"] == "versioned":
         job["keep"] = {k: f.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+    elif job["type"] == "versioned-files":
+        job["retention_days"] = f.get("retention_days", "90")
     else:
         job["mirror"] = bool(f.get("mirror"))
     try:
@@ -310,12 +312,14 @@ def costs_refresh():
         flash("Set an S3 bucket in Config before refreshing usage.")
         return redirect(url_for("gui.estimate_page"))
     jobs = jobs_io.load(cfg["CONFIG_DIR"])
-    archive_jobs = [j["name"] for j in jobs if j.get("type") == "archive"]
+    # Both "archive" and "versioned-files" jobs write to their own media/<name> S3
+    # prefix (see estimate_io._size_for) -- both must be scanned for current spend.
+    media_jobs = [j["name"] for j in jobs if j.get("type") in ("archive", "versioned-files")]
     has_versioned = any(j.get("type") == "versioned" for j in jobs)
     # The container's rendered rclone.conf already carries the runtime key +
     # endpoint (scripts/lib/rclone-conf.sh) — no creds needed here, and none new.
     rclone_config = str(Path(cfg["CACHE_DIR"], "rclone.conf"))
-    data = usage.collect_usage(bucket, archive_jobs, has_versioned, rclone_config=rclone_config)
+    data = usage.collect_usage(bucket, media_jobs, has_versioned, rclone_config=rclone_config)
     usage.save_cached(cfg["CACHE_DIR"], data)
     flash("Usage refreshed.")
     return redirect(url_for("gui.estimate_page"))

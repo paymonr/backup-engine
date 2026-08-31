@@ -43,6 +43,19 @@ def test_create_job_then_lists(client, app):
     assert jobs[0]["name"] == "movies" and jobs[0]["type"] == "archive"
     assert b"movies" in client.get("/jobs").data
 
+def test_create_versioned_files_job_persists_type_and_retention(client, app):
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs", data={"csrf": t, "name": "docs", "type": "versioned-files",
+                                    "source": "media/movies", "schedule": "0 5 * * *",
+                                    "storage_class": "DEEP_ARCHIVE", "enabled": "1",
+                                    "retention_days": "120"})
+    assert r.status_code in (302, 303)
+    jobs = json.loads(pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").read_text())["jobs"]
+    assert jobs[0]["name"] == "docs" and jobs[0]["type"] == "versioned-files"
+    assert jobs[0]["retention_days"] == 120
+    assert jobs[0]["storage_class"] == "DEEP_ARCHIVE"
+
+
 def test_jobs_page_nameless_entry_no_500(client, app):
     # Regression (FIX 2): a hand-edited nameless jobs.json entry must not 500 /jobs
     # (jobs_page does j["name"]) — jobs_io.load drops it on the fail-safe read path.

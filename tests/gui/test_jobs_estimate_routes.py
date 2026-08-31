@@ -78,6 +78,17 @@ def test_jobs_estimate_returns_this_and_total(client):
     assert "price_source" in j and "price_date" in j
 
 
+def test_jobs_estimate_versioned_files_returns_a_number(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "name": "docs", "type": "versioned-files", "source": "movies",
+        "storage_class": "DEEP_ARCHIVE", "schedule": "0 5 * * *",
+        "retention_days": "90", "size_gb": "50"})
+    assert r.status_code == 200
+    j = r.get_json()
+    assert isinstance(j["this_job_monthly"], (int, float))
+    assert j["new_total_monthly"] >= j["this_job_monthly"]
+
+
 def test_jobs_estimate_new_job_adds_to_existing_total(client):
     base = client.get("/estimate.json").get_json()["monthly_total"]
     r = client.get("/jobs/estimate.json", query_string={
