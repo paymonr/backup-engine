@@ -181,6 +181,26 @@ def test_automated_override_bucket_skips_account_lookup(client, dirs, monkeypatc
     assert "S3_BUCKET=my-own-bucket" in be
 
 
+def test_provision_home_shows_first_run_setup_when_unprovisioned(client):
+    r = client.get("/provision")
+    assert r.status_code == 200
+    assert b"First-time setup" in r.data
+
+
+def test_provision_home_shows_ready_when_provisioned(dirs, template_path):
+    from app.gui import config_io
+    config_io.write_secrets(dirs["config"],
+                            {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    Path(dirs["config"], "backup.env").write_text("S3_BUCKET=acme\nAWS_REGION=us-east-1\n")
+    app = create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
+                      "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
+                      "SECRET_KEY": "test", "TESTING": True})
+    r = app.test_client().get("/provision")
+    assert r.status_code == 200
+    assert b"Destination set" in r.data and b"acme" in r.data
+    assert b"First-time setup" not in r.data
+
+
 def test_automated_account_lookup_failure_saves_nothing(client, dirs, monkeypatch):
     from app.gui import provision
 

@@ -138,3 +138,12 @@ def test_clear_cost_explorer_creds_removes_ce_keeps_core(dirs):
     assert raw["AWS_ACCESS_KEY_ID"] == "AKIA" and raw["RESTIC_PASSWORD"] == "pw"
     assert cio.secrets_mode(dirs["config"]) == "600"
     assert cio.read_cost_explorer_creds(dirs["config"]) is None
+
+
+def test_is_provisioned_requires_runtime_key_and_bucket(dirs):
+    cfg = dirs["config"]
+    assert cio.is_provisioned(cfg) is False                      # fresh install
+    cio.write_secrets(cfg, {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    assert cio.is_provisioned(cfg) is False                      # creds but no bucket
+    Path(cfg, "backup.env").write_text("S3_BUCKET=acme\nAWS_REGION=us-east-1\n")
+    assert cio.is_provisioned(cfg) is True                       # creds + bucket

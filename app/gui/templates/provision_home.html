@@ -1,8 +1,16 @@
 {% extends "base.html" %}
 {% block body %}
+{% if provisioned %}
 <p class="eyebrow">Provisioning</p>
-<h1>Provision the AWS destination</h1>
-<p class="lead">Get from "no bucket" to a validated, least-privilege runtime key. Pick the path that fits how much access you want to hand this container.</p>
+<h1>Re-provision the AWS destination</h1>
+<div class="card">
+  <p><span class="badge badge-ok">ready</span> Destination set — bucket <code>{{ bucket }}</code>{% if region %} in <code>{{ region }}</code>{% endif %}. Re-provision below to change it, or <a href="{{ url_for('gui.jobs_page') }}">go to your jobs →</a></p>
+</div>
+{% else %}
+<p class="eyebrow">First-time setup · Step 1 of 2</p>
+<h1>Welcome — let's set up your backup destination</h1>
+<p class="lead">Before you can back anything up, this container needs an S3 bucket and a least-privilege runtime key. Pick the path that fits how much access you want to hand it — you'll be creating your first backup job in a moment.</p>
+{% endif %}
 
 <div class="card">
   <h2>Before you begin</h2>

@@ -19,6 +19,10 @@ def about_page():
 
 @bp.get("/")
 def index():
+    # First run (no runtime key + bucket yet) lands on the provisioning wizard;
+    # once set up, the Jobs page is home.
+    if not config_io.is_provisioned(current_app.config["CONFIG_DIR"]):
+        return redirect(url_for("gui.provision_home"))
     return redirect(url_for("gui.jobs_page"))
 
 @bp.get("/config")
@@ -53,7 +57,11 @@ def logs():
 
 @bp.get("/provision")
 def provision_home():
-    return render_template("provision_home.html", csrf=security.issue_csrf())
+    cfg = current_app.config
+    env = config_io.read_backup_env(cfg["CONFIG_DIR"])
+    return render_template("provision_home.html", csrf=security.issue_csrf(),
+                           provisioned=config_io.is_provisioned(cfg["CONFIG_DIR"]),
+                           bucket=env.get("S3_BUCKET", ""), region=env.get("AWS_REGION", ""))
 
 @bp.get("/provision/manual")
 def provision_manual():
@@ -100,8 +108,8 @@ def provision_validate():
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": region, "S3_BUCKET": bucket})
-    flash("Runtime key validated and saved. Reminder: confirm bucket versioning is ON.")
-    return redirect(url_for("gui.provision_home"))
+    flash("Runtime key validated and saved. Reminder: confirm bucket versioning is ON. Next: create your first backup job.")
+    return redirect(url_for("gui.jobs_page"))
 
 @bp.get("/provision/automated")
 def provision_automated():
@@ -142,8 +150,8 @@ def provision_automated_run():
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"]})
-    flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key.")
-    return redirect(url_for("gui.provision_home"))
+    flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key. Next: create your first backup job.")
+    return redirect(url_for("gui.jobs_page"))
 
 @bp.get("/jobs")
 def jobs_page():
