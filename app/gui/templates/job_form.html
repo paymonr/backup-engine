@@ -33,6 +33,28 @@
   </div>
   <div class="card"><h2>4 · Storage &amp; retention</h2>
     <label>Storage class <select name="storage_class">{% for c in storage_classes %}<option value="{{c}}" {{ 'selected' if job and job.storage_class==c }}>{{c}}</option>{% endfor %}</select></label>
+    <details class="class-panel">
+      <summary>Compare storage classes</summary>
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Class</th><th class="num">$/GB·mo</th><th>Read</th><th class="num">Min days</th><th>Retrieval</th><th class="num">Egress $/GB</th></tr></thead>
+        <tbody>
+          {% for c in class_info %}
+          <tr>
+            <th>{{ c.name }}{% if c.cold %} <span class="badge badge-idle">cold</span>{% endif %}</th>
+            <td class="num">{{ "%.4f"|format(c.rate_gb_month) }}</td>
+            <td>{{ c.read_access }}</td>
+            <td class="num">{{ c.min_duration_days or '—' }}</td>
+            <td>{{ c.retrieval }}</td>
+            <td class="num">{{ "%.2f"|format(c.egress_per_gb) }}</td>
+          </tr>
+          <tr class="class-use"><td colspan="6" class="hint">{{ c.use_case }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <p class="hint">Restoring is retrieval + egress ($/GB out of AWS), independent of how cheap storage is. Prices: {{ price_stamp.source or '—' }} @ {{ price_stamp.date or '—' }}.</p>
+    </details>
     <fieldset class="retention"><legend>Versioned retention (keep)</legend>
       {% set k = job.keep if job and job.keep else {'last':3,'daily':7,'weekly':4,'monthly':6} %}
       <div class="field-row">

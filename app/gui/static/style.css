@@ -81,6 +81,11 @@ legend { color: var(--muted); font-size: .85rem; padding: 0 .4rem; }
 /* .retention — versioned-retention fieldset (job_form.html); spaces it from the field above */
 .retention { margin-top: var(--sp-2); }
 .table-scroll { overflow-x: auto; }
+/* .class-panel — storage-class comparison <details> in job_form.html (4 · Storage & retention) */
+.class-panel { margin: var(--sp-2) 0; }
+.class-panel > summary { cursor: pointer; color: var(--accent); }
+.class-panel table { font-size: 0.9rem; }
+.class-panel .class-use td { padding-top: 0; border-top: 0; }
 .row-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; justify-content: flex-end; }
 .row-actions form { margin: 0; }
 /* .tree — confined folder picker (#source-tree in job_form.html): the root <ul>

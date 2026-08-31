@@ -14,7 +14,8 @@ def app(tmp_path, source_root, template_path):
     cfg = tmp_path / "config"; cfg.mkdir()
     return create_app({"CONFIG_DIR": str(cfg), "CACHE_DIR": str(tmp_path / "cache"),
                        "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
-                       "SOURCE_ROOT": str(source_root), "SECRET_KEY": "test", "TESTING": True})
+                       "SOURCE_ROOT": str(source_root), "SECRET_KEY": "test", "TESTING": True,
+                       "PRICES_LIVE": False})
 
 @pytest.fixture
 def client(app):
@@ -126,3 +127,11 @@ def test_job_delete_on_corrupt_file_flashes_not_500(client, app):
     r = client.post("/jobs/movies/delete", data={"csrf": t})
     assert r.status_code in (302, 303)
     assert p.read_text() == "{ this is not valid json"
+
+def test_wizard_class_panel_lists_every_class_with_min_and_retrieval(client):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert "class-panel" in body
+    for cls in ("STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"):
+        assert cls in body
+    assert "180" in body            # Deep Archive minimum days
+    assert "thaw required" in body  # cold read-access surfaced
