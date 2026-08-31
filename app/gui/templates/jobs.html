@@ -14,7 +14,7 @@
       {% for j in jobs %}
       <tr>
         <td><strong>{{ j.name }}</strong><br><span class="hint"><code>{{ j.source }}</code></span></td>
-        <td>{{ 'Versioned' if j.type=='versioned' else 'Archive' }} <span class="hint">{{ '(restic)' if j.type=='versioned' else '(rclone)' }}</span></td>
+        <td>{% if j.type=='versioned' %}Versioned <span class="hint">(restic)</span>{% elif j.type=='versioned-files' %}Versioned files <span class="hint">(catalog)</span>{% else %}Archive <span class="hint">(rclone)</span>{% endif %}</td>
         <td><code>{{ j.schedule }}</code></td>
         <td>
           {% if j.state %}<span class="badge {{ 'badge-ok' if j.state.outcome=='success' else 'badge-fail' }}">{{ j.state.outcome }}</span>
@@ -34,6 +34,14 @@
   </div>
 </div>
 {% else %}
-<div class="card"><p class="muted">No jobs yet — <a href="{{ url_for('gui.job_new') }}">create one</a> to start backing up.</p></div>
+<div class="card onboarding">
+  <h2>Getting started</h2>
+  <ol class="steps">
+    <li>Set your AWS region, bucket, and keys on the <a href="{{ url_for('gui.config_page') }}">Config</a> page (or provision a least-privilege bucket from <a href="{{ url_for('gui.provision_home') }}">Provision</a>).</li>
+    <li>Create your first <a href="{{ url_for('gui.job_new') }}">backup job</a> — pick a folder, a storage class (the wizard compares them and warns about cold/retrieval costs), and a schedule.</li>
+    <li>Run it on demand from this page, then check the <a href="{{ url_for('gui.estimate_page') }}">cost estimate</a>.</li>
+  </ol>
+  <p><a class="btn btn-primary" href="{{ url_for('gui.job_new') }}">+ Create your first job</a></p>
+</div>
 {% endif %}
 {% endblock %}

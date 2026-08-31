@@ -55,6 +55,7 @@ summary:hover { color: var(--ink); }
 .hint { color: var(--faint); font-size: .85rem; } .muted { color: var(--muted); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-6); margin: 0 0 var(--sp-4); }
 .card-hero { background: var(--surface); border-color: var(--border-strong); }
+.onboarding .steps { margin: var(--sp-2) 0; padding-left: 1.2rem; display: grid; gap: var(--sp-1); }
 /* Wizard cost card pins as the form scrolls under it (job_form.html only — NOT all
    .card-hero: the estimate page reuses .card-hero and must not stick). Its opaque
    --surface bg + border let content scroll cleanly beneath. */

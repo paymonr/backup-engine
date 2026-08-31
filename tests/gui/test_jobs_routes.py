@@ -26,8 +26,31 @@ def _csrf(client, path):
     with client.session_transaction() as s:
         return s["_csrf"]
 
+@pytest.fixture
+def tmp_jobs(app):
+    # Seeds a single versioned-files job directly into jobs.json.
+    p = pathlib.Path(app.config["CONFIG_DIR"], "jobs.json")
+    p.write_text(json.dumps({"jobs": [{"name": "m", "type": "versioned-files", "source": "media",
+                                        "schedule": "0 3 * * *", "enabled": True,
+                                        "storage_class": "DEEP_ARCHIVE", "retention_days": 90}]}))
+    return p
+
 def test_jobs_list_empty(client):
-    r = client.get("/jobs"); assert r.status_code == 200 and b"No jobs" in r.data
+    # Empty state now renders the onboarding card (see
+    # test_jobs_empty_state_shows_onboarding_steps) rather than a bare "No jobs yet" message.
+    r = client.get("/jobs"); assert r.status_code == 200 and b"Getting started" in r.data
+
+def test_jobs_empty_state_shows_onboarding_steps(client):
+    # with no jobs configured, the page guides first-run setup
+    body = client.get("/jobs").get_data(as_text=True)
+    assert "Getting started" in body
+    assert "/config" in body or "Provision" in body  # points at setup
+
+def test_versioned_files_job_labeled_correctly(client, tmp_jobs):
+    # tmp_jobs writes a versioned-files job into jobs.json
+    body = client.get("/jobs").get_data(as_text=True)
+    assert "Versioned files" in body
+    assert "Archive" not in body  # the old label bug mislabeled it Archive
 
 def test_new_form_renders_source_tree(client):
     # job_form.html renders the picker as #source-tree (renamed from the old
