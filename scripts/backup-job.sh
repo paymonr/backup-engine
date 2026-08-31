@@ -33,11 +33,7 @@ main() {
   case "$JOB_TYPE" in
     versioned) _run_versioned "$src" ;;
     archive)   _run_archive "$src" ;;
-    # versioned-files hands off entirely to the Python engine (JOB_* +
-    # SOURCE_ROOT/CACHE_DIR/S3_BUCKET are already exported/available for it
-    # to read); exec replaces this process, so success/failure reporting
-    # below is skipped for this type -- the CLI's own exit code is the signal.
-    versioned-files) exec python3 -m app.engine.vfiles backup "$JOB" ;;
+    versioned-files) _run_vfiles "$JOB" ;;
     *) _fail "job '$JOB' has unknown type '$JOB_TYPE'" ;;
   esac
   local dur=$(( $(date +%s) - start ))
@@ -76,6 +72,15 @@ _run_archive() {
   log_info "rclone $verb $src -> s3:$S3_BUCKET/media/$JOB (class=$JOB_STORAGE_CLASS)"
   rclone "${args[@]}" || _fail "rclone $verb failed for '$JOB'"
   rclone check "$src" "s3:$S3_BUCKET/media/$JOB" --size-only || log_warn "rclone check differences for '$JOB' (size-only)"
+}
+
+_run_vfiles() {
+  # Runs the Python engine IN-PROCESS (not exec) so control returns to
+  # main() -- the success-path state-file write + notify/healthcheck below,
+  # and _usb_exit_trap's failure-path recording, apply to versioned-files
+  # jobs the same as versioned/archive. JOB_* + SOURCE_ROOT/CACHE_DIR/S3_BUCKET
+  # are already exported/available for the module to read.
+  python3 -m app.engine.vfiles backup "$1" || _fail "vfiles backup failed for '$1'"
 }
 
 _record_failure() { local msg="$1" rc="${2:-1}"; _BE_FAIL_HANDLED=1; mkdir -p "$CACHE_DIR/state"

@@ -51,7 +51,7 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   [ "$status" -ne 0 ]
 }
 
-@test "versioned-files job -> dispatches to app.engine.vfiles module" {
+@test "versioned-files job -> dispatches to app.engine.vfiles module (in-process, not exec)" {
   export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
   local b="$BATS_TEST_TMPDIR/bin"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
@@ -64,6 +64,19 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   # own "rclone version"/"restic version" probes still land in these logs)
   ! grep -q -- "copy " "$RCLONE_LOG"
   ! grep -q -- "backup " "$RESTIC_LOG"
+  # control returned to main() -- NOT exec'd away -- so the success-path
+  # state-file write (read by routes.py's Jobs page) actually ran
+  grep -q '"outcome":"success"' "$CACHE_DIR/state/vf.json"
+}
+
+@test "versioned-files job failure -> _fail records outcome:failure (not silently exec'd away)" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job vf
+  [ "$status" -ne 0 ]
+  grep -q '"outcome":"failure"' "$CACHE_DIR/state/vf.json"
 }
 
 # --- Task 10 security: the REAL jobs_io CLI re-validates untrusted jobs.json ---
