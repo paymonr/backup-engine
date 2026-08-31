@@ -70,15 +70,18 @@ def secrets_mode(config_dir: str) -> str | None:
     return oct(p.stat().st_mode & 0o777)[2:] if p.exists() else None
 
 def is_provisioned(config_dir: str) -> bool:
-    """First-run signal: the app has a saved runtime AWS key AND a destination
+    """First-run signal: the app has a saved runtime AWS key AND a REAL destination
     bucket -- exactly what every provisioning flow writes on success. A fresh
     install (neither present) is routed into the provisioning wizard instead of
     the Jobs page. RESTIC_PASSWORD is intentionally NOT required (an archive-only
-    setup never sets it)."""
+    setup never sets it). The example template's `changeme-...` placeholder bucket
+    (written verbatim when a Config save leaves S3_BUCKET blank) does NOT count as
+    provisioned -- otherwise a barely-touched install would skip the wizard."""
     sec = secrets_status(config_dir)
-    env = read_backup_env(config_dir)
+    bucket = read_backup_env(config_dir).get("S3_BUCKET", "").strip()
+    bucket_set = bool(bucket) and not bucket.lower().startswith("changeme")
     return bool(sec.get("AWS_ACCESS_KEY_ID") and sec.get("AWS_SECRET_ACCESS_KEY")
-                and env.get("S3_BUCKET"))
+                and bucket_set)
 
 def write_secrets(config_dir: str, values: dict[str, str]) -> None:
     p = Path(config_dir, "secrets.env")
