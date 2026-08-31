@@ -309,13 +309,14 @@ def estimate_page():
         prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
     except Exception:
         prices = None
+    class_info = storage_class_info(prices) if prices is not None else []
     current = (estimate_io.current_costs(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices)
                if prices is not None else {"available": False})
     billing = estimate_io.billing_view(cfg["CONFIG_DIR"])
     return render_template("estimate.html", d=d, est=est, error=error,
                            storage_classes=STORAGE_CLASSES,
                            retrieval_tiers=estimate_io.RETRIEVAL_TIERS,
-                           current=current, billing=billing,
+                           current=current, billing=billing, class_info=class_info,
                            csrf=security.issue_csrf())
 
 @bp.get("/estimate.json")
