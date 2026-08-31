@@ -54,6 +54,31 @@ run_restore() { local job="$1"; shift; run bash "$BATS_TEST_DIRNAME/../../script
   grep -q -- "copy s3:my-bucket/media/movies/2020/ $out -v" "$RCLONE_LOG"
 }
 
+@test "versioned-files job -> dispatches to app.engine.vfiles module" {
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  local b="$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_restore vf list
+  [ "$status" -eq 0 ]
+  grep -q -- "-m app.engine.vfiles restore vf list" "$PYTHON_LOG"
+  [ ! -s "$RCLONE_LOG" ]
+  [ ! -s "$RESTIC_LOG" ]
+}
+
+@test "versioned-files job -> restore with path/target/--asof/--tier passed through" {
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  local b="$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  local out="$BATS_TEST_TMPDIR/out"
+  run_restore vf a/b.txt "$out" --asof 1700000000 --tier Expedited
+  [ "$status" -eq 0 ]
+  grep -q -- "-m app.engine.vfiles restore vf a/b.txt $out --asof 1700000000 --tier Expedited" "$PYTHON_LOG"
+}
+
 @test "unknown job -> clear error" {
   printf 'exit 3\n' >"$JOBS_IO_STUB"
   run_restore ghost list

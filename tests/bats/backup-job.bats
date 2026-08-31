@@ -51,6 +51,21 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   [ "$status" -ne 0 ]
 }
 
+@test "versioned-files job -> dispatches to app.engine.vfiles module" {
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  local b="$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job vf
+  [ "$status" -eq 0 ]
+  grep -q -- "-m app.engine.vfiles backup vf" "$PYTHON_LOG"
+  # dispatched to python, not the archive/versioned engines (version_banner's
+  # own "rclone version"/"restic version" probes still land in these logs)
+  ! grep -q -- "copy " "$RCLONE_LOG"
+  ! grep -q -- "backup " "$RESTIC_LOG"
+}
+
 # --- Task 10 security: the REAL jobs_io CLI re-validates untrusted jobs.json ---
 # These bypass the stub (JOBS_IO_CMD -> the real python module) so backup-job.sh
 # exercises run-time source confinement, not just the write path.

@@ -33,6 +33,11 @@ main() {
   case "$JOB_TYPE" in
     versioned) _run_versioned "$src" ;;
     archive)   _run_archive "$src" ;;
+    # versioned-files hands off entirely to the Python engine (JOB_* +
+    # SOURCE_ROOT/CACHE_DIR/S3_BUCKET are already exported/available for it
+    # to read); exec replaces this process, so success/failure reporting
+    # below is skipped for this type -- the CLI's own exit code is the signal.
+    versioned-files) exec python3 -m app.engine.vfiles backup "$JOB" ;;
     *) _fail "job '$JOB' has unknown type '$JOB_TYPE'" ;;
   esac
   local dur=$(( $(date +%s) - start ))

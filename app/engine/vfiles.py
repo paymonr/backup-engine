@@ -26,7 +26,10 @@
 # the exact stored key, so the suffix is free. The current version of a path is
 # the newest by uploaded_at (catalog.record_version keeps is_current in sync).
 from __future__ import annotations
+import argparse
+import os
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -228,3 +231,96 @@ def restore(job, *, target, path=None, asof=None, cache_dir, bucket, rclone_conf
         return {"status": "restored", "path": path, "key": key, "target": str(dest)}
     finally:
         conn.close()
+
+
+def _main(argv: list[str]) -> int:
+    """CLI entrypoint for ``python3 -m app.engine.vfiles``:
+
+        python3 -m app.engine.vfiles backup <job>
+        python3 -m app.engine.vfiles restore <job> list
+        python3 -m app.engine.vfiles restore <job> <path> <target> \
+            [--asof TS] [--tier Bulk|Standard|Expedited]
+
+    Dispatched from scripts/backup-job.sh (the `versioned-files)` case) and
+    scripts/restore.sh the same way, with `<job>` matching the `$JOB`/`$job`
+    shell var those scripts already resolved via `app.gui.jobs_io`.
+
+    This CLI does NOT re-read config/jobs.json -- it TRUSTS the JOB_* env
+    vars those scripts already `eval`'d from jobs_io's (re-validated,
+    shell-safe) output -- JOB_SOURCE, JOB_STORAGE_CLASS, JOB_RETENTION_DAYS --
+    the same way backup-job.sh's own _run_versioned/_run_archive trust their
+    JOB_* vars without re-validating them; jobs_io's own `_main` is the
+    re-validation gate (name charset + source confinement) that already ran
+    to produce them. It additionally reads the wiring backup-job.sh sets up:
+    SOURCE_ROOT, CACHE_DIR, S3_BUCKET -- and derives the rclone config path
+    scripts/lib/rclone-conf.sh always renders to: $CACHE_DIR/rclone.conf.
+    """
+    parser = argparse.ArgumentParser(prog="python3 -m app.engine.vfiles")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    backup_p = sub.add_parser("backup", help="run one incremental backup")
+    backup_p.add_argument("job", help="job name (the $JOB backup-job.sh resolved)")
+
+    restore_p = sub.add_parser("restore", help="list versions, or recover one file")
+    restore_p.add_argument("job", help="job name")
+    restore_p.add_argument("path", help='"list", or the relpath of a file to restore')
+    restore_p.add_argument("target", nargs="?", default=None,
+                            help="target dir (required unless path is 'list')")
+    restore_p.add_argument("--asof", type=float, default=None,
+                            help="unix timestamp: restore the version current as of then")
+    restore_p.add_argument("--tier", default="Bulk", choices=["Bulk", "Standard", "Expedited"],
+                            help="Glacier/Deep Archive thaw tier (cold storage classes only)")
+
+    args = parser.parse_args(argv)
+
+    def _require_env(name: str) -> str:
+        val = os.environ.get(name)
+        if not val:
+            parser.error(f"missing required environment variable: {name}")
+        return val
+
+    cache_dir = _require_env("CACHE_DIR")
+    bucket = _require_env("S3_BUCKET")
+    rclone_config = str(Path(cache_dir) / "rclone.conf")
+    retention_raw = os.environ.get("JOB_RETENTION_DAYS", "90")
+    try:
+        retention_days = int(retention_raw)
+    except ValueError:
+        parser.error(f"invalid JOB_RETENTION_DAYS: {retention_raw!r}")
+    job = {
+        "name": args.job,
+        "source": os.environ.get("JOB_SOURCE", ""),
+        "storage_class": _require_env("JOB_STORAGE_CLASS"),
+        "retention_days": retention_days,
+    }
+
+    if args.cmd == "backup":
+        source_root = str(Path(_require_env("SOURCE_ROOT")) / job["source"])
+        stats = backup(job, source_root=source_root, cache_dir=cache_dir,
+                        bucket=bucket, rclone_config=rclone_config)
+        print(f'uploaded={stats["uploaded"]} deleted={stats["deleted"]} pruned={stats["pruned"]}')
+        return 0
+
+    # restore
+    if args.path == "list":
+        if args.target is not None:
+            parser.error("'list' takes no target/--asof/--tier")
+        restore(job, path=None, target="", cache_dir=cache_dir, bucket=bucket,
+                rclone_config=rclone_config)
+        return 0
+
+    if args.target is None:
+        parser.error("restore <job> <path> <target> [--asof TS] [--tier Bulk|Standard|Expedited]")
+    try:
+        result = restore(job, path=args.path, target=args.target, asof=args.asof,
+                          cache_dir=cache_dir, bucket=bucket, rclone_config=rclone_config,
+                          thaw=args.tier)
+    except LookupError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print(f'{result["status"]}: {result["path"]} ({result["key"]})')
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv[1:]))

@@ -14,9 +14,10 @@ usage() {
   cat <<EOF
 usage:
   restore.sh <job> list
-  restore.sh <job> restore <snapshot-id|latest> <target-dir>
-  restore.sh <job> thaw <prefix> [--tier Bulk|Standard|Expedited] [--dry-run]
-  restore.sh <job> download <prefix> <target-dir>
+  restore.sh <job> restore <snapshot-id|latest> <target-dir>          (versioned only)
+  restore.sh <job> thaw <prefix> [--tier Bulk|Standard|Expedited] [--dry-run]   (archive only)
+  restore.sh <job> download <prefix> <target-dir>                     (archive only)
+  restore.sh <job> <path> <target> [--asof TS] [--tier Bulk|Standard|Expedited]  (versioned-files only)
 EOF
 }
 
@@ -110,6 +111,11 @@ main() {
   case "$JOB_TYPE" in
     versioned) _restore_versioned "$job" "$@" ;;
     archive)   _restore_archive "$job" "$@" ;;
+    # versioned-files hands off entirely to the Python engine, mirroring
+    # backup-job.sh's dispatch; JOB_* + CACHE_DIR/S3_BUCKET are already
+    # available for it to read (SOURCE_ROOT is irrelevant here -- restore
+    # reads from the catalog + S3, never the job's local source tree).
+    versioned-files) exec python3 -m app.engine.vfiles restore "$job" "$@" ;;
     *) die "job '$job' has unknown type '$JOB_TYPE'" ;;
   esac
 }
