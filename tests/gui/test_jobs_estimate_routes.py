@@ -157,6 +157,24 @@ def test_jobs_estimate_non_us_east_1_region_no_500(dirs, template_path, source_r
     assert r.get_json()["this_job_monthly"] >= 0
 
 
+def test_estimate_json_includes_advice_and_restore(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "type": "versioned", "storage_class": "DEEP_ARCHIVE",
+        "size_gb": "50", "schedule": "0 3 * * *", "name": "x", "source": "media"})
+    assert r.status_code == 200
+    j = r.get_json()
+    assert "this_job_restore" in j and j["this_job_restore"] > 0
+    assert any(a["level"] == "danger" for a in j["advice"])  # restic + cold
+
+
+def test_estimate_json_advice_empty_for_plain_standard(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "type": "archive", "storage_class": "STANDARD",
+        "size_gb": "10", "schedule": "0 3 * * *", "name": "y", "source": "media"})
+    j = r.get_json()
+    assert j["advice"] == []
+
+
 def test_jobs_estimate_never_walks_source_uses_default(client):
     # FIX: the wizard estimate must NEVER touch the filesystem (it has to be instant
     # on every keystroke). With a source= but NO size_gb it uses _DEFAULT_SIZE_GB,

@@ -5,6 +5,7 @@ from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io, dirsize, attributions
+from .storage_advice import storage_class_info
 from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
 from ..estimator import usage
@@ -151,18 +152,38 @@ def jobs_page():
     rows = [{**j, "state": runner.read_state(cfg["CACHE_DIR"], j["name"])} for j in jobs]
     return render_template("jobs.html", jobs=rows, csrf=security.issue_csrf())
 
+def _class_panel_context(cfg):
+    """Pricing-derived storage-class panel data for the job form. Guarded: a
+    pricing failure must degrade the panel to empty rather than 500 the page."""
+    region = estimate_io._region(cfg["CONFIG_DIR"])
+    try:
+        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+        class_info = storage_class_info(prices)
+        price_stamp = {"source": prices.source, "date": prices.date}
+    except Exception:
+        class_info, price_stamp = [], {"source": None, "date": None}
+    return class_info, price_stamp
+
 @bp.get("/jobs/new")
 def job_new():
-    return render_template("job_form.html", job=None, source_root=current_app.config["SOURCE_ROOT"],
-                           storage_classes=jobs_io.STORAGE_CLASSES, csrf=security.issue_csrf())
+    cfg = current_app.config
+    class_info, price_stamp = _class_panel_context(cfg)
+    return render_template("job_form.html", job=None, source_root=cfg["SOURCE_ROOT"],
+                           storage_classes=jobs_io.STORAGE_CLASSES,
+                           class_info=class_info, price_stamp=price_stamp,
+                           csrf=security.issue_csrf())
 
 @bp.get("/jobs/<name>/edit")
 def job_edit(name):
-    job = jobs_io.get(current_app.config["CONFIG_DIR"], name)
+    cfg = current_app.config
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
     if job is None:
         abort(404)
-    return render_template("job_form.html", job=job, source_root=current_app.config["SOURCE_ROOT"],
-                           storage_classes=jobs_io.STORAGE_CLASSES, csrf=security.issue_csrf())
+    class_info, price_stamp = _class_panel_context(cfg)
+    return render_template("job_form.html", job=job, source_root=cfg["SOURCE_ROOT"],
+                           storage_classes=jobs_io.STORAGE_CLASSES,
+                           class_info=class_info, price_stamp=price_stamp,
+                           csrf=security.issue_csrf())
 
 @bp.get("/jobs/browse")
 def jobs_browse():
@@ -199,8 +220,12 @@ def jobs_estimate_json():
         # the wizard to "—" rather than 500.
         return jsonify({"this_job_monthly": None, "new_total_monthly": None,
                         "price_source": None, "price_date": None})
+    name = str(request.args.get("name", "")).strip()
+    saved = jobs_io.get(cfg["CONFIG_DIR"], name) if name else None
+    saved_class = saved.get("storage_class") if saved else None
     try:
-        result = estimate_io.wizard_estimate(request.args, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"], prices)
+        result = estimate_io.wizard_estimate(request.args, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"],
+                                             prices, saved_class=saved_class)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({**result, "price_source": prices.source, "price_date": prices.date})

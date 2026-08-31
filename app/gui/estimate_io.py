@@ -6,9 +6,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Mapping
-from . import config_io, jobs_io
+from . import config_io, jobs_io, storage_advice
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days, estimate,
+    restore_cost,
 )
 from ..estimator.schedule import backups_per_month
 from ..estimator import usage, billing
@@ -183,7 +184,7 @@ def form_defaults(config_dir, source_root) -> dict:
     }
 
 
-def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
+def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_class=None) -> dict:
     """Live cost for the job create/edit WIZARD: prices a CANDIDATE job built from
     the in-progress form params (not yet saved), plus what the total across every
     saved job becomes with this candidate added in — replacing any existing job of
@@ -220,9 +221,17 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
     others = tuple(j for j in base.jobs if j.name != name)
     total_scn = replace(base, jobs=others + (candidate,))
 
+    this_est = estimate(this_scn, prices)
+    # Candidate full-restore (retrieval + egress) at fraction 1.0, using the
+    # scenario's retrieval tier. Reuses the model; adds no math here.
+    this_restore = restore_cost(candidate, base, prices, 1.0)
+    advice = storage_advice.class_advice(engine, cls, str(params.get("schedule", "")),
+                                         saved_class, prices)
     return {
-        "this_job_monthly": estimate(this_scn, prices).monthly_total,
+        "this_job_monthly": this_est.monthly_total,
         "new_total_monthly": estimate(total_scn, prices).monthly_total,
+        "this_job_restore": this_restore,
+        "advice": advice,
     }
 
 
