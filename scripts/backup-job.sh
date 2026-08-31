@@ -18,7 +18,12 @@ main() {
   # load the job def (JOB_* vars). Overridable for tests via JOBS_IO_CMD.
   local jobsio="${JOBS_IO_CMD:-python3 -m app.gui.jobs_io}"
   local def; if ! def="$(CONFIG_DIR="${CONFIG_DIR:-/config}" $jobsio "$JOB")"; then _fail "job '$JOB' not found"; fi
-  eval "$def"
+  # `set -a` exports every var the def assigns (emit_shell emits bare `JOB_*=`,
+  # no `export`) so the versioned-files engine, which runs as a python3 CHILD and
+  # reads them from os.environ, inherits JOB_STORAGE_CLASS/JOB_SOURCE/etc. The
+  # restic/archive engines use them as in-process shell vars, so this is harmless
+  # to them; SOURCE_ROOT/CACHE_DIR/S3_BUCKET are already exported (Dockerfile/config).
+  set -a; eval "$def"; set +a
   local src="$SOURCE_ROOT/$JOB_SOURCE"
   [ -d "$src" ] || _fail "job '$JOB' source '$src' missing"
   acquire_lock "$JOB"; version_banner
@@ -78,8 +83,9 @@ _run_vfiles() {
   # Runs the Python engine IN-PROCESS (not exec) so control returns to
   # main() -- the success-path state-file write + notify/healthcheck below,
   # and _usb_exit_trap's failure-path recording, apply to versioned-files
-  # jobs the same as versioned/archive. JOB_* + SOURCE_ROOT/CACHE_DIR/S3_BUCKET
-  # are already exported/available for the module to read.
+  # jobs the same as versioned/archive. JOB_* are exported at the `set -a`
+  # eval above and SOURCE_ROOT/CACHE_DIR/S3_BUCKET by Dockerfile/config, so
+  # this child process inherits everything the module reads from os.environ.
   python3 -m app.engine.vfiles backup "$1" || _fail "vfiles backup failed for '$1'"
 }
 

@@ -105,3 +105,30 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   [ "$status" -eq 0 ]
   grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
 }
+
+@test "versioned-files dispatch EXPORTS the job def to the python engine (regression)" {
+  # emit_shell emits bare `JOB_*=...`; backup-job.sh must export the eval'd def so
+  # the python3 CHILD (app.engine.vfiles reads os.environ) actually sees
+  # JOB_STORAGE_CLASS/JOB_SOURCE/JOB_RETENTION_DAYS. Unlike the argv-logging stub
+  # above, this stub inspects its ENVIRONMENT and fails when the def is absent --
+  # exactly as vfiles._require_env("JOB_STORAGE_CLASS") does at runtime. Before the
+  # export fix the vars are unexported shell vars and never reach the child.
+  export PYENV_LOG="$BATS_TEST_TMPDIR/pyenv.log"; : >"$PYENV_LOG"
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/python3" <<'STUB'
+#!/usr/bin/env bash
+printf 'JOB_STORAGE_CLASS=%s\n' "${JOB_STORAGE_CLASS-UNSET}" >>"$PYENV_LOG"
+printf 'JOB_SOURCE=%s\n' "${JOB_SOURCE-UNSET}" >>"$PYENV_LOG"
+printf 'JOB_RETENTION_DAYS=%s\n' "${JOB_RETENTION_DAYS-UNSET}" >>"$PYENV_LOG"
+[ -n "${JOB_STORAGE_CLASS:-}" ] || exit 7   # mirrors vfiles _require_env
+exit 0
+STUB
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job vf
+  [ "$status" -eq 0 ]
+  grep -q "JOB_STORAGE_CLASS=STANDARD" "$PYENV_LOG"
+  grep -q "JOB_SOURCE=appdata" "$PYENV_LOG"
+  grep -q "JOB_RETENTION_DAYS=30" "$PYENV_LOG"
+  grep -q '"outcome":"success"' "$CACHE_DIR/state/vf.json"
+}

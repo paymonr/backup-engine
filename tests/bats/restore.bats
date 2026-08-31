@@ -91,3 +91,22 @@ run_restore() { local job="$1"; shift; run bash "$BATS_TEST_DIRNAME/../../script
   [ "$status" -eq 2 ]
   [[ "$output" == *"usage:"* ]]
 }
+
+@test "versioned-files restore EXPORTS the job def to the python engine (regression)" {
+  # restore.sh eval's the def then hands off to python3 (exec); the def must be
+  # exported so the engine's os.environ reads (JOB_STORAGE_CLASS for cold-thaw, etc.)
+  # succeed. Stub inspects its ENVIRONMENT, not argv, and fails if the def is absent.
+  export PYENV_LOG="$BATS_TEST_TMPDIR/pyenv.log"; : >"$PYENV_LOG"
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/python3" <<'STUB'
+#!/usr/bin/env bash
+printf 'JOB_STORAGE_CLASS=%s\n' "${JOB_STORAGE_CLASS-UNSET}" >>"$PYENV_LOG"
+[ -n "${JOB_STORAGE_CLASS:-}" ] || exit 7
+exit 0
+STUB
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_restore vf list
+  [ "$status" -eq 0 ]
+  grep -q "JOB_STORAGE_CLASS=DEEP_ARCHIVE" "$PYENV_LOG"
+}
