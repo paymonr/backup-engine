@@ -86,6 +86,12 @@ legend { color: var(--muted); font-size: .85rem; padding: 0 .4rem; }
 .class-panel > summary { cursor: pointer; color: var(--accent); }
 .class-panel table { font-size: 0.9rem; }
 .class-panel .class-use td { padding-top: 0; border-top: 0; }
+/* .advice — live storage-class advice list (#job-advice in job_form.html's #job-cost card) */
+.advice { display: grid; gap: var(--sp-1); margin-top: var(--sp-2); }
+.advice-item { margin: 0; padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.92rem; }
+.advice-info { border-color: var(--border-strong); color: var(--muted); }
+.advice-warn { border-color: var(--warn-border); background: var(--warn-bg); color: var(--ink); }
+.advice-danger { border-color: var(--danger-border); background: var(--danger-bg); color: var(--ink); }
 .row-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; justify-content: flex-end; }
 .row-actions form { margin: 0; }
 /* .tree — confined folder picker (#source-tree in job_form.html): the root <ul>

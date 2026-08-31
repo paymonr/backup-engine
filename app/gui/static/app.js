@@ -131,6 +131,8 @@
   var sizeInput = document.getElementById("size-gb-input");
   var sourceTree = document.getElementById("source-tree");
   var sizingEl = document.getElementById("job-cost-sizing");
+  var restoreEl = document.getElementById("job-cost-restore");
+  var adviceEl = document.getElementById("job-advice");
   var timer;
 
   function sizing(on) { if (sizingEl) sizingEl.hidden = !on; }
@@ -139,10 +141,24 @@
     if (v === null || v === undefined) return "—";
     return "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
+  function paintAdvice(list) {
+    if (!adviceEl) return;
+    while (adviceEl.firstChild) adviceEl.removeChild(adviceEl.firstChild);
+    if (!list || !list.length) { adviceEl.hidden = true; return; }
+    for (var i = 0; i < list.length; i++) {
+      var item = document.createElement("p");
+      item.className = "advice-item advice-" + (list[i].level || "info");
+      item.textContent = list[i].text;
+      adviceEl.appendChild(item);
+    }
+    adviceEl.hidden = false;
+  }
   function paint(data) {
     thisEl.textContent = money(data && data.this_job_monthly);
     totalEl.textContent = money(data && data.new_total_monthly);
     if (dateEl) dateEl.textContent = (data && data.price_date) || "—";
+    if (restoreEl) restoreEl.textContent = money(data && data.this_job_restore);
+    paintAdvice(data && data.advice);
   }
   function update() {
     var qs = new URLSearchParams(new FormData(form)).toString();

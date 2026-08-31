@@ -135,3 +135,9 @@ def test_wizard_class_panel_lists_every_class_with_min_and_retrieval(client):
         assert cls in body
     assert "180" in body            # Deep Archive minimum days
     assert "thaw required" in body  # cold read-access surfaced
+
+def test_wizard_has_advice_container_and_original_class(client):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert 'id="job-advice"' in body
+    assert 'data-original-class' in body
+    assert 'id="job-cost-restore"' in body

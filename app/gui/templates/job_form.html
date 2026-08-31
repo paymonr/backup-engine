@@ -7,8 +7,10 @@
     <li class="med"><span class="lbl">This job</span><span id="job-cost-this">—</span></li>
     <li class="med"><span class="lbl">New total</span><span id="job-cost-total">—</span></li>
   </ul>
+  <p class="hint">Full restore (once): <span id="job-cost-restore">—</span> <small>(retrieval + egress)</small></p>
   <p class="hint">Prices as of <span id="job-cost-date">—</span>. Updates live as you fill in the form. <span id="job-cost-sizing" hidden><em>Sizing folder…</em></span></p>
   <p id="job-cost-error" class="alert alert-error" hidden></p>
+  <div id="job-advice" class="advice" hidden></div>
 </div>
 
 <form id="job-form" method="post" action="{{ url_for('gui.job_save') }}">
@@ -32,7 +34,7 @@
     <label class="inline"><input type="checkbox" name="enabled" value="1" {{ 'checked' if not job or job.enabled }}> Enabled (scheduled)</label>
   </div>
   <div class="card"><h2>4 · Storage &amp; retention</h2>
-    <label>Storage class <select name="storage_class">{% for c in storage_classes %}<option value="{{c}}" {{ 'selected' if job and job.storage_class==c }}>{{c}}</option>{% endfor %}</select></label>
+    <label>Storage class <select name="storage_class" data-original-class="{{ job.storage_class if job else '' }}">{% for c in storage_classes %}<option value="{{c}}" {{ 'selected' if job and job.storage_class==c }}>{{c}}</option>{% endfor %}</select></label>
     <details class="class-panel">
       <summary>Compare storage classes</summary>
       <div class="table-scroll">
