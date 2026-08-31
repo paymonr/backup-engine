@@ -197,9 +197,27 @@
   var sizingEl = document.getElementById("job-cost-sizing");
   var restoreEl = document.getElementById("job-cost-restore");
   var adviceEl = document.getElementById("job-advice");
+  var infoEl = document.getElementById("source-info");
   var timer;
 
   function sizing(on) { if (sizingEl) sizingEl.hidden = !on; }
+  function fmtBytes(b) {
+    var gb = b / (1024 * 1024 * 1024);
+    if (gb >= 1) return gb.toLocaleString(undefined, { maximumFractionDigits: 2 }) + " GB";
+    var mb = b / (1024 * 1024);
+    if (mb >= 1) return mb.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " MB";
+    return Math.max(0, Math.round(b / 1024)).toLocaleString() + " KB";
+  }
+  function showInfo(d) {
+    if (!infoEl) return;
+    if (!d) { infoEl.hidden = true; infoEl.textContent = ""; return; }
+    var files = Number(d.count || 0).toLocaleString();
+    var size = fmtBytes(Number(d.bytes || 0));
+    var atLeast = d.capped ? "at least " : "";
+    var partial = d.capped ? " (partial — large folder, stopped at 8s)" : "";
+    infoEl.textContent = "This folder holds " + atLeast + size + " across " + files + " files" + partial + ".";
+    infoEl.hidden = false;
+  }
 
   function money(v) {
     if (v === null || v === undefined) return "—";
@@ -249,18 +267,20 @@
       var t = ev.target;
       if (!t || t.type !== "checkbox") return;
       var path = t.checked ? t.value : "";
-      if (!path) { sizeInput.value = ""; sizing(false); schedule(); return; }
+      if (!path) { sizeInput.value = ""; sizing(false); showInfo(null); schedule(); return; }
       // The estimate is NEVER blocked on the folder walk: recompute right away with
-      // the current/default size, show a "sizing…" hint, and fetch the real folder
-      // size async. When it returns, seed #size-gb-input and recompute once more.
+      // the current/default size, show the "calculating…" line, and fetch the real
+      // folder size + file count async. When it returns, seed #size-gb-input, show
+      // what we found, and recompute once more.
       sizeInput.value = "";
+      showInfo(null);
       sizing(true);
       schedule();
       fetch("/jobs/source-size?path=" + encodeURIComponent(path))
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
           sizing(false);
-          if (d) { sizeInput.value = String(d.bytes / (1024 * 1024 * 1024)); schedule(); }
+          if (d) { sizeInput.value = String(d.bytes / (1024 * 1024 * 1024)); showInfo(d); schedule(); }
         })
         .catch(function () { sizing(false); });
     });
@@ -279,4 +299,24 @@
       for (var j = 0; j < buttons.length; j++) buttons[j].disabled = true;
     });
   }
+})();
+
+// Wizard: show only the retention controls that apply to the chosen backup type
+// ([data-when-type] on the restic keep-fieldset / archive mirror / versioned-files
+// retention-days). Toggled on load and whenever the type radio changes.
+(function () {
+  var form = document.getElementById("job-form");
+  if (!form) return;
+  var conds = form.querySelectorAll("[data-when-type]");
+  if (!conds.length) return;
+  function apply() {
+    var checked = form.querySelector('input[name="type"]:checked');
+    var t = checked ? checked.value : "";
+    for (var i = 0; i < conds.length; i++) {
+      conds[i].hidden = conds[i].getAttribute("data-when-type") !== t;
+    }
+  }
+  var radios = form.querySelectorAll('input[name="type"]');
+  for (var j = 0; j < radios.length; j++) radios[j].addEventListener("change", apply);
+  apply();
 })();

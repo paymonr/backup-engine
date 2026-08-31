@@ -14,6 +14,14 @@
   --sp-1:.25rem; --sp-2:.5rem; --sp-3:.75rem; --sp-4:1rem; --sp-6:1.5rem; --sp-8:2rem;
 }
 * { box-sizing: border-box; }
+/* The `hidden` attribute must always win. Author rules like `label{display:block}`
+   otherwise override the UA `[hidden]{display:none}`, which left the schedule
+   builder's weekday/day <label>s visible for Daily. */
+[hidden] { display: none !important; }
+/* Wizard folder-size readout (its own line, larger; green while calculating). */
+.sizing { color: var(--ok); font-size: 1.05rem; font-weight: 560; margin: var(--sp-2) 0 0; }
+.source-info { color: var(--ink); font-size: 1rem; margin: var(--sp-1) 0 0; }
+.source-info .muted { color: var(--muted); }
 html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink);
   font: 15px/1.55 var(--font-sans); }
@@ -127,6 +135,9 @@ th { color: var(--muted); font-weight: 560; font-size: .82rem; }
 .flash li, .alert { background: var(--accent-bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .6rem .8rem; }
 .alert-error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
 .alert-warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+.error-detail { border-color: var(--danger-border); background: var(--danger-bg); }
+.error-detail > summary { color: var(--danger); }
+.error-detail pre { white-space: pre-wrap; word-break: break-word; margin: var(--sp-2) 0 0; }
 .text-warn { color: var(--warn); }
 /* ---- provisioning mode picker (provision_home.html) ---- */
 .modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-4); margin: var(--sp-4) 0 var(--sp-6); }

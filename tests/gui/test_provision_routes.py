@@ -201,6 +201,21 @@ def test_provision_home_shows_ready_when_provisioned(dirs, template_path):
     assert b"First-time setup" not in r.data
 
 
+def test_automated_failure_surfaces_the_real_tofu_error(client, monkeypatch):
+    from app.gui import provision
+    def boom(*a, **k):
+        raise provision.TofuError("apply", "Error: creating S3 Bucket: BucketAlreadyOwnedByYou")
+    monkeypatch.setattr(provision, "run_tofu_apply", boom)
+    token = _csrf(client, "/provision/automated")
+    r = client.post("/provision/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
+    assert r.status_code == 400
+    assert b"failed at tofu apply" in r.data              # the generic summary
+    assert b"BucketAlreadyOwnedByYou" in r.data           # the ACTUAL reason, now shown
+    assert b"What AWS / OpenTofu reported" in r.data
+
+
 def test_automated_account_lookup_failure_saves_nothing(client, dirs, monkeypatch):
     from app.gui import provision
 

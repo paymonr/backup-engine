@@ -169,3 +169,13 @@ def test_wizard_has_advice_container_and_original_class(client):
     assert 'id="job-advice"' in body
     assert 'data-original-class' in body
     assert 'id="job-cost-restore"' in body
+
+def test_wizard_has_sizing_readout_and_type_gated_retention(client):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    # folder-size readout: its own "calculating" line + a "what we found" line
+    assert 'id="job-cost-sizing"' in body and "Calculating Directory Size and Info" in body
+    assert 'id="source-info"' in body
+    # retention controls gated per backup type (JS shows only the relevant one)
+    assert 'data-when-type="versioned"' in body
+    assert 'data-when-type="archive"' in body
+    assert 'data-when-type="versioned-files"' in body

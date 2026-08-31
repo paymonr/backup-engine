@@ -8,7 +8,9 @@
     <li class="med"><span class="lbl">New total</span><span id="job-cost-total">—</span></li>
   </ul>
   <p class="hint">Full restore (once): <span id="job-cost-restore">—</span> <small>(retrieval + egress)</small></p>
-  <p class="hint">Prices as of <span id="job-cost-date">—</span>. Updates live as you fill in the form. <span id="job-cost-sizing" hidden><em>Sizing folder…</em></span></p>
+  <p class="hint">Prices as of <span id="job-cost-date">—</span>. Updates live as you fill in the form.</p>
+  <p id="job-cost-sizing" class="sizing" hidden>Calculating Directory Size and Info…</p>
+  <p id="source-info" class="source-info" hidden></p>
   <p id="job-cost-error" class="alert alert-error" hidden></p>
   <div id="job-advice" class="advice" hidden></div>
 </div>
@@ -50,7 +52,7 @@
       <label>Schedule (cron) <input name="schedule" id="sched-input" value="{{ job.schedule if job else '0 3 * * *' }}" required></label>
       <p class="hint">e.g. <code>0 3 * * *</code> = daily 3am, <code>0 4 * * 0</code> = weekly Sun 4am. Or run on demand from the Jobs list. <button type="button" class="btn btn-ghost" id="sched-simple-toggle" hidden>Use the builder</button></p>
     </div>
-    <p class="hint">Versioned jobs share one restic repo, so give each a <strong>different minute</strong> — two firing the same minute collide on the repo lock (one fails and recovers next run).</p>
+    <p class="hint" data-when-type="versioned">Versioned jobs share one restic repo, so give each a <strong>different minute</strong> — two firing the same minute collide on the repo lock (one fails and recovers next run).</p>
     <label class="inline"><input type="checkbox" name="enabled" value="1" {{ 'checked' if not job or job.enabled }}> Enabled (scheduled)</label>
   </div>
   <div class="card"><h2>4 · Storage &amp; retention</h2>
@@ -77,7 +79,7 @@
       </div>
       <p class="hint">Restoring is retrieval + egress ($/GB out of AWS), independent of how cheap storage is. Prices: {{ price_stamp.source or '—' }} @ {{ price_stamp.date or '—' }}.</p>
     </details>
-    <fieldset class="retention"><legend>Versioned retention (keep)</legend>
+    <fieldset class="retention" data-when-type="versioned"><legend>Versioned retention (keep)</legend>
       {% set k = job.keep if job and job.keep else {'last':3,'daily':7,'weekly':4,'monthly':6} %}
       <div class="field-row">
         <label>last <input type="number" min="0" name="keep_last" value="{{ k.last }}"></label>
@@ -86,8 +88,8 @@
         <label>monthly <input type="number" min="0" name="keep_monthly" value="{{ k.monthly }}"></label>
       </div>
     </fieldset>
-    <label class="inline"><input type="checkbox" name="mirror" value="1" {{ 'checked' if job and job.mirror }}> Mirror (archive: delete removed files too)</label>
-    <label>Keep old versions for
+    <label class="inline" data-when-type="archive"><input type="checkbox" name="mirror" value="1" {{ 'checked' if job and job.mirror }}> Mirror (archive: delete removed files too)</label>
+    <label data-when-type="versioned-files">Keep old versions for
       <input type="number" min="0" name="retention_days" value="{{ job.retention_days if job and job.type=='versioned-files' else 90 }}">
       days <small>(versioned files: how long a replaced/deleted version is kept before it's pruned)</small>
     </label>

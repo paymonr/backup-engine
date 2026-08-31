@@ -10,6 +10,7 @@
 </div>
 
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+{% if error_detail %}<details class="error-detail" open><summary>What AWS reported</summary><pre>{{ error_detail }}</pre></details>{% endif %}
 
 <div class="card">
   <form method="post" action="{{ url_for('gui.provision_manual_render') }}">

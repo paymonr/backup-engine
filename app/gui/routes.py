@@ -102,7 +102,8 @@ def provision_validate():
     except provision.ValidationError as e:
         return render_template("provision_manual.html", csrf=security.issue_csrf(),
                                bucket=bucket, region=region, policy=None, console=None,
-                               error=f"Validation failed at the {e.step} step — nothing saved."), 400
+                               error=f"Validation failed at the {e.step} step — nothing saved.",
+                               error_detail=e.detail), 400
     config_io.write_secrets(cfg["CONFIG_DIR"],
                             {"AWS_ACCESS_KEY_ID": key, "AWS_SECRET_ACCESS_KEY": secret})
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
@@ -132,15 +133,17 @@ def provision_automated_run():
         bucket = override or provision.derive_bucket_name(
             provision.aws_account_id(region, admin_key, admin_secret, session_token))
         result = provision.run_tofu_apply(bucket, region, admin_key, admin_secret, session_token)
-    except provision.AccountLookupError:
+    except provision.AccountLookupError as e:
         return render_template("provision_automated.html", csrf=security.issue_csrf(),
                                bucket=override, region=region,
                                error="Couldn't read your AWS account from those admin "
-                                     "credentials — check the key and try again. Nothing was saved."), 400
+                                     "credentials — check the key and try again. Nothing was saved.",
+                               error_detail=e.detail), 400
     except provision.TofuError as e:
         return render_template("provision_automated.html", csrf=security.issue_csrf(),
                                bucket=override, region=region,
-                               error=f"Automated provisioning failed at tofu {e.phase} — nothing saved."), 400
+                               error=f"Automated provisioning failed at tofu {e.phase} — nothing saved.",
+                               error_detail=e.detail), 400
     finally:
         # discard transient admin creds from this frame regardless of outcome
         admin_key = admin_secret = session_token = None
