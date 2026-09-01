@@ -211,11 +211,15 @@
   function showInfo(d) {
     if (!infoEl) return;
     if (!d) { infoEl.hidden = true; infoEl.textContent = ""; return; }
-    var files = Number(d.count || 0).toLocaleString();
-    var size = fmtBytes(Number(d.bytes || 0));
-    var atLeast = d.capped ? "at least " : "";
-    var partial = d.capped ? " (partial — large folder, stopped at 8s)" : "";
-    infoEl.textContent = "This folder holds " + atLeast + size + " across " + files + " files" + partial + ".";
+    if (d.capped && !d.bytes) {
+      infoEl.textContent = "Couldn't finish measuring this folder — it may be extremely large or unreadable.";
+      infoEl.hidden = false;
+      return;
+    }
+    var msg = "This folder holds " + fmtBytes(Number(d.bytes || 0));
+    if (Number(d.count || 0) > 0) msg += " across " + Number(d.count).toLocaleString() + " files";
+    if (d.capped) msg += " (measurement may be incomplete)";
+    infoEl.textContent = msg + ".";
     infoEl.hidden = false;
   }
 

@@ -54,7 +54,7 @@ def test_source_size_ok(client):
     r = client.get("/jobs/source-size?path=movies")
     assert r.status_code == 200
     j = r.get_json()
-    assert j["bytes"] == 1000 and j["count"] == 1
+    assert j["bytes"] >= 1000 and j["count"] == 1  # du -sb: file bytes (+ tiny dir overhead on some FS)
 
 
 def test_source_size_missing_folder_ok_empty(client):
