@@ -54,8 +54,16 @@ def map_offer_to_rates(offer: dict, base: PriceTable) -> PriceTable:
             continue
         if fam == "Storage":
             vol = (attr.get("volumeType") or attr.get("storageClass") or "").strip().lower()
+            usage = attr.get("usagetype") or ""
             cls = _CLASS_BY_VOLUME.get(vol)
-            if cls:
+            # Only the PRIMARY timed byte-hours storage metric IS the storage rate.
+            # AWS lists other Storage-family SKUs under the same volumeType -- most
+            # importantly Glacier Deep Archive restore-*staging* (usagetype
+            # TimedStorage-GDA-Staging, ~$0.021) -- which must NOT overwrite the
+            # per-GB storage price. The S3 offer has no TimedStorage-GDA-ByteHrs at
+            # all, so Deep Archive correctly keeps the bundled constant ($0.00099)
+            # instead of being mispriced ~21x high by the staging SKU.
+            if cls and "ByteHrs" in usage and "Staging" not in usage:
                 storage[cls] = price
         elif fam == "API Request":
             group = (attr.get("group") or "").strip()

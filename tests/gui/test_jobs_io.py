@@ -20,6 +20,12 @@ def _job(**kw):
             "schedule": "0 4 * * 0", "enabled": True, "storage_class": "DEEP_ARCHIVE", "mirror": False}
     base.update(kw); return base
 
+def _vfjob(**kw):
+    base = {"name": "docs", "type": "versioned-files", "source": "media/movies",
+            "schedule": "0 2 * * *", "enabled": True, "storage_class": "DEEP_ARCHIVE",
+            "retention_days": 90}
+    base.update(kw); return base
+
 def test_upsert_then_load_and_get(tmp_path):
     cfg, root = _cfg(tmp_path), _root(tmp_path)
     jobs_io.upsert(cfg, _job(), source_root=root)
@@ -143,6 +149,73 @@ def test_validate_rejects_bad_type_and_class(tmp_path):
         jobs_io.validate(_job(type="magic"), root)
     with pytest.raises(ValueError):
         jobs_io.validate(_job(storage_class="NEBULA"), root)
+
+# --- Task 4: versioned-files job type ---
+
+def test_validate_accepts_versioned_files_on_deep_archive(tmp_path):
+    root = _root(tmp_path)
+    v = jobs_io.validate(_vfjob(storage_class="DEEP_ARCHIVE"), root)
+    assert v["type"] == "versioned-files"
+    assert v["storage_class"] == "DEEP_ARCHIVE"
+    assert v["retention_days"] == 90
+
+def test_validate_accepts_versioned_files_on_standard(tmp_path):
+    root = _root(tmp_path)
+    v = jobs_io.validate(_vfjob(storage_class="STANDARD"), root)
+    assert v["storage_class"] == "STANDARD"
+
+def test_validate_versioned_files_defaults_retention_to_90(tmp_path):
+    root = _root(tmp_path)
+    job = _vfjob(); del job["retention_days"]
+    v = jobs_io.validate(job, root)
+    assert v["retention_days"] == 90
+
+def test_validate_versioned_files_rejects_negative_retention(tmp_path):
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(retention_days=-1), root)
+
+def test_validate_versioned_files_rejects_non_int_retention(tmp_path):
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(retention_days="soon"), root)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(retention_days=None), root)
+
+def test_validate_versioned_files_requires_confined_source(tmp_path):
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(source="../../etc"), root)
+
+def test_validate_versioned_files_requires_existing_source_when_required(tmp_path):
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(source="media/nope"), root)
+
+def test_emit_shell_versioned_files(tmp_path):
+    j = jobs_io.validate(_vfjob(storage_class="GLACIER", retention_days=120), _root(tmp_path))
+    s = jobs_io.emit_shell(j)
+    assert "JOB_TYPE=versioned-files" in s
+    assert "JOB_SOURCE=media/movies" in s
+    assert "JOB_STORAGE_CLASS=GLACIER" in s
+    assert "JOB_RETENTION_DAYS=120" in s
+
+def test_upsert_then_load_versioned_files(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _vfjob(), source_root=root)
+    loaded = jobs_io.get(cfg, "docs")
+    assert loaded["type"] == "versioned-files" and loaded["retention_days"] == 90
+
+def test_main_emit_versioned_files_job(tmp_path, monkeypatch, capsys):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    _write_raw(cfg, [{"name": "docs", "type": "versioned-files", "source": "media/movies",
+                      "schedule": "0 2 * * *", "enabled": True, "storage_class": "DEEP_ARCHIVE",
+                      "retention_days": 45}])
+    monkeypatch.setenv("CONFIG_DIR", cfg); monkeypatch.setenv("SOURCE_ROOT", root)
+    rc = jobs_io._main(["docs"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "JOB_TYPE=versioned-files" in out and "JOB_RETENTION_DAYS=45" in out
 
 def test_emit_shell_archive(tmp_path):
     s = jobs_io.emit_shell(_job())

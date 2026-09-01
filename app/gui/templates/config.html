@@ -18,7 +18,7 @@
 
   <div class="card">
     <h2>Secrets <small>— write-only, leave blank to keep current</small></h2>
-    <p class="hint">File mode: {{ secret_mode or "not present" }}{% if secret_mode and secret_mode != "600" %} <strong style="color:var(--warn)">(should be 600)</strong>{% endif %}</p>
+    <p class="hint">File mode: {{ secret_mode or "not present" }}{% if secret_mode and secret_mode != "600" %} <strong class="text-warn">(should be 600)</strong>{% endif %}</p>
     {% for k in secret_keys %}
       <label for="{{ k }}">{{ k }} <small>— {{ "set" if secret_status[k] else "not set" }}</small></label>
       <input id="{{ k }}" name="{{ k }}" type="password" autocomplete="new-password"
@@ -32,6 +32,6 @@ $EDITOR /config/secrets.env   # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, RESTIC
     </details>
   </div>
 
-  <div class="actions"><button type="submit" class="btn-primary">Save configuration</button></div>
+  <div class="actions"><button type="submit" class="btn btn-primary">Save configuration</button></div>
 </form>
 {% endblock %}

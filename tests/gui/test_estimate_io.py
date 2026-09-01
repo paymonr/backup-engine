@@ -15,6 +15,9 @@ VJOB = {"name": "appdata", "type": "versioned", "source": "appdata",
 AJOB = {"name": "movies", "type": "archive", "source": "movies",
         "schedule": "0 4 * * 0", "enabled": True, "storage_class": "DEEP_ARCHIVE",
         "mirror": False}
+VFJOB = {"name": "docs", "type": "versioned-files", "source": "docs",
+         "schedule": "0 2 * * *", "enabled": True, "storage_class": "DEEP_ARCHIVE",
+         "retention_days": 45}
 
 def _cfg(tmp_path, jobs=None, env=""):
     cfg = tmp_path / "config"
@@ -64,6 +67,34 @@ def test_size_defaults_without_usage(tmp_path):
     by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [AJOB]), SRC))
     assert by["movies"].size_gb == estimate_io._DEFAULT_SIZE_GB
     assert by["movies"].file_count == estimate_io._DEFAULT_FILES
+
+# --- Task 4: versioned-files -> cost profile mapping ---
+
+def test_versioned_files_job_maps_to_versioned_cost_profile(tmp_path):
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [VFJOB]), SRC))
+    j = by["docs"]
+    assert j.engine == "versioned-files"
+    assert j.storage_class == "DEEP_ARCHIVE"
+    assert j.versioning_retention_days == 45
+
+def test_versioned_files_default_retention_when_missing(tmp_path):
+    job = {k: v for k, v in VFJOB.items() if k != "retention_days"}
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [job]), SRC))
+    assert by["docs"].versioning_retention_days == 90
+
+def test_versioned_files_size_from_cached_usage_media_prefix(tmp_path):
+    # versioned-files jobs live under media/<job>/ in S3 (their own per-job
+    # prefix, like archive) -- NOT the shared "appdata" restic repo.
+    usage = {"media/docs": {"bytes": 50 * 1024 ** 3, "count": 500}}
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [VFJOB]), SRC, usage=usage))
+    assert by["docs"].size_gb == 50 and by["docs"].file_count == 500
+
+def test_versioned_files_produces_a_cost_estimate(tmp_path):
+    from app.estimator.model import estimate
+    from app.estimator.prices import load_prices
+    s = estimate_io.scenario_from_jobs(_cfg(tmp_path, [VFJOB]), SRC)
+    est = estimate(s, load_prices("us-east-1"))
+    assert est.monthly_total > 0
 
 # --- scenario_from_params (live what-if) ---
 

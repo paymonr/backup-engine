@@ -6,14 +6,15 @@
 
 <div class="alert alert-warn">These admin credentials are <strong>transient</strong>: used for a single <code>tofu apply</code> in this container, never written to disk or logs, and discarded immediately after. Use short-lived keys and delete them afterward.</div>
 
-<div class="note">
-  <h3>How to get short-lived admin credentials</h3>
+<div class="card">
+  <h2>How to get short-lived admin credentials</h2>
   <p>Run <code>aws sts get-session-token --duration-seconds 900</code> with an admin profile, or create a temporary access key on an admin IAM user and <strong>delete it right after</strong>. Paste the resulting key, secret, and (if any) session token below.</p>
-  <h3>What this does</h3>
+  <h2>What this does</h2>
   <p>Runs OpenTofu once to create the bucket (versioning + SSE + all public access blocked + lifecycle rules) and a least-privilege IAM user, then saves that user's key here. Your admin creds are discarded when the run finishes.</p>
 </div>
 
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+{% if error_detail %}<details class="error-detail" open><summary>What AWS / OpenTofu reported</summary><pre>{{ error_detail }}</pre></details>{% endif %}
 
 <div class="card">
   <form method="post" action="{{ url_for('gui.provision_automated_run') }}">
@@ -35,7 +36,7 @@
       <input id="bucket" name="bucket" value="{{ bucket }}" placeholder="unraid-backup-&lt;account&gt; (leave blank to auto-name)">
     </details>
 
-    <div class="actions"><button type="submit" class="btn-primary">Provision now</button></div>
+    <div class="actions"><button type="submit" class="btn btn-primary">Provision now</button></div>
   </form>
 </div>
 {% endblock %}

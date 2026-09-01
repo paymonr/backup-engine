@@ -9,6 +9,13 @@ one folder chosen under a single read-only source mount. Each job is one of:
   [Appdata Backup plugin](https://forums.unraid.net/topic/137710-plugin-appdatabackup/)'s archives.
 - **archive** — via `rclone` into its own S3 prefix, typically to **Glacier Deep Archive**
   (cheapest cold storage) for large, mostly-static shares (comics/books/media/etc.).
+- **versioned-files** — incremental whole-file backup with **per-file version history** on **any**
+  storage class, **including Glacier Deep Archive**. Each new/changed file is uploaded under its own
+  distinct version-key via `rclone`; a self-managed **SQLite catalog** tracks every version so you
+  can list history and restore any file as of any point in time, and old versions are pruned by the
+  runtime after a retention window. It gives you file-level history on cold storage (which the
+  restic-based *versioned* type can't do) without a restic repo. See the
+  [Restore runbook](#versioned-files-jobs).
 
 Jobs are created, scheduled, and run from the GUI's Jobs screen.
 
@@ -167,14 +174,25 @@ against). Key knobs in `backup.env` (all global; everything per-job lives in `jo
 - `APPRISE_URLS` / `NOTIFY_ON_SUCCESS` — failure notifications always fire when set; success
   notifications are opt-in.
 
-Per-job settings — schedule, storage class, retention (restic keep-policy for versioned jobs), and
-mirror mode (archive jobs) — are set per job in the GUI's Jobs create/edit wizard and stored in
-`config/jobs.json`. A cold storage class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for
-archive jobs — they're plain objects. For versioned jobs it's discouraged: `restic` has to read
-the repository's `config`/`keys` objects on every run, and it can't do that against a cold repo
-without a thaw first — that thaw-then-run orchestration is a Phase-3 feature (see the
+Per-job settings — schedule, storage class, retention (restic keep-policy for versioned jobs,
+`retention_days` for versioned-files jobs), and mirror mode (archive jobs) — are set per job in the
+GUI's Jobs create/edit wizard and stored in `config/jobs.json`. A cold storage class
+(`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for **archive** and **versioned-files** jobs —
+both store plain objects. For **versioned** (restic) jobs a cold class is discouraged: `restic` has
+to read the repository's `config`/`keys` objects on every run, and it can't do that against a cold
+repo without a thaw first — that thaw-then-run orchestration is a Phase-3 feature (see the
 [Restore runbook](#restore-runbook)). Jobs write directly in their chosen class on first upload —
 no Standard-then-lifecycle round-trip, so no extra transition charges.
+
+**versioned-files retention.** A versioned-files job keeps every file version until it is older than
+`retention_days` (default 90) *and* no longer the current version, at which point the next run
+deletes that old version's object from S3 and drops it from the catalog. There is **no bucket
+versioning and no S3 lifecycle rule** involved — the engine does its own versioning (one object per
+version, under `media/<job>/…@<timestamp>-<id>` keys) and enforces retention itself with ordinary
+object deletes, using only the existing `media/*` object permissions (no new IAM). The current
+version of every file is always retained regardless of age. The per-job catalog is a SQLite database
+kept durable by uploading it to `media/<job>/_catalog/catalog.sqlite` (always STANDARD) at the end of
+every run and re-fetching it on a fresh machine, so version history survives a rebuilt container.
 
 The container validates all of this on start (and before each run) and fails fast with a specific
 error — e.g. a missing source root — rather than silently skipping a backup.
@@ -235,6 +253,30 @@ restore.sh movies download some-series /cache/restore/movies
 (`Days=7`) for each; `download` then does a normal `rclone copy` down once objects are back to a
 readable state. Re-run `download` if it's issued too early — objects still thawing simply won't be
 copyable yet.
+
+### Versioned-files jobs
+
+A versioned-files job restores from its SQLite **catalog** (recovered from
+`media/<job>/_catalog/catalog.sqlite` automatically if this machine has no local copy), so you can
+list a file's whole version history and pull back any one version — the latest, or the one that was
+current at a chosen time.
+
+```bash
+# list every current file and its versions (path, upload time, storage class)
+restore.sh photos list
+
+# restore ONE file (relative path within the job source) to a target directory —
+# the latest version, or with --asof, the version current at that unix timestamp
+restore.sh photos 2023/trip/IMG_0042.jpg /cache/restore/photos
+restore.sh photos 2023/trip/IMG_0042.jpg /cache/restore/photos --asof 1700000000
+```
+
+If the selected version sits in a cold class (`GLACIER`/`DEEP_ARCHIVE`), the restore issues a
+thaw (`aws s3api restore-object`, default `--tier Bulk`; `Standard`/`Expedited` are faster and
+pricier) and reports `thaw-requested` instead of downloading — re-run the same command once the
+thaw finishes (hours for Glacier, up to ~48h for Deep Archive) to pull the file down. Restore only
+ever **reads** from the catalog + S3; it never touches the job's local source tree, so it's safe to
+run on a fresh/rebuilt machine.
 
 ## Cost note
 
@@ -349,8 +391,10 @@ page) ships in the container, served on `GUI_PORT` (default 8099). Reach it at
 - **Jobs** — lists every backup job, with a create/edit wizard. Each job picks one source folder
   from a confined browser over `SOURCE_ROOT` (the single read-only mount, e.g. `/mnt/user` —
   mounted once, so the container can see everything without a mount per folder), an intent
-  (**versioned**, via restic, or **archive**, via rclone), a cron schedule, and — depending on
-  type — restic retention (keep last/daily/weekly/monthly) or archive mirror mode. As you fill in
+  (**versioned**, via restic; **archive**, via rclone; or **versioned-files**, per-file history via
+  rclone + a SQLite catalog), a cron schedule, and — depending on type — restic retention (keep
+  last/daily/weekly/monthly), versioned-files retention (`retention_days`), or archive mirror mode.
+  As you fill in
   the wizard, a live cost panel shows what **this job** would add and the **new total** across
   every saved job (see [Cost estimator](#cost-estimator)). Saving writes `config/jobs.json`. Each
   job's row also has **Run now** (trigger it immediately) and its last-run outcome;

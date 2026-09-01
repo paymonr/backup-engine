@@ -5,6 +5,7 @@ from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io, dirsize, attributions
+from .storage_advice import storage_class_info
 from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
 from ..estimator import usage
@@ -18,6 +19,10 @@ def about_page():
 
 @bp.get("/")
 def index():
+    # First run (no runtime key + bucket yet) lands on the provisioning wizard;
+    # once set up, the Jobs page is home.
+    if not config_io.is_provisioned(current_app.config["CONFIG_DIR"]):
+        return redirect(url_for("gui.provision_home"))
     return redirect(url_for("gui.jobs_page"))
 
 @bp.get("/config")
@@ -52,7 +57,11 @@ def logs():
 
 @bp.get("/provision")
 def provision_home():
-    return render_template("provision_home.html", csrf=security.issue_csrf())
+    cfg = current_app.config
+    env = config_io.read_backup_env(cfg["CONFIG_DIR"])
+    return render_template("provision_home.html", csrf=security.issue_csrf(),
+                           provisioned=config_io.is_provisioned(cfg["CONFIG_DIR"]),
+                           bucket=env.get("S3_BUCKET", ""), region=env.get("AWS_REGION", ""))
 
 @bp.get("/provision/manual")
 def provision_manual():
@@ -93,14 +102,15 @@ def provision_validate():
     except provision.ValidationError as e:
         return render_template("provision_manual.html", csrf=security.issue_csrf(),
                                bucket=bucket, region=region, policy=None, console=None,
-                               error=f"Validation failed at the {e.step} step — nothing saved."), 400
+                               error=f"Validation failed at the {e.step} step — nothing saved.",
+                               error_detail=e.detail), 400
     config_io.write_secrets(cfg["CONFIG_DIR"],
                             {"AWS_ACCESS_KEY_ID": key, "AWS_SECRET_ACCESS_KEY": secret})
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": region, "S3_BUCKET": bucket})
-    flash("Runtime key validated and saved. Reminder: confirm bucket versioning is ON.")
-    return redirect(url_for("gui.provision_home"))
+    flash("Runtime key validated and saved. Reminder: confirm bucket versioning is ON. Next: create your first backup job.")
+    return redirect(url_for("gui.jobs_page"))
 
 @bp.get("/provision/automated")
 def provision_automated():
@@ -123,15 +133,17 @@ def provision_automated_run():
         bucket = override or provision.derive_bucket_name(
             provision.aws_account_id(region, admin_key, admin_secret, session_token))
         result = provision.run_tofu_apply(bucket, region, admin_key, admin_secret, session_token)
-    except provision.AccountLookupError:
+    except provision.AccountLookupError as e:
         return render_template("provision_automated.html", csrf=security.issue_csrf(),
                                bucket=override, region=region,
                                error="Couldn't read your AWS account from those admin "
-                                     "credentials — check the key and try again. Nothing was saved."), 400
+                                     "credentials — check the key and try again. Nothing was saved.",
+                               error_detail=e.detail), 400
     except provision.TofuError as e:
         return render_template("provision_automated.html", csrf=security.issue_csrf(),
                                bucket=override, region=region,
-                               error=f"Automated provisioning failed at tofu {e.phase} — nothing saved."), 400
+                               error=f"Automated provisioning failed at tofu {e.phase} — nothing saved.",
+                               error_detail=e.detail), 400
     finally:
         # discard transient admin creds from this frame regardless of outcome
         admin_key = admin_secret = session_token = None
@@ -141,8 +153,8 @@ def provision_automated_run():
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"]})
-    flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key.")
-    return redirect(url_for("gui.provision_home"))
+    flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key. Next: create your first backup job.")
+    return redirect(url_for("gui.jobs_page"))
 
 @bp.get("/jobs")
 def jobs_page():
@@ -151,18 +163,38 @@ def jobs_page():
     rows = [{**j, "state": runner.read_state(cfg["CACHE_DIR"], j["name"])} for j in jobs]
     return render_template("jobs.html", jobs=rows, csrf=security.issue_csrf())
 
+def _class_panel_context(cfg):
+    """Pricing-derived storage-class panel data for the job form. Guarded: a
+    pricing failure must degrade the panel to empty rather than 500 the page."""
+    region = estimate_io._region(cfg["CONFIG_DIR"])
+    try:
+        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+        class_info = storage_class_info(prices)
+        price_stamp = {"source": prices.source, "date": prices.date}
+    except Exception:
+        class_info, price_stamp = [], {"source": None, "date": None}
+    return class_info, price_stamp
+
 @bp.get("/jobs/new")
 def job_new():
-    return render_template("job_form.html", job=None, source_root=current_app.config["SOURCE_ROOT"],
-                           storage_classes=jobs_io.STORAGE_CLASSES, csrf=security.issue_csrf())
+    cfg = current_app.config
+    class_info, price_stamp = _class_panel_context(cfg)
+    return render_template("job_form.html", job=None, source_root=cfg["SOURCE_ROOT"],
+                           storage_classes=jobs_io.STORAGE_CLASSES,
+                           class_info=class_info, price_stamp=price_stamp,
+                           csrf=security.issue_csrf())
 
 @bp.get("/jobs/<name>/edit")
 def job_edit(name):
-    job = jobs_io.get(current_app.config["CONFIG_DIR"], name)
+    cfg = current_app.config
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
     if job is None:
         abort(404)
-    return render_template("job_form.html", job=job, source_root=current_app.config["SOURCE_ROOT"],
-                           storage_classes=jobs_io.STORAGE_CLASSES, csrf=security.issue_csrf())
+    class_info, price_stamp = _class_panel_context(cfg)
+    return render_template("job_form.html", job=job, source_root=cfg["SOURCE_ROOT"],
+                           storage_classes=jobs_io.STORAGE_CLASSES,
+                           class_info=class_info, price_stamp=price_stamp,
+                           csrf=security.issue_csrf())
 
 @bp.get("/jobs/browse")
 def jobs_browse():
@@ -199,8 +231,12 @@ def jobs_estimate_json():
         # the wizard to "—" rather than 500.
         return jsonify({"this_job_monthly": None, "new_total_monthly": None,
                         "price_source": None, "price_date": None})
+    name = str(request.args.get("name", "")).strip()
+    saved = jobs_io.get(cfg["CONFIG_DIR"], name) if name else None
+    saved_class = saved.get("storage_class") if saved else None
     try:
-        result = estimate_io.wizard_estimate(request.args, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"], prices)
+        result = estimate_io.wizard_estimate(request.args, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"],
+                                             prices, saved_class=saved_class)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({**result, "price_source": prices.source, "price_date": prices.date})
@@ -216,6 +252,8 @@ def job_save():
            "enabled": bool(f.get("enabled")), "storage_class": f.get("storage_class", "STANDARD")}
     if job["type"] == "versioned":
         job["keep"] = {k: f.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+    elif job["type"] == "versioned-files":
+        job["retention_days"] = f.get("retention_days", "90")
     else:
         job["mirror"] = bool(f.get("mirror"))
     try:
@@ -282,13 +320,14 @@ def estimate_page():
         prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
     except Exception:
         prices = None
+    class_info = storage_class_info(prices) if prices is not None else []
     current = (estimate_io.current_costs(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices)
                if prices is not None else {"available": False})
     billing = estimate_io.billing_view(cfg["CONFIG_DIR"])
     return render_template("estimate.html", d=d, est=est, error=error,
                            storage_classes=STORAGE_CLASSES,
                            retrieval_tiers=estimate_io.RETRIEVAL_TIERS,
-                           current=current, billing=billing,
+                           current=current, billing=billing, class_info=class_info,
                            csrf=security.issue_csrf())
 
 @bp.get("/estimate.json")
@@ -310,12 +349,14 @@ def costs_refresh():
         flash("Set an S3 bucket in Config before refreshing usage.")
         return redirect(url_for("gui.estimate_page"))
     jobs = jobs_io.load(cfg["CONFIG_DIR"])
-    archive_jobs = [j["name"] for j in jobs if j.get("type") == "archive"]
+    # Both "archive" and "versioned-files" jobs write to their own media/<name> S3
+    # prefix (see estimate_io._size_for) -- both must be scanned for current spend.
+    media_jobs = [j["name"] for j in jobs if j.get("type") in ("archive", "versioned-files")]
     has_versioned = any(j.get("type") == "versioned" for j in jobs)
     # The container's rendered rclone.conf already carries the runtime key +
     # endpoint (scripts/lib/rclone-conf.sh) — no creds needed here, and none new.
     rclone_config = str(Path(cfg["CACHE_DIR"], "rclone.conf"))
-    data = usage.collect_usage(bucket, archive_jobs, has_versioned, rclone_config=rclone_config)
+    data = usage.collect_usage(bucket, media_jobs, has_versioned, rclone_config=rclone_config)
     usage.save_cached(cfg["CACHE_DIR"], data)
     flash("Usage refreshed.")
     return redirect(url_for("gui.estimate_page"))

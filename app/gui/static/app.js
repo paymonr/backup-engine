@@ -63,6 +63,70 @@
   });
 })();
 
+// Friendly schedule builder: drives the real name="schedule" field (#sched-input).
+(function () {
+  var input = document.getElementById("sched-input");
+  var builder = document.getElementById("sched-builder");
+  if (!input || !builder) return;
+  var freq = document.getElementById("sched-freq");
+  var time = document.getElementById("sched-time");
+  var dow = document.getElementById("sched-dow");
+  var dom = document.getElementById("sched-dom");
+  var dowWrap = document.getElementById("sched-dow-wrap");
+  var domWrap = document.getElementById("sched-dom-wrap");
+  var human = document.getElementById("sched-human");
+  var preview = document.getElementById("sched-preview");
+  var rawBtn = document.getElementById("sched-advanced-toggle");
+  var simpleBtn = document.getElementById("sched-simple-toggle");
+  var raw = document.getElementById("sched-raw");
+  var DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  function two(n) { return (n < 10 ? "0" : "") + n; }
+  function build() {
+    var hm = (time.value || "03:00").split(":");  // native time input -> "HH:MM"
+    var mm = parseInt(hm[1], 10) || 0;
+    var hh = parseInt(hm[0], 10) || 0;
+    dowWrap.hidden = freq.value !== "weekly";
+    domWrap.hidden = freq.value !== "monthly";
+    var cron, txt;
+    if (freq.value === "hourly") { cron = mm + " * * * *"; txt = "hourly at :" + two(mm); }
+    else if (freq.value === "daily") { cron = mm + " " + hh + " * * *"; txt = "daily at " + two(hh) + ":" + two(mm); }
+    else if (freq.value === "weekly") { cron = mm + " " + hh + " * * " + dow.value; txt = "every " + DOW[parseInt(dow.value, 10)] + " at " + two(hh) + ":" + two(mm); }
+    else { var d = Math.min(28, Math.max(1, parseInt(dom.value, 10) || 1)); cron = mm + " " + hh + " " + d + " * *"; txt = "day " + d + " at " + two(hh) + ":" + two(mm); }
+    preview.textContent = cron; human.textContent = txt;
+    input.value = cron;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  function parse(cron) {
+    var f = (cron || "").split(/\s+/);
+    if (f.length !== 5) return false;
+    var mm = f[0], hh = f[1], d = f[2], mon = f[3], w = f[4];
+    // Range-check minute/hour so an out-of-range value (e.g. "0 24 * * *", savable
+    // via the unrestricted Advanced field) does NOT match here -- otherwise the
+    // native time input would blank "24:00" and build() would silently rewrite
+    // the schedule to the 03:00 default on load. Out-of-range stays in Advanced.
+    if (!/^\d+$/.test(mm) || +mm > 59 || mon !== "*") return false;
+    if (hh === "*" && d === "*" && w === "*") { freq.value = "hourly"; time.value = "00:" + two(+mm); return true; }
+    if (!/^\d+$/.test(hh) || +hh > 23) return false;
+    time.value = two(+hh) + ":" + two(+mm);
+    if (d === "*" && w === "*") { freq.value = "daily"; return true; }
+    if (d === "*" && /^[0-6]$/.test(w)) { freq.value = "weekly"; dow.value = w; return true; }
+    if (/^([1-9]|1\d|2[0-8])$/.test(d) && w === "*") { freq.value = "monthly"; dom.value = d; return true; }
+    return false;
+  }
+  function showAdvanced(on) { builder.hidden = on; raw.style.display = on ? "" : "none"; if (simpleBtn) simpleBtn.hidden = !on; }
+
+  if (parse(input.value)) { showAdvanced(false); build(); }
+  else { showAdvanced(true); }  // unparseable -> keep the raw field visible
+
+  freq.addEventListener("change", build);
+  time.addEventListener("input", build);
+  dow.addEventListener("change", build);
+  dom.addEventListener("input", build);
+  if (rawBtn) rawBtn.addEventListener("click", function () { showAdvanced(true); });
+  if (simpleBtn) simpleBtn.addEventListener("click", function () { if (parse(input.value)) { showAdvanced(false); build(); } });
+})();
+
 // Cost estimate: recompute live as inputs change (server owns the cost model).
 (function () {
   var form = document.getElementById("est-form");
@@ -130,16 +194,57 @@
   var errEl = document.getElementById("job-cost-error");
   var sizeInput = document.getElementById("size-gb-input");
   var sourceTree = document.getElementById("source-tree");
+  var sizingEl = document.getElementById("job-cost-sizing");
+  var restoreEl = document.getElementById("job-cost-restore");
+  var adviceEl = document.getElementById("job-advice");
+  var infoEl = document.getElementById("source-info");
   var timer;
+
+  function sizing(on) { if (sizingEl) sizingEl.hidden = !on; }
+  function fmtBytes(b) {
+    var gb = b / (1024 * 1024 * 1024);
+    if (gb >= 1) return gb.toLocaleString(undefined, { maximumFractionDigits: 2 }) + " GB";
+    var mb = b / (1024 * 1024);
+    if (mb >= 1) return mb.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " MB";
+    return Math.max(0, Math.round(b / 1024)).toLocaleString() + " KB";
+  }
+  function showInfo(d) {
+    if (!infoEl) return;
+    if (!d) { infoEl.hidden = true; infoEl.textContent = ""; return; }
+    if (d.capped && !d.bytes) {
+      infoEl.textContent = "Couldn't finish measuring this folder — it may be extremely large or unreadable.";
+      infoEl.hidden = false;
+      return;
+    }
+    var msg = "This folder holds " + fmtBytes(Number(d.bytes || 0));
+    if (Number(d.count || 0) > 0) msg += " across " + Number(d.count).toLocaleString() + " files";
+    if (d.capped) msg += " (measurement may be incomplete)";
+    infoEl.textContent = msg + ".";
+    infoEl.hidden = false;
+  }
 
   function money(v) {
     if (v === null || v === undefined) return "—";
     return "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
+  function paintAdvice(list) {
+    if (!adviceEl) return;
+    while (adviceEl.firstChild) adviceEl.removeChild(adviceEl.firstChild);
+    if (!list || !list.length) { adviceEl.hidden = true; return; }
+    for (var i = 0; i < list.length; i++) {
+      var item = document.createElement("p");
+      item.className = "advice-item advice-" + (list[i].level || "info");
+      item.textContent = list[i].text;
+      adviceEl.appendChild(item);
+    }
+    adviceEl.hidden = false;
+  }
   function paint(data) {
     thisEl.textContent = money(data && data.this_job_monthly);
     totalEl.textContent = money(data && data.new_total_monthly);
     if (dateEl) dateEl.textContent = (data && data.price_date) || "—";
+    if (restoreEl) restoreEl.textContent = money(data && data.this_job_restore);
+    paintAdvice(data && data.advice);
   }
   function update() {
     var qs = new URLSearchParams(new FormData(form)).toString();
@@ -166,14 +271,22 @@
       var t = ev.target;
       if (!t || t.type !== "checkbox") return;
       var path = t.checked ? t.value : "";
-      if (!path) { sizeInput.value = ""; schedule(); return; }
+      if (!path) { sizeInput.value = ""; sizing(false); showInfo(null); schedule(); return; }
+      // The estimate is NEVER blocked on the folder walk: recompute right away with
+      // the current/default size, show the "calculating…" line, and fetch the real
+      // folder size + file count async. When it returns, seed #size-gb-input, show
+      // what we found, and recompute once more.
+      sizeInput.value = "";
+      showInfo(null);
+      sizing(true);
+      schedule();
       fetch("/jobs/source-size?path=" + encodeURIComponent(path))
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
-          sizeInput.value = d ? String(d.bytes / (1024 * 1024 * 1024)) : "";
-          schedule();
+          sizing(false);
+          if (d) { sizeInput.value = String(d.bytes / (1024 * 1024 * 1024)); showInfo(d); schedule(); }
         })
-        .catch(function () {});
+        .catch(function () { sizing(false); });
     });
   }
 
@@ -190,4 +303,24 @@
       for (var j = 0; j < buttons.length; j++) buttons[j].disabled = true;
     });
   }
+})();
+
+// Wizard: show only the retention controls that apply to the chosen backup type
+// ([data-when-type] on the restic keep-fieldset / archive mirror / versioned-files
+// retention-days). Toggled on load and whenever the type radio changes.
+(function () {
+  var form = document.getElementById("job-form");
+  if (!form) return;
+  var conds = form.querySelectorAll("[data-when-type]");
+  if (!conds.length) return;
+  function apply() {
+    var checked = form.querySelector('input[name="type"]:checked');
+    var t = checked ? checked.value : "";
+    for (var i = 0; i < conds.length; i++) {
+      conds[i].hidden = conds[i].getAttribute("data-when-type") !== t;
+    }
+  }
+  var radios = form.querySelectorAll('input[name="type"]');
+  for (var j = 0; j < radios.length; j++) radios[j].addEventListener("change", apply);
+  apply();
 })();

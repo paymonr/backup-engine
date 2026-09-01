@@ -37,6 +37,11 @@ def test_estimate_page_renders_form_and_job_names(client):
     assert b"cost" in low and b"monthly" in low
     assert b"appdata" in r.data and b"movies" in r.data  # seeded job names rendered
 
+def test_estimate_page_has_class_reference(client):
+    body = client.get("/estimate").get_data(as_text=True)
+    assert "class-panel" in body
+    assert "Restoring is retrieval + egress" in body  # the retrieval/egress note
+
 def test_estimate_json_keyed_by_job_names(client):
     j = client.get("/estimate.json").get_json()
     assert set(j["jobs"]) == {"appdata", "movies"}

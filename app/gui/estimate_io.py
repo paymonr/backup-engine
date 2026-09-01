@@ -6,9 +6,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Mapping
-from . import config_io, jobs_io, dirsize, fsbrowse
+from . import config_io, jobs_io, storage_advice
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days, estimate,
+    restore_cost,
 )
 from ..estimator.schedule import backups_per_month
 from ..estimator import usage, billing
@@ -29,7 +30,9 @@ _GLOBAL_DEFAULTS = {
 }
 
 # A versioned job churns more between backups than a bulk archive job.
-_ENGINE_CHANGE = {"versioned": 10.0, "archive": 1.0}
+# versioned-files is per-file incremental versioning (like "versioned"), just
+# without a shared restic repo -- same churn assumption.
+_ENGINE_CHANGE = {"versioned": 10.0, "archive": 1.0, "versioned-files": 10.0}
 
 
 def _region(config_dir: str) -> str:
@@ -53,9 +56,11 @@ def _num(params: Mapping, key: str, fallback, *, label: str) -> float:
 
 
 def _size_for(job: dict, usage) -> tuple[float, int]:
-    """bytes/count from cached usage: archive -> media/<name>; versioned -> the
-    appdata aggregate. Falls back to module defaults for an un-backed-up job."""
-    key = f"media/{job['name']}" if job.get("type") == "archive" else "appdata"
+    """bytes/count from cached usage: versioned -> the shared appdata restic
+    aggregate; archive AND versioned-files -> their own media/<name> S3 prefix
+    (both write to a per-job prefix, not the shared repo). Falls back to
+    module defaults for an un-backed-up job."""
+    key = "appdata" if job.get("type") == "versioned" else f"media/{job['name']}"
     u = (usage or {}).get(key)
     if u:
         return u["bytes"] / (1024 ** 3), int(u["count"])
@@ -68,6 +73,10 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
         keep = job.get("keep") or {}
         retention = effective_retention_days(**{f"keep_{k}": int(keep.get(k, 0))
                                                 for k in ("last", "daily", "weekly", "monthly")})
+    elif engine == "versioned-files":
+        # retention_days is the job's own versioning-retention window (jobs_io
+        # validates/defaults it to 90) -- used directly, no keep-policy proxy.
+        retention = int(job.get("retention_days", 90))
     else:
         retention = None  # falls back to the scenario noncurrent-retention window
     o = override or {}
@@ -175,7 +184,7 @@ def form_defaults(config_dir, source_root) -> dict:
     }
 
 
-def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
+def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_class=None) -> dict:
     """Live cost for the job create/edit WIZARD: prices a CANDIDATE job built from
     the in-progress form params (not yet saved), plus what the total across every
     saved job becomes with this candidate added in — replacing any existing job of
@@ -191,20 +200,18 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
            "schedule": params.get("schedule", ""), "storage_class": cls}
     if engine == "versioned":
         job["keep"] = {k: params.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+    elif engine == "versioned-files":
+        job["retention_days"] = params.get("retention_days", 90)
     else:
         job["mirror"] = bool(params.get("mirror"))
 
-    # Size/count precedence: explicit size_gb/file_count params -> dir_size() of the
-    # picked source folder (when it's given and resolves) -> the module defaults.
-    fallback_gb, fallback_files = _DEFAULT_SIZE_GB, _DEFAULT_FILES
-    if source:
-        try:
-            d = dirsize.dir_size(source_root, source)
-            fallback_gb, fallback_files = d["bytes"] / (1024 ** 3), d["count"]
-        except fsbrowse.PathError:
-            pass  # unresolved/escaping source -> fall back to the module defaults
-    size_gb = _num(params, "size_gb", fallback_gb, label="size")
-    file_count = int(_num(params, "file_count", fallback_files, label="file count"))
+    # Size/count precedence: explicit size_gb/file_count params -> module defaults.
+    # The estimate NEVER walks the filesystem here — it has to be instant on every
+    # keystroke. A picked source folder's real size is fetched separately (async) by
+    # /jobs/source-size and threaded back in via the size_gb field, so it still flows
+    # through this same param, just without blocking the live recompute.
+    size_gb = _num(params, "size_gb", _DEFAULT_SIZE_GB, label="size")
+    file_count = int(_num(params, "file_count", _DEFAULT_FILES, label="file count"))
 
     candidate = _job_inputs(job, size_gb=size_gb, file_count=file_count,
                             scenario_retention=None, override=None)
@@ -214,9 +221,17 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
     others = tuple(j for j in base.jobs if j.name != name)
     total_scn = replace(base, jobs=others + (candidate,))
 
+    this_est = estimate(this_scn, prices)
+    # Candidate full-restore (retrieval + egress) at fraction 1.0, using the
+    # scenario's retrieval tier. Reuses the model; adds no math here.
+    this_restore = restore_cost(candidate, base, prices, 1.0)
+    advice = storage_advice.class_advice(engine, cls, str(params.get("schedule", "")),
+                                         saved_class, prices)
     return {
-        "this_job_monthly": estimate(this_scn, prices).monthly_total,
+        "this_job_monthly": this_est.monthly_total,
         "new_total_monthly": estimate(total_scn, prices).monthly_total,
+        "this_job_restore": this_restore,
+        "advice": advice,
     }
 
 

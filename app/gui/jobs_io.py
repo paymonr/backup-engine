@@ -11,7 +11,7 @@ JOBS_FILE = "jobs.json"
 # newline, which would let "name\n" pass the charset gate and reach restic --tag,
 # rclone media/<name>/, state/<name>.json, the lock, and the crontab name field.
 JOB_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
-TYPES = ("versioned", "archive")
+TYPES = ("versioned", "archive", "versioned-files")
 STORAGE_CLASSES = ("STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE")
 _KEEP_KEYS = ("last", "daily", "weekly", "monthly")
 
@@ -124,6 +124,15 @@ def validate(job: dict, source_root, *, require_exists: bool = True) -> dict:
     if typ == "versioned":
         keep = job.get("keep") or {}
         out["keep"] = {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}
+    elif typ == "versioned-files":
+        raw = job.get("retention_days", 90)
+        try:
+            retention_days = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("retention_days must be a non-negative integer")
+        if retention_days < 0:
+            raise ValueError("retention_days must be a non-negative integer")
+        out["retention_days"] = retention_days
     else:
         out["mirror"] = bool(job.get("mirror", False))
     return out
@@ -145,6 +154,8 @@ def emit_shell(job: dict) -> str:
     if job["type"] == "versioned":
         keep = job.get("keep", {})
         lines += [f"JOB_KEEP_{k.upper()}={int(keep.get(k, 0))}" for k in _KEEP_KEYS]
+    elif job["type"] == "versioned-files":
+        lines.append(f"JOB_RETENTION_DAYS={int(job.get('retention_days', 90))}")
     else:
         lines.append(f"JOB_MIRROR={'true' if job.get('mirror') else 'false'}")
     return "\n".join(lines) + "\n"
