@@ -103,3 +103,18 @@ def test_estimate_page_nameless_jobs_entry_no_500(dirs, template_path, tmp_path)
     app = _make_app(dirs, template_path, tmp_path,
                     [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}, AJOB])
     assert app.test_client().get("/estimate").status_code == 200
+
+# --- cost over time: projection in the routes ---
+
+def test_estimate_json_includes_projection(client):
+    j = client.get("/estimate.json").get_json()
+    assert "projection" in j
+    p = j["projection"]
+    assert len(p["primary"]["months"]) == 24
+    assert set(p["comparison"]) == {"no_versioning", "rolling_30"}
+    assert "onetime" in p and "first_month" in p["onetime"]
+
+def test_estimate_json_invalid_input_still_400(client):
+    r = client.get("/estimate.json?appdata_size_gb=notanumber")
+    assert r.status_code == 400
+    assert "error" in r.get_json()

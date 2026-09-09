@@ -298,16 +298,18 @@ def _compute(cfg, params):
     scenario = estimate_io.scenario_from_params(params, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"],
                                                 usage=(cached or {}).get("data"))
     prices = load_prices(scenario.region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
-    return scenario, estimate(scenario, prices)
+    return scenario, estimate(scenario, prices), prices
 
 @bp.get("/estimate")
 def estimate_page():
     cfg = current_app.config
     d = estimate_io.form_defaults(cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"])
     est = None
+    bundle = None
     error = None
     try:
-        _scn, est = _compute(cfg, request.args)
+        _scn, est, prices_wf = _compute(cfg, request.args)
+        bundle = estimate_io.projection_bundle(_scn, prices_wf)
     except ValueError as e:
         error = str(e)
     # Current spend is independent of the (possibly invalid) live what-if params —
@@ -324,7 +326,7 @@ def estimate_page():
     current = (estimate_io.current_costs(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices)
                if prices is not None else {"available": False})
     billing = estimate_io.billing_view(cfg["CONFIG_DIR"])
-    return render_template("estimate.html", d=d, est=est, error=error,
+    return render_template("estimate.html", d=d, est=est, error=error, bundle=bundle,
                            storage_classes=STORAGE_CLASSES,
                            retrieval_tiers=estimate_io.RETRIEVAL_TIERS,
                            current=current, billing=billing, class_info=class_info,
@@ -334,10 +336,11 @@ def estimate_page():
 def estimate_json():
     cfg = current_app.config
     try:
-        _scn, est = _compute(cfg, request.args)
+        scn, est, prices = _compute(cfg, request.args)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    return jsonify(asdict(est))
+    bundle = estimate_io.projection_bundle(scn, prices)
+    return jsonify({**asdict(est), "projection": bundle})
 
 @bp.post("/costs/refresh")
 def costs_refresh():
