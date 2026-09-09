@@ -151,5 +151,13 @@ th { color: var(--muted); font-weight: 560; font-size: .82rem; }
 /* ---- repeated per-job input groups (estimate.html what-if form) ---- */
 .job-inputs + .job-inputs { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--border); }
 .job-inputs h3 { margin: 0 0 var(--sp-3); }
+/* ---- cost-over-time chart (estimate.html) ---- */
+.chart-legend { list-style: none; display: flex; gap: var(--sp-4); flex-wrap: wrap; padding: 0; margin: var(--sp-2) 0 0; font-size: .85rem; color: var(--muted); }
+.chart-legend .swatch { display: inline-block; width: .75rem; height: .75rem; border-radius: 2px; margin-right: .35rem; vertical-align: middle; }
+.swatch-primary { background: var(--accent); }
+.swatch-nover { background: var(--muted); }
+.swatch-roll { background: var(--ok); }
+#cost-timeline .grid { stroke: var(--border); stroke-width: 1; }
+#cost-timeline .axis { fill: var(--muted); font-size: 11px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 @media (max-width: 560px) { .topbar { height: auto; flex-wrap: wrap; padding: .5rem var(--sp-4); } .nav { margin-left: 0; } .container { padding: var(--sp-6) var(--sp-4) 3rem; } }

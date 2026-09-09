@@ -118,3 +118,11 @@ def test_estimate_json_invalid_input_still_400(client):
     r = client.get("/estimate.json?appdata_size_gb=notanumber")
     assert r.status_code == 400
     assert "error" in r.get_json()
+
+def test_estimate_page_has_timeline_card_and_data(client):
+    body = client.get("/estimate").get_data(as_text=True)
+    assert 'id="cost-timeline"' in body        # svg chart mount
+    assert 'id="proj-data"' in body            # embedded projection JSON for the JS
+    assert 'id="cost-milestones"' in body      # no-JS milestone table
+    assert "Starting out" in body              # one-time card heading
+    assert "First bill" in body                # month-1 headline figure

@@ -8,16 +8,70 @@
 
 <p class="eyebrow">Cost estimate</p>
 <h1>What will this cost?</h1>
-<p class="lead">A steady-state monthly estimate over your saved jobs. Change anything below and the numbers update live — decision-support, not billing-accurate.</p>
+<p class="lead">What your saved jobs cost now and over time. The monthly bill climbs as version history piles up, then plateaus — see the timeline. Change anything below and every number updates live. Decision-support, not billing-accurate.</p>
 
 <div class="card card-hero">
   <ul class="totals">
-    <li class="med"><span class="lbl">Per month</span><span data-est="monthly_total" data-fmt="money">{{ money(est.monthly_total if est else none) }}</span></li>
+    <li class="med"><span class="lbl">First bill</span><span data-est-proj="first_month" data-fmt="money">{{ money(bundle.onetime.first_month if bundle else none) }}</span></li>
+    <li class="med"><span class="lbl">Steady-state / mo</span><span data-est-proj="steady_state_monthly" data-fmt="money">{{ money(bundle.primary.steady_state_monthly if bundle else none) }}</span></li>
     <li class="med"><span class="lbl">First year</span><span data-est="first_year_total" data-fmt="money">{{ money(est.first_year_total if est else none) }}</span></li>
     <li class="med"><span class="lbl">Full restore (once)</span><span data-est="full_restore_total" data-fmt="money">{{ money(est.full_restore_total if est else none) }}</span></li>
   </ul>
   <p class="hint">Prices: <span data-est="region">{{ est.region if est else 'us-east-1' }}</span> @ <span data-est="price_date">{{ est.price_date if est else '—' }}</span>. Updates live.</p>
   <p id="est-error" class="alert alert-error"{{ '' if error else ' hidden' }}>{{ error or '' }}</p>
+</div>
+
+<div class="card">
+  <h2>Starting out <small>— one-time &amp; first-month</small></h2>
+  <ul class="totals">
+    <li><span class="lbl">Upload requests (once)</span><span data-est-proj="upload" data-fmt="money">{{ money(bundle.onetime.upload if bundle else none) }}</span></li>
+    <li><span class="lbl">First monthly bill</span><span data-est-proj="first_month" data-fmt="money">{{ money(bundle.onetime.first_month if bundle else none) }}</span></li>
+  </ul>
+  <p class="hint">The upload charge is the per-request cost to push every file up once — it's per-request, not per-GB, so it's usually pennies. Your first bill jumps straight to storing the whole dataset; the monthly cost then climbs as old versions pile up (see the timeline) until it plateaus.</p>
+  {% if bundle and bundle.onetime.lockin %}
+  <h3>Cold-storage lock-in</h3>
+  <p class="hint">A cold class bills a <em>minimum storage duration</em> — even if you deleted this data the day after uploading, you'd still pay for the full minimum:</p>
+  <ul class="totals" id="cost-lockin">
+    {% for row in bundle.onetime.lockin %}
+    <li><span class="lbl">{{ row.job }} <small>{{ row.storage_class }}</small></span><span>{{ money(row.amount) }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Cost over time <small>— {{ bundle.primary.months|length if bundle else 24 }} months</small></h2>
+  <p class="hint">Monthly bill as versioned history accumulates, then plateaus at the steady state. Two comparison curves show the effect of your retention choice.</p>
+  <div class="table-scroll">
+    <svg id="cost-timeline" viewBox="0 0 720 260" role="img" aria-label="Projected monthly cost over time" style="width:100%;max-width:720px;height:auto"></svg>
+  </div>
+  <ul class="chart-legend" id="cost-legend">
+    <li><span class="swatch swatch-primary"></span>your config</li>
+    <li><span class="swatch swatch-nover"></span>no versioning</li>
+    <li><span class="swatch swatch-roll"></span>rolling 30-day</li>
+  </ul>
+  {% if bundle %}<script type="application/json" id="proj-data">{{ bundle|tojson }}</script>{% endif %}
+
+  <div class="table-scroll">
+  <table id="cost-milestones">
+    <thead><tr><th>Component</th>{% for i in [0, 5, 11, 23] %}<th class="num">M{{ i + 1 }}</th>{% endfor %}<th class="num">steady</th></tr></thead>
+    <tbody>
+      {%- set rows = [('storage','Storage'),('versioning','Versioning'),('ingest','Ingest'),('rotation','Rotation'),('onetime','One-time'),('total','Total')] -%}
+      {% if bundle %}
+      {% set m = bundle.primary.months %}
+      {% set steady_i = bundle.steady_state_month - 1 %}
+      {% for key, label in rows %}
+      <tr><th>{{ label }}</th>
+        {% for i in [0, 5, 11, 23] %}<td class="num">{{ money(m[i][key]) if i < m|length else '—' }}</td>{% endfor %}
+        <td class="num">{{ money(m[steady_i][key]) }}</td>
+      </tr>
+      {% endfor %}
+      {% else %}
+      <tr><td colspan="6" class="muted">Enter valid inputs to see the projection.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
 </div>
 
 <div class="card">
