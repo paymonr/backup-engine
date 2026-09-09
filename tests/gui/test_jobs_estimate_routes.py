@@ -216,3 +216,11 @@ def test_jobs_estimate_churn_param_changes_monthly(client):
     lo = client.get("/jobs/estimate.json", query_string={**q, "change_rate_pct": "1"}).get_json()
     hi = client.get("/jobs/estimate.json", query_string={**q, "change_rate_pct": "30"}).get_json()
     assert hi["this_job_monthly"] > lo["this_job_monthly"]
+
+
+def test_wizard_page_has_churn_selector_and_projection_cells(client):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert 'name="change_rate_pct"' in body          # churn selector
+    assert "How much changes each backup" in body
+    assert 'id="job-cost-first"' in body             # First-bill headline cell
+    assert 'id="job-cost-breakdown"' in body         # plain-English breakdown line

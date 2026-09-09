@@ -262,6 +262,9 @@
   var restoreEl = document.getElementById("job-cost-restore");
   var adviceEl = document.getElementById("job-advice");
   var infoEl = document.getElementById("source-info");
+  var firstEl = document.getElementById("job-cost-first");
+  var breakdownEl = document.getElementById("job-cost-breakdown");
+  var futureEl = document.getElementById("job-cost-future");
   var timer;
 
   function sizing(on) { if (sizingEl) sizingEl.hidden = !on; }
@@ -303,11 +306,38 @@
     }
     adviceEl.hidden = false;
   }
+  function fmtGb(gb) { return Number(gb).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " GB"; }
+  function paintBreakdown(b) {
+    if (!breakdownEl) return;
+    if (!b) { breakdownEl.hidden = true; breakdownEl.textContent = ""; return; }
+    var parts = ["Storage " + fmtGb(b.billed_gb) + ": " + money(b.storage) + "/mo"];
+    if (b.versioning > 0) {
+      var window = (b.retention_days != null) ? b.retention_days + "d, " : "";
+      parts.push("old versions (" + window + "~" + b.change_rate_pct + "% churn): " + money(b.versioning) + "/mo");
+    }
+    if (b.rotation > 0) parts.push("early-deletion: " + money(b.rotation) + "/mo");
+    var onetime = (b.upload_onetime || 0) + (b.lockin_onetime || 0);
+    if (onetime > 0) parts.push("one-time: " + money(onetime));
+    breakdownEl.textContent = parts.join(" · ");
+    breakdownEl.hidden = false;
+  }
+  function paintFuture(p) {
+    if (!futureEl) return;
+    if (!p || Math.abs((p.first_bill || 0) - (p.steady_monthly || 0)) < 0.005) {
+      futureEl.hidden = true; futureEl.textContent = ""; return;
+    }
+    futureEl.textContent = "Ramps from " + money(p.first_bill) + " to " + money(p.steady_monthly) +
+      "/mo by month " + p.steady_month + " (at 12 mo: " + money(p.at_12) + ").";
+    futureEl.hidden = false;
+  }
   function paint(data) {
+    if (firstEl) firstEl.textContent = money(data && data.projection && data.projection.first_bill);
     thisEl.textContent = money(data && data.this_job_monthly);
     totalEl.textContent = money(data && data.new_total_monthly);
     if (dateEl) dateEl.textContent = (data && data.price_date) || "—";
     if (restoreEl) restoreEl.textContent = money(data && data.this_job_restore);
+    paintBreakdown(data && data.breakdown);
+    paintFuture(data && data.projection);
     paintAdvice(data && data.advice);
   }
   function update() {
@@ -376,15 +406,27 @@
   var form = document.getElementById("job-form");
   if (!form) return;
   var conds = form.querySelectorAll("[data-when-type]");
-  if (!conds.length) return;
-  function apply() {
-    var checked = form.querySelector('input[name="type"]:checked');
-    var t = checked ? checked.value : "";
+  var churn = document.getElementById("job-change-rate");
+  // Type-appropriate default churn: media (archive / versioned-files) is mostly
+  // added-to (Static ~1%); restic-versioned data (configs/DBs) churns (~10%).
+  var CHURN_DEFAULT = { versioned: "10", "versioned-files": "1", archive: "1" };
+  function curType() {
+    var c = form.querySelector('input[name="type"]:checked');
+    return c ? c.value : "";
+  }
+  function applyVisibility() {
+    var t = curType();
     for (var i = 0; i < conds.length; i++) {
-      conds[i].hidden = conds[i].getAttribute("data-when-type") !== t;
+      var want = (conds[i].getAttribute("data-when-type") || "").split(/\s+/);
+      conds[i].hidden = want.indexOf(t) === -1;   // data-when-type may list several types
     }
   }
   var radios = form.querySelectorAll('input[name="type"]');
-  for (var j = 0; j < radios.length; j++) radios[j].addEventListener("change", apply);
-  apply();
+  for (var j = 0; j < radios.length; j++) {
+    radios[j].addEventListener("change", function () {
+      applyVisibility();
+      if (churn && CHURN_DEFAULT[curType()]) churn.value = CHURN_DEFAULT[curType()];
+    });
+  }
+  applyVisibility();  // initial: visibility only — keep the server-rendered churn default
 })();
