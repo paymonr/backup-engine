@@ -203,3 +203,41 @@ def test_projection_bundle_lockin_lists_only_cold_jobs(tmp_path):
     names = {row["job"] for row in lockin}
     assert names == {"docs"}  # VFJOB
     assert all(row["amount"] > 0 for row in lockin)
+
+# --- wizard_estimate: churn override + projection + breakdown ---
+
+def _wiz_params(**over):
+    p = {"name": "bak-manga", "type": "versioned-files", "source": "comics/mangas",
+         "schedule": "0 3 1 * *", "storage_class": "DEEP_ARCHIVE",
+         "size_gb": "1000", "file_count": "5000", "retention_days": "180"}
+    p.update(over)
+    return p
+
+def test_wizard_estimate_churn_lowers_versioning_and_monthly(tmp_path):
+    cfg = _cfg(tmp_path, [])
+    prices = _prices()
+    lo = estimate_io.wizard_estimate(_wiz_params(change_rate_pct="1"), cfg, SRC, prices)
+    hi = estimate_io.wizard_estimate(_wiz_params(change_rate_pct="30"), cfg, SRC, prices)
+    assert hi["breakdown"]["versioning"] > lo["breakdown"]["versioning"]
+    assert hi["this_job_monthly"] > lo["this_job_monthly"]
+    assert lo["breakdown"]["change_rate_pct"] == 1.0
+
+def test_wizard_estimate_returns_projection_and_breakdown(tmp_path):
+    r = estimate_io.wizard_estimate(_wiz_params(change_rate_pct="1"), _cfg(tmp_path, []), SRC, _prices())
+    for k in ("first_bill", "steady_monthly", "steady_month", "at_12", "at_24"):
+        assert k in r["projection"]
+    for k in ("billed_gb", "storage", "versioning", "rotation", "ingest",
+              "upload_onetime", "lockin_onetime", "change_rate_pct", "retention_days"):
+        assert k in r["breakdown"]
+    assert r["breakdown"]["lockin_onetime"] > 0          # DEEP_ARCHIVE has a minimum
+    assert r["breakdown"]["retention_days"] == 180
+
+def test_wizard_estimate_static_versions_are_minority_of_bill(tmp_path):
+    # ~1% churn: old-version storage should be a small fraction of base storage.
+    b = estimate_io.wizard_estimate(_wiz_params(change_rate_pct="1"), _cfg(tmp_path, []), SRC, _prices())["breakdown"]
+    assert b["versioning"] < b["storage"]
+
+def test_wizard_estimate_defaults_change_rate_when_absent(tmp_path):
+    # No change_rate_pct param -> falls back to the engine default (unchanged behavior).
+    r = estimate_io.wizard_estimate(_wiz_params(), _cfg(tmp_path, []), SRC, _prices())
+    assert r["breakdown"]["change_rate_pct"] == estimate_io._ENGINE_CHANGE["versioned-files"]

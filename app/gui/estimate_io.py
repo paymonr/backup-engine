@@ -213,8 +213,17 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
     size_gb = _num(params, "size_gb", _DEFAULT_SIZE_GB, label="size")
     file_count = int(_num(params, "file_count", _DEFAULT_FILES, label="file count"))
 
+    # "How much changes each backup?" — the wizard's Static/Some/A-lot selector
+    # sends a %; absent -> the per-engine default (unchanged behavior). This is the
+    # dominant driver of the old-version + rotation cost, so surfacing it is what
+    # makes the wizard estimate trustworthy for static media.
+    override = None
+    if str(params.get("change_rate_pct", "")).strip() != "":
+        override = {"change_rate_pct": _num(params, "change_rate_pct",
+                                            _ENGINE_CHANGE.get(engine, 10.0), label="change rate")}
+
     candidate = _job_inputs(job, size_gb=size_gb, file_count=file_count,
-                            scenario_retention=None, override=None)
+                            scenario_retention=None, override=override)
 
     base = scenario_from_jobs(config_dir, source_root)
     this_scn = replace(base, jobs=(candidate,))
@@ -222,6 +231,9 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
     total_scn = replace(base, jobs=others + (candidate,))
 
     this_est = estimate(this_scn, prices)
+    li = this_est.jobs[candidate.name]
+    proj = project(this_scn, prices)
+    ms = proj.months
     # Candidate full-restore (retrieval + egress) at fraction 1.0, using the
     # scenario's retrieval tier. Reuses the model; adds no math here.
     this_restore = restore_cost(candidate, base, prices, 1.0)
@@ -232,6 +244,25 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
         "new_total_monthly": estimate(total_scn, prices).monthly_total,
         "this_job_restore": this_restore,
         "advice": advice,
+        "projection": {
+            "first_bill": ms[0].total,
+            "steady_monthly": proj.steady_state_monthly,
+            "steady_month": proj.steady_state_month,
+            "at_6": ms[min(5, len(ms) - 1)].total,
+            "at_12": ms[min(11, len(ms) - 1)].total,
+            "at_24": ms[-1].total,
+        },
+        "breakdown": {
+            "billed_gb": li.billed_gb,
+            "storage": li.storage,
+            "versioning": li.versioning,
+            "rotation": li.rotation_monthly,
+            "ingest": li.ingest_monthly,
+            "upload_onetime": li.upfront_onetime,
+            "lockin_onetime": cold_lockin_onetime(candidate, prices),
+            "change_rate_pct": candidate.change_rate_pct,
+            "retention_days": candidate.versioning_retention_days,
+        },
     }
 
 
