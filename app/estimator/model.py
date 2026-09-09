@@ -17,6 +17,7 @@ STORAGE_CLASSES: tuple[str, ...] = (
     "STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE",
 )
 _GB_PER_KB = 1 / (1024 * 1024)
+_DAYS_PER_MONTH = 30.4  # matches schedule.py
 
 @dataclass(frozen=True)
 class JobInputs:
@@ -66,6 +67,22 @@ class Estimate:
     first_year_total: float
     full_restore_total: float
 
+@dataclass
+class MonthPoint:
+    month: int
+    storage: float
+    versioning: float
+    ingest: float
+    rotation: float
+    onetime: float
+    total: float
+
+@dataclass
+class Projection:
+    months: list[MonthPoint]
+    steady_state_month: int
+    steady_state_monthly: float
+
 def _rate(prices: PriceTable, storage_class: str) -> float:
     if storage_class not in STORAGE_CLASSES:
         raise ValueError(f"unknown storage class '{storage_class}'")
@@ -93,9 +110,15 @@ def billed_gb(p: JobInputs, prices: PriceTable) -> float:
 def storage_monthly(p: JobInputs, prices: PriceTable) -> float:
     return billed_gb(p, prices) * _rate(prices, p.storage_class)
 
+def job_retention_days(p: JobInputs, scenario: Scenario) -> int:
+    """The effective noncurrent-version retention (days) for a job: its own
+    override when set, else the scenario-level window. Shared by the steady-state
+    versioning term and the over-time ramp so the two never diverge."""
+    return (p.versioning_retention_days if p.versioning_retention_days is not None
+            else scenario.versioning_retention_days)
+
 def versioning_monthly(p: JobInputs, scenario: Scenario, prices: PriceTable) -> float:
-    retention = (p.versioning_retention_days if p.versioning_retention_days is not None
-                 else scenario.versioning_retention_days)
+    retention = job_retention_days(p, scenario)
     noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * (
         p.backups_per_month * retention / 30)
     return noncurrent_gb * _rate(prices, p.storage_class)
@@ -106,6 +129,15 @@ def ingest_monthly(p: JobInputs, prices: PriceTable) -> float:
 
 def upfront_onetime(p: JobInputs, prices: PriceTable) -> float:
     return effective_object_count(p) * prices.put_per_1k / 1000
+
+def cold_lockin_onetime(p: JobInputs, prices: PriceTable) -> float:
+    """The minimum you pay for the INITIAL dataset in a cold class even if you
+    deleted it the day after upload: billed_gb * $/GB * (min_days / 30). Zero for
+    classes with no minimum-storage-duration (STANDARD)."""
+    min_days = prices.min_storage_duration_days.get(p.storage_class, 0)
+    if not min_days:
+        return 0.0
+    return billed_gb(p, prices) * _rate(prices, p.storage_class) * (min_days / 30)
 
 def rotation_monthly(p: JobInputs, scenario: Scenario, prices: PriceTable) -> float:
     min_days = prices.min_storage_duration_days.get(p.storage_class, 0)
@@ -157,3 +189,45 @@ def estimate(scenario: Scenario, prices: PriceTable) -> Estimate:
     full_restore = sum(restore_cost(j, scenario, prices, 1.0) for j in scenario.jobs)
     return Estimate(prices.date, prices.source, prices.region, jobs,
                     monthly, first_year, full_restore)
+
+def _versioning_fill(retention_days: int, month: int) -> float:
+    """Fraction of the steady-state noncurrent history accumulated by `month`:
+    linear ramp to 1.0 at the retention horizon, flat after. Zero retention
+    (versioning off) -> 0.0, never a divide-by-zero."""
+    if retention_days <= 0:
+        return 0.0
+    return min(1.0, (month * _DAYS_PER_MONTH) / retention_days)
+
+def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Projection:
+    """Per-month cost trajectory: current-data storage, ingest and rotation are
+    flat from month 1; the versioning term ramps to its steady state at the
+    retention horizon; the one-time upload charge lands in month 1. The plateau
+    (any month at/after steady state, excluding one-time) equals
+    estimate(...).monthly_total."""
+    if months < 1:
+        raise ValueError("months must be >= 1")
+    per_job = []  # (storage, steady_versioning, ingest, rotation, onetime, retention)
+    max_retention = 0
+    for j in scenario.jobs:
+        ret = job_retention_days(j, scenario)
+        max_retention = max(max_retention, ret if ret and ret > 0 else 0)
+        per_job.append((
+            storage_monthly(j, prices), versioning_monthly(j, scenario, prices),
+            ingest_monthly(j, prices), rotation_monthly(j, scenario, prices),
+            upfront_onetime(j, prices), ret,
+        ))
+    pts: list[MonthPoint] = []
+    for t in range(1, months + 1):
+        s = v = ing = rot = one = 0.0
+        for store, steady_ver, jing, jrot, jup, jret in per_job:
+            s += store
+            v += steady_ver * _versioning_fill(jret, t)
+            ing += jing
+            rot += jrot
+            if t == 1:
+                one += jup
+        pts.append(MonthPoint(t, s, v, ing, rot, one, s + v + ing + rot + one))
+    steady_month = (min(months, max(1, ceil(max_retention / _DAYS_PER_MONTH)))
+                    if max_retention else 1)
+    steady_monthly = sum(store + sv + ing + rot for store, sv, ing, rot, _up, _r in per_job)
+    return Projection(pts, steady_month, steady_monthly)

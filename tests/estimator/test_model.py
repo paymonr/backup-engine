@@ -156,3 +156,72 @@ def test_full_restore_total_is_independent_of_restores_per_year(prices):
 
 def test_public_api_importable():
     from app.estimator import estimate, Scenario, JobInputs, Estimate, load_prices  # noqa: F401
+
+# --- cost over time: projection + one-time math ---
+
+from app.estimator.model import (
+    job_retention_days, cold_lockin_onetime, project, MonthPoint, Projection,
+)
+
+# A versioned job with a 90-day retention gives a visible multi-month ramp
+# (one calendar month ~30.4 days, so 30-day retention would fill within month 1).
+def _ramp_job():
+    return J(20, 5, "STANDARD", name="v", engine="versioned",
+             backups_per_month=30, change_rate_pct=10, versioning_retention_days=90)
+
+def test_job_retention_days_falls_back_to_scenario():
+    j = J(20, 5, "STANDARD")  # versioning_retention_days=None
+    assert job_retention_days(j, _scn(j, versioning_retention_days=45)) == 45
+    j2 = J(20, 5, "STANDARD", versioning_retention_days=90)
+    assert job_retention_days(j2, _scn(j2, versioning_retention_days=45)) == 90
+
+def test_cold_lockin_deep_archive(prices):
+    # billed_gb=2000 (size dominates floor); 2000 * 0.001 * (180/30) = 12.0
+    assert math.isclose(cold_lockin_onetime(J(2000, 50000, "DEEP_ARCHIVE"), prices), 12.0)
+
+def test_cold_lockin_zero_for_standard(prices):
+    assert cold_lockin_onetime(J(20, 5, "STANDARD"), prices) == 0.0
+
+def test_project_length_and_steady_month(prices):
+    j = _ramp_job()
+    proj = project(_scn(j), prices, months=24)
+    assert isinstance(proj, Projection) and len(proj.months) == 24
+    assert proj.months[0].month == 1 and proj.months[-1].month == 24
+    assert proj.steady_state_month == 3  # ceil(90 / 30.4) == 3
+
+def test_project_versioning_ramps_then_plateaus(prices):
+    j = _ramp_job()
+    m = project(_scn(j), prices, months=24).months
+    # steady versioning = 20 * 0.10 * (30*90/30) = 180 GB * 0.02 = 3.60
+    assert m[0].versioning < m[1].versioning < m[2].versioning
+    assert math.isclose(m[2].versioning, 3.60, rel_tol=1e-9)   # filled at month 3
+    assert math.isclose(m[23].versioning, m[2].versioning)     # flat after plateau
+
+def test_project_month1_carries_onetime_only(prices):
+    j = _ramp_job()
+    m = project(_scn(j), prices, months=24).months
+    assert math.isclose(m[0].onetime, upfront_onetime(j, prices))
+    assert m[1].onetime == 0.0 and m[23].onetime == 0.0
+
+def test_project_plateau_total_equals_monthly_total(prices):
+    scn = _scn(_ramp_job())
+    proj = project(scn, prices, months=24)
+    # last month has no one-time, so its total is the steady monthly bill
+    assert math.isclose(proj.months[-1].total, estimate(scn, prices).monthly_total)
+    assert math.isclose(proj.steady_state_monthly, estimate(scn, prices).monthly_total)
+
+def test_project_zero_retention_has_no_versioning(prices):
+    j = J(20, 5, "STANDARD", versioning_retention_days=0,
+          backups_per_month=30, change_rate_pct=10)
+    m = project(_scn(j), prices, months=6).months  # must not ZeroDivisionError
+    assert all(pt.versioning == 0.0 for pt in m)
+
+def test_project_rejects_nonpositive_months(prices):
+    with pytest.raises(ValueError):
+        project(_scn(_ramp_job()), prices, months=0)
+
+def test_project_no_jobs(prices):
+    proj = project(_scn(), prices, months=12)
+    assert len(proj.months) == 12
+    assert all(pt.total == 0.0 for pt in proj.months)
+    assert proj.steady_state_month == 1
