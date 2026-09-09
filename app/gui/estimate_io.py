@@ -4,12 +4,12 @@
 # itself (that lives in app.estimator.model).
 from __future__ import annotations
 from datetime import datetime, timezone
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Mapping
 from . import config_io, jobs_io, storage_advice
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days, estimate,
-    restore_cost,
+    restore_cost, project, job_retention_days, cold_lockin_onetime, upfront_onetime,
 )
 from ..estimator.schedule import backups_per_month
 from ..estimator import usage, billing
@@ -232,6 +232,40 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
         "new_total_monthly": estimate(total_scn, prices).monthly_total,
         "this_job_restore": this_restore,
         "advice": advice,
+    }
+
+
+def projection_bundle(scenario: Scenario, prices, months: int = 24) -> dict:
+    """Primary trajectory + comparison variants + the one-time/first-month
+    breakdown, all as plain dicts for the template and /estimate.json. Pure over
+    its inputs (prices are passed in, like wizard_estimate)."""
+    primary = project(scenario, prices, months)
+
+    def _retagged(scn, cap):
+        return replace(
+            scn,
+            jobs=tuple(replace(j, versioning_retention_days=cap(job_retention_days(j, scn)))
+                       for j in scn.jobs),
+            versioning_retention_days=cap(scn.versioning_retention_days),
+        )
+    no_versioning = _retagged(scenario, lambda _r: 0)
+    rolling_30 = _retagged(scenario, lambda r: min(r, 30))
+
+    onetime = {
+        "upload": sum(upfront_onetime(j, prices) for j in scenario.jobs),
+        "lockin": [{"job": j.name, "storage_class": j.storage_class,
+                    "amount": cold_lockin_onetime(j, prices)}
+                   for j in scenario.jobs if cold_lockin_onetime(j, prices) > 0],
+        "first_month": primary.months[0].total,
+    }
+    return {
+        "primary": asdict(primary),
+        "comparison": {
+            "no_versioning": asdict(project(no_versioning, prices, months)),
+            "rolling_30": asdict(project(rolling_30, prices, months)),
+        },
+        "onetime": onetime,
+        "steady_state_month": primary.steady_state_month,
     }
 
 

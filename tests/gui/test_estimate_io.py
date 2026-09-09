@@ -175,3 +175,31 @@ def test_form_defaults_reads_region_from_env(tmp_path):
 def test_form_defaults_no_jobs_empty_list(tmp_path):
     d = estimate_io.form_defaults(_cfg(tmp_path), SRC)
     assert d["jobs"] == []
+
+# --- projection_bundle (cost over time) ---
+
+from app.estimator.prices import load_prices
+
+def _prices():
+    return load_prices("us-east-1", live=False)
+
+def test_projection_bundle_shape(tmp_path):
+    scn = estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB, VFJOB]), SRC)
+    b = estimate_io.projection_bundle(scn, _prices(), months=24)
+    assert set(b) == {"primary", "comparison", "onetime", "steady_state_month"}
+    assert len(b["primary"]["months"]) == 24
+    assert set(b["comparison"]) == {"no_versioning", "rolling_30"}
+    assert b["onetime"]["first_month"] == b["primary"]["months"][0]["total"]
+
+def test_projection_bundle_no_versioning_curve_is_flat_zero(tmp_path):
+    scn = estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB, VFJOB]), SRC)
+    nv = estimate_io.projection_bundle(scn, _prices())["comparison"]["no_versioning"]
+    assert all(m["versioning"] == 0.0 for m in nv["months"])
+
+def test_projection_bundle_lockin_lists_only_cold_jobs(tmp_path):
+    # VJOB=STANDARD (no lock-in), VFJOB=DEEP_ARCHIVE (has lock-in)
+    scn = estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB, VFJOB]), SRC)
+    lockin = estimate_io.projection_bundle(scn, _prices())["onetime"]["lockin"]
+    names = {row["job"] for row in lockin}
+    assert names == {"docs"}  # VFJOB
+    assert all(row["amount"] > 0 for row in lockin)
