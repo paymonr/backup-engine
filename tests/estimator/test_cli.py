@@ -87,3 +87,18 @@ def test_render_table_handles_no_jobs():
     from app.estimator.prices import load_prices
     est = estimate(Scenario(), load_prices("us-east-1"))
     assert "no jobs configured" in render_table(est)
+
+def test_cli_json_includes_projection(prices, capsys, monkeypatch, tmp_path):
+    cfg = _cfg(tmp_path, [VJOB, AJOB])
+    monkeypatch.setattr("app.estimator.cli.load_prices", lambda region: prices)
+    assert main(["--config-dir", cfg, "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "projection" in out
+    assert len(out["projection"]["months"]) == 24
+
+def test_cli_table_has_over_time_block(prices, capsys, monkeypatch, tmp_path):
+    cfg = _cfg(tmp_path, [VJOB, AJOB])
+    monkeypatch.setattr("app.estimator.cli.load_prices", lambda region: prices)
+    assert main(["--config-dir", cfg]) == 0
+    out = capsys.readouterr().out
+    assert "OVER TIME" in out and "steady" in out.lower()

@@ -5,7 +5,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict, replace
-from .model import Scenario, Estimate, estimate
+from .model import Scenario, Estimate, estimate, project
 from .prices import load_prices
 from ..gui import estimate_io
 
@@ -53,7 +53,7 @@ def build_scenario(args) -> Scenario:
 def estimate_to_dict(est: Estimate) -> dict:
     return asdict(est)
 
-def render_table(est: Estimate) -> str:
+def render_table(est: Estimate, proj=None) -> str:
     lines = [f"S3 backup cost estimate  (prices: {est.region} @ {est.price_date} — {est.price_source})", ""]
     if not est.jobs:
         lines.append("(no jobs configured — add a job to see an estimate)")
@@ -74,6 +74,16 @@ def render_table(est: Estimate) -> str:
         f"FIRST-YEAR total    ${est.first_year_total:,.2f}",
         f"FULL-RESTORE (once) ${est.full_restore_total:,.2f}",
     ]
+    if proj is not None and proj.months:
+        m1 = proj.months[0]
+        m12 = proj.months[min(11, len(proj.months) - 1)]
+        steady = proj.months[min(proj.steady_state_month - 1, len(proj.months) - 1)]
+        lines += [
+            "", "OVER TIME (monthly bill)",
+            f"  month 1             ${m1.total:,.2f}",
+            f"  month 12            ${m12.total:,.2f}",
+            f"  steady (mo {proj.steady_state_month:>2})       ${steady.total:,.2f}",
+        ]
     return "\n".join(lines)
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,8 +97,14 @@ def main(argv: list[str] | None = None) -> int:
         if scenario.retrieval_tier not in prices.retrieval_request_per_1k:
             raise ValueError(f"unknown retrieval tier '{scenario.retrieval_tier}'")
         est = estimate(scenario, prices)
+        proj = project(scenario, prices)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print(json.dumps(estimate_to_dict(est), indent=2) if args.json else render_table(est))
+    if args.json:
+        payload = estimate_to_dict(est)
+        payload["projection"] = asdict(proj)
+        print(json.dumps(payload, indent=2))
+    else:
+        print(render_table(est, proj))
     return 0
