@@ -197,3 +197,22 @@ def test_jobs_estimate_never_walks_source_uses_default(client):
         "storage_class": "STANDARD", "schedule": "0 4 * * 0",
         "size_gb": str(1000 / 1024 ** 3)}).get_json()
     assert walked["this_job_monthly"] != pytest.approx(tiny["this_job_monthly"])
+
+
+def test_jobs_estimate_includes_projection_and_breakdown(client):
+    j = client.get("/jobs/estimate.json", query_string={
+        "name": "bak-manga", "type": "versioned-files", "source": "comics/mangas",
+        "storage_class": "DEEP_ARCHIVE", "schedule": "0 3 1 * *",
+        "size_gb": "1000", "retention_days": "180", "change_rate_pct": "1"}).get_json()
+    assert {"first_bill", "steady_monthly", "steady_month", "at_12"} <= set(j["projection"])
+    assert {"storage", "versioning", "lockin_onetime", "change_rate_pct"} <= set(j["breakdown"])
+    assert j["breakdown"]["change_rate_pct"] == 1.0
+
+
+def test_jobs_estimate_churn_param_changes_monthly(client):
+    q = {"name": "bak-manga", "type": "versioned-files", "source": "comics/mangas",
+         "storage_class": "DEEP_ARCHIVE", "schedule": "0 3 1 * *", "size_gb": "1000",
+         "retention_days": "180"}
+    lo = client.get("/jobs/estimate.json", query_string={**q, "change_rate_pct": "1"}).get_json()
+    hi = client.get("/jobs/estimate.json", query_string={**q, "change_rate_pct": "30"}).get_json()
+    assert hi["this_job_monthly"] > lo["this_job_monthly"]
