@@ -141,6 +141,53 @@
     if (kind === "int") return n.toLocaleString();
     return String(v);
   }
+  function svgEl(name, attrs) {
+    var e = document.createElementNS("http://www.w3.org/2000/svg", name);
+    for (var k in attrs) { if (attrs.hasOwnProperty(k)) e.setAttribute(k, attrs[k]); }
+    return e;
+  }
+  function strokeColor(sel, fallback) {
+    var el = document.querySelector(sel);
+    return el ? getComputedStyle(el).backgroundColor : fallback;
+  }
+  // Draw the cost-over-time curves into #cost-timeline from a /estimate.json
+  // "projection" bundle (or the SSR'd #proj-data on load). No external library.
+  function drawCostChart(proj) {
+    var svg = document.getElementById("cost-timeline");
+    if (!svg) return;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (!proj || !proj.primary) return;  // invalid input -> leave it blank
+    var W = 720, H = 260, padL = 52, padB = 26, padT = 10, padR = 10;
+    var prim = proj.primary.months, n = prim.length;
+    var curves = [
+      { ms: proj.comparison.no_versioning.months, c: strokeColor(".swatch-nover", "#8a94a6") },
+      { ms: proj.comparison.rolling_30.months, c: strokeColor(".swatch-roll", "#4ecb8d") },
+      { ms: prim, c: strokeColor(".swatch-primary", "#4ea1ff") }
+    ];
+    var maxY = 0;
+    curves.forEach(function (s) { s.ms.forEach(function (m) { if (m.total > maxY) maxY = m.total; }); });
+    if (maxY <= 0) maxY = 1;
+    function x(i) { return padL + (W - padL - padR) * (n <= 1 ? 0 : i / (n - 1)); }
+    function y(v) { return padT + (H - padT - padB) * (1 - v / maxY); }
+    svg.appendChild(svgEl("line", { x1: padL, y1: y(0), x2: W - padR, y2: y(0), "class": "grid" }));
+    svg.appendChild(svgEl("line", { x1: padL, y1: padT, x2: padL, y2: y(0), "class": "grid" }));
+    var sIdx = (proj.steady_state_month || 1) - 1, sx = x(sIdx);
+    svg.appendChild(svgEl("line", { x1: sx, y1: padT, x2: sx, y2: y(0), "class": "grid", "stroke-dasharray": "4 3" }));
+    curves.forEach(function (s) {
+      var pts = s.ms.map(function (m, i) { return x(i) + "," + y(m.total); }).join(" ");
+      svg.appendChild(svgEl("polyline", { points: pts, fill: "none", stroke: s.c, "stroke-width": 2 }));
+    });
+    [0, maxY].forEach(function (v) {
+      var t = svgEl("text", { x: padL - 6, y: y(v) + 3, "text-anchor": "end", "class": "axis" });
+      t.textContent = "$" + v.toFixed(v >= 10 ? 0 : 2);
+      svg.appendChild(t);
+    });
+    [[0, "M1"], [sIdx, "steady"], [n - 1, "M" + n]].forEach(function (pair) {
+      var t = svgEl("text", { x: x(pair[0]), y: H - 8, "text-anchor": "middle", "class": "axis" });
+      t.textContent = pair[1];
+      svg.appendChild(t);
+    });
+  }
   function paint(data) {
     // Scalar top-level fields (monthly_total, region, …): a direct key lookup.
     var cells = document.querySelectorAll("[data-est]");
@@ -158,6 +205,17 @@
       var v = li ? li[el.getAttribute("data-field")] : undefined;
       el.textContent = fmt(v, el.getAttribute("data-fmt"));
     }
+    // Projection headline / starting-out cells + the chart.
+    var proj = data && data.projection;
+    var pcells = document.querySelectorAll("[data-est-proj]");
+    for (var q = 0; q < pcells.length; q++) {
+      var pk = pcells[q].getAttribute("data-est-proj"), pv;
+      if (!proj) pv = undefined;
+      else if (pk === "steady_state_monthly") pv = proj.primary.steady_state_monthly;
+      else pv = proj.onetime[pk];  // first_month, upload
+      pcells[q].textContent = fmt(pv, pcells[q].getAttribute("data-fmt"));
+    }
+    drawCostChart(proj);
   }
   function update() {
     var qs = new URLSearchParams(new FormData(form)).toString();
@@ -176,6 +234,12 @@
   }
   form.addEventListener("input", function () { clearTimeout(timer); timer = setTimeout(update, 250); });
   form.addEventListener("change", function () { clearTimeout(timer); timer = setTimeout(update, 250); });
+  // Initial draw from the server-embedded projection (page loads with the SVG empty).
+  (function initChart() {
+    var tag = document.getElementById("proj-data");
+    if (!tag) return;
+    try { drawCostChart(JSON.parse(tag.textContent)); } catch (e) {}
+  })();
 })();
 
 // Wizard live cost (job_form.html): recompute "this job" + "new total" as the
