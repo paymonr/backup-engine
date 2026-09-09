@@ -446,6 +446,7 @@ Planned, not yet built:
 - **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.
 - **Per-run history** — a persisted run history beyond the last-run state.
 - **Scheduler liveness / health endpoint** — surface whether the background scheduler (supercronic) is still running, so a silent crash is visible in the GUI.
+- **Cost scenario workbench** — define, name, and save multiple custom cost scenarios (per-scenario storage class, retention, versioning) and compare N curves on the cost-over-time timeline. Builds on the `project()` model function and comparison-curve mechanism.
 
 ## Third-party software
 
