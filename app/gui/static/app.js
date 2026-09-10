@@ -406,10 +406,6 @@
   var form = document.getElementById("job-form");
   if (!form) return;
   var conds = form.querySelectorAll("[data-when-type]");
-  var churn = document.getElementById("job-change-rate");
-  // Type-appropriate default churn: media (archive / versioned-files) is mostly
-  // added-to (Static ~1%); restic-versioned data (configs/DBs) churns (~10%).
-  var CHURN_DEFAULT = { versioned: "10", "versioned-files": "1", archive: "1" };
   function curType() {
     var c = form.querySelector('input[name="type"]:checked');
     return c ? c.value : "";
@@ -422,11 +418,6 @@
     }
   }
   var radios = form.querySelectorAll('input[name="type"]');
-  for (var j = 0; j < radios.length; j++) {
-    radios[j].addEventListener("change", function () {
-      applyVisibility();
-      if (churn && CHURN_DEFAULT[curType()]) churn.value = CHURN_DEFAULT[curType()];
-    });
-  }
-  applyVisibility();  // initial: visibility only — keep the server-rendered churn default
+  for (var j = 0; j < radios.length; j++) radios[j].addEventListener("change", applyVisibility);
+  applyVisibility();
 })();

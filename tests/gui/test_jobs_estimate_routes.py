@@ -224,3 +224,11 @@ def test_wizard_page_has_churn_selector_and_projection_cells(client):
     assert "How much changes each backup" in body
     assert 'id="job-cost-first"' in body             # First-bill headline cell
     assert 'id="job-cost-breakdown"' in body         # plain-English breakdown line
+
+
+def test_wizard_churn_selector_defaults_to_no_change(client):
+    import re
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert "No change" in body
+    # the 0% option is the pre-selected default
+    assert re.search(r'<option value="0"[^>]*\bselected', body)

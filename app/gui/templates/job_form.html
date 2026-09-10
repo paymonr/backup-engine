@@ -96,14 +96,15 @@
       <input type="number" min="0" name="retention_days" value="{{ job.retention_days if job and job.type=='versioned-files' else 90 }}">
       days <small>(versioned files: how long a replaced/deleted version is kept before it's pruned)</small>
     </label>
-    {% set churn_default = '1' if (job and job.type in ['versioned-files','archive']) else '10' %}
+    {% set churn_default = '0' %}
     <label data-when-type="versioned versioned-files">How much changes each backup?
       <select name="change_rate_pct" id="job-change-rate">
-        <option value="1"{{ ' selected' if churn_default=='1' }}>Static — mostly added, rarely replaced (~1%)</option>
+        <option value="0"{{ ' selected' if churn_default=='0' }}>No change — files only get added (0%)</option>
+        <option value="1"{{ ' selected' if churn_default=='1' }}>A little — rare replacements (~1%)</option>
         <option value="10"{{ ' selected' if churn_default=='10' }}>Some — regular edits (~10%)</option>
         <option value="30"{{ ' selected' if churn_default=='30' }}>A lot — churny (~30%)</option>
       </select>
-      <small>Drives your old-version + rotation cost. For media you mostly add to (e.g. manga), pick Static — the bill is then almost all just storing your data.</small>
+      <small>Defaults to no change, so the estimate is pure storage. Raise it only if you replace or overwrite existing files — adding new files doesn't count as churn.</small>
     </label>
   </div>
   <div class="card"><h2>5 · Name it</h2>

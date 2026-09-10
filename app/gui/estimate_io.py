@@ -32,7 +32,11 @@ _GLOBAL_DEFAULTS = {
 # A versioned job churns more between backups than a bulk archive job.
 # versioned-files is per-file incremental versioning (like "versioned"), just
 # without a shared restic repo -- same churn assumption.
-_ENGINE_CHANGE = {"versioned": 10.0, "archive": 1.0, "versioned-files": 10.0}
+# Default assumed churn per engine: 0% — a fresh estimate shows the honest floor
+# (pure storage cost, no old-version/rotation churn). Users opt into a churn level
+# via the wizard's "How much changes each backup?" selector / the Cost page's
+# change-rate field.
+_ENGINE_CHANGE = {"versioned": 0.0, "archive": 0.0, "versioned-files": 0.0}
 
 
 def _region(config_dir: str) -> str:

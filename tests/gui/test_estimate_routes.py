@@ -66,8 +66,10 @@ def test_estimate_json_change_rate_drives_versioning(client):
 
 def test_estimate_json_global_retention_drives_archive_versioning(client):
     # An archive job has no per-job retention, so it uses the scenario-level window.
-    low = client.get("/estimate.json?versioning_retention_days=10").get_json()["jobs"]["movies"]["versioning"]
-    high = client.get("/estimate.json?versioning_retention_days=100").get_json()["jobs"]["movies"]["versioning"]
+    # Churn now defaults to 0% (pure storage), so supply a change rate to exercise
+    # the versioning term at all.
+    low = client.get("/estimate.json?movies_change_rate_pct=10&versioning_retention_days=10").get_json()["jobs"]["movies"]["versioning"]
+    high = client.get("/estimate.json?movies_change_rate_pct=10&versioning_retention_days=100").get_json()["jobs"]["movies"]["versioning"]
     assert high > low
 
 def test_estimate_json_bad_input_is_400(client):

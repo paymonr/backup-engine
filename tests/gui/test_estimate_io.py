@@ -237,7 +237,14 @@ def test_wizard_estimate_static_versions_are_minority_of_bill(tmp_path):
     b = estimate_io.wizard_estimate(_wiz_params(change_rate_pct="1"), _cfg(tmp_path, []), SRC, _prices())["breakdown"]
     assert b["versioning"] < b["storage"]
 
-def test_wizard_estimate_defaults_change_rate_when_absent(tmp_path):
-    # No change_rate_pct param -> falls back to the engine default (unchanged behavior).
+def test_wizard_estimate_defaults_to_no_change(tmp_path):
+    # No change_rate_pct param -> 0% churn by default: pure storage, no version/
+    # rotation cost. The user opts into churn via the Static/Some/A-lot selector.
     r = estimate_io.wizard_estimate(_wiz_params(), _cfg(tmp_path, []), SRC, _prices())
-    assert r["breakdown"]["change_rate_pct"] == estimate_io._ENGINE_CHANGE["versioned-files"]
+    assert r["breakdown"]["change_rate_pct"] == 0.0
+    assert r["breakdown"]["versioning"] == 0.0
+    assert r["breakdown"]["rotation"] == 0.0
+
+def test_form_defaults_change_rate_is_zero(tmp_path):
+    d = estimate_io.form_defaults(_cfg(tmp_path, [VJOB, VFJOB]), SRC)
+    assert d["jobs"] and all(j["change_rate_pct"] == 0.0 for j in d["jobs"])
