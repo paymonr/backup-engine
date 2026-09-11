@@ -9,7 +9,9 @@
 # captures argv instead of touching a real bucket. A non-zero return raises
 # S3Error carrying the tool's stderr.
 from __future__ import annotations
+import json
 import subprocess
+from datetime import datetime
 
 
 class S3Error(Exception):
@@ -86,3 +88,31 @@ def thaw(key, *, bucket, tier="Bulk", days=7, runner=subprocess.run) -> None:
         "--bucket", bucket, "--key", key,
         "--restore-request", f"Days={days},GlacierJobParameters={{Tier={tier}}}",
     ])
+
+
+def list_versions(bucket, prefix, *, runner=subprocess.run) -> list[dict]:
+    """List all versions of objects under `prefix` in `bucket`.
+    Returns a list of dicts with keys: "key", "version_id", "is_latest" (bool),
+    "last_modified" (epoch float, or 0.0 if unparseable)."""
+    argv = ["aws", "s3api", "list-object-versions", "--bucket", bucket,
+            "--prefix", prefix, "--output", "json"]
+    proc = runner(argv, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise S3Error((getattr(proc, "stderr", "") or "").strip() or "list-object-versions failed")
+    data = json.loads(proc.stdout or "{}")
+    out = []
+    for v in data.get("Versions", []):
+        lm = v.get("LastModified", "")
+        try:
+            ts = datetime.fromisoformat(lm.replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            ts = 0.0
+        out.append({"key": v["Key"], "version_id": v["VersionId"],
+                    "is_latest": bool(v.get("IsLatest")), "last_modified": ts})
+    return out
+
+
+def delete_version(bucket, key, version_id, *, runner=subprocess.run) -> None:
+    """Delete a specific version of an object by version_id."""
+    _run(runner, ["aws", "s3api", "delete-object", "--bucket", bucket,
+                  "--key", key, "--version-id", version_id])
