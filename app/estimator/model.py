@@ -225,6 +225,21 @@ def _count_fill(count: int, backups_per_month: float, month: int) -> float:
         return 0.0
     return min(1.0, (backups_per_month * month) / count)
 
+def _days_plateau_month(retention_days: int) -> int:
+    """The first month _versioning_fill(retention_days, month) reaches 1.0, or 0
+    if it never does (zero/negative retention -> always flat at 0)."""
+    if not retention_days or retention_days <= 0:
+        return 0
+    return max(1, ceil(retention_days / _DAYS_PER_MONTH))
+
+def _count_plateau_month(count: int, backups_per_month: float) -> int:
+    """The first month _count_fill(count, backups_per_month, month) reaches 1.0,
+    or 0 if it never does (zero count, or zero cadence -> always flat at 0 --
+    consistent with _count_fill, which stays 0 forever in that case)."""
+    if count <= 0 or backups_per_month <= 0:
+        return 0
+    return max(1, ceil(count / backups_per_month))
+
 def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Projection:
     """Per-month cost trajectory: current-data storage, ingest and rotation are
     flat from month 1; the versioning term ramps per the job's retention_type
@@ -238,11 +253,16 @@ def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Project
     if months < 1:
         raise ValueError("months must be >= 1")
     per_job = []  # (storage, steady_versioning, ingest, rotation, onetime, retention_type, retention_days, retention_count, backups_per_month)
-    max_retention = 0
+    max_plateau_month = 0  # the LATEST month any job's own ramp reaches its steady state
     for j in scenario.jobs:
         ret = job_retention_days(j, scenario)
-        if j.retention_type == "days":
-            max_retention = max(max_retention, ret if ret and ret > 0 else 0)
+        if j.retention_type == "count":
+            plateau = _count_plateau_month(j.retention_count, j.backups_per_month)
+        elif j.retention_type == "keep_all":
+            plateau = 0  # never plateaus -- doesn't bound steady_state_month
+        else:
+            plateau = _days_plateau_month(ret)
+        max_plateau_month = max(max_plateau_month, plateau)
         per_job.append((
             storage_monthly(j, prices), versioning_monthly(j, scenario, prices),
             ingest_monthly(j, prices), rotation_monthly(j, scenario, prices),
@@ -265,8 +285,7 @@ def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Project
             if t == 1:
                 one += jup
         pts.append(MonthPoint(t, s, v, ing, rot, one, s + v + ing + rot + one))
-    steady_month = (min(months, max(1, ceil(max_retention / _DAYS_PER_MONTH)))
-                    if max_retention else 1)
+    steady_month = min(months, max_plateau_month) if max_plateau_month else 1
     steady_monthly = sum(store + sv + ing + rot
                          for store, sv, ing, rot, _up, _rt, _ret, _rc, _bpm in per_job)
     return Projection(pts, steady_month, steady_monthly)

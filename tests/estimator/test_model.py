@@ -265,3 +265,31 @@ def test_project_count_type_ramps_then_plateaus(prices):
     assert m[0].versioning < m[4].versioning
     assert math.isclose(m[4].versioning, steady, rel_tol=1e-9)  # filled at month 5 (5 backups @ 1/mo)
     assert math.isclose(m[7].versioning, steady)                # flat after
+
+# --- Task 8 fix round 1: steady_state_month must account for count jobs too ---
+
+def test_project_count_only_scenario_reports_true_plateau_month(prices):
+    # Regression for the bug: steady_state_month used to only look at "days"-type
+    # jobs, so a count-only scenario fell through to the "no retention" branch and
+    # wrongly reported steady-by-month-1 even though the count ramp hadn't finished.
+    p = J(20, 5, "STANDARD", name="c", engine="versioned", backups_per_month=1,
+          change_rate_pct=10, retention_type="count", retention_count=12)
+    proj = project(_scn(p), prices, months=24)
+    assert proj.steady_state_month == 12  # ceil(12/1) -- matches _count_fill's own ramp completion
+    steady_pt = proj.months[proj.steady_state_month - 1]
+    assert math.isclose(steady_pt.total, proj.steady_state_monthly)
+    # sanity: at month 1 the ramp has barely started, nowhere near steady
+    assert proj.months[0].versioning < steady_pt.versioning
+
+def test_project_steady_month_is_max_plateau_across_days_and_count_jobs(prices):
+    days_job = _ramp_job()  # retention_days=90 -> plateau month 3
+    count_job = J(20, 5, "STANDARD", name="c", engine="versioned", backups_per_month=1,
+                 change_rate_pct=10, retention_type="count", retention_count=12)  # plateau month 12
+    proj = project(_scn(days_job, count_job), prices, months=24)
+    assert proj.steady_state_month == 12  # the count job's later plateau wins over the days job's
+
+def test_project_days_only_steady_month_unaffected_by_count_fix(prices):
+    # Regression: a pure "days" scenario's steady month is unchanged by the fix.
+    j = _ramp_job()
+    proj = project(_scn(j), prices, months=24)
+    assert proj.steady_state_month == 3  # ceil(90 / 30.4) == 3, same as before
