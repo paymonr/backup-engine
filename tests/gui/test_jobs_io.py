@@ -385,6 +385,20 @@ def test_tiered_only_for_versioned(tmp_path):
     with pytest.raises(ValueError):
         _val(_base(type="archive", retention=t), tmp_path)   # tiered on archive -> reject
 
+def test_tiered_all_zero_rejected(tmp_path):
+    # Fix 1a: an all-zero tiered keep policy would flow to `restic forget --prune
+    # --keep-last 0 --keep-daily 0 --keep-weekly 0 --keep-monthly 0` and destroy
+    # every snapshot for the job's tag. Must be rejected at validate() time.
+    t = {"type": "tiered", "keep": {"last": 0, "daily": 0, "weekly": 0, "monthly": 0}}
+    with pytest.raises(ValueError):
+        _val(_base(type="versioned", source="appdata", retention=t), tmp_path)
+
+def test_tiered_one_nonzero_still_valid(tmp_path):
+    # Regression guard: at least one non-zero keep value must still validate.
+    t = {"type": "tiered", "keep": {"last": 1, "daily": 0, "weekly": 0, "monthly": 0}}
+    r = _val(_base(type="versioned", source="appdata", retention=t), tmp_path)
+    assert r == {"type": "tiered", "keep": {"last": 1, "daily": 0, "weekly": 0, "monthly": 0}}
+
 def test_migrate_legacy_versioned_keep(tmp_path):
     r = _val(_base(type="versioned", source="appdata", keep={"last": 2, "daily": 5, "weekly": 1, "monthly": 0}), tmp_path)
     assert r == {"type": "tiered", "keep": {"last": 2, "daily": 5, "weekly": 1, "monthly": 0}}

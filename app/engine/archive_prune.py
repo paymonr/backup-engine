@@ -1,8 +1,9 @@
 from __future__ import annotations
-import argparse, subprocess, time
+import argparse, os, subprocess, sys, time
 from app.engine import s3
 
 _DAY = 86400
+_KNOWN_TYPES = ("keep_all", "days", "count", "tiered")
 
 class PruneScopeError(Exception):
     """A prunable version pointed outside the job's own media/<job>/ prefix."""
@@ -31,12 +32,13 @@ def select_prunable(versions, policy, now):
             out += noncurrent[keep:]
     return [{"key": v["key"], "version_id": v["version_id"]} for v in out]
 
-def prune(job, policy, *, bucket, now=None, runner=subprocess.run, _versions=None, _deleter=None) -> int:
+def prune(job, policy, *, bucket, endpoint=None, now=None, runner=subprocess.run, _versions=None, _deleter=None) -> int:
     now = now if now is not None else time.time()
     prefix = _prefix(job)
-    versions = _versions if _versions is not None else s3.list_versions(bucket, prefix, runner=runner)
+    versions = (_versions if _versions is not None
+                else s3.list_versions(bucket, prefix, endpoint=endpoint, runner=runner))
     targets = select_prunable(versions, policy, now)
-    deleter = _deleter or (lambda k, v: s3.delete_version(bucket, k, v, runner=runner))
+    deleter = _deleter or (lambda k, v: s3.delete_version(bucket, k, v, endpoint=endpoint, runner=runner))
     # Validate all targets before deleting any (scope guard, destructive operation safety)
     for t in targets:
         if not t["key"].startswith(prefix) or ".." in t["key"].split("/"):
@@ -53,12 +55,21 @@ def main(argv=None) -> int:
     ap.add_argument("--days", type=int, default=0); ap.add_argument("--count", type=int, default=1)
     ap.add_argument("--bucket", default=None)
     a = ap.parse_args(argv)
-    import os
     bucket = a.bucket or os.environ.get("S3_BUCKET")
+    if not bucket:
+        print("archive_prune: no bucket configured (pass --bucket or set S3_BUCKET)", file=sys.stderr)
+        return 2
+    if a.type not in _KNOWN_TYPES:
+        print(f"archive_prune: unknown --type {a.type!r} (expected one of {', '.join(_KNOWN_TYPES)})",
+              file=sys.stderr)
+        return 2
+    endpoint = os.environ.get("S3_ENDPOINT")
     policy = {"type": a.type}
     if a.type == "days": policy["days"] = a.days
     elif a.type == "count": policy["count"] = a.count
-    n = prune(a.job, policy, bucket=bucket)
+    # keep_all legitimately means "skip prune" -- select_prunable returns [] for
+    # it, a clean no-op, not an error.
+    n = prune(a.job, policy, bucket=bucket, endpoint=endpoint)
     print(f"archive prune '{a.job}': removed {n} old version(s)")
     return 0
 

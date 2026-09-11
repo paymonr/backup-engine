@@ -51,3 +51,79 @@ def test_prune_scope_guard_rejects_path_traversal():
     with pytest.raises(ap.PruneScopeError):
         ap.prune("j", {"type": "days", "days": 1}, bucket="b", now=now,
                  runner=None, _versions=vs, _deleter=lambda *a, **k: None)
+
+# --- Fix 2b: S3_ENDPOINT threaded from prune() down into s3.list_versions/delete_version ---
+
+def test_prune_threads_endpoint_to_s3_list_and_delete_calls():
+    import json, types
+    now = time.time()
+    payload = {"Versions": [
+        {"Key": "media/j/a", "VersionId": "cur", "IsLatest": True, "LastModified": "2026-09-01T00:00:00+00:00"},
+        {"Key": "media/j/a", "VersionId": "old", "IsLatest": False, "LastModified": "2026-01-01T00:00:00+00:00"},
+    ]}
+    seen = []
+    def runner(argv, **kw):
+        seen.append(argv)
+        if "list-object-versions" in argv:
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    n = ap.prune("j", {"type": "days", "days": 30}, bucket="buck", now=now,
+                 endpoint="minio.local:9000", runner=runner)
+    assert n == 1
+    assert len(seen) == 2   # one list-object-versions, one delete-object
+    for argv in seen:
+        assert "--endpoint-url" in argv
+        assert argv[argv.index("--endpoint-url") + 1] == "https://minio.local:9000"
+
+
+def test_prune_omits_endpoint_when_none():
+    import json, types
+    now = time.time()
+    payload = {"Versions": []}
+    seen = []
+    def runner(argv, **kw):
+        seen.append(argv)
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+    ap.prune("j", {"type": "days", "days": 30}, bucket="buck", now=now, runner=runner)
+    assert "--endpoint-url" not in seen[0]
+
+
+# --- Fix 3: archive_prune.main CLI hardening ---
+
+def test_main_missing_bucket_errors_cleanly(monkeypatch, capsys):
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    rc = ap.main(["myjob", "--type", "keep_all"])
+    assert rc != 0
+    assert capsys.readouterr().err.strip()
+
+
+def test_main_unknown_type_errors_cleanly(monkeypatch, capsys):
+    monkeypatch.setenv("S3_BUCKET", "buck")
+    rc = ap.main(["myjob", "--type", "bogus"])
+    assert rc != 0
+    assert "bogus" in capsys.readouterr().err
+
+
+def test_main_keep_all_is_clean_noop(monkeypatch, capsys):
+    # keep_all must remain a clean no-op, not be rejected as an "unknown type".
+    monkeypatch.setenv("S3_BUCKET", "buck")
+    captured = {}
+    def fake_prune(job, policy, *, bucket, endpoint=None, **kw):
+        captured["policy"] = policy
+        return 0
+    monkeypatch.setattr(ap, "prune", fake_prune)
+    rc = ap.main(["myjob", "--type", "keep_all"])
+    assert rc == 0
+    assert captured["policy"] == {"type": "keep_all"}
+
+
+def test_main_reads_s3_endpoint_env_and_threads_to_prune(monkeypatch):
+    captured = {}
+    def fake_prune(job, policy, *, bucket, endpoint=None, **kw):
+        captured["endpoint"] = endpoint
+        return 0
+    monkeypatch.setattr(ap, "prune", fake_prune)
+    monkeypatch.setenv("S3_BUCKET", "buck")
+    monkeypatch.setenv("S3_ENDPOINT", "minio.local:9000")
+    ap.main(["myjob", "--type", "keep_all"])
+    assert captured["endpoint"] == "minio.local:9000"

@@ -84,9 +84,15 @@ def _normalize_retention(job: dict, typ: str) -> dict:
             raise ValueError("tiered retention is only valid for versioned (restic) jobs")
         keep = r.get("keep") or {}
         try:
-            return {"type": "tiered", "keep": {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}}
+            norm = {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}
         except (TypeError, ValueError):
             raise ValueError("tiered keep values must be non-negative integers")
+        if not any(norm.values()):
+            # {last:0, daily:0, weekly:0, monthly:0} means "keep nothing" to restic
+            # (`forget --prune --keep-last 0 --keep-daily 0 ...`) -- it would forget
+            # and prune EVERY snapshot for the job's tag. Never allow it.
+            raise ValueError("tiered retention must keep at least one snapshot (all keep values are zero)")
+        return {"type": "tiered", "keep": norm}
     if t == "days":
         try:
             d = int(r.get("days", 0))

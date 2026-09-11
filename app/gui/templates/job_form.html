@@ -97,7 +97,7 @@
       versions <small>(the N most recent versions of each file/path are kept, older ones pruned)</small>
     </label>
     <fieldset class="retention" data-when-type="versioned" data-when-retention="tiered"><legend>Tiered keep policy (restic)</legend>
-      {% set k = job.keep if job and job.keep else {'last':3,'daily':7,'weekly':4,'monthly':6} %}
+      {% set k = job.keep if job and job.keep and (job.keep.last or job.keep.daily or job.keep.weekly or job.keep.monthly) else {'last':3,'daily':7,'weekly':4,'monthly':6} %}
       <div class="field-row">
         <label>last <input type="number" min="0" name="keep_last" value="{{ k.last }}"></label>
         <label>daily <input type="number" min="0" name="keep_daily" value="{{ k.daily }}"></label>

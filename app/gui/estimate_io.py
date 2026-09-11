@@ -38,6 +38,12 @@ _GLOBAL_DEFAULTS = {
 # change-rate field.
 _ENGINE_CHANGE = {"versioned": 0.0, "archive": 0.0, "versioned-files": 0.0}
 
+# Sane tiered-keep defaults for a versioned job's live estimate when no keep_*
+# params were posted yet -- matches job_form.html's tiered-fieldset prefill
+# defaults exactly (Fix 1b) so the wizard's estimate and its form field never
+# disagree about what "no input yet" means.
+_KEEP_DEFAULTS = {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}
+
 
 def _region(config_dir: str) -> str:
     """Region for the scenario, read per-call from the saved backup.env (only the
@@ -239,7 +245,11 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
     if "retention_type" in params:
         job["retention"] = retention_from_form(params)
     elif engine == "versioned":
-        job["keep"] = {k: params.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+        # No keep_* params posted (pre-selector caller / first live estimate before
+        # the wizard's tiered fields have a value) -> the sane defaults, not zero.
+        # jobs_io._normalize_retention (Fix 1) now rejects an all-zero tiered keep
+        # policy outright, so defaulting to "0" here would 400 the live estimate.
+        job["keep"] = {k: params.get(f"keep_{k}", str(d)) for k, d in _KEEP_DEFAULTS.items()}
     elif engine == "versioned-files":
         job["retention_days"] = params.get("retention_days", 90)
     if engine == "archive":

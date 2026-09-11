@@ -145,6 +145,30 @@ def test_create_versioned_job_with_tiered_retention_preserves_keep_fields(client
     assert jobs[0]["keep"] == {"last": 2, "daily": 5, "weekly": 3, "monthly": 12}
 
 
+def test_edit_form_tiered_fieldset_falls_back_when_derived_keep_is_all_zero(client, app):
+    # Fix 1b: a versioned job saved with a count/days policy has its derived
+    # legacy `keep` mirror = {0,0,0,0} (jobs_io.validate). The old prefill
+    # `job.keep if job and job.keep else DEFAULTS` treated that all-zero dict as
+    # truthy and prefilled the tiered fieldset with 0/0/0/0 -- so toggling to
+    # "Tiered" and saving without editing would persist a destructive all-zero
+    # policy. The template must fall back to the sane defaults instead.
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs", data={"csrf": t, "name": "appdata", "type": "versioned",
+                                    "source": "appdata", "schedule": "0 3 * * *",
+                                    "storage_class": "STANDARD", "enabled": "1",
+                                    "retention_type": "count", "retention_count": "5"})
+    assert r.status_code in (302, 303)
+    jobs = json.loads(pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").read_text())["jobs"]
+    assert jobs[0]["keep"] == {"last": 0, "daily": 0, "weekly": 0, "monthly": 0}  # derived mirror
+
+    body = client.get("/jobs/appdata/edit").get_data(as_text=True)
+    assert 'name="keep_last" value="3"' in body
+    assert 'name="keep_daily" value="7"' in body
+    assert 'name="keep_weekly" value="4"' in body
+    assert 'name="keep_monthly" value="6"' in body
+    assert 'name="keep_last" value="0"' not in body
+
+
 def test_jobs_page_nameless_entry_no_500(client, app):
     # Regression (FIX 2): a hand-edited nameless jobs.json entry must not 500 /jobs
     # (jobs_page does j["name"]) — jobs_io.load drops it on the fail-safe read path.
