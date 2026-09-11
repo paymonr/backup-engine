@@ -73,7 +73,7 @@ A job's retention is one **policy**, stored in `jobs.json` under a single `reten
 | `count` | keep the N most recent versions of each file, drop older | all |
 | `tiered` | restic keep-policy (last/daily/weekly/monthly) | **versioned only** |
 
-**Back-compat / migration:** existing jobs are mapped on load (`jobs_io`): a versioned job's `keep` → `retention:{type:tiered,keep}`; a versioned-files job's `retention_days` → `retention:{type:days,days}`; an archive job (no retention today) → `retention:{type:days, days:<baseline default>}` (or `keep_all` — see §12 open question). The old fields are read if `retention` is absent, and rewritten to the new shape on next save.
+**Back-compat / migration:** existing jobs are mapped on load (`jobs_io`): a versioned job's `keep` → `retention:{type:tiered,keep}`; a versioned-files job's `retention_days` → `retention:{type:days,days}`; an archive job (no retention today) → `retention:{type:days, days:<baseline default = 180>}` (matches prior effective behavior — resolved in §14). The old fields are read if `retention` is absent, and rewritten to the new shape on next save.
 
 ## 5. Per-engine enforcement
 
@@ -167,8 +167,8 @@ The wizard/estimator threads the policy through `estimate_io`; the cost-over-tim
 - **Phase 1 — per-job retention policies:** §4–§7, §9 (policy menu, jobs.json + migration, three engine prunes, `ListBucketVersions`, wizard selector, cost model). Delivers working per-job rotation on its own.
 - **Phase 2 — baseline lifecycle management:** §8 (lifecycle credential, Settings view/edit screen, provisioning tunables). Builds on Phase 1's invariant/validation.
 
-## 14. Open questions for spec review
+## 14. Resolved decisions (spec review — 2026-09-11)
 
-1. **Archive default policy on migration:** existing archive jobs have no retention today. Map them to `days = <baseline>` (matches prior effective behavior) or `keep_all` (no client-side deletion until the user opts in)? Leaning **`days = baseline`** so behavior is unchanged.
-2. **Baseline default window:** 180 days proposed. OK, or a different roomy default?
-3. **Settings location:** its own `/settings/lifecycle` page, or a panel on the existing Cost/Settings screen next to the Cost-Explorer connect form (they're the same credential-connect pattern)? Leaning a **panel next to Cost Explorer**.
+1. **Archive default policy on migration:** map existing archive jobs to **`retention:{type:days, days:180}`** (= the baseline), so upgrade behavior is unchanged. (Not `keep_all`.)
+2. **Baseline default window:** **180 days** noncurrent-version expiration (loosened from today's 30) as the roomy outer bound.
+3. **Settings location:** a **panel on the existing Cost/Settings screen next to the Cost-Explorer connect form** (same credential-connect pattern) — not a separate `/settings/lifecycle` page.
