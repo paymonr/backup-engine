@@ -14,6 +14,7 @@ JOB_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
 TYPES = ("versioned", "archive", "versioned-files")
 STORAGE_CLASSES = ("STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE")
 _KEEP_KEYS = ("last", "daily", "weekly", "monthly")
+_RETENTION_TYPES = ("keep_all", "days", "count", "tiered")
 
 def valid_name(s: str) -> bool:
     return bool(JOB_NAME_RE.match(s or "")) and s not in (".", "..")
@@ -55,6 +56,37 @@ def _parse_jobs(text: str, *, drop_invalid_names: bool = False) -> list[dict]:
         jobs = [j for j in jobs
                 if isinstance(j.get("name"), str) and valid_name(j["name"])]
     return list(jobs)
+
+def _normalize_retention(job: dict, typ: str) -> dict:
+    """One retention policy per job. Explicit `retention` wins; else migrate the
+    legacy per-type fields; else default. `tiered` is versioned-only."""
+    r = job.get("retention")
+    if not isinstance(r, dict):   # migrate legacy shapes
+        if typ == "versioned" and job.get("keep"):
+            r = {"type": "tiered", "keep": job["keep"]}
+        elif typ == "versioned-files" and job.get("retention_days") is not None:
+            r = {"type": "days", "days": job["retention_days"]}
+        else:
+            r = {"type": "days", "days": 180}   # archive default / anything unset
+    t = r.get("type")
+    if t not in _RETENTION_TYPES:
+        raise ValueError(f"unknown retention type {t!r}")
+    if t == "tiered":
+        if typ != "versioned":
+            raise ValueError("tiered retention is only valid for versioned (restic) jobs")
+        keep = r.get("keep") or {}
+        return {"type": "tiered", "keep": {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}}
+    if t == "days":
+        d = int(r.get("days", 0))
+        if d < 0:
+            raise ValueError("retention days must be >= 0")
+        return {"type": "days", "days": d}
+    if t == "count":
+        c = int(r.get("count", 0))
+        if c < 1:
+            raise ValueError("retention count must be >= 1")
+        return {"type": "count", "count": c}
+    return {"type": "keep_all"}
 
 def load(config_dir) -> list[dict]:
     # Fail-SAFE READ path (crontab render, Jobs page, get/run/restore): a missing
@@ -135,6 +167,7 @@ def validate(job: dict, source_root, *, require_exists: bool = True) -> dict:
         out["retention_days"] = retention_days
     else:
         out["mirror"] = bool(job.get("mirror", False))
+    out["retention"] = _normalize_retention(job, typ)
     return out
 
 def upsert(config_dir, job: dict, *, source_root) -> None:

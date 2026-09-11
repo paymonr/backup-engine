@@ -358,3 +358,43 @@ def test_emit_shell_is_injection_safe(tmp_path):
     unsafe = jobs_io.emit_shell({"name": "x", "type": "archive", "source": "a b",
                                   "storage_class": "STANDARD", "mirror": False})
     assert "'" in unsafe
+
+# --- Task 1: Retention schema normalization and migration ---
+
+def _base(**kw):
+    d = {"name": "j", "type": "archive", "source": "movies",
+         "schedule": "0 4 * * 0", "storage_class": "STANDARD"}
+    d.update(kw); return d
+
+def _val(job, tmp_path):
+    (tmp_path / "movies").mkdir(exist_ok=True); (tmp_path / "appdata").mkdir(exist_ok=True)
+    return jobs_io.validate(job, str(tmp_path))["retention"]
+
+def test_retention_explicit_days(tmp_path):
+    assert _val(_base(retention={"type": "days", "days": 30}), tmp_path) == {"type": "days", "days": 30}
+
+def test_retention_count_and_keep_all(tmp_path):
+    assert _val(_base(retention={"type": "count", "count": 5}), tmp_path) == {"type": "count", "count": 5}
+    assert _val(_base(retention={"type": "keep_all"}), tmp_path) == {"type": "keep_all"}
+
+def test_tiered_only_for_versioned(tmp_path):
+    t = {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}
+    assert _val(_base(type="versioned", source="appdata", retention=t), tmp_path)["type"] == "tiered"
+    with pytest.raises(ValueError):
+        _val(_base(type="archive", retention=t), tmp_path)   # tiered on archive -> reject
+
+def test_migrate_legacy_versioned_keep(tmp_path):
+    r = _val(_base(type="versioned", source="appdata", keep={"last": 2, "daily": 5, "weekly": 1, "monthly": 0}), tmp_path)
+    assert r == {"type": "tiered", "keep": {"last": 2, "daily": 5, "weekly": 1, "monthly": 0}}
+
+def test_migrate_legacy_versioned_files_retention_days(tmp_path):
+    r = _val(_base(type="versioned-files", source="movies", retention_days=45), tmp_path)
+    assert r == {"type": "days", "days": 45}
+
+def test_archive_default_is_days_180(tmp_path):
+    assert _val(_base(type="archive"), tmp_path) == {"type": "days", "days": 180}
+
+def test_bad_policy_rejected(tmp_path):
+    for bad in ({"type": "nope"}, {"type": "days", "days": -1}, {"type": "count", "count": 0}):
+        with pytest.raises(ValueError):
+            _val(_base(retention=bad), tmp_path)
