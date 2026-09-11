@@ -110,7 +110,7 @@ yourself), replicate what the module does:
 3. **Create an IAM policy** scoped to just this bucket and just the two prefixes — object actions
    only, no bucket-configuration permissions:
 
-   <!-- keep in sync with opentofu/main.tf data.aws_iam_policy_document.runtime -->
+   <!-- keep in sync with provisioning/iam-policy.json.tmpl -->
    ```json
    {
      "Version": "2012-10-17",
@@ -118,14 +118,14 @@ yourself), replicate what the module does:
        {
          "Sid": "ListBucketScoped",
          "Effect": "Allow",
-         "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+         "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketVersions"],
          "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
        },
        {
          "Sid": "ObjectRW",
          "Effect": "Allow",
          "Action": [
-           "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+           "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
            "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts",
            "s3:RestoreObject"
          ],
@@ -174,25 +174,43 @@ against). Key knobs in `backup.env` (all global; everything per-job lives in `jo
 - `APPRISE_URLS` / `NOTIFY_ON_SUCCESS` — failure notifications always fire when set; success
   notifications are opt-in.
 
-Per-job settings — schedule, storage class, retention (restic keep-policy for versioned jobs,
-`retention_days` for versioned-files jobs), and mirror mode (archive jobs) — are set per job in the
-GUI's Jobs create/edit wizard and stored in `config/jobs.json`. A cold storage class
-(`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for **archive** and **versioned-files** jobs —
-both store plain objects. For **versioned** (restic) jobs a cold class is discouraged: `restic` has
-to read the repository's `config`/`keys` objects on every run, and it can't do that against a cold
-repo without a thaw first — that thaw-then-run orchestration is a Phase-3 feature (see the
-[Restore runbook](#restore-runbook)). Jobs write directly in their chosen class on first upload —
-no Standard-then-lifecycle round-trip, so no extra transition charges.
+Per-job settings — schedule, storage class, retention policy, and mirror mode (archive jobs) — are
+set per job in the GUI's Jobs create/edit wizard and stored in `config/jobs.json`. Every job chooses
+one retention policy:
 
-**versioned-files retention.** A versioned-files job keeps every file version until it is older than
-`retention_days` (default 90) *and* no longer the current version, at which point the next run
-deletes that old version's object from S3 and drops it from the catalog. There is **no bucket
-versioning and no S3 lifecycle rule** involved — the engine does its own versioning (one object per
-version, under `media/<job>/…@<timestamp>-<id>` keys) and enforces retention itself with ordinary
-object deletes, using only the existing `media/*` object permissions (no new IAM). The current
-version of every file is always retained regardless of age. The per-job catalog is a SQLite database
-kept durable by uploading it to `media/<job>/_catalog/catalog.sqlite` (always STANDARD) at the end of
-every run and re-fetching it on a fresh machine, so version history survives a rebuilt container.
+- **Keep everything** — unlimited history; nothing is ever pruned.
+- **Keep for N days** — a version is kept for N days after it's replaced or deleted, then pruned.
+- **Keep last N versions** — only the N most recent versions of each file/path are kept.
+- **Tiered (keep last / daily / weekly / monthly)** — restic-style bucketed retention; available for
+  **versioned** (restic) jobs only.
+
+Policies are enforced client-side, after each run: `restic forget` for versioned jobs, the
+versioned-files prune step for versioned-files jobs (see below), and an S3-version prune for archive
+jobs. In every case the bucket's baseline lifecycle rules (noncurrent-version expiration) remain the
+guaranteed *outer bound* — a job's retention policy can only prune within that bound, never beyond
+it. A Phase-2 Settings screen will let you view/edit the baseline lifecycle from the GUI.
+
+A cold storage class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for **archive** and
+**versioned-files** jobs — both store plain objects. For **versioned** (restic) jobs a cold class is
+discouraged: `restic` has to read the repository's `config`/`keys` objects on every run, and it
+can't do that against a cold repo without a thaw first — that thaw-then-run orchestration is a
+Phase-3 feature (see the [Restore runbook](#restore-runbook)). Jobs write directly in their chosen
+class on first upload — no Standard-then-lifecycle round-trip, so no extra transition charges.
+
+**versioned-files retention.** A versioned-files job's retention policy governs its non-current
+versions: **keep everything** never prunes; **keep for N days** prunes a version once it has been
+non-current for N days; **keep last N versions** prunes older versions once more than N versions of
+a file exist (tiered retention isn't offered for this job type — it's restic-only). At the end of
+each run the job walks its catalog, deletes whichever non-current versions the policy now allows
+pruning, and drops them from the catalog. There is **no bucket versioning and no S3 lifecycle rule**
+involved in this — the engine does its own versioning (one object per version, under
+`media/<job>/…@<timestamp>-<id>` keys) and prunes it itself with ordinary object deletes, using only
+the existing `media/*` object permissions (no new IAM — the new `s3:DeleteObjectVersion` /
+`s3:ListBucketVersions` IAM actions are for the **archive** job type's S3-version prune, not
+versioned-files). The current version of every file is always retained regardless of age or policy.
+The per-job catalog is a SQLite database kept durable by uploading it to
+`media/<job>/_catalog/catalog.sqlite` (always STANDARD) at the end of every run and re-fetching it on
+a fresh machine, so version history survives a rebuilt container.
 
 The container validates all of this on start (and before each run) and fails fast with a specific
 error — e.g. a missing source root — rather than silently skipping a backup.
