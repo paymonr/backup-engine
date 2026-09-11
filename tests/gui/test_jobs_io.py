@@ -223,10 +223,12 @@ def test_emit_shell_archive(tmp_path):
     assert "JOB_STORAGE_CLASS=DEEP_ARCHIVE" in s and "JOB_MIRROR=false" in s
 
 def test_emit_shell_versioned_keep(tmp_path):
+    root = _root(tmp_path)
     j = _job(name="cfg", type="versioned", source="appdata", storage_class="STANDARD",
              keep={"last": 3, "daily": 7, "weekly": 4, "monthly": 6})
     j.pop("mirror", None)
-    s = jobs_io.emit_shell(j)
+    validated = jobs_io.validate(j, root)
+    s = jobs_io.emit_shell(validated)
     assert "JOB_TYPE=versioned" in s and "JOB_KEEP_LAST=3" in s and "JOB_KEEP_MONTHLY=6" in s
 
 def test_main_list_prints_enabled_schedule_name_per_job(tmp_path, monkeypatch, capsys):
@@ -421,3 +423,14 @@ def test_legacy_fields_derived_from_retention(tmp_path):
     # Both paths should have the same days value
     assert v["retention_days"] == v["retention"]["days"]
     assert v["retention_days"] == 45
+
+def test_emit_shell_retention_vars(tmp_path):
+    def emit(job): return jobs_io.emit_shell(jobs_io.validate(job, str(tmp_path)))
+    (tmp_path / "movies").mkdir(exist_ok=True); (tmp_path / "appdata").mkdir(exist_ok=True)
+    assert "JOB_RETENTION_TYPE=days" in emit(_base(retention={"type": "days", "days": 30}))
+    assert "JOB_RETENTION_DAYS=30" in emit(_base(retention={"type": "days", "days": 30}))
+    assert "JOB_RETENTION_COUNT=5" in emit(_base(retention={"type": "count", "count": 5}))
+    v = emit(_base(type="versioned", source="appdata",
+                   retention={"type": "tiered", "keep": {"last": 2, "daily": 5, "weekly": 1, "monthly": 0}}))
+    assert "JOB_RETENTION_TYPE=tiered" in v and "JOB_KEEP_LAST=2" in v and "JOB_KEEP_DAILY=5" in v
+    assert "JOB_RETENTION_TYPE=keep_all" in emit(_base(retention={"type": "keep_all"}))

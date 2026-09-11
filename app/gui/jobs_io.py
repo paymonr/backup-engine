@@ -201,12 +201,16 @@ def emit_shell(job: dict) -> str:
     q = shlex.quote
     lines = [f"JOB_NAME={q(job['name'])}", f"JOB_TYPE={q(job['type'])}",
              f"JOB_SOURCE={q(job['source'])}", f"JOB_STORAGE_CLASS={q(job.get('storage_class','STANDARD'))}"]
-    if job["type"] == "versioned":
-        keep = job.get("keep", {})
+    r = job.get("retention") or {"type": "days", "days": 180}
+    lines.append(f"JOB_RETENTION_TYPE={q(r['type'])}")
+    if r["type"] == "days":
+        lines.append(f"JOB_RETENTION_DAYS={int(r['days'])}")
+    elif r["type"] == "count":
+        lines.append(f"JOB_RETENTION_COUNT={int(r['count'])}")
+    elif r["type"] == "tiered":
+        keep = r.get("keep", {})
         lines += [f"JOB_KEEP_{k.upper()}={int(keep.get(k, 0))}" for k in _KEEP_KEYS]
-    elif job["type"] == "versioned-files":
-        lines.append(f"JOB_RETENTION_DAYS={int(job.get('retention_days', 90))}")
-    else:
+    if job["type"] == "archive":
         lines.append(f"JOB_MIRROR={'true' if job.get('mirror') else 'false'}")
     return "\n".join(lines) + "\n"
 
