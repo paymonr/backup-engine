@@ -64,8 +64,16 @@ def _normalize_retention(job: dict, typ: str) -> dict:
     if not isinstance(r, dict):   # migrate legacy shapes
         if typ == "versioned" and job.get("keep"):
             r = {"type": "tiered", "keep": job["keep"]}
-        elif typ == "versioned-files" and job.get("retention_days") is not None:
-            r = {"type": "days", "days": job["retention_days"]}
+        elif typ == "versioned-files":
+            # Preserve old validation: explicit None is an error (key present but None),
+            # missing key defaults to 90 days.
+            if "retention_days" in job:
+                rd = job["retention_days"]
+                if rd is None:
+                    raise ValueError("retention_days must be a non-negative integer")
+                r = {"type": "days", "days": rd}
+            else:
+                r = {"type": "days", "days": 90}   # versioned-files default (backward compat)
         else:
             r = {"type": "days", "days": 180}   # archive default / anything unset
     t = r.get("type")
@@ -75,14 +83,23 @@ def _normalize_retention(job: dict, typ: str) -> dict:
         if typ != "versioned":
             raise ValueError("tiered retention is only valid for versioned (restic) jobs")
         keep = r.get("keep") or {}
-        return {"type": "tiered", "keep": {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}}
+        try:
+            return {"type": "tiered", "keep": {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}}
+        except (TypeError, ValueError):
+            raise ValueError("tiered keep values must be non-negative integers")
     if t == "days":
-        d = int(r.get("days", 0))
+        try:
+            d = int(r.get("days", 0))
+        except (TypeError, ValueError):
+            raise ValueError("retention days must be a non-negative integer")
         if d < 0:
             raise ValueError("retention days must be >= 0")
         return {"type": "days", "days": d}
     if t == "count":
-        c = int(r.get("count", 0))
+        try:
+            c = int(r.get("count", 0))
+        except (TypeError, ValueError):
+            raise ValueError("retention count must be a positive integer")
         if c < 1:
             raise ValueError("retention count must be >= 1")
         return {"type": "count", "count": c}
@@ -153,21 +170,21 @@ def validate(job: dict, source_root, *, require_exists: bool = True) -> dict:
         raise ValueError(f"unknown storage class {cls!r}")
     out = {"name": name, "type": typ, "source": source, "schedule": sched,
            "enabled": bool(job.get("enabled", True)), "storage_class": cls}
-    if typ == "versioned":
-        keep = job.get("keep") or {}
-        out["keep"] = {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}
-    elif typ == "versioned-files":
-        raw = job.get("retention_days", 90)
-        try:
-            retention_days = int(raw)
-        except (TypeError, ValueError):
-            raise ValueError("retention_days must be a non-negative integer")
-        if retention_days < 0:
-            raise ValueError("retention_days must be a non-negative integer")
-        out["retention_days"] = retention_days
-    else:
+    if typ == "archive":
         out["mirror"] = bool(job.get("mirror", False))
+    # Compute retention first, then derive legacy fields from it (single source of truth)
     out["retention"] = _normalize_retention(job, typ)
+    if typ == "versioned":
+        # Mirror tiered keep policy if present, else zero dict
+        ret = out["retention"]
+        if ret["type"] == "tiered":
+            out["keep"] = dict(ret["keep"])
+        else:
+            out["keep"] = {k: 0 for k in _KEEP_KEYS}
+    elif typ == "versioned-files":
+        # Mirror days value if present, else 0
+        ret = out["retention"]
+        out["retention_days"] = ret["days"] if ret["type"] == "days" else 0
     return out
 
 def upsert(config_dir, job: dict, *, source_root) -> None:

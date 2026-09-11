@@ -398,3 +398,26 @@ def test_bad_policy_rejected(tmp_path):
     for bad in ({"type": "nope"}, {"type": "days", "days": -1}, {"type": "count", "count": 0}):
         with pytest.raises(ValueError):
             _val(_base(retention=bad), tmp_path)
+
+def test_legacy_fields_derived_from_retention(tmp_path):
+    # Regression: legacy fields (keep, retention_days) must never diverge from retention.
+    # Test versioned job with new-schema-only retention (no top-level keep).
+    root = _root(tmp_path)
+    retention_spec = {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}
+    v = jobs_io.validate(
+        {"name": "cfg", "type": "versioned", "source": "appdata", "schedule": "0 3 * * *",
+         "storage_class": "STANDARD", "retention": retention_spec},
+        root
+    )
+    # Both paths should have the same keep values
+    assert v["keep"] == v["retention"]["keep"]
+    # Test versioned-files job with new-schema-only retention (no top-level retention_days).
+    retention_spec = {"type": "days", "days": 45}
+    v = jobs_io.validate(
+        {"name": "docs", "type": "versioned-files", "source": "media/movies", "schedule": "0 2 * * *",
+         "storage_class": "STANDARD", "retention": retention_spec},
+        root
+    )
+    # Both paths should have the same days value
+    assert v["retention_days"] == v["retention"]["days"]
+    assert v["retention_days"] == 45
