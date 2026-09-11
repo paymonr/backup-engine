@@ -179,7 +179,7 @@ set per job in the GUI's Jobs create/edit wizard and stored in `config/jobs.json
 one retention policy:
 
 - **Keep everything** — unlimited history; nothing is ever pruned.
-- **Keep for N days** — a version is kept for N days after it's replaced or deleted, then pruned.
+- **Keep for N days** — a version is kept until it is both no longer current and older than N days, then pruned.
 - **Keep last N versions** — only the N most recent versions of each file/path are kept.
 - **Tiered (keep last / daily / weekly / monthly)** — restic-style bucketed retention; available for
   **versioned** (restic) jobs only.
@@ -198,8 +198,8 @@ Phase-3 feature (see the [Restore runbook](#restore-runbook)). Jobs write direct
 class on first upload — no Standard-then-lifecycle round-trip, so no extra transition charges.
 
 **versioned-files retention.** A versioned-files job's retention policy governs its non-current
-versions: **keep everything** never prunes; **keep for N days** prunes a version once it has been
-non-current for N days; **keep last N versions** prunes older versions once more than N versions of
+versions: **keep everything** never prunes; **keep for N days** prunes a non-current
+version once it is older than N days; **keep last N versions** prunes older versions once more than N versions of
 a file exist (tiered retention isn't offered for this job type — it's restic-only). At the end of
 each run the job walks its catalog, deletes whichever non-current versions the policy now allows
 pruning, and drops them from the catalog. There is **no bucket versioning and no S3 lifecycle rule**
