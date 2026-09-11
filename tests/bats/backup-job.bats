@@ -16,7 +16,7 @@ setup() {
 run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
 
 @test "archive job -> rclone copy to media/<name>" {
-  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false\n' >"$JOBS_IO_STUB"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
   run_job movies
   [ "$status" -eq 0 ]
   grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
@@ -24,18 +24,63 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
 }
 
 @test "archive mirror -> rclone sync" {
-  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=true\n' >"$JOBS_IO_STUB"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=true; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
   run_job movies
   grep -q "sync $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
 }
 
 @test "versioned job -> restic backup with tag + keep" {
-  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_KEEP_LAST=3; echo JOB_KEEP_DAILY=7; echo JOB_KEEP_WEEKLY=4; echo JOB_KEEP_MONTHLY=6\n' >"$JOBS_IO_STUB"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=tiered; echo JOB_KEEP_LAST=3; echo JOB_KEEP_DAILY=7; echo JOB_KEEP_WEEKLY=4; echo JOB_KEEP_MONTHLY=6\n' >"$JOBS_IO_STUB"
   run_job cfg
   [ "$status" -eq 0 ]
   grep -q "backup $SOURCE_ROOT/appdata" "$RESTIC_LOG"
   grep -q -- "--tag cfg" "$RESTIC_LOG"
   grep -q -- "--keep-last 3" "$RESTIC_LOG"
+}
+
+@test "versioned job days retention -> restic forget --keep-within Nd" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=days; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  grep -q -- "forget --prune --tag cfg --keep-within 30d" "$RESTIC_LOG"
+}
+
+@test "versioned job count retention -> restic forget --keep-last N" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=count; echo JOB_RETENTION_COUNT=5\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  grep -q -- "forget --prune --tag cfg --keep-last 5" "$RESTIC_LOG"
+}
+
+@test "versioned job keep_all retention -> no restic forget" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  grep -q "backup $SOURCE_ROOT/appdata" "$RESTIC_LOG"
+  ! grep -q -- "forget" "$RESTIC_LOG"
+}
+
+@test "archive job days retention -> archive_prune invoked with --type days --days N" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=days; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q -- "-m app.engine.archive_prune movies --type days --days 30 --count 1" "$PYTHON_LOG"
+}
+
+@test "archive job keep_all retention -> no archive_prune call" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
+  [ ! -s "$PYTHON_LOG" ]
 }
 
 @test "missing source dir -> failure" {

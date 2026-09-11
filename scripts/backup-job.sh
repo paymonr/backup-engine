@@ -57,13 +57,21 @@ _run_versioned() {
        | tee "$CACHE_DIR/state/$JOB-last.jsonl" >/dev/null; then
     SNAP_ID="$(grep '"message_type":"summary"' "$CACHE_DIR/state/$JOB-last.jsonl" | grep -o '"snapshot_id":"[a-f0-9]*"' | head -n1 | cut -d'"' -f4)" || true
   else _fail "restic backup failed for '$JOB'"; fi
-  case "$JOB_STORAGE_CLASS" in
-    GLACIER|DEEP_ARCHIVE|GLACIER_IR) log_warn "job '$JOB' class $JOB_STORAGE_CLASS is cold; deferring prune" ;;
-    *) restic -r "$RESTIC_REPOSITORY" "${class_opt[@]}" forget --prune --tag "$JOB" \
-         --keep-last "$JOB_KEEP_LAST" --keep-daily "$JOB_KEEP_DAILY" \
-         --keep-weekly "$JOB_KEEP_WEEKLY" --keep-monthly "$JOB_KEEP_MONTHLY" \
-         || log_warn "restic forget/prune for '$JOB' reported an error (non-fatal)" ;;
+  local forget_args=()
+  case "$JOB_RETENTION_TYPE" in
+    keep_all) : ;;                                             # no forget
+    days)  forget_args=(--keep-within "${JOB_RETENTION_DAYS}d") ;;
+    count) forget_args=(--keep-last "$JOB_RETENTION_COUNT") ;;
+    *)     forget_args=(--keep-last "$JOB_KEEP_LAST" --keep-daily "$JOB_KEEP_DAILY" \
+                        --keep-weekly "$JOB_KEEP_WEEKLY" --keep-monthly "$JOB_KEEP_MONTHLY") ;;
   esac
+  if [ "$JOB_RETENTION_TYPE" != keep_all ]; then
+    case "$JOB_STORAGE_CLASS" in
+      GLACIER|DEEP_ARCHIVE|GLACIER_IR) log_warn "job '$JOB' class $JOB_STORAGE_CLASS is cold; deferring prune" ;;
+      *) restic -r "$RESTIC_REPOSITORY" "${class_opt[@]}" forget --prune --tag "$JOB" "${forget_args[@]}" \
+           || log_warn "restic forget/prune for '$JOB' reported an error (non-fatal)" ;;
+    esac
+  fi
 }
 
 _run_archive() {
@@ -77,6 +85,11 @@ _run_archive() {
   log_info "rclone $verb $src -> s3:$S3_BUCKET/media/$JOB (class=$JOB_STORAGE_CLASS)"
   rclone "${args[@]}" || _fail "rclone $verb failed for '$JOB'"
   rclone check "$src" "s3:$S3_BUCKET/media/$JOB" --size-only || log_warn "rclone check differences for '$JOB' (size-only)"
+  if [ "$JOB_RETENTION_TYPE" != keep_all ]; then
+    python3 -m app.engine.archive_prune "$JOB" --type "$JOB_RETENTION_TYPE" \
+      --days "${JOB_RETENTION_DAYS:-0}" --count "${JOB_RETENTION_COUNT:-1}" \
+      || log_warn "archive prune for '$JOB' reported an error (non-fatal)"
+  fi
 }
 
 _run_vfiles() {
