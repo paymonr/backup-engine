@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, subprocess, sys, time
+import argparse, subprocess, time
 from app.engine import s3
 
 _DAY = 86400
@@ -26,7 +26,9 @@ def select_prunable(versions, policy, now):
             out += [v for v in noncurrent if v["last_modified"] < cutoff]
         elif t == "count":
             # keep the N most recent versions total (latest + newest noncurrent), drop the rest
-            out += vs[policy["count"]:]
+            # operate on noncurrent to guarantee we never select is_latest
+            keep = max(policy["count"] - 1, 0)
+            out += noncurrent[keep:]
     return [{"key": v["key"], "version_id": v["version_id"]} for v in out]
 
 def prune(job, policy, *, bucket, now=None, runner=subprocess.run, _versions=None, _deleter=None) -> int:
@@ -35,10 +37,13 @@ def prune(job, policy, *, bucket, now=None, runner=subprocess.run, _versions=Non
     versions = _versions if _versions is not None else s3.list_versions(bucket, prefix, runner=runner)
     targets = select_prunable(versions, policy, now)
     deleter = _deleter or (lambda k, v: s3.delete_version(bucket, k, v, runner=runner))
-    n = 0
+    # Validate all targets before deleting any (scope guard, destructive operation safety)
     for t in targets:
         if not t["key"].startswith(prefix) or ".." in t["key"].split("/"):
             raise PruneScopeError(f"refusing to delete outside {prefix!r}: {t['key']!r}")
+    # All targets validated; proceed with deletion
+    n = 0
+    for t in targets:
         deleter(t["key"], t["version_id"]); n += 1
     return n
 

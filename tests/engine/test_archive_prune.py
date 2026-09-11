@@ -28,3 +28,26 @@ def test_prune_scope_guard_rejects_foreign_key():
     with pytest.raises(ap.PruneScopeError):
         ap.prune("j", {"type": "days", "days": 1}, bucket="b", now=now,
                  runner=None, _versions=vs, _deleter=lambda *a, **k: None)
+
+def test_count_1_keeps_only_latest():
+    now = time.time()
+    vs = [_v("media/j/a", "cur", True, 1, now), _v("media/j/a", "old", False, 40, now), _v("media/j/a", "old2", False, 60, now)]
+    got = {d["version_id"] for d in ap.select_prunable(vs, {"type": "count", "count": 1}, now)}
+    assert got == {"old", "old2"}   # keep only the 1 most recent (the latest), delete all noncurrent
+
+def test_count_0_never_selects_latest():
+    now = time.time()
+    vs = [_v("media/j/a", "cur", True, 1, now), _v("media/j/a", "old", False, 40, now)]
+    got = ap.select_prunable(vs, {"type": "count", "count": 0}, now)
+    # count=0 should delete all noncurrent (but never the is_latest)
+    assert got == [{"key": "media/j/a", "version_id": "old"}]
+    # Ensure no is_latest version is in the result
+    assert all(v["is_latest"] == False for v in [vs[i] for i in range(len(vs)) if vs[i]["version_id"] in {t["version_id"] for t in got}])
+
+def test_prune_scope_guard_rejects_path_traversal():
+    now = time.time()
+    vs = [_v("media/j/../other/a", "v", False, 999, now)]
+    import pytest
+    with pytest.raises(ap.PruneScopeError):
+        ap.prune("j", {"type": "days", "days": 1}, bucket="b", now=now,
+                 runner=None, _versions=vs, _deleter=lambda *a, **k: None)
