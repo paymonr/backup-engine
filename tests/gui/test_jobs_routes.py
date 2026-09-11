@@ -85,6 +85,43 @@ def test_create_versioned_files_job_persists_type_and_retention(client, app):
     assert jobs[0]["storage_class"] == "DEEP_ARCHIVE"
 
 
+def test_create_archive_job_with_count_retention_round_trips(client, app):
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+                                    "source": "media/movies", "schedule": "0 4 * * 0",
+                                    "storage_class": "STANDARD", "enabled": "1",
+                                    "retention_type": "count", "retention_count": "5"})
+    assert r.status_code in (302, 303)
+    jobs = json.loads(pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").read_text())["jobs"]
+    assert jobs[0]["retention"] == {"type": "count", "count": 5}
+
+
+def test_create_archive_job_with_days_retention_round_trips(client, app):
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+                                    "source": "media/movies", "schedule": "0 4 * * 0",
+                                    "storage_class": "STANDARD", "enabled": "1",
+                                    "retention_type": "days", "retention_days": "45"})
+    assert r.status_code in (302, 303)
+    jobs = json.loads(pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").read_text())["jobs"]
+    assert jobs[0]["retention"] == {"type": "days", "days": 45}
+
+
+def test_create_versioned_job_with_tiered_retention_preserves_keep_fields(client, app):
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs", data={"csrf": t, "name": "appdata", "type": "versioned",
+                                    "source": "appdata", "schedule": "0 3 * * *",
+                                    "storage_class": "STANDARD", "enabled": "1",
+                                    "retention_type": "tiered",
+                                    "keep_last": "2", "keep_daily": "5",
+                                    "keep_weekly": "3", "keep_monthly": "12"})
+    assert r.status_code in (302, 303)
+    jobs = json.loads(pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").read_text())["jobs"]
+    assert jobs[0]["retention"] == {"type": "tiered",
+                                     "keep": {"last": 2, "daily": 5, "weekly": 3, "monthly": 12}}
+    assert jobs[0]["keep"] == {"last": 2, "daily": 5, "weekly": 3, "monthly": 12}
+
+
 def test_jobs_page_nameless_entry_no_500(client, app):
     # Regression (FIX 2): a hand-edited nameless jobs.json entry must not 500 /jobs
     # (jobs_page does j["name"]) — jobs_io.load drops it on the fail-safe read path.
@@ -175,7 +212,21 @@ def test_wizard_has_sizing_readout_and_type_gated_retention(client):
     # folder-size readout: its own "calculating" line + a "what we found" line
     assert 'id="job-cost-sizing"' in body and "Calculating Directory Size and Info" in body
     assert 'id="source-info"' in body
-    # retention controls gated per backup type (JS shows only the relevant one)
+    # retention controls gated per backup type (tiered/mirror) and per chosen
+    # retention policy (days/count/tiered field) -- JS shows only the relevant ones
     assert 'data-when-type="versioned"' in body
     assert 'data-when-type="archive"' in body
-    assert 'data-when-type="versioned-files"' in body
+    assert 'data-when-retention="days"' in body
+    assert 'data-when-retention="count"' in body
+    assert 'data-when-retention="tiered"' in body
+
+
+def test_wizard_has_retention_policy_selector(client):
+    # Task 9: the wizard's per-job retention-policy selector replaces the old
+    # three separate per-type retention controls with one retention_type control.
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert 'name="retention_type"' in body
+    for value in ("keep_all", "days", "count", "tiered"):
+        assert f'value="{value}"' in body
+    # "tiered" is versioned-only; the other three are offered for every backup type.
+    assert 'data-when-type="versioned"' in body

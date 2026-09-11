@@ -82,7 +82,21 @@
       </div>
       <p class="hint">Restoring is retrieval + egress ($/GB out of AWS), independent of how cheap storage is. Prices: {{ price_stamp.source or '—' }} @ {{ price_stamp.date or '—' }}.</p>
     </details>
-    <fieldset class="retention" data-when-type="versioned"><legend>Versioned retention (keep)</legend>
+    {% set retention = job.retention if job else {'type': 'days', 'days': 90} %}
+    <p class="hint">Retention policy — how long to keep replaced/deleted versions.</p>
+    <label class="inline"><input type="radio" name="retention_type" value="keep_all" {{ 'checked' if retention.type=='keep_all' }}> Keep everything</label>
+    <label class="inline"><input type="radio" name="retention_type" value="days" {{ 'checked' if retention.type=='days' }}> Keep for N days</label>
+    <label class="inline"><input type="radio" name="retention_type" value="count" {{ 'checked' if retention.type=='count' }}> Keep last N versions</label>
+    <label class="inline" data-when-type="versioned"><input type="radio" name="retention_type" value="tiered" {{ 'checked' if retention.type=='tiered' }}> Tiered (last/daily/weekly/monthly)</label>
+    <label data-when-retention="days">Keep old versions for
+      <input type="number" min="0" name="retention_days" value="{{ retention.days if retention.type=='days' else 90 }}">
+      days <small>(how long a replaced/deleted version is kept before it's pruned)</small>
+    </label>
+    <label data-when-retention="count">Keep last
+      <input type="number" min="1" name="retention_count" value="{{ retention.count if retention.type=='count' else 5 }}">
+      versions <small>(the N most recent versions of each file/path are kept, older ones pruned)</small>
+    </label>
+    <fieldset class="retention" data-when-type="versioned" data-when-retention="tiered"><legend>Tiered keep policy (restic)</legend>
       {% set k = job.keep if job and job.keep else {'last':3,'daily':7,'weekly':4,'monthly':6} %}
       <div class="field-row">
         <label>last <input type="number" min="0" name="keep_last" value="{{ k.last }}"></label>
@@ -92,10 +106,6 @@
       </div>
     </fieldset>
     <label class="inline" data-when-type="archive"><input type="checkbox" name="mirror" value="1" {{ 'checked' if job and job.mirror }}> Mirror (archive: delete removed files too)</label>
-    <label data-when-type="versioned-files">Keep old versions for
-      <input type="number" min="0" name="retention_days" value="{{ job.retention_days if job and job.type=='versioned-files' else 90 }}">
-      days <small>(versioned files: how long a replaced/deleted version is kept before it's pruned)</small>
-    </label>
     {% set churn_default = '0' %}
     <label data-when-type="versioned versioned-files">How much changes each backup?
       <select name="change_rate_pct" id="job-change-rate">

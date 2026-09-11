@@ -199,6 +199,24 @@ def form_defaults(config_dir, source_root) -> dict:
     }
 
 
+def retention_from_form(params: Mapping, *, default_type: str = "days") -> dict:
+    """Map wizard form/query params (the job_form.html retention-policy selector:
+    retention_type + the matching field) to a raw job['retention'] dict. Values are
+    passed through as posted (str) -- jobs_io.validate()/_normalize_retention does
+    the actual type-coercion and validation, this only shapes the {type: ...} object
+    it expects. Shared by the job-save route and the live wizard estimate below so
+    the two can't diverge on what a submitted policy means."""
+    t = params.get("retention_type", default_type)
+    if t == "keep_all":
+        return {"type": "keep_all"}
+    if t == "count":
+        return {"type": "count", "count": params.get("retention_count", "5")}
+    if t == "tiered":
+        return {"type": "tiered", "keep": {k: params.get(f"keep_{k}", "0")
+                                            for k in ("last", "daily", "weekly", "monthly")}}
+    return {"type": "days", "days": params.get("retention_days", "90")}
+
+
 def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_class=None) -> dict:
     """Live cost for the job create/edit WIZARD: prices a CANDIDATE job built from
     the in-progress form params (not yet saved), plus what the total across every
@@ -213,11 +231,16 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
         raise ValueError(f"unknown storage class '{cls}'")
     job = {"name": name, "type": engine, "source": source,
            "schedule": params.get("schedule", ""), "storage_class": cls}
-    if engine == "versioned":
+    # The wizard's retention-policy selector posts retention_type + the matching
+    # field; older/direct callers (no retention_type) fall back to the pre-selector
+    # per-type params so this stays backward compatible.
+    if "retention_type" in params:
+        job["retention"] = retention_from_form(params)
+    elif engine == "versioned":
         job["keep"] = {k: params.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
     elif engine == "versioned-files":
         job["retention_days"] = params.get("retention_days", 90)
-    else:
+    if engine == "archive":
         job["mirror"] = bool(params.get("mirror"))
 
     # Size/count precedence: explicit size_gb/file_count params -> module defaults.

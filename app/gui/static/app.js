@@ -399,25 +399,36 @@
   }
 })();
 
-// Wizard: show only the retention controls that apply to the chosen backup type
-// ([data-when-type] on the restic keep-fieldset / archive mirror / versioned-files
-// retention-days). Toggled on load and whenever the type radio changes.
+// Wizard: show only the controls that apply to the chosen backup type
+// ([data-when-type], e.g. the tiered fieldset / archive mirror) AND the chosen
+// retention policy ([data-when-retention], e.g. the retention_days/retention_count
+// fields / the tiered fieldset). An element with both attributes needs both to
+// match. Toggled on load and whenever the type or retention_type radio changes.
 (function () {
   var form = document.getElementById("job-form");
   if (!form) return;
-  var conds = form.querySelectorAll("[data-when-type]");
+  var conds = form.querySelectorAll("[data-when-type], [data-when-retention]");
   function curType() {
     var c = form.querySelector('input[name="type"]:checked');
     return c ? c.value : "";
   }
+  function curRetention() {
+    var c = form.querySelector('input[name="retention_type"]:checked');
+    return c ? c.value : "";
+  }
   function applyVisibility() {
-    var t = curType();
+    var t = curType(), rt = curRetention();
     for (var i = 0; i < conds.length; i++) {
-      var want = (conds[i].getAttribute("data-when-type") || "").split(/\s+/);
-      conds[i].hidden = want.indexOf(t) === -1;   // data-when-type may list several types
+      var el = conds[i];
+      var wantType = el.getAttribute("data-when-type");
+      var wantRetention = el.getAttribute("data-when-retention");
+      var hide = false;
+      if (wantType && wantType.split(/\s+/).indexOf(t) === -1) hide = true;         // may list several types
+      if (wantRetention && wantRetention.split(/\s+/).indexOf(rt) === -1) hide = true;
+      el.hidden = hide;
     }
   }
-  var radios = form.querySelectorAll('input[name="type"]');
+  var radios = form.querySelectorAll('input[name="type"], input[name="retention_type"]');
   for (var j = 0; j < radios.length; j++) radios[j].addEventListener("change", applyVisibility);
   applyVisibility();
 })();
