@@ -147,6 +147,24 @@ def prunable(conn: sqlite3.Connection, before_ts) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def prunable_beyond_count(conn: sqlite3.Connection, keep_n) -> list[sqlite3.Row]:
+    """Non-current, non-tombstone versions beyond the newest `keep_n` per path.
+    Tombstones are excluded by the `deleted = 0` filter (they carry no S3 key to
+    delete and are already reachable via `prunable`); the is_current guard is
+    belt-and-suspenders -- the newest row for a path is normally also its
+    current one, but this ensures a live version is never returned even if
+    that ever weren't true."""
+    rows = conn.execute(
+        "SELECT * FROM versions WHERE deleted = 0 ORDER BY path, uploaded_at DESC"
+    ).fetchall()
+    out, seen = [], {}
+    for r in rows:
+        seen[r["path"]] = seen.get(r["path"], 0) + 1
+        if seen[r["path"]] > keep_n and r["is_current"] == 0:
+            out.append(r)
+    return out
+
+
 def is_current_key(conn: sqlite3.Connection, key) -> bool:
     """True if some is_current=1 row still references this exact storage key.
     Prune uses this as a belt-and-suspenders guard: it must never s3.delete an

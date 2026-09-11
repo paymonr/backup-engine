@@ -37,7 +37,8 @@ class FailFirstRunner(StubRunner):
 
 
 def make_job(**over):
-    j = {"name": "j", "source": "/src", "storage_class": "DEEP_ARCHIVE", "retention_days": 30}
+    j = {"name": "j", "source": "/src", "storage_class": "DEEP_ARCHIVE",
+         "policy": {"type": "days", "days": 30}}
     j.update(over)
     return j
 
@@ -169,7 +170,7 @@ def test_backup_prune_deletes_old_versions(tmp_path):
     (src / "a.txt").write_bytes(b"hello")
     os.utime(src / "a.txt", (100, 100))
 
-    job = make_job(retention_days=1)
+    job = make_job(policy={"type": "days", "days": 1})
     now = 1_000_000  # before = now - 86400 = 913600; old(100) prunable, current excluded by is_current
     r = StubRunner()
     s = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
@@ -194,7 +195,7 @@ def test_prune_skips_tombstone_s3_delete(tmp_path):
     src = tmp_path / "src"
     src.mkdir()  # empty source
 
-    job = make_job(retention_days=1)
+    job = make_job(policy={"type": "days", "days": 1})
     now = 1_000_000  # before = 913600; both rows old -> both prunable
     r = StubRunner()
     s = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
@@ -223,7 +224,7 @@ def test_prune_refuses_key_outside_job_prefix(tmp_path):
     (src / "p").write_bytes(b"x")
     os.utime(src / "p", (1, 1))  # unchanged vs current -> no upload
 
-    job = make_job(retention_days=1)
+    job = make_job(policy={"type": "days", "days": 1})
     now = 1_000_000  # bad row (uploaded_at 1.0) is prunable
     r = StubRunner()
     with pytest.raises(vfiles.PruneScopeError):
@@ -249,7 +250,7 @@ def test_prune_refuses_dotdot_traversal_key(tmp_path):
     (src / "p").write_bytes(b"x")
     os.utime(src / "p", (1, 1))  # unchanged vs current -> no upload
 
-    job = make_job(retention_days=1)
+    job = make_job(policy={"type": "days", "days": 1})
     now = 1_000_000  # bad row (uploaded_at 1.0) is prunable
     r = StubRunner()
     with pytest.raises(vfiles.PruneScopeError):
@@ -276,7 +277,7 @@ def test_prune_refuses_out_of_prefix_key_even_when_marked_current(tmp_path):
     (src / "p").write_bytes(b"x")
     os.utime(src / "p", (1, 1))  # unchanged vs current -> no upload
 
-    job = make_job(retention_days=1)
+    job = make_job(policy={"type": "days", "days": 1})
     now = 1_000_000  # old row (uploaded_at 1.0) is prunable
     r = StubRunner()
     with pytest.raises(vfiles.PruneScopeError):
@@ -296,7 +297,7 @@ def test_corrupt_catalog_fails_safe_without_deleting(tmp_path):
     src.mkdir()
     (src / "a.txt").write_bytes(b"hello")
 
-    job = make_job(retention_days=1)
+    job = make_job(policy={"type": "days", "days": 1})
     r = StubRunner()
     with pytest.raises(sqlite3.DatabaseError):
         vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
@@ -315,7 +316,7 @@ def test_same_second_change_yields_distinct_keys_no_aliasing(tmp_path):
     (src / "a.txt").write_bytes(b"one")
     os.utime(src / "a.txt", (10, 10))
     cache = tmp_path / "cache"
-    job = make_job(retention_days=1)
+    job = make_job(policy={"type": "days", "days": 1})
     now = 1_000_000  # identical for both runs
 
     vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
@@ -353,7 +354,7 @@ def test_prune_never_deletes_object_a_current_row_shares(tmp_path):
     (src / "a.txt").write_bytes(b"hello")
     os.utime(src / "a.txt", (11, 11))  # size 5, mtime 11 -> matches current -> unchanged
 
-    job = make_job(retention_days=1)
+    job = make_job(policy={"type": "days", "days": 1})
     now = 1_000_000  # old row (uploaded_at 100) < before(913600) -> prunable
     r = StubRunner()
     s = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
@@ -381,3 +382,86 @@ def test_backup_attempts_catalog_download_and_survives_failure(tmp_path):
         "s3:bkt/media/j/_catalog/catalog.sqlite", str(cache / "j.sqlite"),
     ]
     assert s["uploaded"] == 1  # started from an empty catalog despite the failed download
+
+
+# ---------------------------------------------------------------------------
+# vfiles.backup — retention POLICY: count and keep_all (days is covered above)
+# ---------------------------------------------------------------------------
+
+def test_backup_prune_by_count_policy_deletes_beyond_keep_n(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    k1 = "media/j/a.txt@100"   # oldest -> beyond keep_n=2, prunable
+    k2 = "media/j/a.txt@200"   # 2nd newest -> kept
+    k3 = "media/j/a.txt@300"   # current -> kept
+    catalog.record_version(conn, "a.txt", k1, 5, 100.0, "STANDARD", 100.0)
+    catalog.record_version(conn, "a.txt", k2, 5, 100.0, "STANDARD", 200.0)
+    catalog.record_version(conn, "a.txt", k3, 5, 100.0, "STANDARD", 300.0)
+    conn.close()
+    # unchanged source (size 5, mtime 100) -> no new upload, current stays current
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"hello")
+    os.utime(src / "a.txt", (100, 100))
+
+    job = make_job(policy={"type": "count", "count": 2})
+    r = StubRunner()
+    s = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                      bucket="bkt", rclone_config="/c", now=1_000_000, runner=r)
+    assert s["pruned"] == 1
+    dels = [c for c in r.calls if "deletefile" in c]
+    assert any(f"s3:bkt/{k1}" in c for c in dels)      # 3rd-oldest deleted
+    assert not any(f"s3:bkt/{k2}" in c for c in dels)  # 2 newest kept
+    assert not any(f"s3:bkt/{k3}" in c for c in dels)
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    keys = {v["key"] for v in catalog.versions(conn, "a.txt")}
+    assert keys == {k2, k3}
+    assert catalog.current(conn)["a.txt"]["key"] == k3
+    conn.close()
+
+
+def test_backup_keep_all_policy_prunes_nothing(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    old_key = "media/j/a.txt@100"
+    catalog.record_version(conn, "a.txt", old_key, 5, 100.0, "STANDARD", 100.0)          # old, non-current
+    catalog.record_version(conn, "a.txt", "media/j/a.txt@100000", 5, 100.0, "STANDARD", 100000.0)  # current
+    conn.close()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"hello")
+    os.utime(src / "a.txt", (100, 100))
+
+    job = make_job(policy={"type": "keep_all"})
+    r = StubRunner()
+    s = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                      bucket="bkt", rclone_config="/c", now=1_000_000, runner=r)
+    assert s["pruned"] == 0
+    assert not any("deletefile" in c for c in r.calls)
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    assert len(catalog.versions(conn, "a.txt")) == 2  # nothing pruned, both retained
+    conn.close()
+
+
+def test_prune_by_count_also_enforces_scope_guard(tmp_path):
+    # The scope guard is shared code between the "days" and "count" prune
+    # branches -- prove it still applies when pruning by count.
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    catalog.record_version(conn, "p", "media/OTHERJOB/secret@1", 1, 2.0, "STANDARD", 1.0)  # old, non-current
+    catalog.record_version(conn, "p", "media/j/p@2", 1, 2.0, "STANDARD", 2.0)              # current, in-prefix
+    conn.close()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "p").write_bytes(b"x")
+    os.utime(src / "p", (2, 2))  # matches current -> no upload
+
+    job = make_job(policy={"type": "count", "count": 0})  # keep 0 -> old row prunable
+    r = StubRunner()
+    with pytest.raises(vfiles.PruneScopeError):
+        vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
+                      bucket="bkt", rclone_config="/c", now=1_000_000, runner=r)
+    assert not any("media/OTHERJOB/secret@1" in j for j in joined(r.calls))

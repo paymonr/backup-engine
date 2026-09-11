@@ -6,9 +6,9 @@
 #
 # backup(): load-or-fetch the catalog -> scan the source -> diff against the
 # catalog -> upload each new/changed file under a DISTINCT version-key ->
-# record it -> tombstone removed files -> prune versions older than the
-# retention window (deleting their S3 objects) -> upload the catalog for
-# durability.
+# record it -> tombstone removed files -> prune versions per the job's
+# retention policy (days window, keep-newest-N count, or keep_all -- deleting
+# the pruned versions' S3 objects) -> upload the catalog for durability.
 #
 # restore(): load-or-fetch the catalog (same durability path as backup) ->
 # either LIST every current path + its versions, or select one version of one
@@ -88,11 +88,13 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
     """Run one incremental backup of `job` and return
     {"uploaded", "deleted", "pruned"} counts.
 
-    `job` is a dict {name, source, storage_class, retention_days}.
+    `job` is a dict {name, source, storage_class, policy}, where `policy` is a
+    retention policy dict: {"type": "days", "days": N} | {"type": "count",
+    "count": N} | {"type": "keep_all"}.
     """
     name = job["name"]
     storage_class = job["storage_class"]
-    retention_days = job["retention_days"]
+    policy = job["policy"]
     if now is None:
         now = time.time()
     ts = int(now)
@@ -123,12 +125,23 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
             catalog.mark_deleted(conn, path, now)
             deleted += 1
 
-        # Prune versions older than the retention window. catalog.prunable never
-        # returns a current row, so we only ever delete superseded versions and
-        # tombstones — never the live copy of a path.
-        before = now - retention_days * _SECONDS_PER_DAY
+        # Prune per the job's retention policy. "keep_all" skips prune entirely;
+        # "days" prunes the age window (today's behavior); "count" keeps only the
+        # newest N non-tombstone versions per path. Both catalog.prunable and
+        # catalog.prunable_beyond_count never return a current row, so we only
+        # ever delete superseded versions and tombstones — never the live copy
+        # of a path.
+        ptype = policy["type"]
+        if ptype == "keep_all":
+            prunable_rows = []
+        elif ptype == "count":
+            prunable_rows = catalog.prunable_beyond_count(conn, policy["count"])
+        else:  # "days"
+            before = now - policy["days"] * _SECONDS_PER_DAY
+            prunable_rows = catalog.prunable(conn, before)
+
         pruned = 0
-        for row in catalog.prunable(conn, before):
+        for row in prunable_rows:
             key = row["key"]
             # tombstone rows have key=None -> nothing in S3 to delete.
             if key:
@@ -263,7 +276,8 @@ def _main(argv: list[str]) -> int:
 
     This CLI does NOT re-read config/jobs.json -- it TRUSTS the JOB_* env
     vars those scripts already `eval`'d from jobs_io's (re-validated,
-    shell-safe) output -- JOB_SOURCE, JOB_STORAGE_CLASS, JOB_RETENTION_DAYS --
+    shell-safe) output -- JOB_SOURCE, JOB_STORAGE_CLASS, JOB_RETENTION_TYPE
+    and (depending on its value) JOB_RETENTION_DAYS or JOB_RETENTION_COUNT --
     the same way backup-job.sh's own _run_versioned/_run_archive trust their
     JOB_* vars without re-validating them; jobs_io's own `_main` is the
     re-validation gate (name charset + source confinement) that already ran
@@ -306,16 +320,35 @@ def _main(argv: list[str]) -> int:
     cache_dir = _require_env("CACHE_DIR")
     bucket = _require_env("S3_BUCKET")
     rclone_config = str(Path(cache_dir) / "rclone.conf")
-    retention_raw = os.environ.get("JOB_RETENTION_DAYS", "90")
-    try:
-        retention_days = int(retention_raw)
-    except ValueError:
-        parser.error(f"invalid JOB_RETENTION_DAYS: {retention_raw!r}")
+
+    # JOB_RETENTION_TYPE selects the policy shape; JOB_RETENTION_DAYS defaults to
+    # 90 when unset (backward compat with jobs.json's own versioned-files
+    # default -- see jobs_io._normalize_retention), matching today's behavior
+    # for any invocation that predates JOB_RETENTION_TYPE. count/keep_all are
+    # new: count has no sensible default, so JOB_RETENTION_COUNT is required.
+    retention_type = os.environ.get("JOB_RETENTION_TYPE", "days")
+    if retention_type == "days":
+        days_raw = os.environ.get("JOB_RETENTION_DAYS", "90")
+        try:
+            policy = {"type": "days", "days": int(days_raw)}
+        except ValueError:
+            parser.error(f"invalid JOB_RETENTION_DAYS: {days_raw!r}")
+    elif retention_type == "count":
+        count_raw = _require_env("JOB_RETENTION_COUNT")
+        try:
+            policy = {"type": "count", "count": int(count_raw)}
+        except ValueError:
+            parser.error(f"invalid JOB_RETENTION_COUNT: {count_raw!r}")
+    elif retention_type == "keep_all":
+        policy = {"type": "keep_all"}
+    else:
+        parser.error(f"invalid JOB_RETENTION_TYPE: {retention_type!r}")
+
     job = {
         "name": args.job,
         "source": os.environ.get("JOB_SOURCE", ""),
         "storage_class": _require_env("JOB_STORAGE_CLASS"),
-        "retention_days": retention_days,
+        "policy": policy,
     }
 
     if args.cmd == "backup":

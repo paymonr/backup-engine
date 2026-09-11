@@ -38,7 +38,7 @@ def test_backup_builds_job_dict_and_wiring_from_env(monkeypatch):
     assert rc == 0
     assert captured["job"] == {
         "name": "vf", "source": "appdata",
-        "storage_class": "DEEP_ARCHIVE", "retention_days": 30,
+        "storage_class": "DEEP_ARCHIVE", "policy": {"type": "days", "days": 30},
     }
     assert captured["kwargs"] == {
         "source_root": "/backup/media/appdata",
@@ -62,7 +62,7 @@ def test_backup_default_retention_days_when_env_missing(monkeypatch):
     rc = vfiles._main(["backup", "vf"])
 
     assert rc == 0
-    assert captured["job"]["retention_days"] == 90  # matches jobs_io's default
+    assert captured["job"]["policy"] == {"type": "days", "days": 90}  # matches jobs_io's default
 
 
 def test_backup_missing_env_exits_2(monkeypatch):
@@ -77,6 +77,63 @@ def test_backup_missing_env_exits_2(monkeypatch):
 
 def test_backup_invalid_retention_days_exits_2(monkeypatch):
     _set_common_env(monkeypatch, JOB_RETENTION_DAYS="not-a-number")
+
+    with pytest.raises(SystemExit) as exc:
+        vfiles._main(["backup", "vf"])
+    assert exc.value.code == 2
+
+
+def test_backup_count_policy_from_env(monkeypatch):
+    _set_common_env(monkeypatch, JOB_RETENTION_TYPE="count", JOB_RETENTION_COUNT="5")
+    captured = {}
+
+    def fake_backup(job, **kwargs):
+        captured["job"] = job
+        return {"uploaded": 0, "deleted": 0, "pruned": 0}
+
+    monkeypatch.setattr(vfiles, "backup", fake_backup)
+
+    rc = vfiles._main(["backup", "vf"])
+
+    assert rc == 0
+    assert captured["job"]["policy"] == {"type": "count", "count": 5}
+
+
+def test_backup_keep_all_policy_from_env(monkeypatch):
+    _set_common_env(monkeypatch, JOB_RETENTION_TYPE="keep_all")
+    captured = {}
+
+    def fake_backup(job, **kwargs):
+        captured["job"] = job
+        return {"uploaded": 0, "deleted": 0, "pruned": 0}
+
+    monkeypatch.setattr(vfiles, "backup", fake_backup)
+
+    rc = vfiles._main(["backup", "vf"])
+
+    assert rc == 0
+    assert captured["job"]["policy"] == {"type": "keep_all"}
+
+
+def test_backup_count_policy_missing_count_exits_2(monkeypatch):
+    _set_common_env(monkeypatch, JOB_RETENTION_TYPE="count")
+    monkeypatch.delenv("JOB_RETENTION_COUNT", raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        vfiles._main(["backup", "vf"])
+    assert exc.value.code == 2
+
+
+def test_backup_count_policy_invalid_count_exits_2(monkeypatch):
+    _set_common_env(monkeypatch, JOB_RETENTION_TYPE="count", JOB_RETENTION_COUNT="not-a-number")
+
+    with pytest.raises(SystemExit) as exc:
+        vfiles._main(["backup", "vf"])
+    assert exc.value.code == 2
+
+
+def test_backup_unknown_retention_type_exits_2(monkeypatch):
+    _set_common_env(monkeypatch, JOB_RETENTION_TYPE="bogus")
 
     with pytest.raises(SystemExit) as exc:
         vfiles._main(["backup", "vf"])
