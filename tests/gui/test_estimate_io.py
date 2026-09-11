@@ -44,11 +44,16 @@ def test_builds_a_job_per_entry(tmp_path):
     assert by["appdata"].engine == "versioned" and by["appdata"].storage_class == "STANDARD"
     assert by["movies"].engine == "archive" and by["movies"].storage_class == "DEEP_ARCHIVE"
 
-def test_versioned_retention_from_keep_policy_archive_none(tmp_path):
+def test_versioned_retention_from_keep_policy_archive_default(tmp_path):
+    # An archive job with no explicit retention now migrates to its own per-job
+    # {"type": "days", "days": 180} default (jobs_io's archive-default policy),
+    # NOT a fallback to the scenario-level window (retention-policies Phase 1).
     by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB, AJOB]), SRC))
     assert by["appdata"].versioning_retention_days == effective_retention_days(
         keep_last=3, keep_daily=7, keep_weekly=4, keep_monthly=6)  # == 180
-    assert by["movies"].versioning_retention_days is None
+    assert by["appdata"].retention_type == "days"
+    assert by["movies"].versioning_retention_days == 180
+    assert by["movies"].retention_type == "days"
 
 def test_backups_per_month_from_schedule(tmp_path):
     by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB, AJOB]), SRC))
@@ -248,3 +253,30 @@ def test_wizard_estimate_defaults_to_no_change(tmp_path):
 def test_form_defaults_change_rate_is_zero(tmp_path):
     d = estimate_io.form_defaults(_cfg(tmp_path, [VJOB, VFJOB]), SRC)
     assert d["jobs"] and all(j["change_rate_pct"] == 0.0 for j in d["jobs"])
+
+# --- Task 8: count + keep_all retention shapes map through to JobInputs ---
+
+def test_count_retention_policy_maps_to_job_inputs(tmp_path):
+    job = {**AJOB, "retention": {"type": "count", "count": 7}}
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [job]), SRC))
+    assert by["movies"].retention_type == "count"
+    assert by["movies"].retention_count == 7
+
+def test_keep_all_retention_policy_maps_to_job_inputs(tmp_path):
+    job = {**AJOB, "retention": {"type": "keep_all"}}
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [job]), SRC))
+    assert by["movies"].retention_type == "keep_all"
+    assert by["movies"].retention_count == 0
+
+def test_days_retention_policy_maps_to_job_inputs(tmp_path):
+    job = {**AJOB, "retention": {"type": "days", "days": 42}}
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [job]), SRC))
+    assert by["movies"].retention_type == "days"
+    assert by["movies"].retention_count == 0
+    assert by["movies"].versioning_retention_days == 42
+
+def test_tiered_retention_policy_maps_to_days_type_via_keep_proxy(tmp_path):
+    # tiered (restic keep-policy) behaves like "days" using effective_retention_days.
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB]), SRC))
+    assert by["appdata"].retention_type == "days"
+    assert by["appdata"].retention_count == 0

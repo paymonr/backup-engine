@@ -36,6 +36,14 @@ class JobInputs:
     # (effective_retention_days) while an archive job keeps the scenario's S3
     # noncurrent-expiry value.
     versioning_retention_days: int | None = None
+    # The job's retention POLICY shape (from jobs_io's `retention` object):
+    # "days" -> the day-window formula above (versioning_retention_days); "count"
+    # -> bounded by retention_count versions, independent of any day window;
+    # "keep_all" -> unbounded, grows for the full projection horizon. A restic
+    # "tiered" policy is mapped to "days" upstream (via effective_retention_days),
+    # so this field never carries "tiered" itself.
+    retention_type: str = "days"
+    retention_count: int = 0
 
 @dataclass(frozen=True)
 class Scenario:
@@ -118,9 +126,19 @@ def job_retention_days(p: JobInputs, scenario: Scenario) -> int:
             else scenario.versioning_retention_days)
 
 def versioning_monthly(p: JobInputs, scenario: Scenario, prices: PriceTable) -> float:
-    retention = job_retention_days(p, scenario)
-    noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * (
-        p.backups_per_month * retention / 30)
+    """Steady-state old-version storage, shaped by the job's retention_type:
+    "days" (and "tiered", mapped to "days" upstream) uses today's age-window
+    formula; "count" is bounded by N versions, independent of any day window;
+    "keep_all" has no steady state, so this returns one month's accrual rate
+    (see project()'s unbounded growth for the timeline shape)."""
+    if p.retention_type == "count":
+        noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * p.retention_count
+    elif p.retention_type == "keep_all":
+        noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * p.backups_per_month
+    else:
+        retention = job_retention_days(p, scenario)
+        noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * (
+            p.backups_per_month * retention / 30)
     return noncurrent_gb * _rate(prices, p.storage_class)
 
 def ingest_monthly(p: JobInputs, prices: PriceTable) -> float:
@@ -193,35 +211,55 @@ def estimate(scenario: Scenario, prices: PriceTable) -> Estimate:
 def _versioning_fill(retention_days: int, month: int) -> float:
     """Fraction of the steady-state noncurrent history accumulated by `month`:
     linear ramp to 1.0 at the retention horizon, flat after. Zero retention
-    (versioning off) -> 0.0, never a divide-by-zero."""
+    (versioning off) -> 0.0, never a divide-by-zero. ("days"/"tiered" jobs.)"""
     if retention_days <= 0:
         return 0.0
     return min(1.0, (month * _DAYS_PER_MONTH) / retention_days)
 
+def _count_fill(count: int, backups_per_month: float, month: int) -> float:
+    """Fraction of the steady-state N-version noncurrent pool accumulated by
+    `month`: ramps as backups accrue toward the count, then plateaus -- the
+    count-policy analogue of _versioning_fill's day-window ramp. Zero count ->
+    0.0, never a divide-by-zero. ("count" jobs.)"""
+    if count <= 0:
+        return 0.0
+    return min(1.0, (backups_per_month * month) / count)
+
 def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Projection:
     """Per-month cost trajectory: current-data storage, ingest and rotation are
-    flat from month 1; the versioning term ramps to its steady state at the
-    retention horizon; the one-time upload charge lands in month 1. The plateau
-    (any month at/after steady state, excluding one-time) equals
-    estimate(...).monthly_total."""
+    flat from month 1; the versioning term ramps per the job's retention_type
+    ("days"/"tiered" ramp-then-plateau at the retention horizon; "count"
+    ramp-then-plateau once N versions have accrued; "keep_all" grows linearly for
+    the full horizon, no plateau); the one-time upload charge lands in month 1.
+    The plateau (any month at/after steady state, excluding one-time) equals
+    estimate(...).monthly_total for "days"/"tiered"/"count" jobs -- "keep_all"
+    jobs never plateau, so a scenario with any keep_all job keeps growing past
+    that point too."""
     if months < 1:
         raise ValueError("months must be >= 1")
-    per_job = []  # (storage, steady_versioning, ingest, rotation, onetime, retention)
+    per_job = []  # (storage, steady_versioning, ingest, rotation, onetime, retention_type, retention_days, retention_count, backups_per_month)
     max_retention = 0
     for j in scenario.jobs:
         ret = job_retention_days(j, scenario)
-        max_retention = max(max_retention, ret if ret and ret > 0 else 0)
+        if j.retention_type == "days":
+            max_retention = max(max_retention, ret if ret and ret > 0 else 0)
         per_job.append((
             storage_monthly(j, prices), versioning_monthly(j, scenario, prices),
             ingest_monthly(j, prices), rotation_monthly(j, scenario, prices),
-            upfront_onetime(j, prices), ret,
+            upfront_onetime(j, prices), j.retention_type, ret, j.retention_count,
+            j.backups_per_month,
         ))
     pts: list[MonthPoint] = []
     for t in range(1, months + 1):
         s = v = ing = rot = one = 0.0
-        for store, steady_ver, jing, jrot, jup, jret in per_job:
+        for store, steady_ver, jing, jrot, jup, rtype, jret, rcount, bpm in per_job:
             s += store
-            v += steady_ver * _versioning_fill(jret, t)
+            if rtype == "count":
+                v += steady_ver * _count_fill(rcount, bpm, t)
+            elif rtype == "keep_all":
+                v += steady_ver * t  # unbounded: accrues every month, never plateaus
+            else:
+                v += steady_ver * _versioning_fill(jret, t)
             ing += jing
             rot += jrot
             if t == 1:
@@ -229,5 +267,6 @@ def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Project
         pts.append(MonthPoint(t, s, v, ing, rot, one, s + v + ing + rot + one))
     steady_month = (min(months, max(1, ceil(max_retention / _DAYS_PER_MONTH)))
                     if max_retention else 1)
-    steady_monthly = sum(store + sv + ing + rot for store, sv, ing, rot, _up, _r in per_job)
+    steady_monthly = sum(store + sv + ing + rot
+                         for store, sv, ing, rot, _up, _rt, _ret, _rc, _bpm in per_job)
     return Projection(pts, steady_month, steady_monthly)

@@ -73,16 +73,25 @@ def _size_for(job: dict, usage) -> tuple[float, int]:
 
 def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override) -> JobInputs:
     engine = job.get("type", "versioned")
-    if engine == "versioned":
-        keep = job.get("keep") or {}
-        retention = effective_retention_days(**{f"keep_{k}": int(keep.get(k, 0))
-                                                for k in ("last", "daily", "weekly", "monthly")})
-    elif engine == "versioned-files":
-        # retention_days is the job's own versioning-retention window (jobs_io
-        # validates/defaults it to 90) -- used directly, no keep-policy proxy.
-        retention = int(job.get("retention_days", 90))
-    else:
-        retention = None  # falls back to the scenario noncurrent-retention window
+    # The single source of truth for a job's retention is its `retention` policy
+    # object (jobs_io._normalize_retention also migrates the legacy per-type
+    # `keep`/`retention_days` fields and applies jobs_io's own type defaults --
+    # e.g. archive -> {"type": "days", "days": 180} -- so a raw/unvalidated job
+    # dict, like a saved one, maps consistently). Reused here rather than
+    # re-reading `keep`/`retention_days` directly.
+    policy = jobs_io._normalize_retention(job, engine)
+    if policy["type"] == "tiered":
+        # restic keep-policy proxy: collapses to the "days" shape (unchanged
+        # from today) via the furthest-back-tier day window.
+        retention_type, retention_count = "days", 0
+        retention_days = effective_retention_days(**{f"keep_{k}": int(policy["keep"].get(k, 0))
+                                                      for k in ("last", "daily", "weekly", "monthly")})
+    elif policy["type"] == "count":
+        retention_type, retention_count, retention_days = "count", policy["count"], None
+    elif policy["type"] == "keep_all":
+        retention_type, retention_count, retention_days = "keep_all", 0, None
+    else:  # "days"
+        retention_type, retention_count, retention_days = "days", 0, policy["days"]
     o = override or {}
     return JobInputs(
         name=job["name"], engine=engine,
@@ -93,7 +102,9 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
         backups_per_month=float(o.get("backups_per_month",
                                       backups_per_month(job.get("schedule", "")))),
         change_rate_pct=float(o.get("change_rate_pct", _ENGINE_CHANGE.get(engine, 10.0))),
-        versioning_retention_days=retention,
+        versioning_retention_days=retention_days,
+        retention_type=retention_type,
+        retention_count=retention_count,
     )
 
 

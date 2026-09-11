@@ -225,3 +225,43 @@ def test_project_no_jobs(prices):
     assert len(proj.months) == 12
     assert all(pt.total == 0.0 for pt in proj.months)
     assert proj.steady_state_month == 1
+
+# --- Task 8: count + keep_all retention shapes ---
+
+def test_versioning_monthly_count_type_bounded_by_n_versions(prices):
+    p = J(20, 5, "STANDARD", backups_per_month=30, change_rate_pct=10,
+          retention_type="count", retention_count=4)
+    # 20 * 0.10 * 4 = 8 GB noncurrent; * 0.02 = 1.60 -- no retention-days factor at all
+    expected = 20 * 0.10 * 4 * 0.02
+    s_short = _scn(p, versioning_retention_days=1)
+    s_long = _scn(p, versioning_retention_days=1000)
+    assert math.isclose(versioning_monthly(p, s_short, prices), expected)
+    # independent of retention days (scenario window, and any per-job override)
+    assert math.isclose(versioning_monthly(p, s_short, prices), versioning_monthly(p, s_long, prices))
+
+def test_versioning_monthly_keep_all_type_ignores_retention_days(prices):
+    p = J(20, 5, "STANDARD", backups_per_month=30, change_rate_pct=10, retention_type="keep_all")
+    s_short = _scn(p, versioning_retention_days=1)
+    s_long = _scn(p, versioning_retention_days=1000)
+    assert math.isclose(versioning_monthly(p, s_short, prices), versioning_monthly(p, s_long, prices))
+    assert versioning_monthly(p, s_short, prices) > 0
+
+def test_project_keep_all_grows_no_plateau_vs_days_plateaus(prices):
+    days_job = _ramp_job()  # retention_type="days" (default), plateaus at month 3
+    keep_all_job = J(20, 5, "STANDARD", name="ka", engine="versioned",
+                     backups_per_month=30, change_rate_pct=10, retention_type="keep_all")
+    m_days = project(_scn(days_job), prices, months=12).months
+    m_keep_all = project(_scn(keep_all_job), prices, months=12).months
+    # days job: flat after its plateau (month 3)
+    assert math.isclose(m_days[5].versioning, m_days[11].versioning)
+    # keep_all job: strictly grows month over month, all the way to the horizon -- no plateau
+    assert m_keep_all[0].versioning < m_keep_all[5].versioning < m_keep_all[11].versioning
+
+def test_project_count_type_ramps_then_plateaus(prices):
+    p = J(20, 5, "STANDARD", name="c", engine="versioned", backups_per_month=1,
+          change_rate_pct=10, retention_type="count", retention_count=5)
+    m = project(_scn(p), prices, months=8).months
+    steady = versioning_monthly(p, _scn(p), prices)  # 20*0.10*5*0.02 = 2.00
+    assert m[0].versioning < m[4].versioning
+    assert math.isclose(m[4].versioning, steady, rel_tol=1e-9)  # filled at month 5 (5 backups @ 1/mo)
+    assert math.isclose(m[7].versioning, steady)                # flat after
