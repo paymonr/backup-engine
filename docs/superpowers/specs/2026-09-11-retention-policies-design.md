@@ -100,7 +100,7 @@ The archive prune is a small pure-Python module (`app/engine/archive_prune.py`) 
 
 ## 6. IAM changes
 
-- **Runtime key** (`provisioning/iam-policy.json.tmpl`): add **`s3:ListBucketVersions`** to the `ListBucketScoped` statement (needed to enumerate object versions for the archive prune). `DeleteObject` (version-scoped delete) is already granted. No bucket-config permissions added.
+- **Runtime key** (`provisioning/iam-policy.json.tmpl`): add **`s3:ListBucketVersions`** to the `ListBucketScoped` statement (to enumerate object versions) and **`s3:DeleteObjectVersion`** to the `ObjectRW` statement (to delete a *noncurrent* version — the granted `s3:DeleteObject` only removes the current version / adds a delete marker, it cannot delete a specific `VersionId`). No bucket-config permissions added. Archive version ops use the **aws CLI** (like `s3.thaw` already does), since rclone can't target a specific `VersionId`.
 - **New optional lifecycle-management credential** (§8): a separate IAM credential the admin creates with `s3:GetBucketLifecycleConfiguration` + `s3:PutBucketLifecycleConfiguration` on the bucket. Documented in the README's manual-provisioning IAM section and emitted/optional in the OpenTofu module (a separate `*-lifecycle` user, key output marked sensitive) — but the app never requires it; it's connect-in-the-GUI like Cost Explorer.
 
 ## 7. Wizard UI (per-job policy)
