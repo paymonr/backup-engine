@@ -417,7 +417,22 @@
     return c ? c.value : "";
   }
   function applyVisibility() {
-    var t = curType(), rt = curRetention();
+    var t = curType();
+    // "tiered" is versioned-only (its own radio label carries
+    // data-when-type="versioned"); if the backup type changes away from versioned
+    // while Tiered is still selected, the radio would stay checked while hidden --
+    // submitting would silently POST retention_type=tiered for a non-versioned job
+    // and 400 server-side. Snap the selection to "days" first so what's checked
+    // (and what's rendered below) always matches what's shown.
+    if (t !== "versioned") {
+      var tiered = form.querySelector('input[name="retention_type"][value="tiered"]');
+      if (tiered && tiered.checked) {
+        tiered.checked = false;
+        var days = form.querySelector('input[name="retention_type"][value="days"]');
+        if (days) days.checked = true;
+      }
+    }
+    var rt = curRetention();
     for (var i = 0; i < conds.length; i++) {
       var el = conds[i];
       var wantType = el.getAttribute("data-when-type");

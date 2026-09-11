@@ -214,7 +214,9 @@ def retention_from_form(params: Mapping, *, default_type: str = "days") -> dict:
     if t == "tiered":
         return {"type": "tiered", "keep": {k: params.get(f"keep_{k}", "0")
                                             for k in ("last", "daily", "weekly", "monthly")}}
-    return {"type": "days", "days": params.get("retention_days", "90")}
+    if t == "days":
+        return {"type": "days", "days": params.get("retention_days", "90")}
+    raise ValueError(f"unknown retention type {t!r}")
 
 
 def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_class=None) -> dict:

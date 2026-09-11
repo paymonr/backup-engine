@@ -132,6 +132,43 @@ def test_jobs_estimate_bad_storage_class_is_400(client):
     assert "error" in r.get_json()
 
 
+def test_jobs_estimate_bad_retention_type_is_400(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "name": "photos", "type": "archive", "source": "movies",
+        "storage_class": "STANDARD", "schedule": "0 4 * * 0", "retention_type": "bogus"})
+    assert r.status_code == 400
+    assert "error" in r.get_json()
+
+
+def test_jobs_estimate_count_retention_differs_from_days(client):
+    # Task 9 fix: the wizard's live-cost path (wizard_estimate ->
+    # estimate_io.retention_from_form) must reflect the CHOSEN retention policy,
+    # not just ignore it -- a versioned/archive/versioned-files job can now pick
+    # count/keep_all, not only the one legacy per-type field. A non-zero change
+    # rate is required to exercise the old-version ("versioning") cost term at all.
+    q = {"name": "archv-count", "type": "archive", "source": "movies",
+         "storage_class": "STANDARD", "schedule": "0 4 * * 0", "size_gb": "500",
+         "change_rate_pct": "10"}
+    days = client.get("/jobs/estimate.json", query_string={
+        **q, "retention_type": "days", "retention_days": "90"}).get_json()
+    count = client.get("/jobs/estimate.json", query_string={
+        **q, "retention_type": "count", "retention_count": "3"}).get_json()
+    assert count["breakdown"]["versioning"] != pytest.approx(days["breakdown"]["versioning"])
+    assert count["this_job_monthly"] != pytest.approx(days["this_job_monthly"])
+
+
+def test_jobs_estimate_keep_all_retention_differs_from_days(client):
+    q = {"name": "archv-keepall", "type": "archive", "source": "movies",
+         "storage_class": "STANDARD", "schedule": "0 4 * * 0", "size_gb": "500",
+         "change_rate_pct": "10"}
+    days = client.get("/jobs/estimate.json", query_string={
+        **q, "retention_type": "days", "retention_days": "90"}).get_json()
+    keep_all = client.get("/jobs/estimate.json", query_string={
+        **q, "retention_type": "keep_all"}).get_json()
+    assert keep_all["breakdown"]["versioning"] != pytest.approx(days["breakdown"]["versioning"])
+    assert keep_all["this_job_monthly"] != pytest.approx(days["this_job_monthly"])
+
+
 def test_jobs_estimate_no_source_size_gb_uses_default(client):
     # No source, no size_gb -> falls back to the module default rather than 500ing.
     r = client.get("/jobs/estimate.json", query_string={

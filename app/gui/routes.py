@@ -250,19 +250,22 @@ def job_save():
     job = {"name": f.get("name", "").strip(), "type": f.get("type", ""),
            "source": f.get("source", "").strip(), "schedule": f.get("schedule", "").strip(),
            "enabled": bool(f.get("enabled")), "storage_class": f.get("storage_class", "STANDARD")}
-    # The wizard's retention-policy selector posts retention_type + the matching
-    # field (retention_days/retention_count/keep_*); jobs_io.upsert -> validate ->
-    # _normalize_retention normalizes/validates it. Older/direct callers (no
-    # retention_type) fall back to the pre-selector per-type params, same as before.
-    if "retention_type" in f:
-        job["retention"] = estimate_io.retention_from_form(f)
-    elif job["type"] == "versioned":
-        job["keep"] = {k: f.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
-    elif job["type"] == "versioned-files":
-        job["retention_days"] = f.get("retention_days", "90")
-    if job["type"] == "archive":
-        job["mirror"] = bool(f.get("mirror"))
     try:
+        # The wizard's retention-policy selector posts retention_type + the matching
+        # field (retention_days/retention_count/keep_*); jobs_io.upsert -> validate ->
+        # _normalize_retention normalizes/validates it. Older/direct callers (no
+        # retention_type) fall back to the pre-selector per-type params, same as
+        # before. retention_from_form raises ValueError on an unrecognized
+        # retention_type -- inside this try so it 400s like any other bad-input
+        # ValueError, rather than an unhandled 500.
+        if "retention_type" in f:
+            job["retention"] = estimate_io.retention_from_form(f)
+        elif job["type"] == "versioned":
+            job["keep"] = {k: f.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
+        elif job["type"] == "versioned-files":
+            job["retention_days"] = f.get("retention_days", "90")
+        if job["type"] == "archive":
+            job["mirror"] = bool(f.get("mirror"))
         jobs_io.upsert(cfg["CONFIG_DIR"], job, source_root=cfg["SOURCE_ROOT"])
     except jobs_io.JobsFileError as e:
         # The on-disk jobs.json is corrupt: don't clobber the user's bytes, and

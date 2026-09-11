@@ -1,4 +1,4 @@
-import json, pathlib
+import json, pathlib, re
 import pytest
 from app.gui import create_app
 
@@ -94,6 +94,29 @@ def test_create_archive_job_with_count_retention_round_trips(client, app):
     assert r.status_code in (302, 303)
     jobs = json.loads(pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").read_text())["jobs"]
     assert jobs[0]["retention"] == {"type": "count", "count": 5}
+
+
+def test_create_archive_job_with_keep_all_retention_round_trips(client, app):
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+                                    "source": "media/movies", "schedule": "0 4 * * 0",
+                                    "storage_class": "STANDARD", "enabled": "1",
+                                    "retention_type": "keep_all"})
+    assert r.status_code in (302, 303)
+    jobs = json.loads(pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").read_text())["jobs"]
+    assert jobs[0]["retention"] == {"type": "keep_all"}
+
+
+def test_create_job_unknown_retention_type_is_400(client):
+    # retention_from_form fails loud (matches jobs_io._normalize_retention) on an
+    # unrecognized retention_type -- and it must still map to a clean 400, not an
+    # unhandled 500, same as any other bad-input ValueError from this route.
+    t = _csrf(client, "/jobs/new")
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+                                    "source": "media/movies", "schedule": "0 4 * * 0",
+                                    "storage_class": "STANDARD", "enabled": "1",
+                                    "retention_type": "bogus"})
+    assert r.status_code == 400
 
 
 def test_create_archive_job_with_days_retention_round_trips(client, app):
@@ -228,5 +251,10 @@ def test_wizard_has_retention_policy_selector(client):
     assert 'name="retention_type"' in body
     for value in ("keep_all", "days", "count", "tiered"):
         assert f'value="{value}"' in body
-    # "tiered" is versioned-only; the other three are offered for every backup type.
-    assert 'data-when-type="versioned"' in body
+    # "tiered" is versioned-only -- assert THAT RADIO ITSELF (not just some element
+    # on the page, e.g. the unrelated schedule-collision hint) carries
+    # data-when-type="versioned"; the other three policy values are offered for
+    # every backup type.
+    assert re.search(
+        r'<label[^>]*\bdata-when-type="versioned"[^>]*>\s*'
+        r'<input[^>]*\bname="retention_type"[^>]*\bvalue="tiered"', body)
