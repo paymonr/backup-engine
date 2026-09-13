@@ -17,9 +17,9 @@ def test_render_policy_is_valid_json_scoped_to_bucket():
 
 def test_render_policy_action_set_matches_least_privilege():
     stmts = {s["Sid"]: s for s in json.loads(provision.render_policy("b"))["Statement"]}
-    assert stmts["ListBucketScoped"]["Action"] == ["s3:ListBucket", "s3:GetBucketLocation"]
+    assert stmts["ListBucketScoped"]["Action"] == ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketVersions"]
     assert stmts["ObjectRW"]["Action"] == [
-        "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+        "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
         "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts", "s3:RestoreObject",
     ]
 

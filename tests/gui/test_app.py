@@ -1,5 +1,6 @@
 import pytest
-from app.gui import create_app
+from pathlib import Path
+from app.gui import create_app, config_io
 
 @pytest.fixture
 def app(dirs, template_path):
@@ -11,8 +12,22 @@ def app(dirs, template_path):
 def client(app):
     return app.test_client()
 
-def test_index_redirects_to_jobs(client):
+def _make_app(dirs, template_path):
+    return create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
+                       "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
+                       "SECRET_KEY": "test", "TESTING": True})
+
+def test_index_redirects_to_provision_when_unprovisioned(client):
+    # fresh install: no runtime key / bucket yet -> land on the setup wizard
     r = client.get("/")
+    assert r.status_code in (301, 302)
+    assert "/provision" in r.headers["Location"]
+
+def test_index_redirects_to_jobs_when_provisioned(dirs, template_path):
+    config_io.write_secrets(dirs["config"],
+                            {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    Path(dirs["config"], "backup.env").write_text("S3_BUCKET=acme\nAWS_REGION=us-east-1\n")
+    r = _make_app(dirs, template_path).test_client().get("/")
     assert r.status_code in (301, 302)
     assert "/jobs" in r.headers["Location"]
 

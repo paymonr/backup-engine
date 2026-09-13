@@ -15,6 +15,9 @@ AJOB = {"name": "movies", "type": "archive", "source": "movies",
 VJOB = {"name": "appdata", "type": "versioned", "source": "appdata",
         "schedule": "0 3 * * *", "enabled": True, "storage_class": "STANDARD",
         "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}
+VFJOB = {"name": "docs", "type": "versioned-files", "source": "docs",
+         "schedule": "0 5 * * *", "enabled": True, "storage_class": "DEEP_ARCHIVE",
+         "retention_days": 90}
 
 
 @pytest.fixture
@@ -118,6 +121,27 @@ def test_refresh_calls_collect_usage_and_saves_cache(client, dirs, monkeypatch):
     cached = usage.load_cached(dirs["cache"])
     assert cached["data"]["media/movies"] == {"bytes": 5, "count": 1}
     assert cached["data"]["appdata"] == {"bytes": 9, "count": 2}
+
+
+def test_refresh_includes_versioned_files_job_prefix(client, dirs, monkeypatch):
+    # W-4: versioned-files jobs store under media/<job>/ just like archive jobs, so
+    # their names MUST be passed through to usage.collect_usage's media-prefix list
+    # (the same positional arg archive job names go through) -- otherwise their
+    # current-spend prefix never gets scanned.
+    from app.gui import routes
+    pathlib.Path(dirs["config"], "backup.env").write_text("S3_BUCKET=mybucket\nAWS_REGION=us-east-1\n")
+    pathlib.Path(dirs["config"], "jobs.json").write_text(json.dumps({"jobs": [AJOB, VFJOB]}))
+    called = {}
+
+    def fake_collect(bucket, media_jobs, has_versioned, **kw):
+        called["media_jobs"] = list(media_jobs)
+        return {}
+
+    monkeypatch.setattr(routes.usage, "collect_usage", fake_collect)
+    t = _csrf(client)
+    r = client.post("/costs/refresh", data={"csrf": t})
+    assert r.status_code in (302, 303)
+    assert set(called["media_jobs"]) == {"movies", "docs"}
 
 
 def test_refresh_with_malformed_jobs_json_is_not_500(client, dirs, monkeypatch):

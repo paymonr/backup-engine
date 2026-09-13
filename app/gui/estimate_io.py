@@ -4,11 +4,12 @@
 # itself (that lives in app.estimator.model).
 from __future__ import annotations
 from datetime import datetime, timezone
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Mapping
-from . import config_io, jobs_io, dirsize, fsbrowse
+from . import config_io, jobs_io, storage_advice
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days, estimate,
+    restore_cost, project, job_retention_days, cold_lockin_onetime, upfront_onetime,
 )
 from ..estimator.schedule import backups_per_month
 from ..estimator import usage, billing
@@ -29,7 +30,19 @@ _GLOBAL_DEFAULTS = {
 }
 
 # A versioned job churns more between backups than a bulk archive job.
-_ENGINE_CHANGE = {"versioned": 10.0, "archive": 1.0}
+# versioned-files is per-file incremental versioning (like "versioned"), just
+# without a shared restic repo -- same churn assumption.
+# Default assumed churn per engine: 0% — a fresh estimate shows the honest floor
+# (pure storage cost, no old-version/rotation churn). Users opt into a churn level
+# via the wizard's "How much changes each backup?" selector / the Cost page's
+# change-rate field.
+_ENGINE_CHANGE = {"versioned": 0.0, "archive": 0.0, "versioned-files": 0.0}
+
+# Sane tiered-keep defaults for a versioned job's live estimate when no keep_*
+# params were posted yet -- matches job_form.html's tiered-fieldset prefill
+# defaults exactly (Fix 1b) so the wizard's estimate and its form field never
+# disagree about what "no input yet" means.
+_KEEP_DEFAULTS = {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}
 
 
 def _region(config_dir: str) -> str:
@@ -53,9 +66,11 @@ def _num(params: Mapping, key: str, fallback, *, label: str) -> float:
 
 
 def _size_for(job: dict, usage) -> tuple[float, int]:
-    """bytes/count from cached usage: archive -> media/<name>; versioned -> the
-    appdata aggregate. Falls back to module defaults for an un-backed-up job."""
-    key = f"media/{job['name']}" if job.get("type") == "archive" else "appdata"
+    """bytes/count from cached usage: versioned -> the shared appdata restic
+    aggregate; archive AND versioned-files -> their own media/<name> S3 prefix
+    (both write to a per-job prefix, not the shared repo). Falls back to
+    module defaults for an un-backed-up job."""
+    key = "appdata" if job.get("type") == "versioned" else f"media/{job['name']}"
     u = (usage or {}).get(key)
     if u:
         return u["bytes"] / (1024 ** 3), int(u["count"])
@@ -64,12 +79,25 @@ def _size_for(job: dict, usage) -> tuple[float, int]:
 
 def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override) -> JobInputs:
     engine = job.get("type", "versioned")
-    if engine == "versioned":
-        keep = job.get("keep") or {}
-        retention = effective_retention_days(**{f"keep_{k}": int(keep.get(k, 0))
-                                                for k in ("last", "daily", "weekly", "monthly")})
-    else:
-        retention = None  # falls back to the scenario noncurrent-retention window
+    # The single source of truth for a job's retention is its `retention` policy
+    # object (jobs_io._normalize_retention also migrates the legacy per-type
+    # `keep`/`retention_days` fields and applies jobs_io's own type defaults --
+    # e.g. archive -> {"type": "days", "days": 180} -- so a raw/unvalidated job
+    # dict, like a saved one, maps consistently). Reused here rather than
+    # re-reading `keep`/`retention_days` directly.
+    policy = jobs_io._normalize_retention(job, engine)
+    if policy["type"] == "tiered":
+        # restic keep-policy proxy: collapses to the "days" shape (unchanged
+        # from today) via the furthest-back-tier day window.
+        retention_type, retention_count = "days", 0
+        retention_days = effective_retention_days(**{f"keep_{k}": int(policy["keep"].get(k, 0))
+                                                      for k in ("last", "daily", "weekly", "monthly")})
+    elif policy["type"] == "count":
+        retention_type, retention_count, retention_days = "count", policy["count"], None
+    elif policy["type"] == "keep_all":
+        retention_type, retention_count, retention_days = "keep_all", 0, None
+    else:  # "days"
+        retention_type, retention_count, retention_days = "days", 0, policy["days"]
     o = override or {}
     return JobInputs(
         name=job["name"], engine=engine,
@@ -80,7 +108,9 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
         backups_per_month=float(o.get("backups_per_month",
                                       backups_per_month(job.get("schedule", "")))),
         change_rate_pct=float(o.get("change_rate_pct", _ENGINE_CHANGE.get(engine, 10.0))),
-        versioning_retention_days=retention,
+        versioning_retention_days=retention_days,
+        retention_type=retention_type,
+        retention_count=retention_count,
     )
 
 
@@ -175,7 +205,27 @@ def form_defaults(config_dir, source_root) -> dict:
     }
 
 
-def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
+def retention_from_form(params: Mapping, *, default_type: str = "days") -> dict:
+    """Map wizard form/query params (the job_form.html retention-policy selector:
+    retention_type + the matching field) to a raw job['retention'] dict. Values are
+    passed through as posted (str) -- jobs_io.validate()/_normalize_retention does
+    the actual type-coercion and validation, this only shapes the {type: ...} object
+    it expects. Shared by the job-save route and the live wizard estimate below so
+    the two can't diverge on what a submitted policy means."""
+    t = params.get("retention_type", default_type)
+    if t == "keep_all":
+        return {"type": "keep_all"}
+    if t == "count":
+        return {"type": "count", "count": params.get("retention_count", "5")}
+    if t == "tiered":
+        return {"type": "tiered", "keep": {k: params.get(f"keep_{k}", "0")
+                                            for k in ("last", "daily", "weekly", "monthly")}}
+    if t == "days":
+        return {"type": "days", "days": params.get("retention_days", "90")}
+    raise ValueError(f"unknown retention type {t!r}")
+
+
+def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_class=None) -> dict:
     """Live cost for the job create/edit WIZARD: prices a CANDIDATE job built from
     the in-progress form params (not yet saved), plus what the total across every
     saved job becomes with this candidate added in — replacing any existing job of
@@ -189,34 +239,114 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices) -> dict:
         raise ValueError(f"unknown storage class '{cls}'")
     job = {"name": name, "type": engine, "source": source,
            "schedule": params.get("schedule", ""), "storage_class": cls}
-    if engine == "versioned":
-        job["keep"] = {k: params.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
-    else:
+    # The wizard's retention-policy selector posts retention_type + the matching
+    # field; older/direct callers (no retention_type) fall back to the pre-selector
+    # per-type params so this stays backward compatible.
+    if "retention_type" in params:
+        job["retention"] = retention_from_form(params)
+    elif engine == "versioned":
+        # No keep_* params posted (pre-selector caller / first live estimate before
+        # the wizard's tiered fields have a value) -> the sane defaults, not zero.
+        # jobs_io._normalize_retention (Fix 1) now rejects an all-zero tiered keep
+        # policy outright, so defaulting to "0" here would 400 the live estimate.
+        job["keep"] = {k: params.get(f"keep_{k}", str(d)) for k, d in _KEEP_DEFAULTS.items()}
+    elif engine == "versioned-files":
+        job["retention_days"] = params.get("retention_days", 90)
+    if engine == "archive":
         job["mirror"] = bool(params.get("mirror"))
 
-    # Size/count precedence: explicit size_gb/file_count params -> dir_size() of the
-    # picked source folder (when it's given and resolves) -> the module defaults.
-    fallback_gb, fallback_files = _DEFAULT_SIZE_GB, _DEFAULT_FILES
-    if source:
-        try:
-            d = dirsize.dir_size(source_root, source)
-            fallback_gb, fallback_files = d["bytes"] / (1024 ** 3), d["count"]
-        except fsbrowse.PathError:
-            pass  # unresolved/escaping source -> fall back to the module defaults
-    size_gb = _num(params, "size_gb", fallback_gb, label="size")
-    file_count = int(_num(params, "file_count", fallback_files, label="file count"))
+    # Size/count precedence: explicit size_gb/file_count params -> module defaults.
+    # The estimate NEVER walks the filesystem here — it has to be instant on every
+    # keystroke. A picked source folder's real size is fetched separately (async) by
+    # /jobs/source-size and threaded back in via the size_gb field, so it still flows
+    # through this same param, just without blocking the live recompute.
+    size_gb = _num(params, "size_gb", _DEFAULT_SIZE_GB, label="size")
+    file_count = int(_num(params, "file_count", _DEFAULT_FILES, label="file count"))
+
+    # "How much changes each backup?" — the wizard's Static/Some/A-lot selector
+    # sends a %; absent -> the per-engine default (unchanged behavior). This is the
+    # dominant driver of the old-version + rotation cost, so surfacing it is what
+    # makes the wizard estimate trustworthy for static media.
+    override = None
+    if str(params.get("change_rate_pct", "")).strip() != "":
+        override = {"change_rate_pct": _num(params, "change_rate_pct",
+                                            _ENGINE_CHANGE.get(engine, 10.0), label="change rate")}
 
     candidate = _job_inputs(job, size_gb=size_gb, file_count=file_count,
-                            scenario_retention=None, override=None)
+                            scenario_retention=None, override=override)
 
     base = scenario_from_jobs(config_dir, source_root)
     this_scn = replace(base, jobs=(candidate,))
     others = tuple(j for j in base.jobs if j.name != name)
     total_scn = replace(base, jobs=others + (candidate,))
 
+    this_est = estimate(this_scn, prices)
+    li = this_est.jobs[candidate.name]
+    proj = project(this_scn, prices)
+    ms = proj.months
+    # Candidate full-restore (retrieval + egress) at fraction 1.0, using the
+    # scenario's retrieval tier. Reuses the model; adds no math here.
+    this_restore = restore_cost(candidate, base, prices, 1.0)
+    advice = storage_advice.class_advice(engine, cls, str(params.get("schedule", "")),
+                                         saved_class, prices)
     return {
-        "this_job_monthly": estimate(this_scn, prices).monthly_total,
+        "this_job_monthly": this_est.monthly_total,
         "new_total_monthly": estimate(total_scn, prices).monthly_total,
+        "this_job_restore": this_restore,
+        "advice": advice,
+        "projection": {
+            "first_bill": ms[0].total,
+            "steady_monthly": proj.steady_state_monthly,
+            "steady_month": proj.steady_state_month,
+            "at_6": ms[min(5, len(ms) - 1)].total,
+            "at_12": ms[min(11, len(ms) - 1)].total,
+            "at_24": ms[-1].total,
+        },
+        "breakdown": {
+            "billed_gb": li.billed_gb,
+            "storage": li.storage,
+            "versioning": li.versioning,
+            "rotation": li.rotation_monthly,
+            "ingest": li.ingest_monthly,
+            "upload_onetime": li.upfront_onetime,
+            "lockin_onetime": cold_lockin_onetime(candidate, prices),
+            "change_rate_pct": candidate.change_rate_pct,
+            "retention_days": candidate.versioning_retention_days,
+        },
+    }
+
+
+def projection_bundle(scenario: Scenario, prices, months: int = 24) -> dict:
+    """Primary trajectory + comparison variants + the one-time/first-month
+    breakdown, all as plain dicts for the template and /estimate.json. Pure over
+    its inputs (prices are passed in, like wizard_estimate)."""
+    primary = project(scenario, prices, months)
+
+    def _retagged(scn, cap):
+        return replace(
+            scn,
+            jobs=tuple(replace(j, versioning_retention_days=cap(job_retention_days(j, scn)))
+                       for j in scn.jobs),
+            versioning_retention_days=cap(scn.versioning_retention_days),
+        )
+    no_versioning = _retagged(scenario, lambda _r: 0)
+    rolling_30 = _retagged(scenario, lambda r: min(r, 30))
+
+    onetime = {
+        "upload": sum(upfront_onetime(j, prices) for j in scenario.jobs),
+        "lockin": [{"job": j.name, "storage_class": j.storage_class,
+                    "amount": cold_lockin_onetime(j, prices)}
+                   for j in scenario.jobs if cold_lockin_onetime(j, prices) > 0],
+        "first_month": primary.months[0].total,
+    }
+    return {
+        "primary": asdict(primary),
+        "comparison": {
+            "no_versioning": asdict(project(no_versioning, prices, months)),
+            "rolling_30": asdict(project(rolling_30, prices, months)),
+        },
+        "onetime": onetime,
+        "steady_state_month": primary.steady_state_month,
     }
 
 

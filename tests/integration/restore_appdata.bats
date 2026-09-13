@@ -15,7 +15,7 @@ setup() {
   export RESTIC_REPOSITORY="s3:$AWS_S3_ENDPOINT/$S3_BUCKET/appdata"
   export JOBS_IO_STUB="$BATS_TEST_TMPDIR/jobsio.sh"
   export JOBS_IO_CMD="bash $JOBS_IO_STUB"
-  printf 'echo JOB_NAME=appdata; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_KEEP_LAST=3; echo JOB_KEEP_DAILY=7; echo JOB_KEEP_WEEKLY=4; echo JOB_KEEP_MONTHLY=6\n' >"$JOBS_IO_STUB"
+  printf 'echo JOB_NAME=appdata; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=tiered; echo JOB_KEEP_LAST=3; echo JOB_KEEP_DAILY=7; echo JOB_KEEP_WEEKLY=4; echo JOB_KEEP_MONTHLY=6\n' >"$JOBS_IO_STUB"
   bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" appdata
   # Prove restore is source-independent: the primary restore scenario is a
   # fresh/rebuilt machine where the local source is absent or empty. Restore

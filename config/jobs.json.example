@@ -17,6 +17,15 @@
       "enabled": true,
       "storage_class": "DEEP_ARCHIVE",
       "mirror": false
+    },
+    {
+      "name": "photos",
+      "type": "versioned-files",
+      "source": "photos",
+      "schedule": "0 5 * * *",
+      "enabled": true,
+      "storage_class": "DEEP_ARCHIVE",
+      "retention_days": 90
     }
   ]
 }

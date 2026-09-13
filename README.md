@@ -9,6 +9,13 @@ one folder chosen under a single read-only source mount. Each job is one of:
   [Appdata Backup plugin](https://forums.unraid.net/topic/137710-plugin-appdatabackup/)'s archives.
 - **archive** — via `rclone` into its own S3 prefix, typically to **Glacier Deep Archive**
   (cheapest cold storage) for large, mostly-static shares (comics/books/media/etc.).
+- **versioned-files** — incremental whole-file backup with **per-file version history** on **any**
+  storage class, **including Glacier Deep Archive**. Each new/changed file is uploaded under its own
+  distinct version-key via `rclone`; a self-managed **SQLite catalog** tracks every version so you
+  can list history and restore any file as of any point in time, and old versions are pruned by the
+  runtime after a retention window. It gives you file-level history on cold storage (which the
+  restic-based *versioned* type can't do) without a restic repo. See the
+  [Restore runbook](#versioned-files-jobs).
 
 Jobs are created, scheduled, and run from the GUI's Jobs screen.
 
@@ -103,7 +110,7 @@ yourself), replicate what the module does:
 3. **Create an IAM policy** scoped to just this bucket and just the two prefixes — object actions
    only, no bucket-configuration permissions:
 
-   <!-- keep in sync with opentofu/main.tf data.aws_iam_policy_document.runtime -->
+   <!-- keep in sync with provisioning/iam-policy.json.tmpl -->
    ```json
    {
      "Version": "2012-10-17",
@@ -111,14 +118,14 @@ yourself), replicate what the module does:
        {
          "Sid": "ListBucketScoped",
          "Effect": "Allow",
-         "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+         "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketVersions"],
          "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
        },
        {
          "Sid": "ObjectRW",
          "Effect": "Allow",
          "Action": [
-           "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+           "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
            "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts",
            "s3:RestoreObject"
          ],
@@ -167,14 +174,43 @@ against). Key knobs in `backup.env` (all global; everything per-job lives in `jo
 - `APPRISE_URLS` / `NOTIFY_ON_SUCCESS` — failure notifications always fire when set; success
   notifications are opt-in.
 
-Per-job settings — schedule, storage class, retention (restic keep-policy for versioned jobs), and
-mirror mode (archive jobs) — are set per job in the GUI's Jobs create/edit wizard and stored in
-`config/jobs.json`. A cold storage class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for
-archive jobs — they're plain objects. For versioned jobs it's discouraged: `restic` has to read
-the repository's `config`/`keys` objects on every run, and it can't do that against a cold repo
-without a thaw first — that thaw-then-run orchestration is a Phase-3 feature (see the
-[Restore runbook](#restore-runbook)). Jobs write directly in their chosen class on first upload —
-no Standard-then-lifecycle round-trip, so no extra transition charges.
+Per-job settings — schedule, storage class, retention policy, and mirror mode (archive jobs) — are
+set per job in the GUI's Jobs create/edit wizard and stored in `config/jobs.json`. Every job chooses
+one retention policy:
+
+- **Keep everything** — unlimited history; nothing is ever pruned.
+- **Keep for N days** — a version is kept until it is both no longer current and older than N days, then pruned.
+- **Keep last N versions** — only the N most recent versions of each file/path are kept.
+- **Tiered (keep last / daily / weekly / monthly)** — restic-style bucketed retention; available for
+  **versioned** (restic) jobs only.
+
+Policies are enforced client-side, after each run: `restic forget` for versioned jobs, the
+versioned-files prune step for versioned-files jobs (see below), and an S3-version prune for archive
+jobs. In every case the bucket's baseline lifecycle rules (noncurrent-version expiration) remain the
+guaranteed *outer bound* — a job's retention policy can only prune within that bound, never beyond
+it. A Phase-2 Settings screen will let you view/edit the baseline lifecycle from the GUI.
+
+A cold storage class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for **archive** and
+**versioned-files** jobs — both store plain objects. For **versioned** (restic) jobs a cold class is
+discouraged: `restic` has to read the repository's `config`/`keys` objects on every run, and it
+can't do that against a cold repo without a thaw first — that thaw-then-run orchestration is a
+Phase-3 feature (see the [Restore runbook](#restore-runbook)). Jobs write directly in their chosen
+class on first upload — no Standard-then-lifecycle round-trip, so no extra transition charges.
+
+**versioned-files retention.** A versioned-files job's retention policy governs its non-current
+versions: **keep everything** never prunes; **keep for N days** prunes a non-current
+version once it is older than N days; **keep last N versions** prunes older versions once more than N versions of
+a file exist (tiered retention isn't offered for this job type — it's restic-only). At the end of
+each run the job walks its catalog, deletes whichever non-current versions the policy now allows
+pruning, and drops them from the catalog. There is **no bucket versioning and no S3 lifecycle rule**
+involved in this — the engine does its own versioning (one object per version, under
+`media/<job>/…@<timestamp>-<id>` keys) and prunes it itself with ordinary object deletes, using only
+the existing `media/*` object permissions (no new IAM — the new `s3:DeleteObjectVersion` /
+`s3:ListBucketVersions` IAM actions are for the **archive** job type's S3-version prune, not
+versioned-files). The current version of every file is always retained regardless of age or policy.
+The per-job catalog is a SQLite database kept durable by uploading it to
+`media/<job>/_catalog/catalog.sqlite` (always STANDARD) at the end of every run and re-fetching it on
+a fresh machine, so version history survives a rebuilt container.
 
 The container validates all of this on start (and before each run) and fails fast with a specific
 error — e.g. a missing source root — rather than silently skipping a backup.
@@ -235,6 +271,30 @@ restore.sh movies download some-series /cache/restore/movies
 (`Days=7`) for each; `download` then does a normal `rclone copy` down once objects are back to a
 readable state. Re-run `download` if it's issued too early — objects still thawing simply won't be
 copyable yet.
+
+### Versioned-files jobs
+
+A versioned-files job restores from its SQLite **catalog** (recovered from
+`media/<job>/_catalog/catalog.sqlite` automatically if this machine has no local copy), so you can
+list a file's whole version history and pull back any one version — the latest, or the one that was
+current at a chosen time.
+
+```bash
+# list every current file and its versions (path, upload time, storage class)
+restore.sh photos list
+
+# restore ONE file (relative path within the job source) to a target directory —
+# the latest version, or with --asof, the version current at that unix timestamp
+restore.sh photos 2023/trip/IMG_0042.jpg /cache/restore/photos
+restore.sh photos 2023/trip/IMG_0042.jpg /cache/restore/photos --asof 1700000000
+```
+
+If the selected version sits in a cold class (`GLACIER`/`DEEP_ARCHIVE`), the restore issues a
+thaw (`aws s3api restore-object`, default `--tier Bulk`; `Standard`/`Expedited` are faster and
+pricier) and reports `thaw-requested` instead of downloading — re-run the same command once the
+thaw finishes (hours for Glacier, up to ~48h for Deep Archive) to pull the file down. Restore only
+ever **reads** from the catalog + S3; it never touches the job's local source tree, so it's safe to
+run on a fresh/rebuilt machine.
 
 ## Cost note
 
@@ -349,8 +409,10 @@ page) ships in the container, served on `GUI_PORT` (default 8099). Reach it at
 - **Jobs** — lists every backup job, with a create/edit wizard. Each job picks one source folder
   from a confined browser over `SOURCE_ROOT` (the single read-only mount, e.g. `/mnt/user` —
   mounted once, so the container can see everything without a mount per folder), an intent
-  (**versioned**, via restic, or **archive**, via rclone), a cron schedule, and — depending on
-  type — restic retention (keep last/daily/weekly/monthly) or archive mirror mode. As you fill in
+  (**versioned**, via restic; **archive**, via rclone; or **versioned-files**, per-file history via
+  rclone + a SQLite catalog), a cron schedule, and — depending on type — restic retention (keep
+  last/daily/weekly/monthly), versioned-files retention (`retention_days`), or archive mirror mode.
+  As you fill in
   the wizard, a live cost panel shows what **this job** would add and the **new total** across
   every saved job (see [Cost estimator](#cost-estimator)). Saving writes `config/jobs.json`. Each
   job's row also has **Run now** (trigger it immediately) and its last-run outcome;
@@ -402,6 +464,7 @@ Planned, not yet built:
 - **OIDC authentication** — native OpenID Connect login, so the GUI can stand on its own without an external proxy.
 - **Per-run history** — a persisted run history beyond the last-run state.
 - **Scheduler liveness / health endpoint** — surface whether the background scheduler (supercronic) is still running, so a silent crash is visible in the GUI.
+- **Cost scenario workbench** — define, name, and save multiple custom cost scenarios (per-scenario storage class, retention, versioning) and compare N curves on the cost-over-time timeline. Builds on the `project()` model function and comparison-curve mechanism.
 
 ## Third-party software
 

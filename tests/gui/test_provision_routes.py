@@ -181,6 +181,41 @@ def test_automated_override_bucket_skips_account_lookup(client, dirs, monkeypatc
     assert "S3_BUCKET=my-own-bucket" in be
 
 
+def test_provision_home_shows_first_run_setup_when_unprovisioned(client):
+    r = client.get("/provision")
+    assert r.status_code == 200
+    assert b"First-time setup" in r.data
+
+
+def test_provision_home_shows_ready_when_provisioned(dirs, template_path):
+    from app.gui import config_io
+    config_io.write_secrets(dirs["config"],
+                            {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    Path(dirs["config"], "backup.env").write_text("S3_BUCKET=acme\nAWS_REGION=us-east-1\n")
+    app = create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
+                      "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
+                      "SECRET_KEY": "test", "TESTING": True})
+    r = app.test_client().get("/provision")
+    assert r.status_code == 200
+    assert b"Destination set" in r.data and b"acme" in r.data
+    assert b"First-time setup" not in r.data
+
+
+def test_automated_failure_surfaces_the_real_tofu_error(client, monkeypatch):
+    from app.gui import provision
+    def boom(*a, **k):
+        raise provision.TofuError("apply", "Error: creating S3 Bucket: BucketAlreadyOwnedByYou")
+    monkeypatch.setattr(provision, "run_tofu_apply", boom)
+    token = _csrf(client, "/provision/automated")
+    r = client.post("/provision/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
+    assert r.status_code == 400
+    assert b"failed at tofu apply" in r.data              # the generic summary
+    assert b"BucketAlreadyOwnedByYou" in r.data           # the ACTUAL reason, now shown
+    assert b"What AWS / OpenTofu reported" in r.data
+
+
 def test_automated_account_lookup_failure_saves_nothing(client, dirs, monkeypatch):
     from app.gui import provision
 

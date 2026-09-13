@@ -20,6 +20,12 @@ def _job(**kw):
             "schedule": "0 4 * * 0", "enabled": True, "storage_class": "DEEP_ARCHIVE", "mirror": False}
     base.update(kw); return base
 
+def _vfjob(**kw):
+    base = {"name": "docs", "type": "versioned-files", "source": "media/movies",
+            "schedule": "0 2 * * *", "enabled": True, "storage_class": "DEEP_ARCHIVE",
+            "retention_days": 90}
+    base.update(kw); return base
+
 def test_upsert_then_load_and_get(tmp_path):
     cfg, root = _cfg(tmp_path), _root(tmp_path)
     jobs_io.upsert(cfg, _job(), source_root=root)
@@ -144,16 +150,85 @@ def test_validate_rejects_bad_type_and_class(tmp_path):
     with pytest.raises(ValueError):
         jobs_io.validate(_job(storage_class="NEBULA"), root)
 
+# --- Task 4: versioned-files job type ---
+
+def test_validate_accepts_versioned_files_on_deep_archive(tmp_path):
+    root = _root(tmp_path)
+    v = jobs_io.validate(_vfjob(storage_class="DEEP_ARCHIVE"), root)
+    assert v["type"] == "versioned-files"
+    assert v["storage_class"] == "DEEP_ARCHIVE"
+    assert v["retention_days"] == 90
+
+def test_validate_accepts_versioned_files_on_standard(tmp_path):
+    root = _root(tmp_path)
+    v = jobs_io.validate(_vfjob(storage_class="STANDARD"), root)
+    assert v["storage_class"] == "STANDARD"
+
+def test_validate_versioned_files_defaults_retention_to_90(tmp_path):
+    root = _root(tmp_path)
+    job = _vfjob(); del job["retention_days"]
+    v = jobs_io.validate(job, root)
+    assert v["retention_days"] == 90
+
+def test_validate_versioned_files_rejects_negative_retention(tmp_path):
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(retention_days=-1), root)
+
+def test_validate_versioned_files_rejects_non_int_retention(tmp_path):
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(retention_days="soon"), root)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(retention_days=None), root)
+
+def test_validate_versioned_files_requires_confined_source(tmp_path):
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(source="../../etc"), root)
+
+def test_validate_versioned_files_requires_existing_source_when_required(tmp_path):
+    root = _root(tmp_path)
+    with pytest.raises(ValueError):
+        jobs_io.validate(_vfjob(source="media/nope"), root)
+
+def test_emit_shell_versioned_files(tmp_path):
+    j = jobs_io.validate(_vfjob(storage_class="GLACIER", retention_days=120), _root(tmp_path))
+    s = jobs_io.emit_shell(j)
+    assert "JOB_TYPE=versioned-files" in s
+    assert "JOB_SOURCE=media/movies" in s
+    assert "JOB_STORAGE_CLASS=GLACIER" in s
+    assert "JOB_RETENTION_DAYS=120" in s
+
+def test_upsert_then_load_versioned_files(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _vfjob(), source_root=root)
+    loaded = jobs_io.get(cfg, "docs")
+    assert loaded["type"] == "versioned-files" and loaded["retention_days"] == 90
+
+def test_main_emit_versioned_files_job(tmp_path, monkeypatch, capsys):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    _write_raw(cfg, [{"name": "docs", "type": "versioned-files", "source": "media/movies",
+                      "schedule": "0 2 * * *", "enabled": True, "storage_class": "DEEP_ARCHIVE",
+                      "retention_days": 45}])
+    monkeypatch.setenv("CONFIG_DIR", cfg); monkeypatch.setenv("SOURCE_ROOT", root)
+    rc = jobs_io._main(["docs"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "JOB_TYPE=versioned-files" in out and "JOB_RETENTION_DAYS=45" in out
+
 def test_emit_shell_archive(tmp_path):
     s = jobs_io.emit_shell(_job())
     assert "JOB_TYPE=archive" in s and "JOB_SOURCE=media/movies" in s
     assert "JOB_STORAGE_CLASS=DEEP_ARCHIVE" in s and "JOB_MIRROR=false" in s
 
 def test_emit_shell_versioned_keep(tmp_path):
+    root = _root(tmp_path)
     j = _job(name="cfg", type="versioned", source="appdata", storage_class="STANDARD",
              keep={"last": 3, "daily": 7, "weekly": 4, "monthly": 6})
     j.pop("mirror", None)
-    s = jobs_io.emit_shell(j)
+    validated = jobs_io.validate(j, root)
+    s = jobs_io.emit_shell(validated)
     assert "JOB_TYPE=versioned" in s and "JOB_KEEP_LAST=3" in s and "JOB_KEEP_MONTHLY=6" in s
 
 def test_main_list_prints_enabled_schedule_name_per_job(tmp_path, monkeypatch, capsys):
@@ -285,3 +360,91 @@ def test_emit_shell_is_injection_safe(tmp_path):
     unsafe = jobs_io.emit_shell({"name": "x", "type": "archive", "source": "a b",
                                   "storage_class": "STANDARD", "mirror": False})
     assert "'" in unsafe
+
+# --- Task 1: Retention schema normalization and migration ---
+
+def _base(**kw):
+    d = {"name": "j", "type": "archive", "source": "movies",
+         "schedule": "0 4 * * 0", "storage_class": "STANDARD"}
+    d.update(kw); return d
+
+def _val(job, tmp_path):
+    (tmp_path / "movies").mkdir(exist_ok=True); (tmp_path / "appdata").mkdir(exist_ok=True)
+    return jobs_io.validate(job, str(tmp_path))["retention"]
+
+def test_retention_explicit_days(tmp_path):
+    assert _val(_base(retention={"type": "days", "days": 30}), tmp_path) == {"type": "days", "days": 30}
+
+def test_retention_count_and_keep_all(tmp_path):
+    assert _val(_base(retention={"type": "count", "count": 5}), tmp_path) == {"type": "count", "count": 5}
+    assert _val(_base(retention={"type": "keep_all"}), tmp_path) == {"type": "keep_all"}
+
+def test_tiered_only_for_versioned(tmp_path):
+    t = {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}
+    assert _val(_base(type="versioned", source="appdata", retention=t), tmp_path)["type"] == "tiered"
+    with pytest.raises(ValueError):
+        _val(_base(type="archive", retention=t), tmp_path)   # tiered on archive -> reject
+
+def test_tiered_all_zero_rejected(tmp_path):
+    # Fix 1a: an all-zero tiered keep policy would flow to `restic forget --prune
+    # --keep-last 0 --keep-daily 0 --keep-weekly 0 --keep-monthly 0` and destroy
+    # every snapshot for the job's tag. Must be rejected at validate() time.
+    t = {"type": "tiered", "keep": {"last": 0, "daily": 0, "weekly": 0, "monthly": 0}}
+    with pytest.raises(ValueError):
+        _val(_base(type="versioned", source="appdata", retention=t), tmp_path)
+
+def test_tiered_one_nonzero_still_valid(tmp_path):
+    # Regression guard: at least one non-zero keep value must still validate.
+    t = {"type": "tiered", "keep": {"last": 1, "daily": 0, "weekly": 0, "monthly": 0}}
+    r = _val(_base(type="versioned", source="appdata", retention=t), tmp_path)
+    assert r == {"type": "tiered", "keep": {"last": 1, "daily": 0, "weekly": 0, "monthly": 0}}
+
+def test_migrate_legacy_versioned_keep(tmp_path):
+    r = _val(_base(type="versioned", source="appdata", keep={"last": 2, "daily": 5, "weekly": 1, "monthly": 0}), tmp_path)
+    assert r == {"type": "tiered", "keep": {"last": 2, "daily": 5, "weekly": 1, "monthly": 0}}
+
+def test_migrate_legacy_versioned_files_retention_days(tmp_path):
+    r = _val(_base(type="versioned-files", source="movies", retention_days=45), tmp_path)
+    assert r == {"type": "days", "days": 45}
+
+def test_archive_default_is_days_180(tmp_path):
+    assert _val(_base(type="archive"), tmp_path) == {"type": "days", "days": 180}
+
+def test_bad_policy_rejected(tmp_path):
+    for bad in ({"type": "nope"}, {"type": "days", "days": -1}, {"type": "count", "count": 0}):
+        with pytest.raises(ValueError):
+            _val(_base(retention=bad), tmp_path)
+
+def test_legacy_fields_derived_from_retention(tmp_path):
+    # Regression: legacy fields (keep, retention_days) must never diverge from retention.
+    # Test versioned job with new-schema-only retention (no top-level keep).
+    root = _root(tmp_path)
+    retention_spec = {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}
+    v = jobs_io.validate(
+        {"name": "cfg", "type": "versioned", "source": "appdata", "schedule": "0 3 * * *",
+         "storage_class": "STANDARD", "retention": retention_spec},
+        root
+    )
+    # Both paths should have the same keep values
+    assert v["keep"] == v["retention"]["keep"]
+    # Test versioned-files job with new-schema-only retention (no top-level retention_days).
+    retention_spec = {"type": "days", "days": 45}
+    v = jobs_io.validate(
+        {"name": "docs", "type": "versioned-files", "source": "media/movies", "schedule": "0 2 * * *",
+         "storage_class": "STANDARD", "retention": retention_spec},
+        root
+    )
+    # Both paths should have the same days value
+    assert v["retention_days"] == v["retention"]["days"]
+    assert v["retention_days"] == 45
+
+def test_emit_shell_retention_vars(tmp_path):
+    def emit(job): return jobs_io.emit_shell(jobs_io.validate(job, str(tmp_path)))
+    (tmp_path / "movies").mkdir(exist_ok=True); (tmp_path / "appdata").mkdir(exist_ok=True)
+    assert "JOB_RETENTION_TYPE=days" in emit(_base(retention={"type": "days", "days": 30}))
+    assert "JOB_RETENTION_DAYS=30" in emit(_base(retention={"type": "days", "days": 30}))
+    assert "JOB_RETENTION_COUNT=5" in emit(_base(retention={"type": "count", "count": 5}))
+    v = emit(_base(type="versioned", source="appdata",
+                   retention={"type": "tiered", "keep": {"last": 2, "daily": 5, "weekly": 1, "monthly": 0}}))
+    assert "JOB_RETENTION_TYPE=tiered" in v and "JOB_KEEP_LAST=2" in v and "JOB_KEEP_DAILY=5" in v
+    assert "JOB_RETENTION_TYPE=keep_all" in emit(_base(retention={"type": "keep_all"}))

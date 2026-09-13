@@ -11,9 +11,10 @@ JOBS_FILE = "jobs.json"
 # newline, which would let "name\n" pass the charset gate and reach restic --tag,
 # rclone media/<name>/, state/<name>.json, the lock, and the crontab name field.
 JOB_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
-TYPES = ("versioned", "archive")
+TYPES = ("versioned", "archive", "versioned-files")
 STORAGE_CLASSES = ("STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE")
 _KEEP_KEYS = ("last", "daily", "weekly", "monthly")
+_RETENTION_TYPES = ("keep_all", "days", "count", "tiered")
 
 def valid_name(s: str) -> bool:
     return bool(JOB_NAME_RE.match(s or "")) and s not in (".", "..")
@@ -55,6 +56,60 @@ def _parse_jobs(text: str, *, drop_invalid_names: bool = False) -> list[dict]:
         jobs = [j for j in jobs
                 if isinstance(j.get("name"), str) and valid_name(j["name"])]
     return list(jobs)
+
+def _normalize_retention(job: dict, typ: str) -> dict:
+    """One retention policy per job. Explicit `retention` wins; else migrate the
+    legacy per-type fields; else default. `tiered` is versioned-only."""
+    r = job.get("retention")
+    if not isinstance(r, dict):   # migrate legacy shapes
+        if typ == "versioned" and job.get("keep"):
+            r = {"type": "tiered", "keep": job["keep"]}
+        elif typ == "versioned-files":
+            # Preserve old validation: explicit None is an error (key present but None),
+            # missing key defaults to 90 days.
+            if "retention_days" in job:
+                rd = job["retention_days"]
+                if rd is None:
+                    raise ValueError("retention_days must be a non-negative integer")
+                r = {"type": "days", "days": rd}
+            else:
+                r = {"type": "days", "days": 90}   # versioned-files default (backward compat)
+        else:
+            r = {"type": "days", "days": 180}   # archive default / anything unset
+    t = r.get("type")
+    if t not in _RETENTION_TYPES:
+        raise ValueError(f"unknown retention type {t!r}")
+    if t == "tiered":
+        if typ != "versioned":
+            raise ValueError("tiered retention is only valid for versioned (restic) jobs")
+        keep = r.get("keep") or {}
+        try:
+            norm = {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}
+        except (TypeError, ValueError):
+            raise ValueError("tiered keep values must be non-negative integers")
+        if not any(norm.values()):
+            # {last:0, daily:0, weekly:0, monthly:0} means "keep nothing" to restic
+            # (`forget --prune --keep-last 0 --keep-daily 0 ...`) -- it would forget
+            # and prune EVERY snapshot for the job's tag. Never allow it.
+            raise ValueError("tiered retention must keep at least one snapshot (all keep values are zero)")
+        return {"type": "tiered", "keep": norm}
+    if t == "days":
+        try:
+            d = int(r.get("days", 0))
+        except (TypeError, ValueError):
+            raise ValueError("retention days must be a non-negative integer")
+        if d < 0:
+            raise ValueError("retention days must be >= 0")
+        return {"type": "days", "days": d}
+    if t == "count":
+        try:
+            c = int(r.get("count", 0))
+        except (TypeError, ValueError):
+            raise ValueError("retention count must be a positive integer")
+        if c < 1:
+            raise ValueError("retention count must be >= 1")
+        return {"type": "count", "count": c}
+    return {"type": "keep_all"}
 
 def load(config_dir) -> list[dict]:
     # Fail-SAFE READ path (crontab render, Jobs page, get/run/restore): a missing
@@ -121,11 +176,21 @@ def validate(job: dict, source_root, *, require_exists: bool = True) -> dict:
         raise ValueError(f"unknown storage class {cls!r}")
     out = {"name": name, "type": typ, "source": source, "schedule": sched,
            "enabled": bool(job.get("enabled", True)), "storage_class": cls}
-    if typ == "versioned":
-        keep = job.get("keep") or {}
-        out["keep"] = {k: max(0, int(keep.get(k, 0))) for k in _KEEP_KEYS}
-    else:
+    if typ == "archive":
         out["mirror"] = bool(job.get("mirror", False))
+    # Compute retention first, then derive legacy fields from it (single source of truth)
+    out["retention"] = _normalize_retention(job, typ)
+    if typ == "versioned":
+        # Mirror tiered keep policy if present, else zero dict
+        ret = out["retention"]
+        if ret["type"] == "tiered":
+            out["keep"] = dict(ret["keep"])
+        else:
+            out["keep"] = {k: 0 for k in _KEEP_KEYS}
+    elif typ == "versioned-files":
+        # Mirror days value if present, else 0
+        ret = out["retention"]
+        out["retention_days"] = ret["days"] if ret["type"] == "days" else 0
     return out
 
 def upsert(config_dir, job: dict, *, source_root) -> None:
@@ -142,10 +207,16 @@ def emit_shell(job: dict) -> str:
     q = shlex.quote
     lines = [f"JOB_NAME={q(job['name'])}", f"JOB_TYPE={q(job['type'])}",
              f"JOB_SOURCE={q(job['source'])}", f"JOB_STORAGE_CLASS={q(job.get('storage_class','STANDARD'))}"]
-    if job["type"] == "versioned":
-        keep = job.get("keep", {})
+    r = job.get("retention") or {"type": "days", "days": 180}
+    lines.append(f"JOB_RETENTION_TYPE={q(r['type'])}")
+    if r["type"] == "days":
+        lines.append(f"JOB_RETENTION_DAYS={int(r['days'])}")
+    elif r["type"] == "count":
+        lines.append(f"JOB_RETENTION_COUNT={int(r['count'])}")
+    elif r["type"] == "tiered":
+        keep = r.get("keep", {})
         lines += [f"JOB_KEEP_{k.upper()}={int(keep.get(k, 0))}" for k in _KEEP_KEYS]
-    else:
+    if job["type"] == "archive":
         lines.append(f"JOB_MIRROR={'true' if job.get('mirror') else 'false'}")
     return "\n".join(lines) + "\n"
 

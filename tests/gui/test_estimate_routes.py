@@ -37,6 +37,11 @@ def test_estimate_page_renders_form_and_job_names(client):
     assert b"cost" in low and b"monthly" in low
     assert b"appdata" in r.data and b"movies" in r.data  # seeded job names rendered
 
+def test_estimate_page_has_class_reference(client):
+    body = client.get("/estimate").get_data(as_text=True)
+    assert "class-panel" in body
+    assert "Restoring is retrieval + egress" in body  # the retrieval/egress note
+
 def test_estimate_json_keyed_by_job_names(client):
     j = client.get("/estimate.json").get_json()
     assert set(j["jobs"]) == {"appdata", "movies"}
@@ -59,11 +64,16 @@ def test_estimate_json_change_rate_drives_versioning(client):
     high = client.get("/estimate.json?appdata_change_rate_pct=50").get_json()["jobs"]["appdata"]["versioning"]
     assert high > low
 
-def test_estimate_json_global_retention_drives_archive_versioning(client):
-    # An archive job has no per-job retention, so it uses the scenario-level window.
-    low = client.get("/estimate.json?versioning_retention_days=10").get_json()["jobs"]["movies"]["versioning"]
-    high = client.get("/estimate.json?versioning_retention_days=100").get_json()["jobs"]["movies"]["versioning"]
-    assert high > low
+def test_estimate_json_archive_now_has_its_own_default_retention(client):
+    # Retention-policies Phase 1 (Task 8): an archive job now migrates to its own
+    # per-job {"type": "days", "days": 180} policy (jobs_io's archive default),
+    # not a fallback to the scenario-level window -- so the global knob no longer
+    # moves its versioning term. Churn defaults to 0% (pure storage), so supply a
+    # change rate to exercise the versioning term at all.
+    low = client.get("/estimate.json?movies_change_rate_pct=10&versioning_retention_days=10").get_json()["jobs"]["movies"]["versioning"]
+    high = client.get("/estimate.json?movies_change_rate_pct=10&versioning_retention_days=100").get_json()["jobs"]["movies"]["versioning"]
+    assert high == low
+    assert high > 0
 
 def test_estimate_json_bad_input_is_400(client):
     r = client.get("/estimate.json?appdata_size_gb=abc")
@@ -98,3 +108,26 @@ def test_estimate_page_nameless_jobs_entry_no_500(dirs, template_path, tmp_path)
     app = _make_app(dirs, template_path, tmp_path,
                     [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}, AJOB])
     assert app.test_client().get("/estimate").status_code == 200
+
+# --- cost over time: projection in the routes ---
+
+def test_estimate_json_includes_projection(client):
+    j = client.get("/estimate.json").get_json()
+    assert "projection" in j
+    p = j["projection"]
+    assert len(p["primary"]["months"]) == 24
+    assert set(p["comparison"]) == {"no_versioning", "rolling_30"}
+    assert "onetime" in p and "first_month" in p["onetime"]
+
+def test_estimate_json_invalid_input_still_400(client):
+    r = client.get("/estimate.json?appdata_size_gb=notanumber")
+    assert r.status_code == 400
+    assert "error" in r.get_json()
+
+def test_estimate_page_has_timeline_card_and_data(client):
+    body = client.get("/estimate").get_data(as_text=True)
+    assert 'id="cost-timeline"' in body        # svg chart mount
+    assert 'id="proj-data"' in body            # embedded projection JSON for the JS
+    assert 'id="cost-milestones"' in body      # no-JS milestone table
+    assert "Starting out" in body              # one-time card heading
+    assert "First bill" in body                # month-1 headline figure

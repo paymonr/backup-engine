@@ -14,9 +14,10 @@ usage() {
   cat <<EOF
 usage:
   restore.sh <job> list
-  restore.sh <job> restore <snapshot-id|latest> <target-dir>
-  restore.sh <job> thaw <prefix> [--tier Bulk|Standard|Expedited] [--dry-run]
-  restore.sh <job> download <prefix> <target-dir>
+  restore.sh <job> restore <snapshot-id|latest> <target-dir>          (versioned only)
+  restore.sh <job> thaw <prefix> [--tier Bulk|Standard|Expedited] [--dry-run]   (archive only)
+  restore.sh <job> download <prefix> <target-dir>                     (archive only)
+  restore.sh <job> <path> <target> [--asof TS] [--tier Bulk|Standard|Expedited]  (versioned-files only)
 EOF
 }
 
@@ -106,10 +107,20 @@ main() {
   if ! def="$(CONFIG_DIR="${CONFIG_DIR:-/config}" $jobsio "$job")"; then
     die "job '$job' not found"
   fi
-  eval "$def"
+  # `set -a` exports the def (emit_shell emits bare `JOB_*=`, no `export`) so the
+  # versioned-files engine, handed off to below as a python3 process reading
+  # os.environ, inherits JOB_STORAGE_CLASS/etc. Harmless to the versioned/archive
+  # branches, which use them as in-process shell vars.
+  set -a; eval "$def"; set +a
   case "$JOB_TYPE" in
     versioned) _restore_versioned "$job" "$@" ;;
     archive)   _restore_archive "$job" "$@" ;;
+    # versioned-files hands off entirely to the Python engine, mirroring
+    # backup-job.sh's dispatch; JOB_* are exported at the `set -a` eval above and
+    # CACHE_DIR/S3_BUCKET by Dockerfile/config, so the exec'd process inherits
+    # them (SOURCE_ROOT is irrelevant here -- restore reads from the catalog + S3,
+    # never the job's local source tree).
+    versioned-files) exec python3 -m app.engine.vfiles restore "$job" "$@" ;;
     *) die "job '$job' has unknown type '$JOB_TYPE'" ;;
   esac
 }

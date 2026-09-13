@@ -54,7 +54,7 @@ def test_source_size_ok(client):
     r = client.get("/jobs/source-size?path=movies")
     assert r.status_code == 200
     j = r.get_json()
-    assert j["bytes"] == 1000 and j["count"] == 1
+    assert j["bytes"] >= 1000 and j["count"] == 1  # du -sb: file bytes (+ tiny dir overhead on some FS)
 
 
 def test_source_size_missing_folder_ok_empty(client):
@@ -76,6 +76,17 @@ def test_jobs_estimate_returns_this_and_total(client):
     assert j["this_job_monthly"] >= 0
     assert j["new_total_monthly"] >= j["this_job_monthly"]
     assert "price_source" in j and "price_date" in j
+
+
+def test_jobs_estimate_versioned_files_returns_a_number(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "name": "docs", "type": "versioned-files", "source": "movies",
+        "storage_class": "DEEP_ARCHIVE", "schedule": "0 5 * * *",
+        "retention_days": "90", "size_gb": "50"})
+    assert r.status_code == 200
+    j = r.get_json()
+    assert isinstance(j["this_job_monthly"], (int, float))
+    assert j["new_total_monthly"] >= j["this_job_monthly"]
 
 
 def test_jobs_estimate_new_job_adds_to_existing_total(client):
@@ -121,6 +132,43 @@ def test_jobs_estimate_bad_storage_class_is_400(client):
     assert "error" in r.get_json()
 
 
+def test_jobs_estimate_bad_retention_type_is_400(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "name": "photos", "type": "archive", "source": "movies",
+        "storage_class": "STANDARD", "schedule": "0 4 * * 0", "retention_type": "bogus"})
+    assert r.status_code == 400
+    assert "error" in r.get_json()
+
+
+def test_jobs_estimate_count_retention_differs_from_days(client):
+    # Task 9 fix: the wizard's live-cost path (wizard_estimate ->
+    # estimate_io.retention_from_form) must reflect the CHOSEN retention policy,
+    # not just ignore it -- a versioned/archive/versioned-files job can now pick
+    # count/keep_all, not only the one legacy per-type field. A non-zero change
+    # rate is required to exercise the old-version ("versioning") cost term at all.
+    q = {"name": "archv-count", "type": "archive", "source": "movies",
+         "storage_class": "STANDARD", "schedule": "0 4 * * 0", "size_gb": "500",
+         "change_rate_pct": "10"}
+    days = client.get("/jobs/estimate.json", query_string={
+        **q, "retention_type": "days", "retention_days": "90"}).get_json()
+    count = client.get("/jobs/estimate.json", query_string={
+        **q, "retention_type": "count", "retention_count": "3"}).get_json()
+    assert count["breakdown"]["versioning"] != pytest.approx(days["breakdown"]["versioning"])
+    assert count["this_job_monthly"] != pytest.approx(days["this_job_monthly"])
+
+
+def test_jobs_estimate_keep_all_retention_differs_from_days(client):
+    q = {"name": "archv-keepall", "type": "archive", "source": "movies",
+         "storage_class": "STANDARD", "schedule": "0 4 * * 0", "size_gb": "500",
+         "change_rate_pct": "10"}
+    days = client.get("/jobs/estimate.json", query_string={
+        **q, "retention_type": "days", "retention_days": "90"}).get_json()
+    keep_all = client.get("/jobs/estimate.json", query_string={
+        **q, "retention_type": "keep_all"}).get_json()
+    assert keep_all["breakdown"]["versioning"] != pytest.approx(days["breakdown"]["versioning"])
+    assert keep_all["this_job_monthly"] != pytest.approx(days["this_job_monthly"])
+
+
 def test_jobs_estimate_no_source_size_gb_uses_default(client):
     # No source, no size_gb -> falls back to the module default rather than 500ing.
     r = client.get("/jobs/estimate.json", query_string={
@@ -146,12 +194,78 @@ def test_jobs_estimate_non_us_east_1_region_no_500(dirs, template_path, source_r
     assert r.get_json()["this_job_monthly"] >= 0
 
 
-def test_jobs_estimate_sizes_from_source_folder_when_no_size_gb(client):
-    # No explicit size_gb -> the candidate is sized from dir_size(source).
-    small = client.get("/jobs/estimate.json", query_string={
-        "name": "photos", "type": "archive", "source": "appdata",
-        "storage_class": "STANDARD", "schedule": "0 4 * * 0"}).get_json()
-    big = client.get("/jobs/estimate.json", query_string={
+def test_estimate_json_includes_advice_and_restore(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "type": "versioned", "storage_class": "DEEP_ARCHIVE",
+        "size_gb": "50", "schedule": "0 3 * * *", "name": "x", "source": "media"})
+    assert r.status_code == 200
+    j = r.get_json()
+    assert "this_job_restore" in j and j["this_job_restore"] > 0
+    assert any(a["level"] == "danger" for a in j["advice"])  # restic + cold
+
+
+def test_estimate_json_advice_empty_for_plain_standard(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "type": "archive", "storage_class": "STANDARD",
+        "size_gb": "10", "schedule": "0 3 * * *", "name": "y", "source": "media"})
+    j = r.get_json()
+    assert j["advice"] == []
+
+
+def test_jobs_estimate_never_walks_source_uses_default(client):
+    # FIX: the wizard estimate must NEVER touch the filesystem (it has to be instant
+    # on every keystroke). With a source= but NO size_gb it uses _DEFAULT_SIZE_GB,
+    # NOT the picked folder's real on-disk bytes -- the real size is fetched
+    # separately, async, by /jobs/source-size and threaded back via size_gb.
+    from app.gui.estimate_io import _DEFAULT_SIZE_GB
+    walked = client.get("/jobs/estimate.json", query_string={
         "name": "photos", "type": "archive", "source": "movies",
         "storage_class": "STANDARD", "schedule": "0 4 * * 0"}).get_json()
-    assert big["this_job_monthly"] >= small["this_job_monthly"]
+    default_sized = client.get("/jobs/estimate.json", query_string={
+        "name": "photos", "type": "archive", "source": "movies",
+        "storage_class": "STANDARD", "schedule": "0 4 * * 0",
+        "size_gb": str(_DEFAULT_SIZE_GB)}).get_json()
+    # Uses the DEFAULT size, matching an explicit size_gb=_DEFAULT_SIZE_GB request...
+    assert walked["this_job_monthly"] == pytest.approx(default_sized["this_job_monthly"])
+    # ...and NOT the near-zero cost the folder's ~1000-byte real size would produce
+    # (which is what a filesystem walk would have used).
+    tiny = client.get("/jobs/estimate.json", query_string={
+        "name": "photos", "type": "archive", "source": "movies",
+        "storage_class": "STANDARD", "schedule": "0 4 * * 0",
+        "size_gb": str(1000 / 1024 ** 3)}).get_json()
+    assert walked["this_job_monthly"] != pytest.approx(tiny["this_job_monthly"])
+
+
+def test_jobs_estimate_includes_projection_and_breakdown(client):
+    j = client.get("/jobs/estimate.json", query_string={
+        "name": "bak-manga", "type": "versioned-files", "source": "comics/mangas",
+        "storage_class": "DEEP_ARCHIVE", "schedule": "0 3 1 * *",
+        "size_gb": "1000", "retention_days": "180", "change_rate_pct": "1"}).get_json()
+    assert {"first_bill", "steady_monthly", "steady_month", "at_12"} <= set(j["projection"])
+    assert {"storage", "versioning", "lockin_onetime", "change_rate_pct"} <= set(j["breakdown"])
+    assert j["breakdown"]["change_rate_pct"] == 1.0
+
+
+def test_jobs_estimate_churn_param_changes_monthly(client):
+    q = {"name": "bak-manga", "type": "versioned-files", "source": "comics/mangas",
+         "storage_class": "DEEP_ARCHIVE", "schedule": "0 3 1 * *", "size_gb": "1000",
+         "retention_days": "180"}
+    lo = client.get("/jobs/estimate.json", query_string={**q, "change_rate_pct": "1"}).get_json()
+    hi = client.get("/jobs/estimate.json", query_string={**q, "change_rate_pct": "30"}).get_json()
+    assert hi["this_job_monthly"] > lo["this_job_monthly"]
+
+
+def test_wizard_page_has_churn_selector_and_projection_cells(client):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert 'name="change_rate_pct"' in body          # churn selector
+    assert "How much changes each backup" in body
+    assert 'id="job-cost-first"' in body             # First-bill headline cell
+    assert 'id="job-cost-breakdown"' in body         # plain-English breakdown line
+
+
+def test_wizard_churn_selector_defaults_to_no_change(client):
+    import re
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert "No change" in body
+    # the 0% option is the pre-selected default
+    assert re.search(r'<option value="0"[^>]*\bselected', body)

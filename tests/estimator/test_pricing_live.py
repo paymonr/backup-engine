@@ -46,3 +46,29 @@ def test_load_prices_uses_fresh_cache(monkeypatch, tmp_path):
     load_prices("us-east-1", cache_dir=str(tmp_path), live=True)
     load_prices("us-east-1", cache_dir=str(tmp_path), live=True)
     assert calls["n"] == 1  # second call served from cache
+
+def test_deep_archive_staging_sku_does_not_overwrite_storage():
+    # Mirrors the REAL AWS S3 offer: the only Storage SKU tagged volumeType
+    # "Glacier Deep Archive" is the restore-STAGING metric (~$0.021), and there is
+    # no TimedStorage-GDA-ByteHrs at all. The staging price must NOT become the
+    # Deep Archive storage rate -- the bundled $0.00099 stands. (Regression: the
+    # old volumeType-only mapping set DEEP_ARCHIVE to 0.021, ~21x too high, which
+    # made Deep Archive look pricier than STANDARD.)
+    base = _bundled()
+    offer = {
+        "publicationDate": "2026-08-18T00:00:00Z",
+        "products": {
+            "GDA_STAGING": {"productFamily": "Storage", "attributes": {
+                "volumeType": "Glacier Deep Archive", "usagetype": "TimedStorage-GDA-Staging"}},
+            "STD": {"productFamily": "Storage", "attributes": {
+                "volumeType": "Standard", "usagetype": "TimedStorage-ByteHrs"}},
+        },
+        "terms": {"OnDemand": {
+            "GDA_STAGING": {"t1": {"priceDimensions": {"d1": {"pricePerUnit": {"USD": "0.0210000000"}}}}},
+            "STD": {"t2": {"priceDimensions": {"d2": {"pricePerUnit": {"USD": "0.0230000000"}}}}},
+        }},
+    }
+    table = pl.map_offer_to_rates(offer, base)
+    assert table.storage_gb_month["DEEP_ARCHIVE"] == base.storage_gb_month["DEEP_ARCHIVE"]
+    assert table.storage_gb_month["DEEP_ARCHIVE"] < 0.01  # bundled 0.00099, not staging 0.021
+    assert table.storage_gb_month["STANDARD"] == pytest.approx(0.023)  # real ByteHrs still live

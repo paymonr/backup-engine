@@ -13,7 +13,7 @@ setup() {
   echo "payload" >"$SOURCE_ROOT/movies/a.txt"
   export JOBS_IO_STUB="$BATS_TEST_TMPDIR/jobsio.sh"
   export JOBS_IO_CMD="bash $JOBS_IO_STUB"
-  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false\n' >"$JOBS_IO_STUB"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
   bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" movies
 }
 teardown() { minio_down; }

@@ -1,20 +1,47 @@
 {% extends "base.html" %}{% block body %}
 <p class="eyebrow">Backups</p>
 <h1>Jobs</h1>
-<p class="lead">Each job backs up one folder on a schedule. <a class="btn-primary btn" href="{{ url_for('gui.job_new') }}">+ Create job</a></p>
-{% for j in jobs %}
+<p class="lead">Each job backs up one folder on a schedule. <a class="btn btn-primary" href="{{ url_for('gui.job_new') }}">+ New job</a></p>
+
+{% if jobs %}
 <div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
-    <div><h2 style="margin:0">{{ j.name }}</h2>
-      <p class="hint">{{ 'Versioned (restic)' if j.type=='versioned' else 'Archive (rclone)' }} · <code>{{ j.source }}</code> · {{ j.schedule }}</p></div>
-    <div style="display:flex;gap:.5rem;align-items:center;">
-      {% if j.state %}<span class="badge {{ 'badge-ok' if j.state.outcome=='success' else 'badge-fail' }}">{{ j.state.outcome }}</span>
-      {% else %}<span class="badge badge-idle">never run</span>{% endif %}
-      <form method="post" action="{{ url_for('gui.job_run', name=j.name) }}" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Run now</button></form>
-      <a class="btn" href="{{ url_for('gui.job_edit', name=j.name) }}">Edit</a>
-      <form method="post" action="{{ url_for('gui.job_delete', name=j.name) }}" style="display:inline" onsubmit="return confirm('Delete {{ j.name }}?')"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Delete</button></form>
-    </div>
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Type</th><th>Schedule</th><th>Last run</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td><strong>{{ j.name }}</strong><br><span class="hint"><code>{{ j.source }}</code></span></td>
+        <td>{% if j.type=='versioned' %}Versioned <span class="hint">(restic)</span>{% elif j.type=='versioned-files' %}Versioned files <span class="hint">(catalog)</span>{% else %}Archive <span class="hint">(rclone)</span>{% endif %}</td>
+        <td><code>{{ j.schedule }}</code></td>
+        <td>
+          {% if j.state %}<span class="badge {{ 'badge-ok' if j.state.outcome=='success' else 'badge-fail' }}">{{ j.state.outcome }}</span>
+          {% else %}<span class="badge badge-idle">never run</span>{% endif %}
+        </td>
+        <td>
+          <div class="row-actions">
+            <form method="post" action="{{ url_for('gui.job_run', name=j.name) }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-ghost">Run now</button></form>
+            <a class="btn" href="{{ url_for('gui.job_edit', name=j.name) }}">Edit</a>
+            <form method="post" action="{{ url_for('gui.job_delete', name=j.name) }}" onsubmit="return confirm('Delete {{ j.name }}?')"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-danger">Delete</button></form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
   </div>
 </div>
-{% else %}<div class="card"><p style="margin:0;color:var(--muted)">No jobs yet. Create one to start backing up.</p></div>{% endfor %}
+{% else %}
+<div class="card onboarding">
+  <h2>Getting started</h2>
+  <ol class="steps">
+    <li>Set your AWS region, bucket, and keys on the <a href="{{ url_for('gui.config_page') }}">Config</a> page (or provision a least-privilege bucket from <a href="{{ url_for('gui.provision_home') }}">Provision</a>).</li>
+    <li>Create your first <a href="{{ url_for('gui.job_new') }}">backup job</a> — pick a folder, a storage class (the wizard compares them and warns about cold/retrieval costs), and a schedule.</li>
+    <li>Run it on demand from this page, then check the <a href="{{ url_for('gui.estimate_page') }}">cost estimate</a>.</li>
+  </ol>
+  <p><a class="btn btn-primary" href="{{ url_for('gui.job_new') }}">+ Create your first job</a></p>
+</div>
+{% endif %}
 {% endblock %}

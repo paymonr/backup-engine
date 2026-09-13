@@ -16,7 +16,7 @@ setup() {
 run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
 
 @test "archive job -> rclone copy to media/<name>" {
-  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false\n' >"$JOBS_IO_STUB"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
   run_job movies
   [ "$status" -eq 0 ]
   grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
@@ -24,18 +24,63 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
 }
 
 @test "archive mirror -> rclone sync" {
-  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=true\n' >"$JOBS_IO_STUB"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=true; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
   run_job movies
   grep -q "sync $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
 }
 
 @test "versioned job -> restic backup with tag + keep" {
-  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_KEEP_LAST=3; echo JOB_KEEP_DAILY=7; echo JOB_KEEP_WEEKLY=4; echo JOB_KEEP_MONTHLY=6\n' >"$JOBS_IO_STUB"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=tiered; echo JOB_KEEP_LAST=3; echo JOB_KEEP_DAILY=7; echo JOB_KEEP_WEEKLY=4; echo JOB_KEEP_MONTHLY=6\n' >"$JOBS_IO_STUB"
   run_job cfg
   [ "$status" -eq 0 ]
   grep -q "backup $SOURCE_ROOT/appdata" "$RESTIC_LOG"
   grep -q -- "--tag cfg" "$RESTIC_LOG"
   grep -q -- "--keep-last 3" "$RESTIC_LOG"
+}
+
+@test "versioned job days retention -> restic forget --keep-within Nd" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=days; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  grep -q -- "forget --prune --tag cfg --keep-within 30d" "$RESTIC_LOG"
+}
+
+@test "versioned job count retention -> restic forget --keep-last N" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=count; echo JOB_RETENTION_COUNT=5\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  grep -q -- "forget --prune --tag cfg --keep-last 5" "$RESTIC_LOG"
+}
+
+@test "versioned job keep_all retention -> no restic forget" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  grep -q "backup $SOURCE_ROOT/appdata" "$RESTIC_LOG"
+  ! grep -q -- "forget" "$RESTIC_LOG"
+}
+
+@test "archive job days retention -> archive_prune invoked with --type days --days N" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=days; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q -- "-m app.engine.archive_prune movies --type days --days 30 --count 1" "$PYTHON_LOG"
+}
+
+@test "archive job keep_all retention -> no archive_prune call" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
+  [ ! -s "$PYTHON_LOG" ]
 }
 
 @test "missing source dir -> failure" {
@@ -49,6 +94,34 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   printf 'exit 3\n' >"$JOBS_IO_STUB"
   run_job ghost
   [ "$status" -ne 0 ]
+}
+
+@test "versioned-files job -> dispatches to app.engine.vfiles module (in-process, not exec)" {
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  local b="$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job vf
+  [ "$status" -eq 0 ]
+  grep -q -- "-m app.engine.vfiles backup vf" "$PYTHON_LOG"
+  # dispatched to python, not the archive/versioned engines (version_banner's
+  # own "rclone version"/"restic version" probes still land in these logs)
+  ! grep -q -- "copy " "$RCLONE_LOG"
+  ! grep -q -- "backup " "$RESTIC_LOG"
+  # control returned to main() -- NOT exec'd away -- so the success-path
+  # state-file write (read by routes.py's Jobs page) actually ran
+  grep -q '"outcome":"success"' "$CACHE_DIR/state/vf.json"
+}
+
+@test "versioned-files job failure -> _fail records outcome:failure (not silently exec'd away)" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job vf
+  [ "$status" -ne 0 ]
+  grep -q '"outcome":"failure"' "$CACHE_DIR/state/vf.json"
 }
 
 # --- Task 10 security: the REAL jobs_io CLI re-validates untrusted jobs.json ---
@@ -76,4 +149,31 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   run_job movies
   [ "$status" -eq 0 ]
   grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
+}
+
+@test "versioned-files dispatch EXPORTS the job def to the python engine (regression)" {
+  # emit_shell emits bare `JOB_*=...`; backup-job.sh must export the eval'd def so
+  # the python3 CHILD (app.engine.vfiles reads os.environ) actually sees
+  # JOB_STORAGE_CLASS/JOB_SOURCE/JOB_RETENTION_DAYS. Unlike the argv-logging stub
+  # above, this stub inspects its ENVIRONMENT and fails when the def is absent --
+  # exactly as vfiles._require_env("JOB_STORAGE_CLASS") does at runtime. Before the
+  # export fix the vars are unexported shell vars and never reach the child.
+  export PYENV_LOG="$BATS_TEST_TMPDIR/pyenv.log"; : >"$PYENV_LOG"
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/python3" <<'STUB'
+#!/usr/bin/env bash
+printf 'JOB_STORAGE_CLASS=%s\n' "${JOB_STORAGE_CLASS-UNSET}" >>"$PYENV_LOG"
+printf 'JOB_SOURCE=%s\n' "${JOB_SOURCE-UNSET}" >>"$PYENV_LOG"
+printf 'JOB_RETENTION_DAYS=%s\n' "${JOB_RETENTION_DAYS-UNSET}" >>"$PYENV_LOG"
+[ -n "${JOB_STORAGE_CLASS:-}" ] || exit 7   # mirrors vfiles _require_env
+exit 0
+STUB
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job vf
+  [ "$status" -eq 0 ]
+  grep -q "JOB_STORAGE_CLASS=STANDARD" "$PYENV_LOG"
+  grep -q "JOB_SOURCE=appdata" "$PYENV_LOG"
+  grep -q "JOB_RETENTION_DAYS=30" "$PYENV_LOG"
+  grep -q '"outcome":"success"' "$CACHE_DIR/state/vf.json"
 }

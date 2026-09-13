@@ -1,32 +1,40 @@
 {% extends "base.html" %}
 {% block body %}
+{% if provisioned %}
 <p class="eyebrow">Provisioning</p>
-<h1>Provision the AWS destination</h1>
-<p class="lead">Get from "no bucket" to a validated, least-privilege runtime key. Pick the path that fits how much access you want to hand this container.</p>
+<h1>Re-provision the AWS destination</h1>
+<div class="card">
+  <p><span class="badge badge-ok">ready</span> Destination set — bucket <code>{{ bucket }}</code>{% if region %} in <code>{{ region }}</code>{% endif %}. Re-provision below to change it, or <a href="{{ url_for('gui.jobs_page') }}">go to your jobs →</a></p>
+</div>
+{% else %}
+<p class="eyebrow">First-time setup · Step 1 of 2</p>
+<h1>Welcome — let's set up your backup destination</h1>
+<p class="lead">Before you can back anything up, this container needs an S3 bucket and a least-privilege runtime key. Pick the path that fits how much access you want to hand it — you'll be creating your first backup job in a moment.</p>
+{% endif %}
 
-<div class="note">
-  <h3>Before you begin</h3>
+<div class="card">
+  <h2>Before you begin</h2>
   <p>You'll need an <strong>AWS account</strong> and access that can create an S3 bucket and an IAM user — either the web console (guided-manual) or admin credentials (scripted / automated). Everything is created in a single region.</p>
   <p>Unsure which path? <strong>Guided-manual</strong> is the safest — it never sees your admin credentials. All three end the same way: a least-privilege runtime key saved to this container.</p>
 </div>
 
 <div class="modes">
-  <a class="mode-card" href="{{ url_for('gui.provision_manual') }}">
-    <span class="tag">No admin creds</span>
+  <a class="card mode-card" href="{{ url_for('gui.provision_manual') }}">
+    <span class="eyebrow">No admin creds</span>
     <h3>Guided-manual</h3>
-    <p>We render the exact least-privilege IAM policy and walk you through creating the bucket in the AWS console. You validate the key you make.</p>
+    <p class="hint">We render the exact least-privilege IAM policy and walk you through creating the bucket in the AWS console. You validate the key you make.</p>
     <span class="go">Walk me through it →</span>
   </a>
-  <a class="mode-card" href="{{ url_for('gui.provision_scripted') }}">
-    <span class="tag">Your shell</span>
+  <a class="card mode-card" href="{{ url_for('gui.provision_scripted') }}">
+    <span class="eyebrow">Your shell</span>
     <h3>Scripted</h3>
-    <p>Run <code>setup.sh</code> from a shell that already has your admin credentials. They never touch this container.</p>
+    <p class="hint">Run <code>setup.sh</code> from a shell that already has your admin credentials. They never touch this container.</p>
     <span class="go">Show the command →</span>
   </a>
-  <a class="mode-card" href="{{ url_for('gui.provision_automated') }}">
-    <span class="tag">Transient creds</span>
+  <a class="card mode-card" href="{{ url_for('gui.provision_automated') }}">
+    <span class="eyebrow">Transient creds</span>
     <h3>Automated</h3>
-    <p>Paste short-lived admin credentials. We create the bucket with OpenTofu, save the runtime key, and discard the admin creds.</p>
+    <p class="hint">Paste short-lived admin credentials. We create the bucket with OpenTofu, save the runtime key, and discard the admin creds.</p>
     <span class="go">Provision for me →</span>
   </a>
 </div>

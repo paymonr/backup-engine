@@ -4,8 +4,8 @@
 <h1>Scripted setup</h1>
 <p class="lead">Run this from a shell that already has your AWS <strong>admin</strong> credentials (<code>AWS_PROFILE</code> or <code>AWS_ACCESS_KEY_ID</code> / <code>AWS_SECRET_ACCESS_KEY</code>). Admin creds stay in your shell — this container never sees them.</p>
 
-<div class="note">
-  <h3>Before you begin</h3>
+<div class="card">
+  <h2>Before you begin</h2>
   <p>You need the repo checked out on a machine with <code>aws</code> and <code>tofu</code> (OpenTofu) installed, and admin credentials active in that shell. A good bucket name is <code>unraid-backup-&lt;your-account-id&gt;</code> to match the automated mode.</p>
 </div>
 
@@ -15,8 +15,8 @@
   <p class="hint">It wraps <code>tofu apply</code> — creating the bucket and a least-privilege IAM user — and prints the runtime key/secret + region/bucket.</p>
 </div>
 
-<div class="note">
-  <h3>What's next</h3>
+<div class="card">
+  <h2>What's next</h2>
   <p>Paste the printed key/secret into <a href="{{ url_for('gui.config_page') }}">Config</a> (or re-run <a href="{{ url_for('gui.provision_manual') }}">Test &amp; Validate</a> in guided-manual mode). Then set <code>RESTIC_PASSWORD</code>, and create your first backup job from <a href="{{ url_for('gui.jobs_page') }}">Jobs</a>.</p>
 </div>
 {% endblock %}
