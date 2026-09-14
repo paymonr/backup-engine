@@ -8,6 +8,7 @@ from app.estimator.model import (
     JobInputs, Scenario, estimate, project, restore_cost, rotation_monthly,
 )
 from app.gui import estimate_io
+from app.estimator import cli
 
 PT = load_prices("us-east-1")
 
@@ -80,7 +81,7 @@ def test_restore_cold_includes_temporary_standard_copy():
     j = _job(storage_class="DEEP_ARCHIVE", size_gb=1000.0, file_count=1000)
     with_copy = restore_cost(j, Scenario(jobs=(j,), retrieval_tier="Bulk", restore_copy_days=7), PT, 1.0)
     without = restore_cost(j, Scenario(jobs=(j,), retrieval_tier="Bulk", restore_copy_days=0), PT, 1.0)
-    assert (with_copy - without) == pytest.approx(1000 * PT.storage_gb_month["STANDARD"] * 7 / 30, rel=1e-6)
+    assert (with_copy - without) == pytest.approx(1000 * PT.storage_gb_month["STANDARD"] * 7 / 30.4, rel=1e-6)
 
 
 # --- Egress free tier -----------------------------------------------------------
@@ -99,3 +100,19 @@ def test_projection_bundle_no_versioning_zeroes_count_and_keep_all():
         nov = b["comparison"]["no_versioning"]["months"][-1]["versioning"]
         assert prim > 0                       # the job DOES have versioning cost
         assert nov == pytest.approx(0.0)      # "no versioning" overlay truly zeroes it
+
+
+# --- N5: the CLI over-time block labels unbounded / not-yet-reached honestly -----
+def test_cli_over_time_labels_keep_all_as_growing():
+    j = _job(retention_type="keep_all", change_rate_pct=10)
+    scn = Scenario(jobs=(j,))
+    out = cli.render_table(estimate(scn, PT), project(scn, PT, 24))
+    assert "growing" in out.lower() and "no steady state" in out.lower()
+    assert "steady (mo  1)" not in out            # must NOT claim it settled at month 1
+
+
+def test_cli_over_time_flags_count_not_reached_within_horizon():
+    j = _job(retention_type="count", retention_count=1000, backups_per_month=30)
+    scn = Scenario(jobs=(j,))
+    out = cli.render_table(estimate(scn, PT), project(scn, PT, 24))
+    assert "not reached" in out.lower()

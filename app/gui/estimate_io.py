@@ -8,7 +8,7 @@ from dataclasses import asdict, replace
 from typing import Mapping
 from . import config_io, jobs_io, storage_advice
 from ..estimator.model import (
-    JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days, estimate,
+    JobInputs, Scenario, STORAGE_CLASSES, estimate,
     restore_cost, project, job_retention_days, cold_lockin_onetime, upfront_onetime,
     effective_object_count,
 )

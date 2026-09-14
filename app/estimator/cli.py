@@ -77,13 +77,19 @@ def render_table(est: Estimate, proj=None) -> str:
     if proj is not None and proj.months:
         m1 = proj.months[0]
         m12 = proj.months[min(11, len(proj.months) - 1)]
-        steady = proj.months[min(proj.steady_state_month - 1, len(proj.months) - 1)]
+        last = proj.months[-1]
         lines += [
             "", "OVER TIME (monthly bill)",
             f"  month 1             ${m1.total:,.2f}",
             f"  month 12            ${m12.total:,.2f}",
-            f"  steady (mo {proj.steady_state_month:>2})       ${steady.total:,.2f}",
         ]
+        if proj.unbounded:
+            lines.append(f"  month {len(proj.months):>2} (growing) ${last.total:,.2f}   (Keep everything — no steady state)")
+        elif proj.steady_state_month > len(proj.months):
+            lines.append(f"  month {len(proj.months):>2}            ${last.total:,.2f}   (steady not reached until mo {proj.steady_state_month})")
+        else:
+            steady = proj.months[proj.steady_state_month - 1]
+            lines.append(f"  steady (mo {proj.steady_state_month:>2})       ${steady.total:,.2f}")
     return "\n".join(lines)
 
 def main(argv: list[str] | None = None) -> int:

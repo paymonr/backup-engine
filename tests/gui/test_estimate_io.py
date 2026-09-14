@@ -4,7 +4,6 @@ import json
 import pathlib
 import pytest
 from app.gui import estimate_io
-from app.estimator.model import effective_retention_days
 from app.estimator.schedule import backups_per_month
 
 SRC = "/backup/media"  # source_root is unused by the adapter today (reserved)

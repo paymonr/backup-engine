@@ -40,8 +40,8 @@ class JobInputs:
     # "days" -> the day-window formula above (versioning_retention_days); "count"
     # -> bounded by retention_count versions, independent of any day window;
     # "keep_all" -> unbounded, grows for the full projection horizon. A restic
-    # "tiered" policy is mapped to "days" upstream (via effective_retention_days),
-    # so this field never carries "tiered" itself.
+    # "tiered" policy is mapped upstream to "count" = the sum of its keep tiers
+    # (sparse retained snapshots), so this field never carries "tiered" itself.
     retention_type: str = "days"
     retention_count: int = 0
 
@@ -174,8 +174,8 @@ def _effective_lifetime_days(p: JobInputs, scenario: Scenario) -> float:
     if p.retention_type == "keep_all":
         return float("inf")
     if p.retention_type == "count":
-        if p.backups_per_month <= 0:
-            return float("inf")
+        if p.retention_count <= 0 or p.backups_per_month <= 0:
+            return float("inf")  # no versions kept / no cadence -> nothing to early-delete
         return (p.retention_count / p.backups_per_month) * _DAYS_PER_MONTH
     return job_retention_days(p, scenario)
 
@@ -235,7 +235,7 @@ def restore_cost(p: JobInputs, scenario: Scenario, prices: PriceTable, fraction:
     cost += restored_objects * prices.retrieval_request_rate(p.storage_class, tier) / 1000
     # Glacier/Deep-Archive stage a temporary S3 Standard copy for the restore window.
     if p.storage_class in prices.cold_overhead_classes:
-        cost += restored_gb * _rate(prices, "STANDARD") * (scenario.restore_copy_days / 30)
+        cost += restored_gb * _rate(prices, "STANDARD") * (scenario.restore_copy_days / _DAYS_PER_MONTH)
     return cost
 
 def _line_items(p: JobInputs, scenario: Scenario, prices: PriceTable) -> LineItems:
