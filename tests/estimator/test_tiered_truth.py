@@ -24,15 +24,14 @@ SC = {
 }
 
 
-def _close(pred, truth, rel=0.06, abs_small=0.016):
-    """Real-restic monthly values carry RNG noise (random file choice), and the
-    early months of a WEEKLY schedule (4 backups/month, ~20 churned files each)
-    are discrete and calendar-phase sensitive. Allow 6% relative, or 0.012 of the
-    dataset absolute (~1% of size, cents on a real job) when the truth is small.
-    Measured: every daily scenario is within 1.2% in every month; the weekly
-    scenario's months 2-4 sit <= 0.015 absolute ABOVE the real binary (the model
-    retains slightly more, early, for a sparse weekly cadence), steady 0.4%."""
-    return abs(pred - truth) <= abs_small if truth < 0.2 else abs(pred - truth) / truth <= rel
+def _close(pred, truth, rel=0.03, abs_small=0.005):
+    """Measured against the real restic 0.17.3 binary (30-day bucketing on both
+    sides — the fixture is rebuilt from per-backup timestamps, NOT the experiment's
+    4-backup 'weekly months', which drifted 2 days/month and looked like a ramp
+    error): worst any-month error 1.22%, worst steady 0.81%, across 7 scenarios.
+    Allow 3% relative, or 0.005 of the dataset absolute when the truth is tiny
+    (residual is RNG noise from random file selection)."""
+    return abs(pred - truth) <= abs_small if truth < 0.05 else abs(pred - truth) / truth <= rel
 
 
 @pytest.mark.parametrize("sid", sorted(SC))
@@ -46,7 +45,9 @@ def test_matches_real_restic_every_month(sid):
 @pytest.mark.parametrize("sid", sorted(SC))
 def test_matches_real_restic_steady_state(sid):
     # Measured model-vs-real steady error was <1% on every scenario; allow 3%.
-    pred = tiered.steady_fraction(*SC[sid], months=24, start=START)
+    n = len(REAL[sid]["months"])            # compare over the SAME last-6 window
+    months = tiered.old_fraction_by_month(*SC[sid], months=n, start=START)
+    pred = sum(months[-6:]) / 6
     truth = REAL[sid]["steady"]
     assert abs(pred - truth) / truth <= 0.03, f"{sid}: {pred:.4f} vs real {truth:.4f}"
 
