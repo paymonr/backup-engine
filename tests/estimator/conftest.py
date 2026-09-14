@@ -18,7 +18,10 @@ TEST_PRICES_DICT = {
             "GLACIER": {"Bulk": 0.0025, "Standard": 0.01, "Expedited": 0.03},
             "DEEP_ARCHIVE": {"Bulk": 0.0025, "Standard": 0.02},
         },
-        "request_per_1k": {"Bulk": 0.025, "Standard": 0.05, "Expedited": 10.0},
+        "request_per_1k": {
+            "GLACIER": {"Bulk": 0.025, "Standard": 0.05, "Expedited": 10.0},
+            "DEEP_ARCHIVE": {"Bulk": 0.025, "Standard": 0.05},
+        },
     },
     "data_transfer_out_per_gb": 0.10,
     "constraints": {

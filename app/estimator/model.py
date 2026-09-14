@@ -53,6 +53,8 @@ class Scenario:
     restore_fraction: float = 1.0
     restores_per_year: float = 1.0
     retrieval_tier: str = "Bulk"
+    # Days a Glacier/Deep-Archive restore keeps its temporary S3 Standard copy.
+    restore_copy_days: float = 7.0
 
 @dataclass
 class LineItems:
@@ -90,6 +92,10 @@ class Projection:
     months: list[MonthPoint]
     steady_state_month: int
     steady_state_monthly: float
+    # True when any job never plateaus (a keep_all "Keep everything" policy): the
+    # curve grows for the whole horizon and steady_state_* is NOT a real plateau —
+    # callers should present the horizon value + growth, not "settles at $X".
+    unbounded: bool = False
 
 def _rate(prices: PriceTable, storage_class: str) -> float:
     if storage_class not in STORAGE_CLASSES:
@@ -158,8 +164,20 @@ def versioning_monthly(p: JobInputs, scenario: Scenario, prices: PriceTable) -> 
     else:
         retention = job_retention_days(p, scenario)
         noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * (
-            p.backups_per_month * retention / 30)
+            p.backups_per_month * retention / _DAYS_PER_MONTH)
     return noncurrent_gb * _rate(prices, p.storage_class)
+
+def _effective_lifetime_days(p: JobInputs, scenario: Scenario) -> float:
+    """How long a churned (now-noncurrent) version actually lives under the policy,
+    before the early-deletion comparison against the class minimum. keep_all -> never
+    deleted (inf); count -> time to accrue `count` newer versions; days -> the window."""
+    if p.retention_type == "keep_all":
+        return float("inf")
+    if p.retention_type == "count":
+        if p.backups_per_month <= 0:
+            return float("inf")
+        return (p.retention_count / p.backups_per_month) * _DAYS_PER_MONTH
+    return job_retention_days(p, scenario)
 
 def ingest_monthly(p: JobInputs, prices: PriceTable) -> float:
     new_objects_per_backup = effective_object_count(p) * (p.change_rate_pct / 100)
@@ -175,34 +193,49 @@ def cold_lockin_onetime(p: JobInputs, prices: PriceTable) -> float:
     min_days = prices.min_storage_duration_days.get(p.storage_class, 0)
     if not min_days:
         return 0.0
-    return billed_gb(p, prices) * _rate(prices, p.storage_class) * (min_days / 30)
+    return billed_gb(p, prices) * _rate(prices, p.storage_class) * (min_days / _DAYS_PER_MONTH)
 
 def rotation_monthly(p: JobInputs, scenario: Scenario, prices: PriceTable) -> float:
+    """Early-deletion penalty for churned versions on a min-duration class — the
+    SHORTFALL only. A version deleted after it has already lived >= the class
+    minimum incurs $0 (its storage is the normal versioning term); only versions
+    whose retention lifetime is SHORTER than the minimum owe the remaining days.
+    (Previously charged the full minimum on every churned byte, double-counting the
+    versioning term by up to 100% whenever retention >= the minimum.)"""
     min_days = prices.min_storage_duration_days.get(p.storage_class, 0)
     if not min_days:
         return 0.0
+    shortfall_days = max(0.0, min_days - _effective_lifetime_days(p, scenario))
+    if shortfall_days <= 0:
+        return 0.0
     rotated_gb_per_month = p.size_gb * (p.change_rate_pct / 100) * p.backups_per_month
-    return rotated_gb_per_month * _rate(prices, p.storage_class) * (min_days / 30)
+    return rotated_gb_per_month * _rate(prices, p.storage_class) * (shortfall_days / _DAYS_PER_MONTH)
 
 def _retrieval_per_gb(storage_class: str, tier: str, prices: PriceTable) -> float:
     table = prices.retrieval_per_gb.get(storage_class)
-    if table is None:
+    if not table:
         return 0.0  # warm class (e.g. STANDARD): no retrieval fee
     if tier in table:
         return table[tier]
-    if storage_class in ("GLACIER", "DEEP_ARCHIVE"):
-        raise ValueError(f"retrieval tier '{tier}' not available for {storage_class}")
-    return next(iter(table.values()))  # non-tiered cold (IA/GLACIER_IR): single rate
+    # Tier not offered for this class (e.g. Deep Archive has no Expedited). Fall
+    # back to Standard, else the single available rate — never raise, since the
+    # class+tier combo is user-selectable and must not 500 the estimate.
+    return table.get("Standard", next(iter(table.values())))
 
 def restore_cost(p: JobInputs, scenario: Scenario, prices: PriceTable, fraction: float) -> float:
     restored_gb = p.size_gb * fraction
     restored_objects = effective_object_count(p) * fraction
-    cost = restored_gb * prices.data_transfer_out_per_gb + restored_objects * prices.get_per_1k / 1000
-    per_gb = _retrieval_per_gb(p.storage_class, scenario.retrieval_tier, prices)
-    if per_gb:
-        cost += restored_gb * per_gb
-        if p.storage_class in ("GLACIER", "DEEP_ARCHIVE"):
-            cost += restored_objects * prices.retrieval_request_per_1k[scenario.retrieval_tier] / 1000
+    tier = scenario.retrieval_tier
+    # Egress (monthly free allowance + cumulative tiers) + per-class GET requests.
+    cost = prices.egress_cost(restored_gb) + restored_objects * prices.get_rate(p.storage_class) / 1000
+    # Cold-class thaw: per-GB retrieval + per-request retrieval. Both are gated on
+    # the CLASS, not on a truthy per-GB rate — Glacier Bulk is free per-GB yet
+    # still bills a per-request fee (was silently dropped by an `if per_gb:` gate).
+    cost += restored_gb * _retrieval_per_gb(p.storage_class, tier, prices)
+    cost += restored_objects * prices.retrieval_request_rate(p.storage_class, tier) / 1000
+    # Glacier/Deep-Archive stage a temporary S3 Standard copy for the restore window.
+    if p.storage_class in prices.cold_overhead_classes:
+        cost += restored_gb * _rate(prices, "STANDARD") * (scenario.restore_copy_days / 30)
     return cost
 
 def _line_items(p: JobInputs, scenario: Scenario, prices: PriceTable) -> LineItems:
@@ -221,9 +254,12 @@ def estimate(scenario: Scenario, prices: PriceTable) -> Estimate:
     jobs = {j.name: _line_items(j, scenario, prices) for j in scenario.jobs}
     monthly = sum(li.storage + li.versioning + li.ingest_monthly + li.rotation_monthly
                   for li in jobs.values())
-    upfront = sum(li.upfront_onetime for li in jobs.values())
     annual_restore = sum(li.restore_per_event for li in jobs.values()) * scenario.restores_per_year
-    first_year = 12 * monthly + upfront + annual_restore
+    # First-year from the RAMPED 12-month path (the months already fold in the
+    # month-1 one-time upload + the versioning ramp), so days/count jobs aren't
+    # over-charged a full year of steady versioning and keep_all's growth is counted
+    # instead of a flat month-1 figure — rather than a flat 12 * steady monthly.
+    first_year = sum(m.total for m in project(scenario, prices, months=12).months) + annual_restore
     full_restore = sum(restore_cost(j, scenario, prices, 1.0) for j in scenario.jobs)
     return Estimate(prices.date, prices.source, prices.region, jobs,
                     monthly, first_year, full_restore)
@@ -305,7 +341,12 @@ def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Project
             if t == 1:
                 one += jup
         pts.append(MonthPoint(t, s, v, ing, rot, one, s + v + ing + rot + one))
-    steady_month = min(months, max_plateau_month) if max_plateau_month else 1
+    unbounded = any(j.retention_type == "keep_all" for j in scenario.jobs)
+    # Report the TRUE plateau month even if it exceeds `months` (a count policy that
+    # can't accrue N versions within the horizon hasn't reached steady state — don't
+    # clamp it to the horizon and pretend it has). keep_all never plateaus -> 1 here,
+    # but `unbounded` tells callers to disregard steady_state_* entirely.
+    steady_month = max_plateau_month if max_plateau_month else 1
     steady_monthly = sum(store + sv + ing + rot
                          for store, sv, ing, rot, _up, _rt, _ret, _rc, _bpm in per_job)
-    return Projection(pts, steady_month, steady_monthly)
+    return Projection(pts, steady_month, steady_monthly, unbounded)

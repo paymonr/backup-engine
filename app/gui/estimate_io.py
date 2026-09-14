@@ -88,11 +88,14 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
     # re-reading `keep`/`retention_days` directly.
     policy = jobs_io._normalize_retention(job, engine)
     if policy["type"] == "tiered":
-        # restic keep-policy proxy: collapses to the "days" shape (unchanged
-        # from today) via the furthest-back-tier day window.
-        retention_type, retention_count = "days", 0
-        retention_days = effective_retention_days(**{f"keep_{k}": int(policy["keep"].get(k, 0))
-                                                      for k in ("last", "daily", "weekly", "monthly")})
+        # A restic tiered keep policy retains a SPARSE set of snapshots (~the sum of
+        # the keep tiers), not one per backup — so model it as a "count" of that many
+        # noncurrent snapshots. The old days-window x backups_per_month formula
+        # overstated tiered versioning ~10x for daily backups (e.g. last3/daily7/
+        # weekly4/monthly6 -> ~20 snapshots, not 180 backups over a 180-day window).
+        keep = policy["keep"]
+        snapshots = sum(max(0, int(keep.get(k, 0))) for k in ("last", "daily", "weekly", "monthly"))
+        retention_type, retention_count, retention_days = "count", max(1, snapshots), None
     elif policy["type"] == "count":
         retention_type, retention_count, retention_days = "count", policy["count"], None
     elif policy["type"] == "keep_all":
@@ -320,6 +323,8 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
             # What you'll actually pay across the first six months (cumulative),
             # so the card can answer "what does the next half-year cost me?".
             "total_6mo": sum(m.total for m in ms[:6]),
+            # keep_all never plateaus: the card must show growth, not a fake "settles at".
+            "unbounded": proj.unbounded,
         },
         "breakdown": {
             "billed_gb": li.billed_gb,
@@ -342,9 +347,14 @@ def projection_bundle(scenario: Scenario, prices, months: int = 24) -> dict:
     primary = project(scenario, prices, months)
 
     def _retagged(scn, cap):
+        # Neutralize by POLICY SHAPE, not just the day-window: count/keep_all jobs
+        # ignore versioning_retention_days, so ALSO force them onto a "days" policy
+        # with the capped window — otherwise the no_versioning / rolling_30 overlay
+        # curves are silent no-ops for count/keep_all jobs (they'd match primary).
         return replace(
             scn,
-            jobs=tuple(replace(j, versioning_retention_days=cap(job_retention_days(j, scn)))
+            jobs=tuple(replace(j, retention_type="days", retention_count=0,
+                               versioning_retention_days=cap(job_retention_days(j, scn)))
                        for j in scn.jobs),
             versioning_retention_days=cap(scn.versioning_retention_days),
         )

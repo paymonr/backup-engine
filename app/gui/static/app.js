@@ -334,8 +334,21 @@
       return;
     }
     var first = p.first_bill || 0, steady = p.steady_monthly || 0;
-    var flat = Math.abs(first - steady) < 0.005;
     var sixmo = (p.total_6mo != null) ? money(p.total_6mo) : "—";
+    if (p.unbounded) {
+      // keep_all ("Keep everything"): never settles — show the growth, not a plateau.
+      futureEl.textContent = "Keeps growing — “Keep everything” has no steady state: " +
+        "versions pile up to ~" + money(p.at_12) + "/mo by year 1, ~" + money(p.at_24) +
+        "/mo by year 2, and rising. About " + sixmo + " total over the next 6 months.";
+      futureEl.hidden = false;
+      if (milestonesEl) {
+        milestonesEl.textContent = "Monthly bill — M1 " + money(first) + " · M6 " + money(p.at_6) +
+          " · M12 " + money(p.at_12) + " · M24 " + money(p.at_24) + " (climbing).";
+        milestonesEl.hidden = false;
+      }
+      return;
+    }
+    var flat = Math.abs(first - steady) < 0.005;
     if (flat) {
       futureEl.textContent = "≈ " + money(steady) + "/mo, steady — no monthly increase. " +
         "About " + sixmo + " total over the next 6 months.";

@@ -37,8 +37,8 @@ def test_storage_monthly_warm(prices):
 def test_versioning_monthly_scales_with_retention(prices):
     p = J(20, 5, "STANDARD", backups_per_month=30, change_rate_pct=10)
     s = _scn(p, versioning_retention_days=30)
-    # 20 * 0.10 * (30 * 30 / 30) = 60 GB noncurrent; * 0.02 = 1.20
-    assert math.isclose(versioning_monthly(p, s, prices), 1.20)
+    # backups-in-window uses 30.4-day months: 20 * 0.10 * (30 * 30 / 30.4) GB * 0.02
+    assert math.isclose(versioning_monthly(p, s, prices), 20 * 0.10 * (30 * 30 / 30.4) * 0.02)
 
 def test_ingest_monthly_counts_changed_objects(prices):
     p = J(20, 5, "STANDARD", backups_per_month=30, change_rate_pct=10)
@@ -53,9 +53,20 @@ def test_rotation_zero_for_warm_class(prices):
     assert rotation_monthly(p, _scn(p), prices) == 0.0
 
 def test_rotation_charges_min_duration_for_cold_churn(prices):
+    # retention 30d < min 180d -> early-deletion SHORTFALL of 150d is charged (not
+    # the full 180). rotated/mo = 2000 * 0.01 * 4 = 80 GB; * 0.001 * (150/30.4).
     p = J(2000, 50000, "DEEP_ARCHIVE", backups_per_month=4, change_rate_pct=1)
-    # rotated/mo = 2000 * 0.01 * 4 = 80 GB; * 0.001 * (180/30) = 0.48
-    assert math.isclose(rotation_monthly(p, _scn(p), prices), 0.48)
+    s = _scn(p, versioning_retention_days=30)
+    assert math.isclose(rotation_monthly(p, s, prices), 80 * 0.001 * ((180 - 30) / 30.4))
+
+def test_rotation_zero_when_retention_meets_minimum(prices):
+    # retention >= class minimum -> no early deletion -> rotation is $0 (the version's
+    # storage is already covered by the versioning term; charging min_days would double-count).
+    p = J(2000, 50000, "DEEP_ARCHIVE", backups_per_month=4, change_rate_pct=1)
+    s = _scn(p, versioning_retention_days=180)      # == the 180d minimum
+    assert rotation_monthly(p, s, prices) == 0.0
+    s2 = _scn(p, versioning_retention_days=365)     # well beyond the minimum
+    assert rotation_monthly(p, s2, prices) == 0.0
 
 def test_restore_warm_class_has_no_retrieval_fee(prices):
     p = J(10, 100, "STANDARD")
@@ -82,11 +93,13 @@ def test_restore_standard_ia_uses_single_rate_and_no_request_fee(prices):
     expected = 10 * 0.10 + 100 * 0.0004 / 1000 + 10 * 0.01
     assert math.isclose(restore_cost(p, s, prices, 1.0), expected)
 
-def test_unknown_retrieval_tier_raises(prices):
+def test_unavailable_retrieval_tier_falls_back_to_standard(prices):
+    # Deep Archive has no Expedited tier. The model must NOT raise (a user-selectable
+    # class+tier combo cannot 500 the estimate); it falls back to Standard pricing.
     p = J(2000, 50000, "DEEP_ARCHIVE")
-    with pytest.raises(ValueError) as e:
-        restore_cost(p, _scn(p, retrieval_tier="Warp"), prices, 1.0)
-    assert "Warp" in str(e.value)
+    got = restore_cost(p, _scn(p, retrieval_tier="Expedited"), prices, 1.0)
+    std = restore_cost(p, _scn(p, retrieval_tier="Standard"), prices, 1.0)
+    assert math.isclose(got, std)
 
 def test_storage_monthly_raises_for_unknown_storage_class(prices):
     with pytest.raises(ValueError):
@@ -95,13 +108,13 @@ def test_storage_monthly_raises_for_unknown_storage_class(prices):
 def test_versioning_monthly_uses_per_job_retention_override(prices):
     p = J(20, 5, "STANDARD", backups_per_month=30, change_rate_pct=10, versioning_retention_days=60)
     s = _scn(p, versioning_retention_days=30)
-    # uses 60, not 30: 20 * 0.10 * (30 * 60 / 30) = 120 GB; * 0.02 = 2.40
-    assert math.isclose(versioning_monthly(p, s, prices), 2.40)
+    # uses 60, not 30: 20 * 0.10 * (30 * 60 / 30.4) GB * 0.02
+    assert math.isclose(versioning_monthly(p, s, prices), 20 * 0.10 * (30 * 60 / 30.4) * 0.02)
 
 def test_versioning_monthly_falls_back_to_scenario_retention(prices):
     p = J(20, 5, "STANDARD", backups_per_month=30, change_rate_pct=10)
     s = _scn(p, versioning_retention_days=30)
-    assert math.isclose(versioning_monthly(p, s, prices), 1.20)
+    assert math.isclose(versioning_monthly(p, s, prices), 20 * 0.10 * (30 * 30 / 30.4) * 0.02)
 
 def test_effective_retention_days_reaches_furthest_tier():
     assert effective_retention_days(keep_last=3, keep_daily=7, keep_weekly=4, keep_monthly=6) == 180
@@ -176,8 +189,9 @@ def test_job_retention_days_falls_back_to_scenario():
     assert job_retention_days(j2, _scn(j2, versioning_retention_days=45)) == 90
 
 def test_cold_lockin_deep_archive(prices):
-    # billed_gb=2000 (size dominates floor); 2000 * 0.001 * (180/30) = 12.0
-    assert math.isclose(cold_lockin_onetime(J(2000, 50000, "DEEP_ARCHIVE"), prices), 12.0)
+    # billed_gb=2000 (size dominates floor); 2000 * 0.001 * (180/30.4)
+    assert math.isclose(cold_lockin_onetime(J(2000, 50000, "DEEP_ARCHIVE"), prices),
+                        2000 * 0.001 * (180 / 30.4))
 
 def test_cold_lockin_zero_for_standard(prices):
     assert cold_lockin_onetime(J(20, 5, "STANDARD"), prices) == 0.0
@@ -192,10 +206,11 @@ def test_project_length_and_steady_month(prices):
 def test_project_versioning_ramps_then_plateaus(prices):
     j = _ramp_job()
     m = project(_scn(j), prices, months=24).months
-    # steady versioning = 20 * 0.10 * (30*90/30) = 180 GB * 0.02 = 3.60
+    # steady versioning = 20 * 0.10 * (30*90/30.4) GB * 0.02; plateau at month 3
+    steady = 20 * 0.10 * (30 * 90 / 30.4) * 0.02
     assert m[0].versioning < m[1].versioning < m[2].versioning
-    assert math.isclose(m[2].versioning, 3.60, rel_tol=1e-9)   # filled at month 3
-    assert math.isclose(m[23].versioning, m[2].versioning)     # flat after plateau
+    assert math.isclose(m[2].versioning, steady, rel_tol=1e-9)   # filled at month 3
+    assert math.isclose(m[23].versioning, m[2].versioning)       # flat after plateau
 
 def test_project_month1_carries_onetime_only(prices):
     j = _ramp_job()

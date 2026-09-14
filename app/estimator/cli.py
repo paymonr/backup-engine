@@ -94,7 +94,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         scenario = build_scenario(args)
         prices = load_prices(scenario.region)
-        if scenario.retrieval_tier not in prices.retrieval_request_per_1k:
+        valid_tiers = ({t for m in prices.retrieval_request_per_1k.values() for t in m}
+                       | {t for m in prices.retrieval_per_gb.values() for t in m})
+        if scenario.retrieval_tier not in valid_tiers:
             raise ValueError(f"unknown retrieval tier '{scenario.retrieval_tier}'")
         est = estimate(scenario, prices)
         proj = project(scenario, prices)

@@ -15,7 +15,13 @@
       "STANDARD": 0.005, "STANDARD_IA": 0.01, "GLACIER_IR": 0.02, "GLACIER": 0.03, "DEEP_ARCHIVE": 0.05
     },
     "get_per_1k": 0.0004,
-    "lifecycle_transition_per_1k": 0.05
+    "get_per_1k_by_class": {
+      "STANDARD": 0.0004, "STANDARD_IA": 0.001, "GLACIER_IR": 0.01, "GLACIER": 0.0004, "DEEP_ARCHIVE": 0.0004
+    },
+    "lifecycle_transition_per_1k": 0.05,
+    "lifecycle_transition_per_1k_by_class": {
+      "STANDARD_IA": 0.01, "GLACIER_IR": 0.02, "GLACIER": 0.03, "DEEP_ARCHIVE": 0.05
+    }
   },
   "retrieval": {
     "per_gb": {
@@ -24,9 +30,21 @@
       "GLACIER": { "Bulk": 0.0, "Standard": 0.01, "Expedited": 0.03 },
       "DEEP_ARCHIVE": { "Bulk": 0.0025, "Standard": 0.02 }
     },
-    "request_per_1k": { "Bulk": 0.025, "Standard": 0.05, "Expedited": 10.0 }
+    "request_per_1k": {
+      "GLACIER": { "Bulk": 0.0, "Standard": 0.05, "Expedited": 10.0 },
+      "DEEP_ARCHIVE": { "Bulk": 0.025, "Standard": 0.10 }
+    }
   },
   "data_transfer_out_per_gb": 0.09,
+  "data_transfer_out": {
+    "free_gb_per_month": 100,
+    "tiers": [
+      { "up_to_gb": 10240, "rate": 0.09 },
+      { "up_to_gb": 51200, "rate": 0.085 },
+      { "up_to_gb": 153600, "rate": 0.07 },
+      { "up_to_gb": null, "rate": 0.05 }
+    ]
+  },
   "constraints": {
     "min_billable_object_kb": 128,
     "min_billable_classes": ["STANDARD_IA", "GLACIER_IR"],

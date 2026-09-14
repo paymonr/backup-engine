@@ -16,7 +16,9 @@ class PriceTable:
     get_per_1k: float
     lifecycle_transition_per_1k: float
     retrieval_per_gb: dict[str, dict[str, float]]
-    retrieval_request_per_1k: dict[str, float]
+    # Per-class, per-tier restore-request price: {storage_class: {tier: $/1k}}.
+    # Only the async-restore classes (GLACIER / DEEP_ARCHIVE) carry these.
+    retrieval_request_per_1k: dict[str, dict[str, float]]
     data_transfer_out_per_gb: float
     min_billable_object_kb: float
     min_storage_duration_days: dict[str, int]
@@ -32,10 +34,53 @@ class PriceTable:
     cold_overhead_classes: tuple[str, ...] = ()
     cold_overhead_standard_kb: float = 0.0
     cold_overhead_archive_kb: float = 0.0
+    # Per-class GET price (IA/GIR cost more than the flat STANDARD rate). Empty ->
+    # every class uses the flat get_per_1k.
+    get_per_1k_by_class: dict[str, float] = field(default_factory=dict)
+    # Per-destination lifecycle-transition price (currently unused by the model —
+    # jobs write directly to their class, no Standard-then-lifecycle round trip).
+    lifecycle_transition_per_1k_by_class: dict[str, float] = field(default_factory=dict)
+    # Internet egress: monthly free allowance + cumulative tiers [(up_to_gb|None, rate)].
+    # Empty tiers -> flat data_transfer_out_per_gb from the first GB (legacy).
+    egress_free_gb: float = 0.0
+    egress_tiers: tuple[tuple, ...] = ()
 
     def put_rate(self, storage_class: str) -> float:
         """PUT $/1k for a class — its own rate if the table carries one, else the flat rate."""
         return self.put_per_1k_by_class.get(storage_class, self.put_per_1k)
+
+    def get_rate(self, storage_class: str) -> float:
+        """GET $/1k for a class — its own rate if present, else the flat rate."""
+        return self.get_per_1k_by_class.get(storage_class, self.get_per_1k)
+
+    def retrieval_request_rate(self, storage_class: str, tier: str) -> float:
+        """Restore-request $/1k for a cold class + tier, 0.0 if the class has none
+        (warm classes) or the tier isn't offered (falls back to the class's Standard)."""
+        by_class = self.retrieval_request_per_1k.get(storage_class)
+        if not by_class:
+            return 0.0
+        if tier in by_class:
+            return by_class[tier]
+        return by_class.get("Standard", 0.0)
+
+    def egress_cost(self, gb: float) -> float:
+        """Internet-egress $ for `gb` this month: the free allowance is subtracted
+        first, then cumulative tiers apply. Falls back to the flat rate if no tiers."""
+        billable = max(0.0, gb - self.egress_free_gb)
+        if not self.egress_tiers:
+            return billable * self.data_transfer_out_per_gb
+        cost = 0.0
+        prev = 0.0
+        remaining = billable
+        for up_to, rate in self.egress_tiers:
+            if remaining <= 0:
+                break
+            span = (up_to - prev) if up_to is not None else remaining
+            take = min(remaining, max(0.0, span))
+            cost += take * rate
+            remaining -= take
+            prev = up_to if up_to is not None else prev
+        return cost
 
     @classmethod
     def from_dict(cls, d: dict) -> "PriceTable":
@@ -43,6 +88,8 @@ class PriceTable:
         ret = d["retrieval"]
         con = d["constraints"]
         overhead = con.get("cold_object_overhead", {})
+        egress = d.get("data_transfer_out", {})
+        egress_tiers = tuple((t.get("up_to_gb"), t["rate"]) for t in egress.get("tiers", ()))
         return cls(
             region=d["region"], date=d["date"], source=d["source"],
             storage_gb_month=d["storage_gb_month"],
@@ -57,6 +104,10 @@ class PriceTable:
             cold_overhead_classes=tuple(overhead.get("classes", ())),
             cold_overhead_standard_kb=overhead.get("standard_tier_kb", 0.0),
             cold_overhead_archive_kb=overhead.get("archive_tier_kb", 0.0),
+            get_per_1k_by_class=req.get("get_per_1k_by_class", {}),
+            lifecycle_transition_per_1k_by_class=req.get("lifecycle_transition_per_1k_by_class", {}),
+            egress_free_gb=egress.get("free_gb_per_month", 0.0),
+            egress_tiers=egress_tiers,
         )
 
 _FALLBACK_REGION = "us-east-1"
