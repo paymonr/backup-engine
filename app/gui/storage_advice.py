@@ -113,3 +113,56 @@ def class_advice(job_type: str, storage_class: str, schedule: str,
                     saved_class, storage_class)})
 
     return out
+
+
+# Positive, plain-language "which to pick and why" for each job type — the
+# recommendation half that pairs with class_advice's caveats. Keyed by the job
+# type's internal value. `recommend_class` is the class to steer toward for that
+# type; `reason` says why. Kept here (not in the template) so the wizard can react
+# to the current selection through the same live-estimate round-trip.
+TYPE_GUIDANCE = {
+    "versioned": {
+        "label": "Versioned & encrypted",
+        "when": ("Configs, databases, and anything you'd want to roll back to a "
+                 "point in time. Encrypted; deduplicated."),
+        "recommend_class": "STANDARD",
+        "reason": ("restic re-reads its repository on every run, so it needs an "
+                   "instant class with no per-read fee. Cold classes aren't "
+                   "usable here, and on a small repo Standard-IA's retrieval and "
+                   "minimum-size fees usually cost more than the cheaper storage "
+                   "saves."),
+    },
+    "archive": {
+        "label": "Bulk archive",
+        "when": "Large, mostly-static media (movies, comics) you rarely restore.",
+        "recommend_class": "DEEP_ARCHIVE",
+        "reason": ("cheapest per-GB and fine for plain media objects. Retrieval is "
+                   "slow (hours) — a good trade when you almost never restore."),
+    },
+    "versioned-files": {
+        "label": "Versioned files",
+        "when": ("Large files you want per-file version history on — even on "
+                 "cheap or cold storage."),
+        "recommend_class": "DEEP_ARCHIVE",
+        "reason": ("stores plain objects, so cold storage works natively (unlike "
+                   "restic snapshots). Pick STANDARD only if you restore often, "
+                   "since cold restores need a thaw first."),
+    },
+}
+
+
+def type_advice(job_type: str, storage_class: str | None = None) -> dict | None:
+    """The positive recommendation for a job type: when to use it, which storage
+    class to prefer, and why — plus whether the currently-selected class already
+    matches the recommendation. Returns None for an unknown type."""
+    g = TYPE_GUIDANCE.get(job_type)
+    if not g:
+        return None
+    rec = g["recommend_class"]
+    return {
+        "type_label": g["label"],
+        "type_when": g["when"],
+        "recommend_class": rec,
+        "class_reason": g["reason"],
+        "on_recommended": (storage_class == rec) if storage_class else None,
+    }

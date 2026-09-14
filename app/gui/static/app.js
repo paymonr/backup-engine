@@ -265,6 +265,8 @@
   var firstEl = document.getElementById("job-cost-first");
   var breakdownEl = document.getElementById("job-cost-breakdown");
   var futureEl = document.getElementById("job-cost-future");
+  var milestonesEl = document.getElementById("job-cost-milestones");
+  var guidanceEl = document.getElementById("job-guidance");
   var timer;
 
   function sizing(on) { if (sizingEl) sizingEl.hidden = !on; }
@@ -321,14 +323,56 @@
     breakdownEl.textContent = parts.join(" · ");
     breakdownEl.hidden = false;
   }
+  // Always shows something (unlike the old ramp-only line): a flat job gets a
+  // "steady, no increase" summary; a ramping job gets start → rise → steady plus
+  // the monthly milestones. Both surface the cumulative next-6-months figure.
   function paintFuture(p) {
     if (!futureEl) return;
-    if (!p || Math.abs((p.first_bill || 0) - (p.steady_monthly || 0)) < 0.005) {
-      futureEl.hidden = true; futureEl.textContent = ""; return;
+    if (!p) {
+      futureEl.hidden = true; futureEl.textContent = "";
+      if (milestonesEl) { milestonesEl.hidden = true; milestonesEl.textContent = ""; }
+      return;
     }
-    futureEl.textContent = "Ramps from " + money(p.first_bill) + " to " + money(p.steady_monthly) +
-      "/mo by month " + p.steady_month + " (at 12 mo: " + money(p.at_12) + ").";
+    var first = p.first_bill || 0, steady = p.steady_monthly || 0;
+    var flat = Math.abs(first - steady) < 0.005;
+    var sixmo = (p.total_6mo != null) ? money(p.total_6mo) : "—";
+    if (flat) {
+      futureEl.textContent = "≈ " + money(steady) + "/mo, steady — no monthly increase. " +
+        "About " + sixmo + " total over the next 6 months.";
+    } else {
+      futureEl.textContent = "Starts " + money(first) + "/mo and rises " + money(steady - first) +
+        " to " + money(steady) + "/mo by month " + p.steady_month + ". " +
+        "About " + sixmo + " total over the next 6 months.";
+    }
     futureEl.hidden = false;
+    if (milestonesEl) {
+      // Always show the monthly milestones — for a flat job the equal numbers make
+      // "it doesn't grow" concrete rather than leaving the trajectory blank.
+      milestonesEl.textContent = "Monthly bill — M1 " + money(first) + " · M6 " + money(p.at_6) +
+        " · M12 " + money(p.at_12) + " · M24 " + money(p.at_24) + ".";
+      milestonesEl.hidden = false;
+    }
+  }
+  // Reactive "which type / class, and why" — updates through the same live
+  // estimate round-trip whenever the type or storage-class selection changes.
+  function paintGuidance(g) {
+    if (!guidanceEl) return;
+    while (guidanceEl.firstChild) guidanceEl.removeChild(guidanceEl.firstChild);
+    if (!g) { guidanceEl.hidden = true; return; }
+    var when = document.createElement("p");
+    when.className = "advice-item advice-info";
+    when.textContent = g.type_label + " — " + g.type_when;
+    guidanceEl.appendChild(when);
+    var cls = document.createElement("p");
+    if (g.on_recommended === true) {
+      cls.className = "advice-item advice-good";
+      cls.textContent = "✓ " + g.recommend_class + " is the recommended storage class for this type.";
+    } else {
+      cls.className = "advice-item advice-info";
+      cls.textContent = "Recommended storage class: " + g.recommend_class + " — " + g.class_reason;
+    }
+    guidanceEl.appendChild(cls);
+    guidanceEl.hidden = false;
   }
   function paint(data) {
     if (firstEl) firstEl.textContent = money(data && data.projection && data.projection.first_bill);
@@ -338,6 +382,7 @@
     if (restoreEl) restoreEl.textContent = money(data && data.this_job_restore);
     paintBreakdown(data && data.breakdown);
     paintFuture(data && data.projection);
+    paintGuidance(data && data.guidance);
     paintAdvice(data && data.advice);
   }
   function update() {

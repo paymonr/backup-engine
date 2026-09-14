@@ -294,6 +294,7 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
         "new_total_monthly": estimate(total_scn, prices).monthly_total,
         "this_job_restore": this_restore,
         "advice": advice,
+        "guidance": storage_advice.type_advice(engine, cls),
         "projection": {
             "first_bill": ms[0].total,
             "steady_monthly": proj.steady_state_monthly,
@@ -301,6 +302,9 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
             "at_6": ms[min(5, len(ms) - 1)].total,
             "at_12": ms[min(11, len(ms) - 1)].total,
             "at_24": ms[-1].total,
+            # What you'll actually pay across the first six months (cumulative),
+            # so the card can answer "what does the next half-year cost me?".
+            "total_6mo": sum(m.total for m in ms[:6]),
         },
         "breakdown": {
             "billed_gb": li.billed_gb,

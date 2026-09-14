@@ -89,6 +89,40 @@ def test_jobs_estimate_versioned_files_returns_a_number(client):
     assert j["new_total_monthly"] >= j["this_job_monthly"]
 
 
+def test_jobs_estimate_projection_includes_six_month_total(client):
+    r = client.get("/jobs/estimate.json", query_string={
+        "name": "photos", "type": "archive", "source": "movies",
+        "storage_class": "DEEP_ARCHIVE", "schedule": "0 4 * * 0", "size_gb": "500"})
+    assert r.status_code == 200
+    p = r.get_json()["projection"]
+    # The cumulative next-6-months figure the card needs is present, positive, and
+    # at least the first month (it is a sum of >=1 non-negative months).
+    assert isinstance(p["total_6mo"], (int, float))
+    assert p["total_6mo"] >= p["first_bill"] > 0
+    assert p["total_6mo"] >= p["at_6"]
+
+
+def test_jobs_estimate_guidance_recommends_class_per_type(client):
+    # Versioned steers to STANDARD; selecting it flags on_recommended True.
+    v = client.get("/jobs/estimate.json", query_string={
+        "name": "cfg", "type": "versioned", "source": "movies",
+        "storage_class": "STANDARD", "schedule": "0 5 * * *", "size_gb": "5"}).get_json()
+    assert v["guidance"]["recommend_class"] == "STANDARD"
+    assert v["guidance"]["on_recommended"] is True
+    assert v["guidance"]["type_label"] and v["guidance"]["type_when"]
+    # A cold class for a versioned job is NOT the recommendation.
+    v2 = client.get("/jobs/estimate.json", query_string={
+        "name": "cfg", "type": "versioned", "source": "movies",
+        "storage_class": "DEEP_ARCHIVE", "schedule": "0 5 * * *", "size_gb": "5"}).get_json()
+    assert v2["guidance"]["on_recommended"] is False
+    # Archive steers to DEEP_ARCHIVE.
+    a = client.get("/jobs/estimate.json", query_string={
+        "name": "media", "type": "archive", "source": "movies",
+        "storage_class": "DEEP_ARCHIVE", "schedule": "0 4 * * 0", "size_gb": "500"}).get_json()
+    assert a["guidance"]["recommend_class"] == "DEEP_ARCHIVE"
+    assert a["guidance"]["on_recommended"] is True
+
+
 def test_jobs_estimate_new_job_adds_to_existing_total(client):
     base = client.get("/estimate.json").get_json()["monthly_total"]
     r = client.get("/jobs/estimate.json", query_string={
