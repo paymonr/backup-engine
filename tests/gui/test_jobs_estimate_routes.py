@@ -123,6 +123,39 @@ def test_jobs_estimate_guidance_recommends_class_per_type(client):
     assert a["guidance"]["on_recommended"] is True
 
 
+def test_jobs_estimate_warns_and_bundling_fixes_many_small_on_cold(client):
+    # 5M objects / 1000GB ~ 0.2MB avg on DEEP_ARCHIVE -> the bundling warning fires.
+    loose = client.get("/jobs/estimate.json", query_string={
+        "name": "manga", "type": "archive", "source": "movies", "storage_class": "DEEP_ARCHIVE",
+        "schedule": "0 4 * * 0", "size_gb": "1000", "file_count": "5000000"}).get_json()
+    assert "bundle" in " ".join(a["text"] for a in loose["advice"]).lower()
+    # Turning on packing collapses the effective object count: warning clears AND the
+    # one-time upload drops sharply.
+    packed = client.get("/jobs/estimate.json", query_string={
+        "name": "manga", "type": "archive", "source": "movies", "storage_class": "DEEP_ARCHIVE",
+        "schedule": "0 4 * * 0", "size_gb": "1000", "file_count": "5000000",
+        "packing": "1", "pack_member_gb": "1"}).get_json()
+    assert "bundle" not in " ".join(a["text"] for a in packed["advice"]).lower()
+    assert packed["breakdown"]["upload_onetime"] < loose["breakdown"]["upload_onetime"] / 100
+
+
+def test_jobs_estimate_no_bundle_warning_for_large_objects(client):
+    # ~8MB .cbz objects (real manga) on DEEP_ARCHIVE -> no warning; already fine.
+    j = client.get("/jobs/estimate.json", query_string={
+        "name": "manga", "type": "archive", "source": "movies", "storage_class": "DEEP_ARCHIVE",
+        "schedule": "0 4 * * 0", "size_gb": "1824", "file_count": "232021"}).get_json()
+    assert "bundle" not in " ".join(a["text"] for a in j["advice"]).lower()
+
+
+def test_jobs_estimate_deep_archive_put_is_10x_standard(client):
+    def onetime(cls):
+        return client.get("/jobs/estimate.json", query_string={
+            "name": "m", "type": "archive", "source": "movies", "storage_class": cls,
+            "schedule": "0 4 * * 0", "size_gb": "1000", "file_count": "1000000",
+        }).get_json()["breakdown"]["upload_onetime"]
+    assert onetime("DEEP_ARCHIVE") == pytest.approx(10 * onetime("STANDARD"), rel=0.01)
+
+
 def test_jobs_estimate_new_job_adds_to_existing_total(client):
     base = client.get("/estimate.json").get_json()["monthly_total"]
     r = client.get("/jobs/estimate.json", query_string={

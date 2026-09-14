@@ -110,13 +110,33 @@ def effective_retention_days(keep_last: int = 0, keep_daily: int = 0,
     return max(keep_last, keep_daily, keep_weekly * 7, keep_monthly * 30, 1)
 
 def billed_gb(p: JobInputs, prices: PriceTable) -> float:
-    if p.storage_class == "STANDARD":
-        return p.size_gb
-    floor = effective_object_count(p) * prices.min_billable_object_kb * _GB_PER_KB
-    return max(p.size_gb, floor)
+    """Billed data volume. The 128KB minimum-object-size floor applies only to the
+    IA-family classes (STANDARD_IA / GLACIER_IR). STANDARD has no floor, and the
+    cold archive classes (GLACIER / DEEP_ARCHIVE) don't either — their per-object
+    cost is additive metadata overhead, charged separately (cold_object_overhead)."""
+    floor_classes = prices.min_billable_classes or tuple(
+        c for c in STORAGE_CLASSES if c != "STANDARD")
+    if p.storage_class in floor_classes:
+        floor = effective_object_count(p) * prices.min_billable_object_kb * _GB_PER_KB
+        return max(p.size_gb, floor)
+    return p.size_gb
+
+def cold_object_overhead_monthly(p: JobInputs, prices: PriceTable) -> float:
+    """Glacier / Deep Archive bill ~40KB of metadata per object: standard_kb at the
+    STANDARD rate + archive_kb at the object's own cold rate. For millions of small
+    objects this dominates; for a few big ones it's noise. Zero for other classes."""
+    if p.storage_class not in prices.cold_overhead_classes:
+        return 0.0
+    n = effective_object_count(p)
+    std_rate = _rate(prices, "STANDARD")
+    cold_rate = _rate(prices, p.storage_class)
+    per_obj_monthly = (prices.cold_overhead_standard_kb * std_rate
+                       + prices.cold_overhead_archive_kb * cold_rate) * _GB_PER_KB
+    return n * per_obj_monthly
 
 def storage_monthly(p: JobInputs, prices: PriceTable) -> float:
-    return billed_gb(p, prices) * _rate(prices, p.storage_class)
+    return (billed_gb(p, prices) * _rate(prices, p.storage_class)
+            + cold_object_overhead_monthly(p, prices))
 
 def job_retention_days(p: JobInputs, scenario: Scenario) -> int:
     """The effective noncurrent-version retention (days) for a job: its own
@@ -143,10 +163,10 @@ def versioning_monthly(p: JobInputs, scenario: Scenario, prices: PriceTable) -> 
 
 def ingest_monthly(p: JobInputs, prices: PriceTable) -> float:
     new_objects_per_backup = effective_object_count(p) * (p.change_rate_pct / 100)
-    return new_objects_per_backup * p.backups_per_month * prices.put_per_1k / 1000
+    return new_objects_per_backup * p.backups_per_month * prices.put_rate(p.storage_class) / 1000
 
 def upfront_onetime(p: JobInputs, prices: PriceTable) -> float:
-    return effective_object_count(p) * prices.put_per_1k / 1000
+    return effective_object_count(p) * prices.put_rate(p.storage_class) / 1000
 
 def cold_lockin_onetime(p: JobInputs, prices: PriceTable) -> float:
     """The minimum you pay for the INITIAL dataset in a cold class even if you

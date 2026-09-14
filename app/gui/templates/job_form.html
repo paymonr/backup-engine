@@ -108,6 +108,11 @@
       </div>
     </fieldset>
     <label class="inline" data-when-type="archive"><input type="checkbox" name="mirror" value="1" {{ 'checked' if job and job.mirror }}> Mirror (archive: delete removed files too)</label>
+    <label class="inline" data-when-type="archive versioned-files"><input type="checkbox" name="packing" value="1"> My source files are already bundled into larger archives (e.g. <code>.cbz</code> per chapter, tar) <small>— cost estimate only; the tool copies files as-is and won't bundle for you. Leave off if you're pointing at loose files.</small></label>
+    <label data-when-type="archive versioned-files" data-when-packing="1">Typical archive size
+      <input type="number" min="0.001" step="0.01" name="pack_member_gb" value="0.05"> GB each
+      <small>(rough average size of each bundle — with millions of tiny files on a cold class, bundling collapses the object count and slashes the one-time upload + per-object overhead)</small>
+    </label>
     {% set churn_default = '0' %}
     <label data-when-type="versioned versioned-files">How much changes each backup?
       <select name="change_rate_pct" id="job-change-rate">

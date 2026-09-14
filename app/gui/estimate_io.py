@@ -10,6 +10,7 @@ from . import config_io, jobs_io, storage_advice
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, effective_retention_days, estimate,
     restore_cost, project, job_retention_days, cold_lockin_onetime, upfront_onetime,
+    effective_object_count,
 )
 from ..estimator.schedule import backups_per_month
 from ..estimator import usage, billing
@@ -105,6 +106,7 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
         file_count=int(o.get("file_count", file_count)),
         storage_class=job.get("storage_class", "STANDARD"),
         packing=bool(o.get("packing", False)),
+        pack_member_gb=float(o.get("pack_member_gb", 5.0)),
         backups_per_month=float(o.get("backups_per_month",
                                       backups_per_month(job.get("schedule", "")))),
         change_rate_pct=float(o.get("change_rate_pct", _ENGINE_CHANGE.get(engine, 10.0))),
@@ -267,10 +269,21 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
     # sends a %; absent -> the per-engine default (unchanged behavior). This is the
     # dominant driver of the old-version + rotation cost, so surfacing it is what
     # makes the wizard estimate trustworthy for static media.
-    override = None
+    override: dict = {}
     if str(params.get("change_rate_pct", "")).strip() != "":
-        override = {"change_rate_pct": _num(params, "change_rate_pct",
-                                            _ENGINE_CHANGE.get(engine, 10.0), label="change rate")}
+        override["change_rate_pct"] = _num(params, "change_rate_pct",
+                                            _ENGINE_CHANGE.get(engine, 10.0), label="change rate")
+    # Bundling ("my source files are packed into ~N GB archives, e.g. .cbz") — a
+    # modeling input for archive / versioned-files jobs: it collapses the effective
+    # object count, which is what drives the one-time upload and the cold per-object
+    # overhead. The tool doesn't bundle for you; this reflects source files already
+    # bundled. Restic (versioned) auto-packs, so the wizard hides it there.
+    if "packing" in params:
+        override["packing"] = str(params.get("packing", "")).lower() in ("1", "true", "on")
+        override["pack_member_gb"] = _num(params, "pack_member_gb", 5.0, label="bundle size")
+        if override["packing"] and override["pack_member_gb"] <= 0:
+            raise ValueError("bundle size must be greater than zero")
+    override = override or None
 
     candidate = _job_inputs(job, size_gb=size_gb, file_count=file_count,
                             scenario_retention=None, override=override)
@@ -288,7 +301,9 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
     # scenario's retrieval tier. Reuses the model; adds no math here.
     this_restore = restore_cost(candidate, base, prices, 1.0)
     advice = storage_advice.class_advice(engine, cls, str(params.get("schedule", "")),
-                                         saved_class, prices)
+                                         saved_class, prices,
+                                         object_count=effective_object_count(candidate),
+                                         size_gb=candidate.size_gb)
     return {
         "this_job_monthly": this_est.monthly_total,
         "new_total_monthly": estimate(total_scn, prices).monthly_total,

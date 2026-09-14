@@ -56,9 +56,26 @@ def _warmer_than(a: str, b: str) -> bool:
 
 
 def class_advice(job_type: str, storage_class: str, schedule: str,
-                 saved_class, prices: PriceTable) -> list[dict]:
+                 saved_class, prices: PriceTable, *,
+                 object_count: int | None = None, size_gb: float | None = None) -> list[dict]:
     out: list[dict] = []
     min_days = int(prices.min_storage_duration_days.get(storage_class, 0))
+
+    # 0. Many small objects on a cold archive class (GLACIER/DEEP_ARCHIVE): each
+    #    object carries ~40KB metadata overhead AND a ~10x-higher upload-request
+    #    price, so millions of small files can cost far more than the data itself.
+    #    Triggered on AVERAGE object size (post-bundling), so it clears once files
+    #    are packed. `object_count` is the EFFECTIVE count (already reflects packing).
+    if (storage_class in COLD_CLASSES and object_count and object_count >= 50_000
+            and size_gb and (size_gb * 1024 / object_count) < 1.0):
+        avg_kb = size_gb * 1024 * 1024 / object_count
+        out.append({"level": "warn", "text": (
+            "{:,} objects averaging ~{:.0f} KB on {}. Cold storage adds ~40 KB "
+            "overhead per object and charges ~10x more per upload request, so a "
+            "huge number of small files can cost more than the data. Bundle them "
+            "into larger archives (e.g. .cbz per chapter, or tar) before backing "
+            "up — a few thousand big objects instead of millions of tiny ones."
+        ).format(int(object_count), avg_kb, storage_class)})
 
     # 1. restic (Snapshots) cannot operate on a thaw-required class (spec §8-2):
     #    strong WARNING that steers to Versioned files; NOT a hard block.

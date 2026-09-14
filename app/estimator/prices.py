@@ -1,6 +1,6 @@
 # app/estimator/prices.py — price-table type + loader. The ONLY reader of the bundled JSON.
 from __future__ import annotations
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import json
 
@@ -20,12 +20,29 @@ class PriceTable:
     data_transfer_out_per_gb: float
     min_billable_object_kb: float
     min_storage_duration_days: dict[str, int]
+    # Per-class PUT price (cold classes charge ~10x Standard). Empty -> every class
+    # uses the flat put_per_1k (back-compat with older bundled tables).
+    put_per_1k_by_class: dict[str, float] = field(default_factory=dict)
+    # Classes to which the min_billable_object_kb floor applies (IA-family). Cold
+    # Glacier/Deep-Archive classes DON'T have a 128KB floor — they add per-object
+    # overhead instead (below). Empty -> legacy behaviour (floor on every non-STANDARD).
+    min_billable_classes: tuple[str, ...] = ()
+    # Glacier/Deep-Archive per-object metadata overhead: standard_kb billed at the
+    # STANDARD rate + archive_kb billed at the object's own (cold) rate, per object.
+    cold_overhead_classes: tuple[str, ...] = ()
+    cold_overhead_standard_kb: float = 0.0
+    cold_overhead_archive_kb: float = 0.0
+
+    def put_rate(self, storage_class: str) -> float:
+        """PUT $/1k for a class — its own rate if the table carries one, else the flat rate."""
+        return self.put_per_1k_by_class.get(storage_class, self.put_per_1k)
 
     @classmethod
     def from_dict(cls, d: dict) -> "PriceTable":
         req = d["requests"]
         ret = d["retrieval"]
         con = d["constraints"]
+        overhead = con.get("cold_object_overhead", {})
         return cls(
             region=d["region"], date=d["date"], source=d["source"],
             storage_gb_month=d["storage_gb_month"],
@@ -35,6 +52,11 @@ class PriceTable:
             data_transfer_out_per_gb=d["data_transfer_out_per_gb"],
             min_billable_object_kb=con["min_billable_object_kb"],
             min_storage_duration_days=con["min_storage_duration_days"],
+            put_per_1k_by_class=req.get("put_per_1k_by_class", {}),
+            min_billable_classes=tuple(con.get("min_billable_classes", ())),
+            cold_overhead_classes=tuple(overhead.get("classes", ())),
+            cold_overhead_standard_kb=overhead.get("standard_tier_kb", 0.0),
+            cold_overhead_archive_kb=overhead.get("archive_tier_kb", 0.0),
         )
 
 _FALLBACK_REGION = "us-east-1"

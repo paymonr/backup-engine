@@ -452,7 +452,7 @@
 (function () {
   var form = document.getElementById("job-form");
   if (!form) return;
-  var conds = form.querySelectorAll("[data-when-type], [data-when-retention]");
+  var conds = form.querySelectorAll("[data-when-type], [data-when-retention], [data-when-packing]");
   function curType() {
     var c = form.querySelector('input[name="type"]:checked');
     return c ? c.value : "";
@@ -460,6 +460,10 @@
   function curRetention() {
     var c = form.querySelector('input[name="retention_type"]:checked');
     return c ? c.value : "";
+  }
+  function curPacking() {
+    var c = form.querySelector('input[name="packing"]');
+    return (c && c.checked) ? "1" : "0";
   }
   function applyVisibility() {
     var t = curType();
@@ -478,17 +482,20 @@
       }
     }
     var rt = curRetention();
+    var pk = curPacking();
     for (var i = 0; i < conds.length; i++) {
       var el = conds[i];
       var wantType = el.getAttribute("data-when-type");
       var wantRetention = el.getAttribute("data-when-retention");
+      var wantPacking = el.getAttribute("data-when-packing");
       var hide = false;
       if (wantType && wantType.split(/\s+/).indexOf(t) === -1) hide = true;         // may list several types
       if (wantRetention && wantRetention.split(/\s+/).indexOf(rt) === -1) hide = true;
+      if (wantPacking && wantPacking !== pk) hide = true;
       el.hidden = hide;
     }
   }
-  var radios = form.querySelectorAll('input[name="type"], input[name="retention_type"]');
-  for (var j = 0; j < radios.length; j++) radios[j].addEventListener("change", applyVisibility);
+  var toggles = form.querySelectorAll('input[name="type"], input[name="retention_type"], input[name="packing"]');
+  for (var j = 0; j < toggles.length; j++) toggles[j].addEventListener("change", applyVisibility);
   applyVisibility();
 })();
