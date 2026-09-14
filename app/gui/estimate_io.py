@@ -12,7 +12,8 @@ from ..estimator.model import (
     restore_cost, project, job_retention_days, cold_lockin_onetime, upfront_onetime,
     effective_object_count,
 )
-from ..estimator.schedule import backups_per_month
+from ..estimator.schedule import backups_per_month, backup_interval_days
+from ..estimator import tiered
 from ..estimator import usage, billing
 
 RETRIEVAL_TIERS: tuple[str, ...] = ("Bulk", "Standard", "Expedited")
@@ -87,15 +88,17 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
     # dict, like a saved one, maps consistently). Reused here rather than
     # re-reading `keep`/`retention_days` directly.
     policy = jobs_io._normalize_retention(job, engine)
+    keep_tiers = {}
     if policy["type"] == "tiered":
-        # A restic tiered keep policy retains a SPARSE set of snapshots (~the sum of
-        # the keep tiers), not one per backup — so model it as a "count" of that many
-        # noncurrent snapshots. The old days-window x backups_per_month formula
-        # overstated tiered versioning ~10x for daily backups (e.g. last3/daily7/
-        # weekly4/monthly6 -> ~20 snapshots, not 180 backups over a 180-day window).
-        keep = policy["keep"]
-        snapshots = sum(max(0, int(keep.get(k, 0))) for k in ("last", "daily", "weekly", "monthly"))
-        retention_type, retention_count, retention_days = "count", max(1, snapshots), None
+        # A restic tiered keep policy is modelled NATIVELY (app.estimator.tiered):
+        # old data is driven by the gaps between the sparse retained snapshots,
+        # walked on the real calendar. Neither the old "every backup in a days
+        # window" formula (~overstated) nor a "count of snapshots x churn" proxy
+        # (~9x understated: a monthly snapshot kept 5 months back holds 5 months
+        # of changes, not one backup's worth) is right — the tiers go through.
+        keep_tiers = {k: max(0, int(policy["keep"].get(k, 0)))
+                      for k in ("last", "daily", "weekly", "monthly")}
+        retention_type, retention_count, retention_days = "tiered", 0, None
     elif policy["type"] == "count":
         retention_type, retention_count, retention_days = "count", policy["count"], None
     elif policy["type"] == "keep_all":
@@ -116,6 +119,12 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
         versioning_retention_days=retention_days,
         retention_type=retention_type,
         retention_count=retention_count,
+        keep_last=keep_tiers.get("last", 0),
+        keep_daily=keep_tiers.get("daily", 0),
+        keep_weekly=keep_tiers.get("weekly", 0),
+        keep_monthly=keep_tiers.get("monthly", 0),
+        backup_interval_days=float(o.get("backup_interval_days",
+                                         backup_interval_days(job.get("schedule", "")))),
     )
 
 
@@ -230,6 +239,49 @@ def retention_from_form(params: Mapping, *, default_type: str = "days") -> dict:
     raise ValueError(f"unknown retention type {t!r}")
 
 
+def _explain(cand: JobInputs, prices, proj, steady_versioning: float) -> dict | None:
+    """Plain-language facts behind the versioning number — the wizard's "why these
+    numbers" block. Every figure is derived from the validated model, never
+    restated by hand, so the explanation can't drift from the estimate."""
+    if cand.change_rate_pct <= 0:
+        # Retention only costs money when files are REPLACED. With 0% change there
+        # are no old versions, so keep-policy edits correctly change nothing.
+        return {"zero_churn": True}
+    if cand.retention_type != "tiered":
+        return None
+    args = (cand.change_rate_pct / 100, cand.backup_interval_days,
+            cand.keep_last, cand.keep_daily, cand.keep_weekly, cand.keep_monthly)
+    scale = cand.size_gb * prices.storage_gb_month.get(cand.storage_class, 0.0)
+    plateau = tiered.plateau_month(cand.keep_last, cand.keep_daily, cand.keep_weekly,
+                                   cand.keep_monthly, cand.backup_interval_days)
+    steady_frac = (steady_versioning / scale) if scale > 0 else 0.0
+    m1 = proj.months[0].versioning if proj.months else 0.0
+    # keep_last is subsumed by keep_daily at <= 1 backup/day: --keep-daily n already
+    # keeps the n newest snapshots, so any keep_last <= n changes nothing.
+    redundant_last = cand.backup_interval_days >= 1.0 and 0 < cand.keep_last <= cand.keep_daily
+    tiers = {t["tier"]: t["adds_fraction"] * scale for t in tiered.tier_ladder(*args)}
+    if redundant_last:
+        tiers["daily"] = tiers.get("daily", 0.0) + tiers.pop("last", 0.0)
+    longest = ("monthly" if cand.keep_monthly >= 2 else "weekly" if cand.keep_weekly >= 2
+               else "daily" if cand.keep_daily >= 2 else "last")
+    return {
+        "zero_churn": False,
+        "plateau_month": plateau,
+        "longest_tier": longest,
+        "longest_keep": getattr(cand, f"keep_{longest}"),
+        "month1_pct_of_steady": (m1 / steady_versioning) if steady_versioning > 0 else None,
+        "steady_versioning": steady_versioning,
+        "old_multiplier": steady_frac,
+        "old_gb": steady_frac * cand.size_gb,
+        "size_gb": cand.size_gb,
+        "keep_last_redundant": redundant_last,
+        "keep_last": cand.keep_last,
+        "keep_daily": cand.keep_daily,
+        "ladder": [{"tier": k, "keep": getattr(cand, f"keep_{k}"), "adds_per_month": v}
+                   for k, v in tiers.items() if getattr(cand, f"keep_{k}") > 0],
+    }
+
+
 def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_class=None) -> dict:
     """Live cost for the job create/edit WIZARD: prices a CANDIDATE job built from
     the in-progress form params (not yet saved), plus what the total across every
@@ -313,6 +365,7 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
         "this_job_restore": this_restore,
         "advice": advice,
         "guidance": storage_advice.type_advice(engine, cls),
+        "explain": _explain(candidate, prices, proj, li.versioning),
         "projection": {
             "first_bill": ms[0].total,
             "steady_monthly": proj.steady_state_monthly,

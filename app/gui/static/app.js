@@ -267,6 +267,7 @@
   var futureEl = document.getElementById("job-cost-future");
   var milestonesEl = document.getElementById("job-cost-milestones");
   var guidanceEl = document.getElementById("job-guidance");
+  var explainEl = document.getElementById("job-explain");
   var timer;
 
   function sizing(on) { if (sizingEl) sizingEl.hidden = !on; }
@@ -387,6 +388,46 @@
     guidanceEl.appendChild(cls);
     guidanceEl.hidden = false;
   }
+  // "Why these numbers" — plain-language facts derived from the validated model
+  // (never restated by hand), so the explanation can't drift from the estimate.
+  function paintExplain(x) {
+    if (!explainEl) return;
+    while (explainEl.firstChild) explainEl.removeChild(explainEl.firstChild);
+    if (!x) { explainEl.hidden = true; return; }
+    function line(text, level) {
+      var p = document.createElement("p");
+      p.className = "advice-item advice-" + (level || "info");
+      p.textContent = text;
+      explainEl.appendChild(p);
+    }
+    if (x.zero_churn) {
+      line("Retention only costs money when files get REPLACED. With “No change (0%)” there are no old " +
+        "versions, so the keep-policy settings correctly have no cost effect — raise “How much changes " +
+        "each backup?” to see them matter.");
+      explainEl.hidden = false;
+      return;
+    }
+    var pct = (x.month1_pct_of_steady != null) ? Math.round(x.month1_pct_of_steady * 100) : null;
+    line("Old versions build up for about " + x.plateau_month + " months (your longest tier is " +
+      x.longest_tier + "=" + x.longest_keep + "), then level off" +
+      (pct != null ? " — month 1 carries only ~" + pct + "% of the eventual " + money(x.steady_versioning) + "/mo." : "."));
+    if (x.ladder && x.ladder.length) {
+      var parts = x.ladder.map(function (t) { return t.tier + "=" + t.keep + ": +" + money(t.adds_per_month) + "/mo"; });
+      line("Where it comes from — " + parts.join(" · ") + ". The long tail (monthly) usually dominates: " +
+        "a snapshot kept months back holds months of changes.");
+    }
+    if (x.keep_last_redundant) {
+      line("keep last=" + x.keep_last + " is already covered by keep daily=" + x.keep_daily +
+        ": at one backup a day they are the same rule, so raising it costs nothing until it exceeds " +
+        x.keep_daily + ".", "good");
+    }
+    line("At steady state old versions ≈ " + x.old_multiplier.toFixed(2) + "× your data (~" +
+      Math.round(x.old_gb) + " GB on top of " + Math.round(x.size_gb) + " GB). That is expected, not a " +
+      "bug — each retained gap keeps a distinct version.");
+    line("Upper-end estimate: it assumes a changed file is fully rewritten. Partial-file dedup and " +
+      "compression make the real number lower.");
+    explainEl.hidden = false;
+  }
   function paint(data) {
     if (firstEl) firstEl.textContent = money(data && data.projection && data.projection.first_bill);
     thisEl.textContent = money(data && data.this_job_monthly);
@@ -396,6 +437,7 @@
     paintBreakdown(data && data.breakdown);
     paintFuture(data && data.projection);
     paintGuidance(data && data.guidance);
+    paintExplain(data && data.explain);
     paintAdvice(data && data.advice);
   }
   function update() {

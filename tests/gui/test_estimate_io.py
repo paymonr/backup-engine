@@ -48,11 +48,14 @@ def test_versioned_retention_from_keep_policy_archive_default(tmp_path):
     # {"type": "days", "days": 180} default (jobs_io's archive-default policy),
     # NOT a fallback to the scenario-level window (retention-policies Phase 1).
     by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB, AJOB]), SRC))
-    # A versioned/tiered job maps to a "count" of retained snapshots (sum of the keep
-    # tiers 3+7+4+6 = 20), not a days-window — restic keeps sparse snapshots.
-    assert by["appdata"].retention_type == "count"
-    assert by["appdata"].retention_count == 3 + 7 + 4 + 6
-    assert by["appdata"].versioning_retention_days is None
+    # A versioned/tiered job is modelled NATIVELY as "tiered": the keep tiers go
+    # through to app.estimator.tiered (old data = gaps between sparse retained
+    # snapshots), rather than being collapsed to a days-window or a snapshot count.
+    a = by["appdata"]
+    assert a.retention_type == "tiered"
+    assert (a.keep_last, a.keep_daily, a.keep_weekly, a.keep_monthly) == (3, 7, 4, 6)
+    assert a.retention_count == 0 and a.versioning_retention_days is None
+    assert a.backup_interval_days > 0
     # An archive job keeps its own {"type":"days","days":180} default.
     assert by["movies"].versioning_retention_days == 180
     assert by["movies"].retention_type == "days"
@@ -277,10 +280,11 @@ def test_days_retention_policy_maps_to_job_inputs(tmp_path):
     assert by["movies"].retention_count == 0
     assert by["movies"].versioning_retention_days == 42
 
-def test_tiered_retention_policy_maps_to_snapshot_count(tmp_path):
-    # A tiered restic keep-policy maps to a "count" of retained snapshots (sum of the
-    # keep tiers 3+7+4+6 = 20), not the old all-backups days window (~10x over).
+def test_tiered_retention_policy_is_modelled_natively(tmp_path):
+    # A tiered restic keep-policy is carried through as retention_type="tiered" with
+    # its keep tiers intact (not collapsed to a days-window or a snapshot count).
     by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB]), SRC))
-    assert by["appdata"].retention_type == "count"
-    assert by["appdata"].retention_count == 3 + 7 + 4 + 6
-    assert by["appdata"].versioning_retention_days is None
+    a = by["appdata"]
+    assert a.retention_type == "tiered"
+    assert (a.keep_last, a.keep_daily, a.keep_weekly, a.keep_monthly) == (3, 7, 4, 6)
+    assert a.retention_count == 0 and a.versioning_retention_days is None

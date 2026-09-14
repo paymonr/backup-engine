@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil
 from .prices import PriceTable
+from . import tiered
 
 STORAGE_CLASSES: tuple[str, ...] = (
     "STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE",
@@ -39,11 +40,19 @@ class JobInputs:
     # The job's retention POLICY shape (from jobs_io's `retention` object):
     # "days" -> the day-window formula above (versioning_retention_days); "count"
     # -> bounded by retention_count versions, independent of any day window;
-    # "keep_all" -> unbounded, grows for the full projection horizon. A restic
-    # "tiered" policy is mapped upstream to "count" = the sum of its keep tiers
-    # (sparse retained snapshots), so this field never carries "tiered" itself.
+    # "keep_all" -> unbounded, grows for the full projection horizon; "tiered" ->
+    # a restic keep policy, modelled natively by app.estimator.tiered from the
+    # keep_* tiers + the backup interval (old data is driven by the GAPS between
+    # the sparse retained snapshots — see that module's header).
     retention_type: str = "days"
     retention_count: int = 0
+    keep_last: int = 0
+    keep_daily: int = 0
+    keep_weekly: int = 0
+    keep_monthly: int = 0
+    # Days between backups (1.0 daily, 7.0 weekly, 1/24 hourly) — the tiered model
+    # is driven by the interval, never by a rounded backups_per_month.
+    backup_interval_days: float = 1.0
 
 @dataclass(frozen=True)
 class Scenario:
@@ -161,22 +170,45 @@ def versioning_monthly(p: JobInputs, scenario: Scenario, prices: PriceTable) -> 
         noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * p.retention_count
     elif p.retention_type == "keep_all":
         noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * p.backups_per_month
+    elif p.retention_type == "tiered":
+        noncurrent_gb = p.size_gb * tiered.steady_fraction(*_tiered_args(p), months=_tiered_horizon(p))
     else:
         retention = job_retention_days(p, scenario)
         noncurrent_gb = p.size_gb * (p.change_rate_pct / 100) * (
             p.backups_per_month * retention / _DAYS_PER_MONTH)
     return noncurrent_gb * _rate(prices, p.storage_class)
 
+def _tiered_args(p: JobInputs) -> tuple:
+    """(c, interval_days, last, daily, weekly, monthly) for app.estimator.tiered."""
+    return (p.change_rate_pct / 100, p.backup_interval_days,
+            p.keep_last, p.keep_daily, p.keep_weekly, p.keep_monthly)
+
+def _tiered_reach_days(p: JobInputs) -> float:
+    """Age of the oldest snapshot a tiered policy retains = how long a churned
+    version lives before it can be pruned (the longest tier's reach)."""
+    iv = float(p.backup_interval_days)
+    return max((p.keep_last - 1) * iv, (p.keep_daily - 1) * max(iv, 1.0),
+               7.0 * (p.keep_weekly - 1), tiered.MEAN_MONTH_DAYS * (p.keep_monthly - 1), 0.0)
+
+def _tiered_horizon(p: JobInputs) -> int:
+    """A projection horizon long enough for the tiered chain to have plateaued
+    (longest tier + 6 months), so steady_fraction's tail average is truly steady."""
+    return max(24, tiered.plateau_month(p.keep_last, p.keep_daily, p.keep_weekly,
+                                        p.keep_monthly, p.backup_interval_days) + 6)
+
 def _effective_lifetime_days(p: JobInputs, scenario: Scenario) -> float:
     """How long a churned (now-noncurrent) version actually lives under the policy,
     before the early-deletion comparison against the class minimum. keep_all -> never
-    deleted (inf); count -> time to accrue `count` newer versions; days -> the window."""
+    deleted (inf); count -> time to accrue `count` newer versions; tiered -> the
+    longest tier's reach; days -> the window."""
     if p.retention_type == "keep_all":
         return float("inf")
     if p.retention_type == "count":
         if p.retention_count <= 0 or p.backups_per_month <= 0:
             return float("inf")  # no versions kept / no cadence -> nothing to early-delete
         return (p.retention_count / p.backups_per_month) * _DAYS_PER_MONTH
+    if p.retention_type == "tiered":
+        return _tiered_reach_days(p)
     return job_retention_days(p, scenario)
 
 def ingest_monthly(p: JobInputs, prices: PriceTable) -> float:
@@ -308,14 +340,24 @@ def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Project
     that point too."""
     if months < 1:
         raise ValueError("months must be >= 1")
-    per_job = []  # (storage, steady_versioning, ingest, rotation, onetime, retention_type, retention_days, retention_count, backups_per_month)
+    per_job = []  # (storage, steady_versioning, ingest, rotation, onetime, retention_type, retention_days, retention_count, backups_per_month, tiered_series)
     max_plateau_month = 0  # the LATEST month any job's own ramp reaches its steady state
     for j in scenario.jobs:
         ret = job_retention_days(j, scenario)
+        tiered_series = None
         if j.retention_type == "count":
             plateau = _count_plateau_month(j.retention_count, j.backups_per_month)
         elif j.retention_type == "keep_all":
             plateau = 0  # never plateaus -- doesn't bound steady_state_month
+        elif j.retention_type == "tiered":
+            plateau = tiered.plateau_month(j.keep_last, j.keep_daily, j.keep_weekly,
+                                           j.keep_monthly, j.backup_interval_days)
+            # The exact time-averaged old-version $ per month (the ramp IS the model
+            # here — no fill fraction; the chain of retained snapshots fills tier by
+            # tier over the longest tier's reach).
+            scale = j.size_gb * _rate(prices, j.storage_class)
+            tiered_series = [f * scale for f in tiered.old_fraction_by_month(
+                *_tiered_args(j), months=months)]
         else:
             plateau = _days_plateau_month(ret)
         max_plateau_month = max(max_plateau_month, plateau)
@@ -323,17 +365,19 @@ def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Project
             storage_monthly(j, prices), versioning_monthly(j, scenario, prices),
             ingest_monthly(j, prices), rotation_monthly(j, scenario, prices),
             upfront_onetime(j, prices), j.retention_type, ret, j.retention_count,
-            j.backups_per_month,
+            j.backups_per_month, tiered_series,
         ))
     pts: list[MonthPoint] = []
     for t in range(1, months + 1):
         s = v = ing = rot = one = 0.0
-        for store, steady_ver, jing, jrot, jup, rtype, jret, rcount, bpm in per_job:
+        for store, steady_ver, jing, jrot, jup, rtype, jret, rcount, bpm, tser in per_job:
             s += store
             if rtype == "count":
                 v += steady_ver * _count_fill(rcount, bpm, t)
             elif rtype == "keep_all":
                 v += steady_ver * t  # unbounded: accrues every month, never plateaus
+            elif rtype == "tiered":
+                v += tser[t - 1]
             else:
                 v += steady_ver * _versioning_fill(jret, t)
             ing += jing
@@ -348,5 +392,5 @@ def project(scenario: Scenario, prices: PriceTable, months: int = 24) -> Project
     # but `unbounded` tells callers to disregard steady_state_* entirely.
     steady_month = max_plateau_month if max_plateau_month else 1
     steady_monthly = sum(store + sv + ing + rot
-                         for store, sv, ing, rot, _up, _rt, _ret, _rc, _bpm in per_job)
+                         for store, sv, ing, rot, _up, _rt, _ret, _rc, _bpm, _ts in per_job)
     return Projection(pts, steady_month, steady_monthly, unbounded)
