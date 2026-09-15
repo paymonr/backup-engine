@@ -1,0 +1,1237 @@
+<title>Night Shift</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* ============================================================
+   NIGHT SHIFT — operations control room for backup-engine
+   Dark-committed by design: this is a mockup of a dark app.
+   Complete palette on bare :root; body paints its own ground,
+   so the page holds on a light host.
+   ============================================================ */
+:root{
+  color-scheme: dark;
+
+  /* ground + surfaces (existing tokens, unchanged) */
+  --bg:#0E1116; --surface:#161A21; --surface-2:#1E232B;
+  --border:#2A313B; --border-strong:#3A434F;
+  --ink:#E6EAF0; --muted:#AAB2BF; --faint:#8A93A0;
+  --accent:#4C8DFF; --accent-hover:#6AA1FF; --accent-ink:#0B0E13; --accent-bg:#16233B;
+  --ok:#46C08A; --ok-bg:#10241B;
+  --warn:#E0B15A; --warn-bg:#2A2412; --warn-border:#4A3F22;
+  --danger:#F0616B; --danger-bg:#2A1417; --danger-border:#5A2A2E;
+
+  /* six derived additions */
+  --ink-strong:#F5F8FC;
+  --grid:#20262F;
+  --ok-dim:#2C6B52; --warn-dim:#6B5326; --danger-dim:#7A3239;
+
+  /* provenance marks — deliberately dimmer than severity colour */
+  --prov-measured:rgba(70,192,138,.55);
+  --prov-assumed:rgba(224,177,90,.55);
+  --prov-invoiced:rgba(76,141,255,.55);
+
+  --radius:6px; --radius-sm:4px;
+  --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sp-1:.25rem; --sp-2:.5rem; --sp-3:.75rem; --sp-4:1rem; --sp-6:1.5rem; --sp-8:2rem;
+  --gutter:clamp(16px,2.6vw,24px);
+  --w-dense:1240px; --w-read:780px;
+}
+*{box-sizing:border-box;}
+[hidden]{display:none !important;}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font:15px/1.55 var(--font-sans);
+  padding-inline:var(--gutter); padding-block:0 0;
+  -webkit-text-size-adjust:100%;
+}
+h1{font-size:1.6rem;font-weight:680;letter-spacing:-.01em;margin:0;text-wrap:balance;}
+h2{font-size:1.05rem;font-weight:640;letter-spacing:-.005em;margin:0;text-wrap:balance;}
+h3{font-size:.92rem;font-weight:620;margin:0;}
+p{margin:0;}
+a{color:var(--accent);text-decoration:none;}
+a:hover{text-decoration:underline;}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+ul{margin:0;padding:0;list-style:none;}
+
+/* ---------- containers ---------- */
+.dense{max-width:var(--w-dense);margin:0 auto;}
+.read{max-width:var(--w-read);margin:0 auto;}
+
+/* ---------- topbar / screen switcher ---------- */
+.topbar{
+  position:sticky;top:0;z-index:30;background:var(--surface);
+  border-bottom:1px solid var(--border);
+  margin-inline:calc(var(--gutter) * -1);padding-inline:var(--gutter);
+}
+.topbar-in{max-width:var(--w-dense);margin:0 auto;display:flex;align-items:center;gap:var(--sp-4);
+  min-height:56px;flex-wrap:wrap;padding-block:8px;}
+.brand{display:inline-flex;align-items:center;gap:.5rem;font-weight:640;color:var(--ink);letter-spacing:-.01em;}
+.brand b{color:var(--accent);font-weight:640;}
+.switcher{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px;}
+.switcher button{
+  font:inherit;font-size:.86rem;font-weight:550;color:var(--muted);
+  background:transparent;border:0;border-radius:2px;padding:.34rem .7rem;cursor:pointer;white-space:nowrap;
+}
+.switcher button:hover{color:var(--ink);background:var(--surface-2);}
+.switcher button[aria-current="page"]{color:var(--ink);background:var(--surface-2);box-shadow:inset 0 -2px 0 var(--accent);}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;}
+.chip{
+  font-family:var(--font-mono);font-size:.7rem;font-weight:500;letter-spacing:.02em;
+  color:var(--faint);border:1px solid var(--border);border-radius:2px;padding:.2rem .4rem;white-space:nowrap;
+}
+.chip-live{color:var(--muted);}
+.clock{font-family:var(--font-mono);font-size:.74rem;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap;}
+
+/* work bar — 2px indeterminate strip under the topbar */
+.workbar{position:sticky;top:56px;z-index:29;height:2px;background:var(--surface-2);overflow:hidden;
+  margin-inline:calc(var(--gutter) * -1);}
+.workbar::after{content:"";position:absolute;inset:0;width:38%;background:var(--accent);animation:slide 1.2s linear infinite;}
+@keyframes slide{from{transform:translateX(-100%);}to{transform:translateX(320%);}}
+
+/* ---------- bands: rules + 32px, never cards ---------- */
+.screen{padding-block:var(--sp-8) 4rem;}
+.band{border-top:1px solid var(--border);margin-top:var(--sp-8);padding-top:var(--sp-8);}
+.band:first-child{border-top:0;margin-top:0;padding-top:0;}
+.slabel{font-size:.72rem;font-weight:650;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:0 0 var(--sp-3);}
+.slabel .cnt{color:var(--muted);}
+.band-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);flex-wrap:wrap;}
+.band-head .more{font-size:.84rem;}
+
+/* ---------- figures + provenance ---------- */
+.fig{font-family:var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em;color:var(--ink);}
+.big{font-size:1.35rem;font-weight:500;}
+.p-measured{border-bottom:1px solid var(--prov-measured);padding-bottom:1px;}
+.p-assumed{border-bottom:1px dotted var(--prov-assumed);padding-bottom:1px;color:var(--muted);}
+.p-invoiced{border-bottom:3px double var(--prov-invoiced);padding-bottom:0;}
+.stamp{font-family:var(--font-mono);font-size:.72rem;color:var(--faint);}
+.price-stamp{display:inline-flex;align-items:center;gap:.35rem;font-family:var(--font-mono);font-size:.72rem;
+  color:var(--muted);border:1px solid var(--border);border-bottom-style:dotted;border-radius:2px;padding:.15rem .4rem;}
+.price-stamp.is-live{border-bottom-style:solid;border-color:var(--prov-measured);color:var(--ink);}
+.legend{display:flex;gap:var(--sp-4);flex-wrap:wrap;font-family:var(--font-mono);font-size:.72rem;color:var(--faint);margin-top:var(--sp-3);}
+.legend i{font-style:normal;color:var(--muted);}
+.delta{font-family:var(--font-mono);font-size:.82rem;color:var(--muted);font-variant-numeric:tabular-nums;}
+.delta b{color:var(--ink);font-weight:500;}
+
+/* ---------- state tokens ---------- */
+.tok{display:inline-flex;align-items:center;gap:.3rem;font-family:var(--font-mono);font-size:.68rem;font-weight:600;
+  letter-spacing:.06em;padding:.16rem .38rem;border-radius:0;border:1px solid;white-space:nowrap;}
+.tok::before{content:"";width:6px;height:6px;background:currentColor;}
+.tok-ok{color:var(--ok);border-color:rgba(70,192,138,.35);background:var(--ok-bg);}
+.tok-failed{color:var(--danger);border-color:var(--danger-border);background:var(--danger-bg);}
+.tok-running{color:var(--accent);border-color:rgba(76,141,255,.4);background:var(--accent-bg);}
+.tok-running::before{animation:pulse 1.6s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.25;}}
+.tok-paused{color:var(--muted);border-color:var(--border-strong);background:var(--surface-2);}
+.tok-overdue{color:var(--warn);border-color:var(--warn-border);background:var(--warn-bg);}
+.tok-notrun{color:var(--faint);border-color:var(--border);background:var(--surface-2);}
+
+/* ---------- verdict bar ---------- */
+.verdict{border-left:3px solid var(--danger);background:var(--surface);padding:var(--sp-4) var(--sp-6);
+  display:flex;gap:var(--sp-6);align-items:center;justify-content:space-between;flex-wrap:wrap;}
+.verdict h2{color:var(--ink-strong);max-width:62ch;}
+.verdict .sub{font-family:var(--font-mono);font-size:.82rem;color:var(--muted);margin-top:.4rem;font-variant-numeric:tabular-nums;}
+
+/* ---------- signals: six levels, four channels ---------- */
+.sig{display:grid;grid-template-columns:16px minmax(0,1fr);gap:var(--sp-3);align-items:start;
+  padding:var(--sp-3) var(--sp-4);border-left:2px solid transparent;}
+.sig .glyph{margin-top:2px;}
+.sig .label{font-family:var(--font-mono);font-size:.68rem;font-weight:600;letter-spacing:.1em;display:block;margin-bottom:.25rem;}
+.sig .body{max-width:74ch;}
+.sig p + p{margin-top:.35rem;}
+.sig-note{border-left:0;padding-left:0;color:var(--faint);font-size:.88rem;grid-template-columns:minmax(0,1fr);}
+.sig-note .body{color:var(--faint);}
+.sig-advice{border-left-color:var(--accent);background:var(--surface);}
+.sig-advice .label{color:var(--accent);}
+.sig-warning{border-left-color:var(--warn);background:var(--warn-bg);}
+.sig-warning .label{color:var(--warn);}
+.sig-blocker{border-left:3px solid var(--danger);background:var(--danger-bg);}
+.sig-blocker .label{color:var(--danger);}
+.sig-success{border-left-color:var(--ok);background:var(--ok-bg);}
+.sig-success .label{color:var(--ok);}
+.sig-failure{border-left:3px solid var(--danger);background:var(--danger-bg);}
+.sig-failure .label{color:var(--danger);}
+.needs{display:grid;gap:var(--sp-3);}
+.needs-row{display:grid;grid-template-columns:minmax(0,1fr) 170px;gap:var(--sp-3);align-items:center;
+  border:1px solid var(--border);border-left:0;}
+.needs-row.is-blocker{border-color:var(--danger-border);}
+.needs-row.is-warning{border-color:var(--warn-border);}
+.needs-row > .act{padding-right:var(--sp-4);display:flex;justify-content:flex-end;}
+.errline{font-family:var(--font-mono);font-size:.82rem;color:var(--ink);background:var(--bg);
+  border:1px solid var(--danger-border);padding:.4rem .5rem;display:block;overflow-x:auto;white-space:pre;margin:.45rem 0;}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;font:inherit;font-size:.86rem;font-weight:560;
+  padding:.45rem .8rem;border-radius:var(--radius-sm);border:1px solid var(--border-strong);
+  background:var(--surface);color:var(--ink);cursor:pointer;white-space:nowrap;text-align:center;}
+.btn:hover{background:var(--surface-2);text-decoration:none;}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.btn-primary:hover{background:var(--accent-hover);}
+.btn-ghost{background:transparent;border-color:transparent;color:var(--muted);}
+.btn-ghost:hover{color:var(--ink);background:var(--surface-2);}
+.btn-sm{font-size:.78rem;padding:.3rem .55rem;}
+.btn[disabled]{opacity:.45;cursor:not-allowed;}
+.btn[disabled]:hover{background:var(--surface);}
+.linklike{font:inherit;background:none;border:0;padding:0;color:var(--accent);cursor:pointer;font-weight:560;}
+.linklike:hover{text-decoration:underline;}
+
+/* ---------- tables (sharp: radius 0 where it is data) ---------- */
+.scroll{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;}
+thead th{font-size:.72rem;font-weight:650;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);
+  text-align:left;padding:0 var(--sp-3) var(--sp-2) 0;border-bottom:1px solid var(--border);white-space:nowrap;}
+tbody td{padding:var(--sp-3) var(--sp-3) var(--sp-3) 0;border-bottom:1px solid var(--border);vertical-align:top;}
+.num{text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap;}
+thead th.num{text-align:right;}
+.cell2{display:grid;gap:1px;}
+.cell2 .v{font-family:var(--font-mono);font-size:.92rem;color:var(--ink);font-variant-numeric:tabular-nums;}
+.cell2 .s{font-size:.78rem;color:var(--faint);font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.jobname{font-weight:560;color:var(--ink);font-size:.98rem;}
+.jobpath{font-family:var(--font-mono);font-size:.76rem;color:var(--faint);word-break:break-all;}
+tr.jobrow:hover td{background:var(--surface);}
+.col-strip{width:168px;}
+
+/* ---------- run ledger: the one bold element ---------- */
+.strip{display:flex;gap:2px;align-items:flex-end;}
+.cellx{width:9px;height:18px;background:var(--grid);border-radius:0;display:block;}
+.ledger .cellx{width:10px;height:20px;}
+.cellx.ok{background:var(--ok);}
+.cellx.ok.dim{background:var(--ok-dim);}
+.cellx.fail{background:var(--danger);}
+.cellx.fail.dim{background:var(--danger-dim);}
+.cellx.slow{background:var(--warn);}
+.cellx.slow.dim{background:var(--warn-dim);}
+.bars{display:flex;gap:2px;align-items:flex-end;height:20px;margin-top:3px;}
+.bar{width:10px;background:var(--border-strong);display:block;}
+.bar.tall{background:var(--muted);}
+.ledger-wrap{overflow-x:auto;padding-bottom:4px;}
+.ledger-axis{display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:.72rem;
+  color:var(--faint);margin-top:var(--sp-2);max-width:358px;}
+.key-cell{display:inline-block;width:9px;height:12px;vertical-align:-1px;margin-right:.3rem;}
+
+/* ---------- job page ---------- */
+.jobgrid{display:grid;grid-template-columns:minmax(0,1fr) 304px;gap:var(--sp-8);align-items:start;}
+.rail{position:sticky;top:76px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:var(--sp-4);}
+.rail h3{margin-bottom:var(--sp-3);}
+.rrow{display:grid;grid-template-columns:14px minmax(0,1fr);gap:.5rem;padding:.55rem 0;border-top:1px solid var(--border);}
+.rrow:first-of-type{border-top:0;}
+.rrow .k{font-size:.84rem;color:var(--muted);}
+.rrow .v{font-family:var(--font-mono);font-size:.84rem;color:var(--ink);}
+.rrow .t{font-family:var(--font-mono);font-size:.7rem;color:var(--faint);}
+.dot{width:8px;height:8px;margin-top:6px;border-radius:0;}
+.dot-ok{background:var(--ok);} .dot-warn{background:var(--warn);} .dot-danger{background:var(--danger);}
+.jobhead{display:flex;gap:var(--sp-6);justify-content:space-between;flex-wrap:wrap;align-items:flex-start;}
+.jobhead .who{display:grid;gap:.35rem;}
+.titleline{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;}
+.typeline{color:var(--muted);font-size:.95rem;}
+.pathline{font-family:var(--font-mono);font-size:.8rem;color:var(--faint);word-break:break-all;}
+.actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:flex-start;}
+.statusstrip{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--sp-4) var(--sp-6);}
+.sfig{display:grid;gap:2px;}
+.sfig .k{font-size:.68rem;font-weight:650;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);}
+.sfig .v{font-family:var(--font-mono);font-size:1.15rem;color:var(--ink);font-variant-numeric:tabular-nums;}
+.sfig .s{font-family:var(--font-mono);font-size:.76rem;color:var(--faint);}
+.defgrid{display:grid;grid-template-columns:200px minmax(0,1fr);gap:.1rem var(--sp-4);}
+.defgrid dt{font-size:.84rem;color:var(--faint);padding:.45rem 0;border-top:1px solid var(--border);}
+.defgrid dd{margin:0;padding:.45rem 0;border-top:1px solid var(--border);}
+.defgrid dt:first-of-type,.defgrid dd:first-of-type{border-top:0;}
+
+/* restore points */
+.rp{display:grid;grid-template-columns:22px 130px 92px minmax(0,1fr);gap:var(--sp-3);align-items:center;
+  padding:.5rem var(--sp-3);border-bottom:1px solid var(--border);cursor:pointer;margin:0;font-weight:400;}
+.rp:hover{background:var(--surface);}
+.rp input{margin:0;width:auto;}
+.rp .d{font-family:var(--font-mono);font-size:.88rem;color:var(--ink);font-variant-numeric:tabular-nums;}
+.rp .id{font-family:var(--font-mono);font-size:.82rem;color:var(--muted);}
+.rp .m{font-family:var(--font-mono);font-size:.78rem;color:var(--faint);}
+.rphead{display:grid;grid-template-columns:22px 130px 92px minmax(0,1fr);gap:var(--sp-3);
+  padding:0 var(--sp-3) var(--sp-2);border-bottom:1px solid var(--border);
+  font-size:.68rem;font-weight:650;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);}
+.needsline{display:grid;gap:.3rem;margin:var(--sp-4) 0;}
+.needsline div{display:grid;grid-template-columns:18px minmax(0,1fr);gap:.5rem;font-size:.9rem;align-items:baseline;}
+.needsline .ok{color:var(--ok);} .needsline .warn{color:var(--warn);}
+
+/* forms */
+label.fld{display:block;font-weight:520;color:var(--ink);margin:0 0 var(--sp-2);font-size:.9rem;}
+input[type=text],select{font:inherit;width:100%;max-width:26rem;padding:.45rem .6rem;background:var(--bg);color:var(--ink);
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:.88rem;}
+input[type=text]:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent);}
+.confirm{display:flex;gap:var(--sp-3);align-items:flex-end;flex-wrap:wrap;margin-top:var(--sp-3);}
+.confirm label.fld{margin-bottom:.35rem;}
+.guard{border:1px solid var(--danger-border);background:var(--danger-bg);padding:var(--sp-4);border-radius:var(--radius-sm);}
+.guard input[type=text]{max-width:16rem;}
+
+/* step panels (a form step is a genuinely bounded object → a card) */
+.step{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:var(--sp-4) var(--sp-6);}
+.steps{display:grid;gap:var(--sp-4);}
+.stephead{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-3);margin-bottom:var(--sp-3);}
+.stephead .n{font-family:var(--font-mono);font-size:.8rem;color:var(--faint);margin-right:.5rem;}
+.state-word{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);}
+.state-word.done{color:var(--ok);}
+.state-word.open{color:var(--accent);}
+.opt{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:var(--sp-3);align-items:baseline;
+  padding:.55rem var(--sp-3);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-weight:400;margin:0;}
+.opt + .opt{margin-top:.4rem;}
+.opt:hover{background:var(--surface-2);}
+.opt input{margin:0;width:auto;}
+.opt .t{font-size:.92rem;color:var(--ink);}
+.opt .h{font-size:.8rem;color:var(--faint);display:block;margin-top:.15rem;}
+.opt .money{font-family:var(--font-mono);font-size:.88rem;white-space:nowrap;text-align:right;}
+.opt.is-on{border-color:var(--accent);box-shadow:inset 2px 0 0 var(--accent);background:var(--accent-bg);}
+.opt.is-blocked{opacity:.75;cursor:not-allowed;border-color:var(--danger-border);}
+.opt.is-blocked .t,.opt.is-blocked .money{text-decoration:line-through;color:var(--muted);}
+.is-inert .opt .t,.is-inert .opt .money{color:var(--muted);}
+.is-inert .opt{background:transparent;box-shadow:none;border-color:var(--border);}
+.typestrip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);}
+.tcol{border:1px solid var(--border);border-radius:var(--radius-sm);padding:var(--sp-3);display:grid;gap:.35rem;align-content:start;}
+.tcol.is-on{border-color:var(--accent);background:var(--accent-bg);box-shadow:inset 0 -2px 0 var(--accent);}
+.tcol .nm{font-weight:600;font-size:.92rem;}
+.tcol .desc{font-size:.8rem;color:var(--muted);}
+.tcol .money{font-family:var(--font-mono);font-size:1.05rem;}
+.tcol .sel{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.1em;color:var(--accent);}
+.toggle2{display:inline-flex;border:1px solid var(--border-strong);border-radius:var(--radius-sm);overflow:hidden;}
+.toggle2 button{font:inherit;font-size:.82rem;font-weight:550;padding:.35rem .7rem;background:var(--bg);color:var(--muted);border:0;cursor:pointer;}
+.toggle2 button[aria-pressed="true"]{background:var(--accent-bg);color:var(--ink);box-shadow:inset 0 -2px 0 var(--accent);}
+.consequence{border-left:3px solid var(--accent);background:var(--bg);padding:var(--sp-3);font-size:.88rem;color:var(--ink);margin-bottom:var(--sp-3);}
+
+/* sticky result bar — fixed height, never more than the matrix + one line */
+.resultbar{position:sticky;bottom:0;z-index:20;background:var(--surface);border:1px solid var(--border-strong);
+  border-bottom:0;border-radius:var(--radius) var(--radius) 0 0;padding:var(--sp-3) var(--sp-4);margin-top:var(--sp-4);
+  display:flex;gap:var(--sp-6);align-items:center;justify-content:space-between;flex-wrap:wrap;}
+.matrix{width:auto;border-collapse:collapse;}
+.matrix th,.matrix td{padding:.2rem .7rem .2rem 0;border:0;font-size:.82rem;}
+.matrix thead th{font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);border-bottom:1px solid var(--border);padding-bottom:.25rem;}
+.matrix tbody th{text-align:left;font-weight:460;color:var(--muted);white-space:nowrap;}
+.matrix td{font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right;color:var(--ink);}
+.matrix thead th small{display:block;font-size:.64rem;color:var(--faint);letter-spacing:0;text-transform:none;font-family:var(--font-mono);}
+
+/* details / tool detail */
+details{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);padding:.5rem .8rem;}
+details[open]{padding-bottom:var(--sp-3);}
+summary{cursor:pointer;font-weight:550;font-size:.88rem;color:var(--muted);}
+summary:hover{color:var(--ink);}
+pre{font-family:var(--font-mono);font-size:.8rem;background:var(--bg);border:1px solid var(--border);
+  padding:var(--sp-3);margin:var(--sp-2) 0;overflow-x:auto;color:var(--ink);border-radius:var(--radius-sm);}
+.cmd{position:relative;}
+.cmd .copy{position:absolute;top:8px;right:8px;}
+code{font-family:var(--font-mono);font-size:.88em;background:var(--surface-2);border:1px solid var(--border);
+  border-radius:2px;padding:.05em .3em;}
+
+/* flash — the change flash, 400ms */
+.flash{animation:flash .4s ease-out;}
+@keyframes flash{from{background:var(--accent-bg);color:var(--ink-strong);}to{background:transparent;}}
+
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--sp-4) var(--sp-6);}
+.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--sp-4) var(--sp-6);}
+.lead{color:var(--muted);max-width:66ch;}
+.hint{color:var(--faint);font-size:.84rem;}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.sitefoot{max-width:var(--w-dense);margin:0 auto;border-top:1px solid var(--border);padding-block:var(--sp-6) var(--sp-8);}
+
+/* ---------- responsive ---------- */
+@media (max-width:1000px){
+  .jobgrid{grid-template-columns:minmax(0,1fr);}
+  .rail{position:static;}
+}
+@media (max-width:900px){
+  .col-strip,.col-took{display:none;}
+  .compact-only{display:block;}
+  .typestrip{grid-template-columns:minmax(0,1fr);}
+}
+@media (min-width:901px){.compact-only{display:none;}}
+@media (max-width:620px){
+  .needs-row{grid-template-columns:minmax(0,1fr);}
+  .needs-row > .act{justify-content:flex-start;padding:0 var(--sp-4) var(--sp-3) var(--sp-4);}
+  .rp,.rphead{grid-template-columns:22px minmax(0,1fr);}
+  .rp .id,.rp .m,.rphead span:nth-child(3),.rphead span:nth-child(4){display:none;}
+  .defgrid{grid-template-columns:minmax(0,1fr);}
+  .defgrid dd{border-top:0;padding-top:0;}
+  .verdict{padding:var(--sp-4);}
+  .resultbar{gap:var(--sp-3);}
+  .matrix th,.matrix td{padding-right:.5rem;font-size:.76rem;}
+  .step{padding:var(--sp-4);}
+}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important;}
+  .workbar::after{width:100%;animation:none;
+    background:repeating-linear-gradient(90deg,var(--accent) 0 8px,var(--surface-2) 8px 16px);}
+  .flash{animation:none;box-shadow:inset 2px 0 0 var(--accent);}
+  .tok-running::before{animation:none;}
+}
+</style>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <span class="brand">backup<b>-</b>engine</span>
+    <nav class="switcher" aria-label="Screens">
+      <button type="button" data-go="board" aria-current="page">Board</button>
+      <button type="button" data-go="job">Job &middot; appdata</button>
+      <button type="button" data-go="new">New job</button>
+    </nav>
+    <div class="topbar-right">
+      <span class="chip">LAN only &middot; no auth</span>
+      <span class="clock">Tue 15 Sep 2026 &middot; 07:42 &middot; refreshed 12 s ago</span>
+    </div>
+  </div>
+</header>
+<div class="workbar" id="workbar" hidden></div>
+
+<main>
+
+<!-- ============================================================
+     SCREEN 1 — BOARD
+     ============================================================ -->
+<section class="screen dense" id="screen-board" aria-label="Board">
+
+  <!-- Band 1 — verdict -->
+  <div class="band">
+    <div class="verdict">
+      <div>
+        <h2>manga has not backed up since Sunday. Amazon refused the upload &mdash; one permission is missing from the key this machine uses.</h2>
+        <p class="sub">Sun 13 Sep 04:00 &middot; failed after 1 h 07 m &middot; 1 of 2 jobs failing &middot; next run tomorrow 05:00, in 21 h 18 m</p>
+      </div>
+      <button type="button" class="btn btn-primary">Fix the permission &rarr;</button>
+    </div>
+  </div>
+
+  <!-- Band 2 — needs you -->
+  <div class="band">
+    <p class="slabel">Needs you <span class="cnt">&middot; 2</span></p>
+    <div class="needs">
+
+      <div class="needs-row is-blocker">
+        <div class="sig sig-blocker">
+          <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill="currentColor"/></svg></span>
+          <div class="body">
+            <span class="label">Blocker</span>
+            <p><strong>manga cannot finish a run.</strong> Amazon refused a delete, so every Sunday run stops at the same point. Nothing has been copied since 6 September.</p>
+            <code class="errline">AccessDenied: s3:DeleteObjectVersion</code>
+            <p class="hint">Two ways out: run <code>./setup.sh</code> on this machine to re-apply the key policy, or add the permission by hand in the AWS console (IAM &rarr; the backup key &rarr; this bucket). Either one takes a minute; the next scheduled run then succeeds.</p>
+            <p class="hint">Sun 13 Sep 04:00 &middot; <button type="button" class="linklike">open the run record &rarr;</button></p>
+          </div>
+        </div>
+        <div class="act"><button type="button" class="btn btn-primary btn-sm">Fix the permission &rarr;</button></div>
+      </div>
+
+      <div class="needs-row is-warning">
+        <div class="sig sig-warning">
+          <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M6 1.4 11.1 10.6H0.9Z"/><path d="M6 4.6v2.6"/><path d="M6 8.9v.2"/></svg></span>
+          <div class="body">
+            <span class="label">Warning</span>
+            <p><strong>No restore has ever been tested.</strong> The recovery passphrase is set and is not the shipped example &mdash; but nothing has yet proved it can actually read your snapshots back.</p>
+            <p class="hint">A test pulls one file to <span class="mono">/tmp</span> and costs about a cent.</p>
+          </div>
+        </div>
+        <div class="act"><button type="button" class="btn btn-sm" data-go="job">Test a restore &rarr;</button></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Band 3 — jobs table, health first -->
+  <div class="band">
+    <div class="band-head">
+      <p class="slabel">Jobs &middot; worst first</p>
+      <p class="slabel"><span class="mono">2 jobs</span></p>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>State</th>
+            <th>Job</th>
+            <th>Last run</th>
+            <th class="col-took">Took</th>
+            <th>Next run</th>
+            <th class="col-strip">Last 14 nights</th>
+            <th class="num">Size</th>
+            <th class="num">Per month</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <tr class="jobrow">
+            <td><span class="tok tok-failed">Failed</span></td>
+            <td>
+              <button type="button" class="linklike jobname" data-go="job">manga</button>
+              <div class="jobpath">/mnt/user/data/media/comics/mangas</div>
+              <div class="compact-only hint mono">took 1 h 07 m &middot; 1 failed, 1 OK in 14 nights</div>
+            </td>
+            <td><div class="cell2"><span class="v">04:00</span><span class="s">Sun, 2 d ago</span></div></td>
+            <td class="col-took"><div class="cell2"><span class="v" style="color:var(--danger)">1 h 07 m</span><span class="s">stopped early &middot; ~2 h 12 m</span></div></td>
+            <td><div class="cell2"><span class="v">Sun 04:00</span><span class="s">in 4 d 20 h</span></div></td>
+            <td class="col-strip">
+              <div class="strip" role="img" aria-label="Last 14 nights for manga: runs Sundays only. 6 September succeeded, 13 September failed.">
+                <span class="cellx" title="Wed 2 Sep · no run scheduled"></span>
+                <span class="cellx" title="Thu 3 Sep · no run scheduled"></span>
+                <span class="cellx" title="Fri 4 Sep · no run scheduled"></span>
+                <span class="cellx" title="Sat 5 Sep · no run scheduled"></span>
+                <span class="cellx ok dim" title="Sun 6 Sep 04:00 · OK · 2 h 09 m"></span>
+                <span class="cellx" title="Mon 7 Sep · no run scheduled"></span>
+                <span class="cellx" title="Tue 8 Sep · no run scheduled"></span>
+                <span class="cellx" title="Wed 9 Sep · no run scheduled"></span>
+                <span class="cellx" title="Thu 10 Sep · no run scheduled"></span>
+                <span class="cellx" title="Fri 11 Sep · no run scheduled"></span>
+                <span class="cellx" title="Sat 12 Sep · no run scheduled"></span>
+                <span class="cellx fail" title="Sun 13 Sep 04:00 · FAILED after 1 h 07 m · AccessDenied"></span>
+                <span class="cellx" title="Mon 14 Sep · no run scheduled"></span>
+                <span class="cellx" title="Tue 15 Sep · no run scheduled"></span>
+              </div>
+            </td>
+            <td class="num"><div class="cell2"><span class="v"><span class="p-measured">1.78 TB</span></span><span class="s">232,021 files</span></div></td>
+            <td class="num"><div class="cell2"><span class="v">$1.85</span><span class="s">projected</span></div></td>
+          </tr>
+
+          <tr class="jobrow">
+            <td><span class="tok tok-ok" id="board-tok-appdata">OK</span></td>
+            <td>
+              <button type="button" class="linklike jobname" data-go="job">appdata</button>
+              <div class="jobpath">/mnt/user/appdata_backups</div>
+              <div class="compact-only hint mono">took 4 m 12 s &middot; 14 nights, no failures</div>
+            </td>
+            <td><div class="cell2"><span class="v">05:00</span><span class="s">today, 2 h 42 m ago</span></div></td>
+            <td class="col-took"><div class="cell2"><span class="v">4 m 12 s</span><span class="s">~4 m 08 s typical</span></div></td>
+            <td><div class="cell2"><span class="v">05:00</span><span class="s">tomorrow, in 21 h 18 m</span></div></td>
+            <td class="col-strip">
+              <div class="strip" role="img" aria-label="Last 14 nights for appdata: every night succeeded.">
+                <span class="cellx ok dim" title="Wed 2 Sep 05:00 · OK · 4 m 25 s"></span>
+                <span class="cellx ok dim" title="Thu 3 Sep 05:00 · OK · 4 m 06 s"></span>
+                <span class="cellx ok dim" title="Fri 4 Sep 05:00 · OK · 3 m 53 s"></span>
+                <span class="cellx ok dim" title="Sat 5 Sep 05:00 · OK · 4 m 31 s"></span>
+                <span class="cellx ok dim" title="Sun 6 Sep 05:00 · OK · 4 m 14 s"></span>
+                <span class="cellx ok dim" title="Mon 7 Sep 05:00 · OK · 4 m 01 s"></span>
+                <span class="cellx ok dim" title="Tue 8 Sep 05:00 · OK · 4 m 19 s"></span>
+                <span class="cellx ok" title="Wed 9 Sep 05:00 · OK · 4 m 08 s"></span>
+                <span class="cellx ok" title="Thu 10 Sep 05:00 · OK · 3 m 57 s"></span>
+                <span class="cellx ok" title="Fri 11 Sep 05:00 · OK · 4 m 23 s"></span>
+                <span class="cellx ok" title="Sat 12 Sep 05:00 · OK · 4 m 04 s"></span>
+                <span class="cellx ok" title="Sun 13 Sep 05:00 · OK · 4 m 16 s"></span>
+                <span class="cellx ok" title="Mon 14 Sep 05:00 · OK · 4 m 02 s"></span>
+                <span class="cellx ok" title="Tue 15 Sep 05:00 · OK · 4 m 12 s · restore point a81f3c2"></span>
+              </div>
+            </td>
+            <td class="num"><div class="cell2"><span class="v"><span class="p-measured">52.71 GB</span></span><span class="s">533 files</span></div></td>
+            <td class="num"><div class="cell2"><span class="v"><span class="p-assumed">$2.69</span></span><span class="s">settles month 6</span></div></td>
+          </tr>
+
+        </tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <span><span class="key-cell" style="background:var(--ok)"></span><i>OK</i></span>
+      <span><span class="key-cell" style="background:var(--danger)"></span><i>failed</i></span>
+      <span><span class="key-cell" style="background:var(--warn)"></span><i>slow &mdash; 3&times; its own typical run</i></span>
+      <span><span class="key-cell" style="background:var(--grid)"></span><i>no run scheduled that night</i></span>
+      <span><span class="key-cell" style="background:var(--ok-dim)"></span><i>older than 7 nights</i></span>
+    </div>
+  </div>
+
+  <!-- Band 4 — cost summary -->
+  <div class="band">
+    <div class="band-head">
+      <p class="slabel">What it costs</p>
+      <p class="band-head more"><button type="button" class="linklike">Open the full cost view &rarr;</button></p>
+    </div>
+
+    <div class="grid4" style="margin-bottom:var(--sp-6)">
+      <div class="sfig">
+        <span class="k">In the bucket now</span>
+        <span class="v"><span class="p-measured">1.86 TB</span></span>
+        <span class="s">measured 14 Sep 07:40 &middot; 2 folders</span>
+      </div>
+      <div class="sfig">
+        <span class="k">Last invoice</span>
+        <span class="v"><span class="p-invoiced">$3.98</span></span>
+        <span class="s">August 2026 &middot; the real bill</span>
+      </div>
+      <div class="sfig">
+        <span class="k">The model says</span>
+        <span class="v">$4.54<span class="s"> /mo</span></span>
+        <span class="s">both jobs, once settled</span>
+      </div>
+      <div class="sfig">
+        <span class="k">Difference</span>
+        <span class="v" style="color:var(--warn)">+$0.56</span>
+        <span class="s">+14.1% &middot; model runs high</span>
+      </div>
+    </div>
+
+    <p class="delta" style="margin-bottom:var(--sp-3)">model <b>$4.54</b> &middot; invoice <b>$3.98</b> &middot; <b>+14.1%</b> &mdash; close enough to trust, and it errs on the expensive side.</p>
+
+    <div class="sig sig-note" style="margin-bottom:var(--sp-4)">
+      <div class="body">Why the model runs high: it prices appdata at the point where old versions stop piling up (month 6, $2.69/mo). In August they were still piling up, so August was cheaper than the steady month you are being quoted.</div>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Job</th><th>What it keeps for you</th><th>Storage tier</th><th class="num">Projected</th><th class="num">Share of the bill</th></tr>
+        </thead>
+        <tbody>
+          <tr class="jobrow">
+            <td><button type="button" class="linklike jobname" data-go="job">manga</button></td>
+            <td><span class="mono p-measured">1.78 TB</span> <span class="hint">&middot; 232,021 .cbz files</span></td>
+            <td>Thaw first, hours <code>DEEP_ARCHIVE</code></td>
+            <td class="num">$1.85 <span class="hint">/mo</span></td>
+            <td class="num hint">not split</td>
+          </tr>
+          <tr class="jobrow">
+            <td><button type="button" class="linklike jobname" data-go="job">appdata</button></td>
+            <td><span class="mono p-measured">52.71 GB</span> <span class="hint">+ <span class="p-assumed">~11.6 GB</span> of old versions</span></td>
+            <td>Instant <code>STANDARD</code></td>
+            <td class="num"><span class="p-assumed">$2.69</span> <span class="hint">/mo</span></td>
+            <td class="num hint">not split</td>
+          </tr>
+          <tr>
+            <td colspan="3" class="hint">Both jobs, every month once settled</td>
+            <td class="num"><strong class="mono">$4.54</strong></td>
+            <td class="num"><span class="mono p-invoiced">$3.98</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="sig sig-note">
+      <div class="body">The bill is not split per job: Amazon's cost report comes back as one account-wide number, so &ldquo;share of the bill&rdquo; stays empty until the two folders are tagged. <button type="button" class="linklike">How to tag them &rarr;</button></div>
+    </div>
+
+    <div class="legend">
+      <span><i style="border-bottom:1px solid var(--prov-measured)">&nbsp;&nbsp;&nbsp;&nbsp;</i> measured</span>
+      <span><i style="border-bottom:1px dotted var(--prov-assumed)">&nbsp;&nbsp;&nbsp;&nbsp;</i> assumed</span>
+      <span><i style="border-bottom:3px double var(--prov-invoiced)">&nbsp;&nbsp;&nbsp;&nbsp;</i> invoiced</span>
+      <span><i>no line</i> = projected</span>
+      <span class="price-stamp">prices: bundled table 2026-08-27</span>
+    </div>
+  </div>
+
+</section>
+
+<!-- ============================================================
+     SCREEN 2 — JOB PAGE: appdata
+     ============================================================ -->
+<section class="screen dense" id="screen-job" aria-label="Job: appdata" hidden>
+
+  <div class="band">
+    <div class="jobhead" style="margin-bottom:var(--sp-6)">
+      <div class="who">
+        <div class="titleline">
+          <span class="tok tok-ok" id="job-token">OK</span>
+          <h1>appdata</h1>
+        </div>
+        <p class="typeline">Snapshot backup &mdash; a point in time, so you can restore any date.</p>
+        <p class="pathline">/mnt/user/appdata_backups &nbsp;&rarr;&nbsp; s3://bw-backups/appdata/</p>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn" id="run-now">Run now</button>
+        <button type="button" class="btn btn-primary" data-scroll="restore-band">Get data back</button>
+        <button type="button" class="btn btn-ghost" aria-label="More actions">&middot;&middot;&middot;</button>
+      </div>
+    </div>
+
+    <div class="sig sig-success" id="run-done" hidden style="margin-bottom:var(--sp-4)">
+      <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6" cy="6" r="5"/><path d="M3.6 6.2 5.3 7.9 8.5 4.4"/></svg></span>
+      <div class="body"><span class="label">Done</span>
+        <p>Run finished in 4 m 09 s. New restore point <span class="mono">c37b0d5</span> &mdash; 6 files changed, 214 MB new.</p>
+      </div>
+    </div>
+
+    <div class="jobgrid">
+      <div>
+        <!-- status strip -->
+        <div class="statusstrip">
+          <div class="sfig"><span class="k">Last run</span><span class="v">05:00</span><span class="s">today &middot; 2 h 42 m ago</span></div>
+          <div class="sfig"><span class="k">Took</span><span class="v">4 m 12 s</span><span class="s">~4 m 08 s typical</span></div>
+          <div class="sfig"><span class="k">Next run</span><span class="v">05:00</span><span class="s">tomorrow &middot; in 21 h 18 m</span></div>
+          <div class="sfig"><span class="k">Streak</span><span class="v">30 nights</span><span class="s">no failures on record</span></div>
+          <div class="sfig"><span class="k">Restore points</span><span class="v">14</span><span class="s">back to 18 Mar 2026</span></div>
+        </div>
+
+        <!-- ledger -->
+        <div class="band">
+          <div class="band-head">
+            <p class="slabel">Last 30 nights</p>
+            <p class="slabel"><span class="mono">30 OK &middot; 0 failed</span></p>
+          </div>
+          <div class="ledger-wrap">
+            <div class="ledger" style="min-width:358px">
+              <div class="strip" role="img" aria-label="Thirty nights of runs for appdata: every night succeeded.">
+                <span class="cellx ok dim" title="Mon 17 Aug · OK · 3 m 58 s"></span>
+                <span class="cellx ok dim" title="Tue 18 Aug · OK · 4 m 11 s"></span>
+                <span class="cellx ok dim" title="Wed 19 Aug · OK · 4 m 04 s"></span>
+                <span class="cellx ok dim" title="Thu 20 Aug · OK · 3 m 52 s"></span>
+                <span class="cellx ok dim" title="Fri 21 Aug · OK · 4 m 28 s"></span>
+                <span class="cellx ok dim" title="Sat 22 Aug · OK · 4 m 00 s"></span>
+                <span class="cellx ok dim" title="Sun 23 Aug · OK · 4 m 15 s"></span>
+                <span class="cellx ok dim" title="Mon 24 Aug · OK · 4 m 09 s"></span>
+                <span class="cellx ok dim" title="Tue 25 Aug · OK · 3 m 56 s"></span>
+                <span class="cellx ok dim" title="Wed 26 Aug · OK · 4 m 22 s"></span>
+                <span class="cellx ok dim" title="Thu 27 Aug · OK · 4 m 07 s"></span>
+                <span class="cellx ok dim" title="Fri 28 Aug · OK · 8 m 52 s — slowest night on record"></span>
+                <span class="cellx ok dim" title="Sat 29 Aug · OK · 4 m 18 s"></span>
+                <span class="cellx ok dim" title="Sun 30 Aug · OK · 4 m 03 s"></span>
+                <span class="cellx ok dim" title="Mon 31 Aug · OK · 4 m 10 s"></span>
+                <span class="cellx ok dim" title="Tue 1 Sep · OK · 3 m 59 s"></span>
+                <span class="cellx ok dim" title="Wed 2 Sep · OK · 4 m 25 s"></span>
+                <span class="cellx ok dim" title="Thu 3 Sep · OK · 4 m 06 s"></span>
+                <span class="cellx ok dim" title="Fri 4 Sep · OK · 3 m 53 s"></span>
+                <span class="cellx ok dim" title="Sat 5 Sep · OK · 4 m 31 s"></span>
+                <span class="cellx ok dim" title="Sun 6 Sep · OK · 4 m 14 s"></span>
+                <span class="cellx ok dim" title="Mon 7 Sep · OK · 4 m 01 s"></span>
+                <span class="cellx ok dim" title="Tue 8 Sep · OK · 4 m 19 s"></span>
+                <span class="cellx ok" title="Wed 9 Sep · OK · 4 m 08 s"></span>
+                <span class="cellx ok" title="Thu 10 Sep · OK · 3 m 57 s"></span>
+                <span class="cellx ok" title="Fri 11 Sep · OK · 4 m 23 s"></span>
+                <span class="cellx ok" title="Sat 12 Sep · OK · 4 m 04 s"></span>
+                <span class="cellx ok" title="Sun 13 Sep · OK · 4 m 16 s"></span>
+                <span class="cellx ok" title="Mon 14 Sep · OK · 4 m 02 s"></span>
+                <span class="cellx ok" title="Tue 15 Sep · OK · 4 m 12 s · restore point a81f3c2"></span>
+              </div>
+              <div class="bars" aria-hidden="true">
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:5px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:6px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:5px"></span><span class="bar" style="height:5px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:5px"></span><span class="bar" style="height:4px"></span><span class="bar tall" style="height:20px"></span>
+                <span class="bar" style="height:5px"></span><span class="bar" style="height:4px"></span><span class="bar" style="height:5px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:5px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:6px"></span><span class="bar" style="height:5px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:5px"></span><span class="bar" style="height:5px"></span>
+                <span class="bar" style="height:4px"></span><span class="bar" style="height:5px"></span><span class="bar" style="height:4px"></span>
+                <span class="bar" style="height:5px"></span><span class="bar" style="height:4px"></span><span class="bar" style="height:5px"></span>
+              </div>
+              <div class="ledger-axis"><span>17 Aug</span><span>last 7 nights &rarr;</span><span>tonight</span></div>
+            </div>
+          </div>
+          <p class="hint" style="margin-top:var(--sp-3)">Thirty nights, no failed runs. The bars under the strip are how long each night took &mdash; the tall one is Friday 28 August at <span class="mono">8 m 52 s</span>, twice the usual and still well inside normal. Hover any night for its date, outcome and restore point.</p>
+        </div>
+
+        <!-- restore -->
+        <div class="band" id="restore-band">
+          <p class="slabel">Get data back</p>
+          <p class="lead" style="margin-bottom:var(--sp-4)">Pick the date you want back. Files are written into a new folder &mdash; the live <span class="mono">/mnt/user/appdata_backups</span> is never touched or overwritten.</p>
+
+          <div class="rphead"><span></span><span>Date &amp; time</span><span>Restore point</span><span>What it gives you back</span></div>
+          <label class="rp" for="rp-1"><input type="radio" name="rp" id="rp-1" checked><span class="d">Tue 15 Sep 05:00</span><span class="id">a81f3c2</span><span class="m">52.71 GB &middot; 6 files changed, 218 MB new &middot; today</span></label>
+          <label class="rp" for="rp-2"><input type="radio" name="rp" id="rp-2"><span class="d">Mon 14 Sep 05:00</span><span class="id">7c41e9b</span><span class="m">52.68 GB &middot; 4 files changed, 96 MB new</span></label>
+          <label class="rp" for="rp-3"><input type="radio" name="rp" id="rp-3"><span class="d">Sun 13 Sep 05:00</span><span class="id">2b90f4d</span><span class="m">52.66 GB &middot; 9 files changed, 402 MB new</span></label>
+          <label class="rp" for="rp-4"><input type="radio" name="rp" id="rp-4"><span class="d">Sat 12 Sep 05:00</span><span class="id">e5d1a06</span><span class="m">52.61 GB &middot; 3 files changed, 71 MB new</span></label>
+          <label class="rp" for="rp-5"><input type="radio" name="rp" id="rp-5"><span class="d">Fri 11 Sep 05:00</span><span class="id">91f7bc3</span><span class="m">52.60 GB &middot; 7 files changed, 188 MB new</span></label>
+          <label class="rp" for="rp-6"><input type="radio" name="rp" id="rp-6"><span class="d">Sun 6 Sep 05:00</span><span class="id">d19a5e4</span><span class="m">52.44 GB &middot; kept as the weekly one</span></label>
+          <label class="rp" for="rp-7"><input type="radio" name="rp" id="rp-7"><span class="d">Wed 18 Mar 05:00</span><span class="id">4b02fa7</span><span class="m">38.09 GB &middot; oldest kept &middot; the first backup</span></label>
+
+          <details style="margin-top:var(--sp-3)">
+            <summary>Show the other 7 restore points</summary>
+            <div class="scroll">
+              <table style="margin-top:var(--sp-2)">
+                <tbody>
+                  <tr><td class="mono">Thu 10 Sep 05:00</td><td class="mono hint">4a2e8d1</td><td class="hint">52.55 GB &middot; daily</td></tr>
+                  <tr><td class="mono">Wed 9 Sep 05:00</td><td class="mono hint">c86b03f</td><td class="hint">52.52 GB &middot; daily</td></tr>
+                  <tr><td class="mono">Sun 30 Aug 05:00</td><td class="mono hint">6f3c72a</td><td class="hint">51.98 GB &middot; weekly</td></tr>
+                  <tr><td class="mono">Sun 23 Aug 05:00</td><td class="mono hint">b04de91</td><td class="hint">51.40 GB &middot; weekly</td></tr>
+                  <tr><td class="mono">Sun 16 Aug 05:00</td><td class="mono hint">3e7a1cd</td><td class="hint">50.86 GB &middot; weekly</td></tr>
+                  <tr><td class="mono">Fri 31 Jul 05:00</td><td class="mono hint">a5c9204</td><td class="hint">49.12 GB &middot; monthly</td></tr>
+                  <tr><td class="mono">Tue 30 Jun 05:00</td><td class="mono hint">f2b18e6</td><td class="hint">46.77 GB &middot; monthly</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="hint" style="margin-top:var(--sp-2)">Fourteen points are kept, because your keep rule is: last 3, then one a day for 7 days, one a week for 4 weeks, one a month for 6 months.</p>
+          </details>
+
+          <div style="margin-top:var(--sp-6)">
+            <label class="fld" for="restore-target">Write the files to</label>
+            <input type="text" id="restore-target" value="/mnt/user/restores/appdata/2026-09-15/">
+            <p class="hint" style="margin-top:.35rem">A new, dated folder. Typing the live source path here is refused &mdash; a restore can never overwrite what it is protecting.</p>
+          </div>
+
+          <div class="needsline">
+            <div><span class="ok" aria-hidden="true">&#10003;</span><span><strong>Recovery passphrase:</strong> set, and not the shipped example. Without it nothing here can be read &mdash; not by you, not by Amazon.</span></div>
+            <div><span class="ok" aria-hidden="true">&#10003;</span><span><strong>Ready now:</strong> this job is on the instant tier <code>STANDARD</code>, so there is no waiting &mdash; the first file starts copying immediately.</span></div>
+            <div><span class="ok" aria-hidden="true">&#10003;</span><span><strong>Data out of Amazon:</strong> 52.71 GB &asymp; <span class="mono">$4.74</span> <span class="hint">one time, for a full restore</span></span></div>
+          </div>
+
+          <div class="sig sig-warning" style="margin:var(--sp-4) 0">
+            <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M6 1.4 11.1 10.6H0.9Z"/><path d="M6 4.6v2.6"/><path d="M6 8.9v.2"/></svg></span>
+            <div class="body">
+              <span class="label">Warning</span>
+              <p>Your other job is not like this one. <strong>manga</strong> sits on the thaw-first tier <code>DEEP_ARCHIVE</code>: before a single file of it can be read, Amazon has to warm it up, and that takes <strong>up to 12 hours</strong> and is charged separately. Worth knowing before the night you need it.</p>
+              <p class="hint"><button type="button" class="linklike">See what a manga restore takes &rarr;</button></p>
+            </div>
+          </div>
+
+          <div class="guard">
+            <p style="font-size:.9rem;margin-bottom:.35rem"><strong>This writes 52.71 GB to your array and starts a charged download.</strong> Type the job name to confirm.</p>
+            <div class="confirm">
+              <div>
+                <label class="fld" for="confirm-name">Type <span class="mono">appdata</span></label>
+                <input type="text" id="confirm-name" placeholder="appdata" autocomplete="off" spellcheck="false">
+              </div>
+              <button type="button" class="btn btn-primary" id="start-restore" disabled>Start restore</button>
+              <span class="hint" id="confirm-hint">Disabled until the name matches.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- cost -->
+        <div class="band">
+          <div class="band-head">
+            <p class="slabel">What this job costs</p>
+            <p class="band-head more"><button type="button" class="linklike">Open the full cost view &rarr;</button></p>
+          </div>
+
+          <div class="grid4" style="margin-bottom:var(--sp-4)">
+            <div class="sfig"><span class="k">First bill</span><span class="v">$1.39</span><span class="s">month 1 &middot; projected</span></div>
+            <div class="sfig"><span class="k">By month 6</span><span class="v"><span class="p-assumed">$2.67</span></span><span class="s">old versions have built up</span></div>
+            <div class="sfig"><span class="k">Every month after</span><span class="v"><span class="p-assumed">$2.69</span></span><span class="s">settles from month 6 &mdash; it stops rising</span></div>
+            <div class="sfig"><span class="k">In the bucket now</span><span class="v"><span class="p-measured">64 GB</span></span><span class="s">measured 14 Sep 07:40</span></div>
+          </div>
+
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Where the money goes</th><th>How much of it</th><th>Where that number came from</th></tr></thead>
+              <tbody>
+                <tr><td>Storing your files</td><td class="mono"><span class="p-measured">52.71 GB</span> &middot; 533 files</td><td class="hint">Walked the folder on 14 Sep 07:40.</td></tr>
+                <tr><td>Storing old versions</td><td class="mono"><span class="p-assumed">~11.6 GB</span></td><td class="hint">Assumed, not measured: about 1% of the folder is replaced each night, so old copies settle at 1.22&times; your data.</td></tr>
+                <tr><td>Uploading</td><td class="mono">pennies</td><td class="hint">Charged per request, not per gigabyte &mdash; 533 small files is nothing.</td></tr>
+                <tr><td>Getting data out of Amazon</td><td class="mono">$0.00</td><td class="hint">Only charged when you restore. A full one would be $4.74.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="delta" style="margin-top:var(--sp-4)">Projection against the real bill, whole account: model <b>$4.54</b> &middot; invoice <b>$3.98</b> &middot; <b>+14.1%</b></p>
+          <div class="sig sig-note">
+            <div class="body">Per-job is not available: Amazon's cost report returns one account-wide figure, so this job's own share of the $3.98 cannot be shown honestly yet.</div>
+          </div>
+
+          <div class="legend">
+            <span><i style="border-bottom:1px solid var(--prov-measured)">&nbsp;&nbsp;&nbsp;&nbsp;</i> measured</span>
+            <span><i style="border-bottom:1px dotted var(--prov-assumed)">&nbsp;&nbsp;&nbsp;&nbsp;</i> assumed &mdash; and printed dimmer</span>
+            <span><i style="border-bottom:3px double var(--prov-invoiced)">&nbsp;&nbsp;&nbsp;&nbsp;</i> invoiced</span>
+            <span><i>no line</i> = projected from the two above</span>
+            <span class="price-stamp" id="price-stamp">prices: bundled table 2026-08-27</span>
+            <label class="hint" style="display:inline-flex;gap:.35rem;align-items:center;cursor:pointer">
+              <input type="checkbox" id="live-prices" style="width:auto"> use live AWS prices
+            </label>
+          </div>
+        </div>
+
+        <!-- settings -->
+        <div class="band">
+          <div class="band-head">
+            <p class="slabel">How it is set up</p>
+            <p class="band-head more"><button type="button" class="linklike" data-go="new">Edit &rarr;</button></p>
+          </div>
+          <dl class="defgrid">
+            <dt>What it protects</dt><dd class="mono">/mnt/user/appdata_backups</dd>
+            <dt>What happens to it</dt><dd>Snapshot backup &mdash; a point in time, restore any date</dd>
+            <dt>Storage tier</dt><dd>Instant <code>STANDARD</code> &mdash; readable the second you ask</dd>
+            <dt>How much changes between runs</dt><dd>A little &mdash; about 1% a night <span class="hint">(an assumption you set, used for every cost figure above)</span></dd>
+            <dt>Keep rule</dt><dd>Last 3 &middot; one a day for 7 days &middot; one a week for 4 weeks &middot; one a month for 6 months</dd>
+            <dt>When it runs</dt><dd>Every day at 05:00</dd>
+            <dt>Where it goes</dt><dd class="mono">s3://bw-backups/appdata/</dd>
+            <dt>State</dt><dd>Scheduled</dd>
+          </dl>
+        </div>
+
+        <!-- tool detail -->
+        <div class="band">
+          <details>
+            <summary>Tool detail &mdash; what actually runs</summary>
+            <p class="hint" style="margin:var(--sp-3) 0">Snapshot backups are made by <strong>restic</strong>. All snapshot jobs share one encrypted store, which is why two of them must never start in the same minute &mdash; the second would find the store locked.</p>
+            <div class="cmd">
+              <pre>restic -r s3:s3.amazonaws.com/bw-backups/appdata \
+  backup /mnt/user/appdata_backups --tag appdata</pre>
+              <button type="button" class="btn btn-sm copy" data-copy="restic -r s3:s3.amazonaws.com/bw-backups/appdata backup /mnt/user/appdata_backups --tag appdata">Copy</button>
+            </div>
+            <p class="hint">Last snapshot id <span class="mono">a81f3c2</span> &middot; tag <span class="mono">appdata</span> &middot; repository password comes from the recovery passphrase. <button type="button" class="linklike">What these tools are &rarr;</button></p>
+          </details>
+        </div>
+      </div>
+
+      <!-- rail -->
+      <aside class="rail">
+        <h3>Recovery readiness</h3>
+        <p class="hint" style="margin-bottom:var(--sp-3)">Could you actually get this back right now?</p>
+
+        <div class="rrow"><span class="dot dot-ok"></span><div><div class="k">Recovery passphrase</div><div class="v">Set &middot; not the example</div><div class="t">checked 15 Sep 07:40</div></div></div>
+        <div class="rrow"><span class="dot dot-ok"></span><div><div class="k">Destination reachable</div><div class="v">Write, read, delete &mdash; all OK</div><div class="t">probed 14 Sep 07:40</div></div></div>
+        <div class="rrow"><span class="dot dot-ok"></span><div><div class="k">Old versions protected</div><div class="v">Bucket versioning on</div><div class="t">checked 14 Sep 07:40</div></div></div>
+        <div class="rrow"><span class="dot dot-ok"></span><div><div class="k">Dates you can go back to</div><div class="v">14 &middot; back to 18 Mar</div><div class="t">181 days of cover</div></div></div>
+        <div class="rrow"><span class="dot dot-warn"></span><div><div class="k">Restore ever tested</div><div class="v" style="color:var(--warn)">Never</div><div class="t">nothing has proved it reads back</div></div></div>
+
+        <button type="button" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore &mdash; one file, ~$0.01</button>
+        <p class="hint" style="margin-top:var(--sp-2)">Pulls a single file to <span class="mono">/tmp</span> and writes today's date into this row.</p>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SCREEN 3 — NEW JOB
+     ============================================================ -->
+<section class="screen read" id="screen-new" aria-label="New job" hidden>
+
+  <p class="slabel">New job</p>
+  <h1 style="margin-bottom:var(--sp-3)">What are you protecting?</h1>
+  <p class="lead" style="margin-bottom:var(--sp-8)">Six decisions, in the order that makes each one answerable. Every number below is priced for the folder you pick, not for a generic gigabyte &mdash; and the running total stays pinned at the bottom of the screen.</p>
+
+  <div class="steps">
+
+    <!-- 1 -->
+    <div class="step">
+      <div class="stephead">
+        <h2><span class="n">1</span>The folder</h2>
+        <span class="state-word done">done</span>
+      </div>
+      <label class="fld" for="src">Folder on this machine</label>
+      <input type="text" id="src" value="/mnt/user/appdata_backups">
+      <p style="margin-top:var(--sp-3)"><span class="fig p-measured">52.71 GB</span> <span class="hint">&middot;</span> <span class="fig p-measured">533 files</span> <span class="hint">&middot; measured just now</span></p>
+      <div class="sig sig-note"><div class="body">Measured first, on purpose: every price on this page is computed from this real size. Nothing below is a per-gigabyte guess.</div></div>
+    </div>
+
+    <!-- 2 -->
+    <div class="step">
+      <div class="stephead">
+        <h2><span class="n">2</span>What should happen to it</h2>
+        <span class="state-word done">done</span>
+      </div>
+      <p class="hint" style="margin-bottom:var(--sp-3)">Priced for your 52.71 GB, side by side.</p>
+      <div class="typestrip">
+        <div class="tcol is-on">
+          <span class="sel">SELECTED</span>
+          <span class="nm">Snapshot backup</span>
+          <span class="desc">A point in time you can go back to &mdash; any date, whole folder or one file.</span>
+          <span class="money"><span class="p-assumed" id="t-snapshot">$2.69</span> <span class="hint">/mo</span></span>
+          <span class="hint" id="t-snapshot-s">settles from month 6</span>
+        </div>
+        <div class="tcol">
+          <span class="sel">&nbsp;</span>
+          <span class="nm">Bulk copy</span>
+          <span class="desc">A straight copy of what is there now. No history &mdash; delete a file here, it goes there too.</span>
+          <span class="money"><span class="p-assumed" id="t-bulk">$2.20</span> <span class="hint">/mo</span></span>
+          <span class="hint">flat, from month 2</span>
+        </div>
+        <div class="tcol">
+          <span class="sel">&nbsp;</span>
+          <span class="nm">File history</span>
+          <span class="desc">Keeps every version of every file, for ever.</span>
+          <span class="money"><span class="p-assumed" id="t-filehist">$6.17</span> <span class="hint">/mo</span></span>
+          <span class="hint" id="t-filehist-s">at month 6, and still climbing &mdash; no plateau</span>
+        </div>
+      </div>
+
+      <p class="slabel" style="margin:var(--sp-6) 0 var(--sp-2)">Storage tier &mdash; how fast you can read it back</p>
+      <label class="opt is-on" for="tier-std">
+        <input type="radio" name="tier" id="tier-std" checked>
+        <span><span class="t">Instant &middot; <code>STANDARD</code></span><span class="h">Readable the moment you ask. What a snapshot backup needs.</span></span>
+        <span class="money"><span class="p-assumed" id="tier-std-n">$2.69</span><span class="h">per month</span></span>
+      </label>
+      <label class="opt" for="tier-ia">
+        <input type="radio" name="tier" id="tier-ia">
+        <span><span class="t">Instant, cheaper &middot; <code>STANDARD_IA</code></span><span class="h">Same speed, cheaper to store, more expensive to read. Charged a 30-day minimum per file.</span></span>
+        <span class="money"><span class="p-assumed" id="tier-ia-n">$1.45</span><span class="h">per month</span></span>
+      </label>
+      <label class="opt is-blocked" for="tier-deep" aria-disabled="true">
+        <input type="radio" name="tier" id="tier-deep" disabled>
+        <span><span class="t">Thaw first, hours &middot; <code>DEEP_ARCHIVE</code></span></span>
+        <span class="money">$0.31<span class="h">per month</span></span>
+      </label>
+      <div class="sig sig-blocker" style="margin-top:.4rem">
+        <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill="currentColor"/></svg></span>
+        <div class="body">
+          <span class="label">Blocker</span>
+          <p>A snapshot backup cannot live on a thaw-first tier. It has to read its own index every night, and Amazon needs hours of warning before it will hand that back &mdash; so <strong>every run would fail</strong>. It is struck out above rather than left quietly selectable.</p>
+          <p class="hint">Want this price? Choose <strong>Bulk copy</strong> in the row above instead &mdash; that is what your manga job does.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3 -->
+    <div class="step">
+      <div class="stephead">
+        <h2><span class="n">3</span>How much changes between runs</h2>
+        <span class="state-word done">done</span>
+      </div>
+      <p class="hint" style="margin-bottom:var(--sp-3)">Asked before the keep rule, because it is what gives the keep rule a price. Try both &mdash; watch what moves.</p>
+      <div class="toggle2" role="group" aria-label="Change rate">
+        <button type="button" id="churn-1" aria-pressed="true">A little &mdash; about 1% <span class="hint">(your setting)</span></button>
+        <button type="button" id="churn-0" aria-pressed="false">No change &mdash; files only get added</button>
+      </div>
+      <p style="margin-top:var(--sp-3)" id="churn-readout">About <span class="fig p-assumed">0.53 GB</span> is replaced each night, so replaced copies build up to about <span class="fig p-assumed">11.6 GB</span> on top of your data &mdash; 1.22&times; what you protect.</p>
+      <p class="hint" style="margin-top:.35rem">This is an assumption, not a measurement, so every figure that depends on it is printed dimmer with a dotted line under it.</p>
+    </div>
+
+    <!-- 4 -->
+    <div class="step" id="step4">
+      <div class="stephead">
+        <h2><span class="n">4</span>How long old versions are kept</h2>
+        <span class="state-word open" id="step4-state">open</span>
+      </div>
+      <div class="consequence" id="step4-note">You replace about 0.53 GB a night, so old versions take up room and cost money. That is what this step is choosing between.</div>
+
+      <label class="opt" for="keep-3">
+        <input type="radio" name="keep" id="keep-3">
+        <span><span class="t">Just the last 3</span><span class="h">Yesterday, the day before, the day before that. Nothing older.</span></span>
+        <span class="money" id="k-3">+$0.07<span class="h">per month</span></span>
+      </label>
+      <label class="opt is-on" for="keep-tier">
+        <input type="radio" name="keep" id="keep-tier" checked>
+        <span><span class="t">Thinning out &mdash; last 3, daily 7, weekly 4, monthly 6</span><span class="h">Dense for the last week, then one a week, then one a month. Six months of cover without six months of copies.</span></span>
+        <span class="money" id="k-tier">+$0.49<span class="h">per month</span></span>
+      </label>
+      <label class="opt" for="keep-180">
+        <input type="radio" name="keep" id="keep-180">
+        <span><span class="t">Everything for 180 days</span><span class="h">Every night kept in full for six months, then dropped.</span></span>
+        <span class="money" id="k-180">+$3.97<span class="h">per month</span></span>
+      </label>
+      <label class="opt" for="keep-all">
+        <input type="radio" name="keep" id="keep-all">
+        <span><span class="t">Keep everything</span><span class="h">Nothing is ever dropped.</span></span>
+        <span class="money" id="k-all">+$3.97<span class="h" id="k-all-s">at month 6, still climbing</span></span>
+      </label>
+
+      <div class="sig sig-note" id="keep-tail"><div class="body">Each price above is what that choice adds to the $2.20 it costs to store the folder itself. Your pick, thinning out, is where $2.69 a month comes from.</div></div>
+    </div>
+
+    <!-- 5 -->
+    <div class="step">
+      <div class="stephead">
+        <h2><span class="n">5</span>When it runs</h2>
+        <span class="state-word done">done</span>
+      </div>
+      <div class="grid2">
+        <div>
+          <label class="fld" for="sched-how">How often</label>
+          <select id="sched-how"><option selected>Every day</option><option>Every week</option><option>Every month</option></select>
+        </div>
+        <div>
+          <label class="fld" for="sched-at">At</label>
+          <select id="sched-at"><option selected>05:00</option><option>04:00</option><option>07:20</option></select>
+        </div>
+      </div>
+      <div class="sig sig-advice" style="margin-top:var(--sp-3)">
+        <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6" cy="6" r="5"/><circle cx="6" cy="6" r="1.5" fill="currentColor" stroke="none"/></svg></span>
+        <div class="body">
+          <span class="label">Advice</span>
+          <p>On Sundays your <strong>manga</strong> job is still copying at 05:00 &mdash; it starts at 04:00 and usually takes about 2 h 12 m. Nothing breaks: the two use different stores. But they will share your upload for an hour.</p>
+          <p class="hint">Take it or leave it. <button type="button" class="linklike" id="use-0720">Use 07:20 instead</button></p>
+        </div>
+      </div>
+      <details style="margin-top:var(--sp-3)"><summary>Show the schedule line this writes</summary><pre>0 5 * * *</pre></details>
+    </div>
+
+    <!-- 6 -->
+    <div class="step">
+      <div class="stephead">
+        <h2><span class="n">6</span>Name it</h2>
+        <span class="state-word done">done</span>
+      </div>
+      <label class="fld" for="job-name">Name</label>
+      <input type="text" id="job-name" value="appdata">
+      <div class="sig sig-note"><div class="body">This one name is used everywhere: the row on the board, the tag on every log line, and the folder in the bucket &mdash; <span class="mono">s3://bw-backups/appdata/</span>. Pick something you will recognise in two years.</div></div>
+    </div>
+  </div>
+
+  <!-- sticky result bar: fixed height, WHEN down the side, WHOSE across the top -->
+  <div class="resultbar">
+    <div class="scroll">
+      <table class="matrix">
+        <thead>
+          <tr><th scope="col"></th><th scope="col">This job<small>appdata</small></th><th scope="col">All jobs<small>appdata + manga</small></th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">First bill</th><td id="m-job-first">$1.39</td><td id="m-all-first">$3.24</td></tr>
+          <tr><th scope="row">Every month, once it settles</th><td><span class="p-assumed" id="m-job-mo">$2.69</span></td><td><span class="p-assumed" id="m-all-mo">$4.54</span></td></tr>
+          <tr><th scope="row">First 6 months, total</th><td><span class="p-assumed" id="m-job-6">$13.81</span></td><td><span class="p-assumed" id="m-all-6">$24.91</span></td></tr>
+        </tbody>
+      </table>
+      <p class="stamp" style="margin-top:.35rem">measured folder &middot; assumed change rate &middot; <span class="price-stamp">prices: bundled table 2026-08-27</span></p>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn btn-ghost">Cancel</button>
+      <button type="button" class="btn btn-primary">Save job</button>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="sitefoot">
+  <details>
+    <summary>How to read this screen &mdash; the marks and the six levels</summary>
+    <div class="grid2" style="margin-top:var(--sp-4)">
+      <div>
+        <p class="slabel">Where a number came from</p>
+        <p style="margin-bottom:.4rem"><span class="fig p-measured">52.71 GB</span> <span class="hint">&mdash; measured. Something walked the folder or read the bucket, on a date it will tell you.</span></p>
+        <p style="margin-bottom:.4rem"><span class="fig p-assumed">~11.6 GB</span> <span class="hint">&mdash; assumed. Dotted, and printed dimmer, because it rests on a guess you made.</span></p>
+        <p style="margin-bottom:.4rem"><span class="fig p-invoiced">$3.98</span> <span class="hint">&mdash; invoiced. This is the bill Amazon actually sent.</span></p>
+        <p><span class="fig">$4.54</span> <span class="hint">&mdash; projected, no line. A projection takes the weakest mark of everything that fed it.</span></p>
+      </div>
+      <div>
+        <p class="slabel">How loudly it is telling you</p>
+        <div class="sig sig-note"><div class="body">Note &mdash; background explanation. No box, no colour, nothing to do.</div></div>
+        <div class="sig sig-advice"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6" cy="6" r="5"/><circle cx="6" cy="6" r="1.5" fill="currentColor" stroke="none"/></svg></span><div class="body"><span class="label">Advice</span>Take it or leave it. Usually comes with a one-click accept.</div></div>
+        <div class="sig sig-warning"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M6 1.4 11.1 10.6H0.9Z"/><path d="M6 4.6v2.6"/><path d="M6 8.9v.2"/></svg></span><div class="body"><span class="label">Warning</span>Will cost you money or surprise you later. Nothing is stopped.</div></div>
+        <div class="sig sig-blocker"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill="currentColor"/></svg></span><div class="body"><span class="label">Blocker</span>Stops the button. Names the two ways out and jumps you to the control.</div></div>
+        <div class="sig sig-success"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6" cy="6" r="5"/><path d="M3.6 6.2 5.3 7.9 8.5 4.4"/></svg></span><div class="body"><span class="label">Done</span>Only ever a moment after you press something. Then it clears itself.</div></div>
+        <div class="sig sig-failure"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4"/><path d="M4.4 4.4 7.6 7.6M7.6 4.4 4.4 7.6"/></svg></span><div class="body"><span class="label">Failed</span>A run that ended badly. Carries a time, the exact error, and a record you can open. Never shares a shape with Done.</div></div>
+        <p class="hint" style="margin-top:var(--sp-3)">States a job can be in: <span class="tok tok-ok">OK</span> <span class="tok tok-failed">Failed</span> <span class="tok tok-running">Running</span> <span class="tok tok-paused">Paused</span> <span class="tok tok-overdue">Overdue</span> <span class="tok tok-notrun">Not run yet</span></p>
+      </div>
+    </div>
+  </details>
+  <p class="hint" style="margin-top:var(--sp-4)">Night Shift &mdash; design direction mockup. Jobs, sizes, runs, errors and invoice are the real ones from this server, read on 15 September 2026.</p>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var screens = {
+    board: document.getElementById("screen-board"),
+    job:   document.getElementById("screen-job"),
+    "new": document.getElementById("screen-new")
+  };
+  var navBtns = Array.prototype.slice.call(document.querySelectorAll(".switcher button"));
+
+  function show(name, scrollTo) {
+    Object.keys(screens).forEach(function (k) { screens[k].hidden = (k !== name); });
+    navBtns.forEach(function (b) {
+      if (b.getAttribute("data-go") === name) { b.setAttribute("aria-current", "page"); }
+      else { b.removeAttribute("aria-current"); }
+    });
+    if (scrollTo) {
+      var t = document.getElementById(scrollTo);
+      if (t) { t.scrollIntoView({ block: "start" }); return; }
+    }
+    window.scrollTo(0, 0);
+  }
+
+  document.addEventListener("click", function (e) {
+    var go = e.target.closest ? e.target.closest("[data-go]") : null;
+    if (go) { show(go.getAttribute("data-go")); return; }
+    var sc = e.target.closest ? e.target.closest("[data-scroll]") : null;
+    if (sc) { var t = document.getElementById(sc.getAttribute("data-scroll")); if (t) t.scrollIntoView({ block: "start" }); return; }
+    var cp = e.target.closest ? e.target.closest("[data-copy]") : null;
+    if (cp) {
+      var txt = cp.getAttribute("data-copy"), old = cp.textContent;
+      try { navigator.clipboard.writeText(txt); } catch (err) { /* clipboard unavailable */ }
+      cp.textContent = "Copied";
+      setTimeout(function () { cp.textContent = old; }, 1400);
+    }
+  });
+
+  /* --- the change flash: 400ms accent ground on whatever actually moved --- */
+  function setFig(id, value) {
+    var el = document.getElementById(id);
+    if (!el || el.textContent === value) { return; }
+    el.textContent = value;
+    el.classList.remove("flash");
+    void el.offsetWidth;
+    el.classList.add("flash");
+  }
+
+  /* --- Create job: change rate drives the keep rule, and says so --- */
+  var AT_1 = {
+    "t-snapshot": "$2.69", "t-bulk": "$2.20", "t-filehist": "$6.17",
+    "tier-std-n": "$2.69", "tier-ia-n": "$1.45",
+    "k-3": "+$0.07", "k-tier": "+$0.49", "k-180": "+$3.97", "k-all": "+$3.97",
+    "m-job-first": "$1.39", "m-all-first": "$3.24",
+    "m-job-mo": "$2.69", "m-all-mo": "$4.54",
+    "m-job-6": "$13.81", "m-all-6": "$24.91"
+  };
+  var AT_0 = {
+    "t-snapshot": "$2.20", "t-bulk": "$2.20", "t-filehist": "$2.20",
+    "tier-std-n": "$2.20", "tier-ia-n": "$1.19",
+    "k-3": "+$0.00", "k-tier": "+$0.00", "k-180": "+$0.00", "k-all": "+$0.00",
+    "m-job-first": "$1.39", "m-all-first": "$3.24",
+    "m-job-mo": "$2.20", "m-all-mo": "$4.05",
+    "m-job-6": "$12.39", "m-all-6": "$23.49"
+  };
+  var b1 = document.getElementById("churn-1"), b0 = document.getElementById("churn-0");
+  var step4 = document.getElementById("step4"), note = document.getElementById("step4-note");
+  var stateWord = document.getElementById("step4-state"), readout = document.getElementById("churn-readout");
+  var keepTail = document.getElementById("keep-tail").querySelector(".body");
+
+  function applyChurn(pct) {
+    var map = pct === 1 ? AT_1 : AT_0;
+    Object.keys(map).forEach(function (k) { setFig(k, map[k]); });
+    b1.setAttribute("aria-pressed", pct === 1 ? "true" : "false");
+    b0.setAttribute("aria-pressed", pct === 0 ? "true" : "false");
+    document.getElementById("t-snapshot-s").textContent = pct === 1 ? "settles from month 6" : "flat, from month 2";
+    document.getElementById("t-filehist-s").textContent = pct === 1 ? "at month 6, and still climbing — no plateau" : "nothing is ever replaced, so nothing piles up";
+    document.getElementById("k-all-s").textContent = pct === 1 ? "at month 6, still climbing" : "per month";
+    if (pct === 1) {
+      step4.classList.remove("is-inert");
+      stateWord.textContent = "open";
+      stateWord.className = "state-word open";
+      note.textContent = "You replace about 0.53 GB a night, so old versions take up room and cost money. That is what this step is choosing between.";
+      note.style.borderLeftColor = "var(--accent)";
+      readout.innerHTML = 'About <span class="fig p-assumed">0.53 GB</span> is replaced each night, so replaced copies build up to about <span class="fig p-assumed">11.6 GB</span> on top of your data — 1.22× what you protect.';
+      keepTail.textContent = "Each price above is what that choice adds to the $2.20 it costs to store the folder itself. Your pick, thinning out, is where $2.69 a month comes from.";
+    } else {
+      step4.classList.add("is-inert");
+      stateWord.textContent = "inert at 0%";
+      stateWord.className = "state-word";
+      note.textContent = "At 0% change nothing is ever replaced, so there are no old versions to store. Nothing you choose in this step changes the bill.";
+      note.style.borderLeftColor = "var(--faint)";
+      readout.innerHTML = 'Nothing is replaced, ever. Files only get added, so there is no second copy of anything — the folder is the whole bill.';
+      keepTail.textContent = "Every option costs the same, which is $0.00 extra. Pick whichever you would rather have if you ever start editing these files.";
+    }
+  }
+  b1.addEventListener("click", function () { applyChurn(1); });
+  b0.addEventListener("click", function () { applyChurn(0); });
+
+  document.getElementById("use-0720").addEventListener("click", function () {
+    var sel = document.getElementById("sched-at");
+    sel.value = "07:20";
+    sel.classList.remove("flash"); void sel.offsetWidth; sel.classList.add("flash");
+  });
+
+  /* --- Job page: restore is guarded by typing the job name --- */
+  var confirmInput = document.getElementById("confirm-name");
+  var startBtn = document.getElementById("start-restore");
+  var confirmHint = document.getElementById("confirm-hint");
+  confirmInput.addEventListener("input", function () {
+    var ok = confirmInput.value.trim() === "appdata";
+    startBtn.disabled = !ok;
+    confirmHint.textContent = ok ? "Ready. This starts a charged download of 52.71 GB." : "Disabled until the name matches.";
+    confirmHint.style.color = ok ? "var(--ok)" : "var(--faint)";
+  });
+
+  /* --- Job page: Run now — one progress pattern for every long action --- */
+  var runBtn = document.getElementById("run-now");
+  var bar = document.getElementById("workbar");
+  var tokJob = document.getElementById("job-token");
+  var tokBoard = document.getElementById("board-tok-appdata");
+  var done = document.getElementById("run-done");
+  runBtn.addEventListener("click", function () {
+    if (runBtn.disabled) { return; }
+    runBtn.disabled = true;
+    runBtn.textContent = "Running…";
+    bar.hidden = false;
+    done.hidden = true;
+    [tokJob, tokBoard].forEach(function (t) { t.className = "tok tok-running"; t.textContent = "Running"; });
+    setTimeout(function () {
+      bar.hidden = true;
+      runBtn.disabled = false;
+      runBtn.textContent = "Run now";
+      [tokJob, tokBoard].forEach(function (t) { t.className = "tok tok-ok"; t.textContent = "OK"; });
+      done.hidden = false;
+      setTimeout(function () { done.hidden = true; }, 7000);
+    }, 4200);
+  });
+
+  /* --- Job page: the price stamp says which price list it used --- */
+  var live = document.getElementById("live-prices");
+  var stamp = document.getElementById("price-stamp");
+  live.addEventListener("change", function () {
+    if (live.checked) {
+      stamp.textContent = "prices: live AWS 2026-09-15";
+      stamp.classList.add("is-live");
+    } else {
+      stamp.textContent = "prices: bundled table 2026-08-27";
+      stamp.classList.remove("is-live");
+    }
+    stamp.classList.remove("flash"); void stamp.offsetWidth; stamp.classList.add("flash");
+  });
+})();
+</script>

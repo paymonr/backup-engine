@@ -1,0 +1,188 @@
+{
+ "current_ia": "**Route map (all under app/gui/routes.py, templates in app/gui/templates/):**\n\n- `/` \u2014 no template; a pure redirect (routes.py:20-26). `is_provisioned()` false \u2192 `/provision`, else \u2192 `/jobs`. There is no home, dashboard or status view anywhere in the app.\n- `/jobs` \u2014 steady-state home and the brand link's target. A 5-column config table (Name / Type / Schedule / Last run / Actions) with an onboarding card when empty.\n- `/jobs/new` and `/jobs/<name>/edit` \u2014 the same 134-line template (job_form.html): a sticky cost card over five numbered cards (type \u2192 folder \u2192 schedule \u2192 storage & retention \u2192 name).\n- `/config` \u2014 15 raw `backup.env` keys as identical text inputs in a 3-column grid, plus 3 write-only secrets.\n- `/provision` \u2192 `/provision/manual` | `/provision/scripted` | `/provision/automated` \u2014 a first-run picker over three mutually exclusive setup paths; permanently in the nav afterwards.\n- `/estimate` \u2014 a 9-card cost workbench (hero KPIs, one-time, 24-month chart + milestones table, class reference, real bucket spend, Cost Explorer credentials, per-job breakdown, what-if job inputs, global assumptions) plus an uncarded `<details>` of model internals.\n- `/about` \u2014 version buried in a lead paragraph + 7 licence rows.\n- `/logs` \u2014 `text/plain` tail of one shared log file. **Orphaned**: no nav item, no link from any template; app.js:1-12 still polls it into a `#log` element that no template has rendered since status.html was deleted (commit 8b1fcc8).\n- **Missing entirely**: restore. `scripts/restore.sh` implements `list | restore <snapshot> <target> | thaw | download`, dispatched per job type \u2014 and has no GUI surface of any kind.\n\n**Shell:** a 4-item flat nav (Jobs | Config | Provision | Cost estimate), one static `<title>backup-engine</title>` on every page, a permanent non-dismissible amber \"No authentication\" strip above every h1, a single accent-blue flash style for success and failure alike, and a footer About link. No error template; 14 `abort()` calls drop the user on Flask's bare white page.\n\n**Intended journey vs. actual shape:** the intended arc is Provision (announced on-screen as \"Step 1 of 2\") \u2192 create a job \u2192 see what it costs \u2192 run it. The IA breaks that arc in three ways. (1) Step 2 of 2 is never labelled anywhere; the Jobs empty state re-lists step 1 as still to do. (2) The nav is organised by *system component* (env file, AWS setup, cost model) rather than by what the user is doing, so a one-time setup task holds a permanent top-level slot while the recurring question \u2014 \"are my backups OK?\" \u2014 has no destination at all. (3) A *job* is not an object in this IA. The same job exists as a row in `/jobs`, a form at `/jobs/x/edit`, a row labelled by raw engine string in `/estimate`'s \"Where it goes\", a \"Prefix\" in `/estimate`'s \"Current spend\", and untagged lines in one shared log \u2014 four screens, four identifiers, no page that is *about* that job. Cost is likewise split across two screens computed by one model but presented in two incompatible vocabularies (3 tiles + prose sentences in the wizard; 4 KPIs + chart + two tables on `/estimate`), with `unbounded` (\"keep everything\") handled on one and silently ignored on the other.",
+ "user_journeys": [
+  {
+   "journey": "First run \u2014 get a working, safe destination (job 1: 'make this container able to write to my S3')",
+   "steps_today": "`/` 302s to `/provision` (\"First-time setup \u00b7 Step 1 of 2\"). Read a lead, a two-paragraph \"Before you begin\" card, then pick one of three mode cards. Guided-manual: type bucket + region \u2192 \"Render policy & steps\" \u2192 drag-select a JSON policy out of a dark `<pre>` \u2192 perform 8 console steps \u2192 paste key/secret \u2192 \"Test & Validate\" (blocking `aws` calls, no progress) \u2192 redirect to `/jobs` with a flash. Two of the four exits then tell you to go to `/config` and set RESTIC_PASSWORD among 15 raw env fields.",
+   "friction": "\"Step 2 of 2\" does not exist on any page, and the page you land on re-lists step 1 ('Set your AWS region, bucket, and keys on the Config page') as undone. A validation failure re-renders with `policy=None`, deleting the entire walkthrough *and* the key form \u2014 recovery means re-render, re-scroll, re-type both credentials. No copy button on the block you are explicitly told to copy. The automated path \u2014 the one that never sees your shell \u2014 has no 'What's next' card and its flash omits RESTIC_PASSWORD entirely, while `/config` reports the shipped `CHANGEME-long-random-passphrase` as '\u2014 set' (secrets_status is `bool(value)`). The likeliest happy path therefore ends with an encrypted restic repo keyed by the example passphrase, and nothing in the IA can say so."
+  },
+  {
+   "journey": "Create a backup job (job 2: 'make /mnt/user/appdata safe')",
+   "steps_today": "`/jobs` \u2192 \"+ New job\" (a primary button sitting mid-sentence inside the `.lead` paragraph) \u2192 job_form.html: a sticky cost card already showing $0.46/mo, a 6-month total and M1\u2013M24 milestones for a 20 GB / 1,000-file placeholder nobody chose (estimate_io.py:23-24, `update()` on load) \u2192 card 1 choose a type \u2192 card 2 tick a folder in a 320px checkbox tree with no sizes \u2192 card 3 schedule \u2192 card 4 storage class, then retention, then mirror, then bundling, then churn \u2192 card 5 name \u2192 Save at the very bottom.",
+   "friction": "The order is inverted relative to how the decision is actually made: the tool's own advice needs the folder's size and object count (storage_advice fires on `object_count >= 50000`; restore cost needs `size_gb`) but type is asked first, and the sticky card announces 'Recommended storage class: DEEP_ARCHIVE' while the select that would honour it is three cards below. The sticky card has unbounded height \u2014 versioned + tiered + 10% churn on STANDARD_IA pins roughly 14 blocks \u2014 so the form becomes a strip scrolling underneath the thing describing it, and 'Save job' never appears in the pinned area. Any server-side `ValueError` (no folder ticked, double space in a hand-typed cron, all-zero tiered keeps) becomes `abort(400)` \u2014 Flask's bare white page, every field lost. A configuration the tool *knows* fails on every run (versioned on GLACIER/DEEP_ARCHIVE) raises a 'danger' advice box and still saves cleanly; it resurfaces days later as the word 'failure'. On success you are redirected to a list with no offer to run it."
+  },
+  {
+   "journey": "Understand what it will cost \u2014 and decide class and retention on that basis",
+   "steps_today": "Either read the wizard's sticky card (three tiles, then breakdown / trajectory / milestones / type guidance / recommended class / 1\u20135 'why these numbers' boxes / restore / price stamp / measuring line / folder facts / up to 4 advice boxes, nearly all in the same faint .85rem), or go to `/estimate` and read a different four KPIs, a 720px SVG with three curves, a Component\u00d7milestone table, a class reference, and a per-job table \u2014 then scroll past a reference card, a credentials form and a real-spend panel to reach the what-if inputs in cards 8 and 9.",
+   "friction": "The wizard's tiles mix two axes: FIRST BILL is a *when*, THIS JOB / MO and NEW TOTAL / MO are a *whose* \u2014 a 2\u00d72 flattened into three cells, with the fourth (all jobs, first bill) missing and all three identical for a first job. `/estimate` answers a different four questions with different labels, so the number you approved in the wizard is not the number you can find later. Changing retention moves nothing, because churn defaults to 0% and the model is correct that retention has no price without replacement \u2014 but that causality exists nowhere in the structure, only in a paragraph that says the settings 'correctly have no cost effect'. The chart's two comparison curves \u2014 the stated reason the chart exists \u2014 carry no numbers anywhere on the page. The one genuine decision aid, the class comparison, is collapsed by default and priced at four decimals per GB rather than for your 12 GB. On `/estimate` the hero is deliberately non-sticky (style.css comment: 'must not stick'), so 'Change anything below and every number updates live' is unobservable; worse, the milestones table and the cold-storage lock-in list are server-rendered only and silently disagree with the hero after any edit."
+  },
+  {
+   "journey": "Check my backups are healthy \u2014 and find out why one failed",
+   "steps_today": "Open `/jobs` and read one badge word per row: 'success', 'failure', or 'never run'. On failure, the available moves are: click 'Run now' again, or guess the URL `/logs` and read an unformatted `text/plain` dump of every job's output with no page around it.",
+   "friction": "No timestamp, duration, next-run time, or snapshot id \u2014 although backup-job.sh writes `last_run`, `duration_s`, `snapshot_id`, `error` and `exit_code` into the state file. A job that succeeded last night and one whose cron silently stopped three months ago render identically. `enabled` is persisted and never displayed, so a paused job shows a live-looking cron. 'Run now' Popens a detached script, flashes 'Started X.' and returns to an unchanged row \u2014 no spinner, no auto-refresh, no log link \u2014 and a second click starts a second concurrent run, colliding on exactly the restic repo lock the wizard warns about. Failure is a terminal state in the IA: the badge links nowhere, the flash links nowhere, and the one log surface is reachable only by typing the URL."
+  },
+  {
+   "journey": "Restore \u2014 get a file, a folder, or a machine back",
+   "steps_today": "There is no path. `scripts/restore.sh <job> list | restore <snapshot-id|latest> <target> | thaw <prefix> --tier | download <prefix> <target>` exists, is dispatched by job type, and is deliberately written to work on a machine where the source tree is gone \u2014 and no route, nav item, button, link or sentence in the GUI mentions it.",
+   "friction": "The GUI *prices* restore in four places \u2014 a 'FULL RESTORE (ONCE)' hero KPI, a 'Restore / event' column per job, 'restore fraction / restores per year / retrieval tier' inputs, and a wizard line \u2014 while offering no way to perform one, no snapshot list, and no statement that restore is a shell operation. Nothing tells the user what a restore will need at the worst possible moment (RESTIC_PASSWORD, a multi-hour thaw on a cold class, the per-GB egress the estimate already computed). The single moment that justifies the product's existence is absent from its information architecture."
+  }
+ ],
+ "top_problems": [
+  {
+   "rank": 1,
+   "problem": "A job is not an object in the IA. There is no per-job page; one job's identity, settings, health, history, projected cost, real spend and log output are scattered across five surfaces under four different identifiers (row, edit form, 'Where it goes' row keyed by raw engine string, 'Current spend' row keyed by S3 'Prefix', untagged lines in one shared log).",
+   "why_it_matters": "This is the structural cause of 'I didn't know if a number was correct'. The estimate for a job and the measured bucket spend for that same job exist on one page and are never placed next to each other, because nothing in the IA knows they describe the same thing. It also means the job name is not a link anywhere \u2014 there is no destination to hang history, restore, logs, or a run button on, which is why every downstream problem (no timestamps, no failure diagnosis, no restore) has nowhere to live.",
+   "screens": [
+    "/jobs",
+    "/jobs/<name>/edit",
+    "/estimate",
+    "/logs"
+   ]
+  },
+  {
+   "rank": 2,
+   "problem": "Restore is fully implemented in the engine and completely absent from the GUI, while restore *cost* is one of four headline KPIs and appears on four different surfaces.",
+   "why_it_matters": "A backup tool's information architecture should be organised around the moment it pays off. This one quantifies that moment obsessively and provides no route to it, no snapshot list, and no warning that restore is a CLI operation requiring RESTIC_PASSWORD and (on cold classes) a multi-hour thaw. It also distorts everything above it: 'FULL RESTORE (ONCE)' reads as a feature's price rather than a warning about an unbuilt path.",
+   "screens": [
+    "/estimate",
+    "/jobs",
+    "/jobs/new",
+    "(missing route)"
+   ]
+  },
+  {
+   "rank": 3,
+   "problem": "The cost tiles mix two orthogonal axes, and cost itself lives on two screens with two vocabularies, two framings, and two different levels of correctness.",
+   "why_it_matters": "FIRST BILL / THIS JOB / MO / NEW TOTAL / MO is a 2\u00d72 (when \u00d7 whose) flattened into three cells with one silently missing \u2014 the owner's 'mix two questions' complaint, stated precisely. Meanwhile /estimate answers a *different* four questions (first bill / steady-state / first year / full restore) as a table-and-chart page, so the number you approved when creating a job cannot be found again later. The wizard honours `unbounded` for 'keep everything'; /estimate prints 'STEADY-STATE / MO' for the same job even though model.py:104-107 explicitly says that plateau is not real.",
+   "screens": [
+    "/jobs/new",
+    "/jobs/<name>/edit",
+    "/estimate"
+   ]
+  },
+  {
+   "rank": 4,
+   "problem": "Retention is presented as a live cost lever but is inert under the default assumption (churn = 0%), and the causal chain churn \u2192 old versions exist \u2192 retention has a price is expressible nowhere in the structure \u2014 so it was patched with a paragraph that defends the model ('the keep-policy settings correctly have no cost effect').",
+   "why_it_matters": "This is the exact frustration 'changing a retention setting didn't update the cost, and nothing said why'. The bolted-on explain block does not fix it: it puts the burden of understanding the model on the user at the moment they are trying to make a decision, and it renders in the same component as 'this will fail every run'. A dead control should be structurally impossible \u2014 the assumption that gives retention meaning should be an ordered, visible input, not a select buried in card 4 and default-zeroed.",
+   "screens": [
+    "/jobs/new",
+    "/jobs/<name>/edit",
+    "/estimate"
+   ]
+  },
+  {
+   "rank": 5,
+   "problem": "Cause and effect are never visible at the same time \u2014 and the two cost surfaces fail this in opposite directions.",
+   "why_it_matters": "The wizard pins an unbounded-height result (up to ~14 blocks) above a form that scrolls beneath it, so the controls disappear under their own output and 'Save job' never appears in the pinned area. /estimate does the reverse: the hero is deliberately non-sticky and the what-if inputs sit seven cards below it, so the page's central promise \u2014 'Change anything below and every number updates live' \u2014 cannot be observed, and two panels (the milestones table and the cold-storage lock-in list) do not recompute at all and silently contradict the hero after any edit. Live recompute is worthless if nobody can watch it happen.",
+   "screens": [
+    "/jobs/new",
+    "/estimate"
+   ]
+  },
+  {
+   "rank": 6,
+   "problem": "Three fundamentally different kinds of value \u2014 saved settings, measured facts, and modeling assumptions \u2014 share one undifferentiated form idiom, and the assumptions are not persisted.",
+   "why_it_matters": "Churn and bundling sit inside 'Storage & retention' looking exactly like storage class and retention days, post with the job form, are never stored by jobs_io.validate, and silently reset on edit \u2014 so the estimate on the edit screen contradicts the one the user approved at creation. Conversely /estimate's per-job size/class/change-rate fields look like settings but are throwaway URL parameters with no apply, no reset, and no diff against the saved job. The user cannot tell which knob changes their backup, which describes their data, and which is a guess feeding a projection.",
+   "screens": [
+    "/jobs/new",
+    "/jobs/<name>/edit",
+    "/estimate"
+   ]
+  },
+  {
+   "rank": 7,
+   "problem": "Numbers carry no provenance and no confidence marker: a 20 GB / 1,000-file placeholder renders identically to a measured folder, and the page that holds both the model and the real invoice never compares them.",
+   "why_it_matters": "Second half of 'I didn't know if a number was correct'. Opening /jobs/x/edit on a 500 GB media job shows a few cents a month because the size fetch only fires on a tree checkbox change and `_num()` falls back to 20 GB. /estimate prefills the same placeholder into visible Size/File count fields with no 'default, not measured' mark. `price_source` (bundled vs live AWS price list) exists in the model and is never rendered. Measured bucket usage and the Cost Explorer invoice sit two cards apart from the projection with no delta line \u2014 the single cheapest way to earn trust in a validated model, unbuilt.",
+   "screens": [
+    "/jobs/<name>/edit",
+    "/jobs/new",
+    "/estimate"
+   ]
+  },
+  {
+   "rank": 8,
+   "problem": "One component (`.advice-item`, differing only by border tint) carries guidance, explanation, warnings and hard blockers \u2014 and advice has no consequences: a configuration the tool knows will fail every run is still saveable.",
+   "why_it_matters": "'Versioned & encrypted \u2014 configs, databases, docs', 'here is why old versions cost money', and 'restic cannot operate on a thaw-required class' are the same shape on screen, so severity is a colour the user must decode. Worse, the third one is correct and ignorable: versioned + DEEP_ARCHIVE saves, schedules, and surfaces days later as the word 'failure' with no error text and no log link. If the model can predict a failed run, the IA must prevent it, not narrate it.",
+   "screens": [
+    "/jobs/new",
+    "/jobs/<name>/edit",
+    "/jobs"
+   ]
+  },
+  {
+   "rank": 9,
+   "problem": "Health is a single word with no time attached, there is no in-progress state, and failure is a dead end.",
+   "why_it_matters": "/jobs is a config table pretending to be a status board: it shows what a job *is* (type, cron, path) and almost nothing about how it is *doing*. No last-run time, duration, next run, or enabled flag \u2014 all of which exist in the state file or the job record. 'Run now' flashes 'Started X.' over an unchanged row, so a second click launches a concurrent run that collides on the restic lock the wizard itself warns about. The `error` and `exit_code` the script writes are never rendered, and /logs is unreachable from the failure badge, the flash, the nav, and every template.",
+   "screens": [
+    "/jobs",
+    "/logs",
+    "/"
+   ]
+  },
+  {
+   "rank": 10,
+   "problem": "Setup is announced as a sequence the app then abandons, and 'set up' is a boolean that cannot tell a real secret from the shipped placeholder.",
+   "why_it_matters": "'First-time setup \u00b7 Step 1 of 2' has no step 2 anywhere in the codebase; the wizard's eyebrow is 'Backups'; the Jobs empty state re-lists step 1 as undone; and four exits give three different answers about where to go next. Meanwhile RESTIC_PASSWORD \u2014 the one value that decides whether a versioned repo is recoverable \u2014 is mentioned on two of four provisioning exits, never on the automated one, and displays as '\u2014 set' when it is still `CHANGEME-long-random-passphrase`. The IA has no concept of setup completeness, only `is_provisioned()`, which checks a bucket string.",
+   "screens": [
+    "/",
+    "/provision",
+    "/provision/automated",
+    "/config",
+    "/jobs"
+   ]
+  },
+  {
+   "rank": 11,
+   "problem": "Vocabulary drifts per screen and implementation names are the primary labels: job types have three spellings, storage classes have three, and restic/rclone/catalog/prefix/ingest/rotation/egress/thaw reach the user untranslated \u2014 while About, the only place restic and rclone are ever explained, is a footer link.",
+   "why_it_matters": "The user has to hold a private translation table to connect a decision made in the wizard ('Versioned & encrypted', 'cheap cold storage') to its consequence on the cost page ('versioned-files', 'STANDARD_IA', 'Rotation', 'Prefix', 'all versioned jobs (shared repo)'). This is a large part of why the wizard felt 'very confusing on what to choose, when, and why': the same two decisions are described in different words in the radio label, the guidance box, the comparison table and the advice box, all on one screen.",
+   "screens": [
+    "/jobs",
+    "/jobs/new",
+    "/estimate",
+    "/about",
+    "/provision/*"
+   ]
+  },
+  {
+   "rank": 12,
+   "problem": "The shell has no vocabulary for severity, progress, or failure: one flash style for success and error (no success alert exists at all), no disabled/loading/spinner pattern anywhere, no field-level validation, and no error template behind 14 `abort()` calls \u2014 while the permanent amber 'No authentication' banner devalues the one colour reserved for real warnings.",
+   "why_it_matters": "This is why every long, irreversible action feels broken: 'Provision now' runs `tofu init` + `apply` for minutes with no feedback and no double-submit guard (a second click fails on 'bucket already exists'); 'Refresh usage' runs `rclone size` synchronously and reports success at the top of a page whose button is five cards down; 'Test & Validate' blocks on four AWS calls silently. And a routine validation slip on the job form throws the user onto a bare white Flask page with everything they typed gone \u2014 the worst possible ending for the app's longest form.",
+   "screens": [
+    "(all routes, base.html)",
+    "/jobs/new",
+    "/provision/automated",
+    "/estimate",
+    "/config"
+   ]
+  }
+ ],
+ "preserve": [
+  "The cost model itself, and the fact that one server-side model feeds the page, the JSON endpoint and the wizard \u2014 the numbers are validated to ~1% against real restic and there is exactly one source of truth. The redesign changes presentation only; do not fork the model per surface.",
+  "Live, debounced (250 ms) recompute that degrades to '\u2014' rather than to wrong numbers, is never blocked on the folder walk, and still has a <noscript> 'Recalculate' fallback.",
+  "Radical honesty in copy, which is the app's best quality: 'Decision-support, not billing-accurate', 'measurement may be incomplete', \"Couldn't finish measuring this folder\", 'cost estimate only; the tool copies files as-is and won't bundle for you', 'Nothing is saved until validation passes', 'this container never sees them', 'never the runtime backup key', 'confirm bucket versioning is ON'.",
+  "Plain-language explanations of counter-intuitive AWS charges, placed where the charge appears: cold-storage minimum-duration lock-in listed per job with a worked example, upload requests as 'per-request, not per-GB, so usually pennies', and 'restoring is retrieval + egress, independent of how cheap storage is'.",
+  "The class-change advice pair on edit \u2014 'affects FUTURE uploads only; files already stored stay in STANDARD' plus the warm-up (thaw + copy) cost note. Right warning, right moment, unprompted.",
+  "The schedule builder: frequency/time/day controls that emit a human sentence *and* the cron, round-trip a saved cron back into the builder with range checks, and fall back to a raw editable field for exotic expressions instead of silently rewriting them.",
+  "Conditional field visibility per type/retention/bundling, including snapping an orphaned 'Tiered' selection back to 'Days' so a hidden radio can never be posted.",
+  "Churn options phrased as lived experience rather than percentages first ('A little \u2014 rare replacements (~1%)', 'A lot \u2014 churny (~30%)'), and 'Keep everything' projected as growth rather than a fake plateau.",
+  "The provisioning safety model end to end: a real list\u2192put\u2192get\u2192delete probe before anything is saved; transient admin credentials zeroed in a finally clause and never written to disk or logs; scrubbed tool stderr shown in an open <details>; three paths described by their honest trust trade-off; and guided-manual's stated three-part contract that the numbered headings actually deliver.",
+  "Write-only secrets with per-key set/not-set status and a '\u2022\u2022\u2022\u2022\u2022 (unchanged)' placeholder, a separate read-only Cost Explorer credential, CSRF on every mutating POST, the 600-mode check, and the first-run gate that treats the 'changeme' bucket as unset.",
+  "The dark theme as it stands: the token set, genuinely AA contrast, `color-scheme: dark` so native selects and scrollbars match, tabular numerals on every numeric column, chart colours read from the legend swatches so legend and lines cannot drift, a single global :focus-visible ring, and `prefers-reduced-motion` respected.",
+  "Two structural habits worth keeping across the rebuild: the eyebrow \u2192 h1 \u2192 lead opening used identically in all nine templates, and price-stamping every figure with its capture date while disclosing model assumptions in a collapsible rather than hiding them.",
+  "All persisted data and behaviour: jobs.json and its validation, the state file's full contents (last_run, duration_s, snapshot_id, error, exit_code \u2014 currently written and never shown), the shared restic repo tagged per job, and scripts/restore.sh's per-type dispatch, which the redesign should surface rather than reimplement."
+ ],
+ "design_principles": [
+  "**The job is the object, and restore is one of its verbs.** Every job gets one page that owns its identity, health, schedule, settings, projected cost, measured spend, run history and restore \u2014 and the list becomes a roll-up of those pages. Grounded in: one job is currently a row in /jobs, a form at /edit, a raw-engine row in 'Where it goes', an S3 'Prefix' in 'Current spend', and untagged lines in an unreachable log, which is why the estimate and the real bill for the same job are never compared and why scripts/restore.sh \u2014 list, restore, thaw, download, already dispatched per type \u2014 has nowhere to appear.",
+  "**One surface answers one question, and the two axes of cost are never mixed in one row.** Separate *when* (first bill / steady month / first year / cumulative) from *whose* (this job / all jobs), label whichever axis is held constant, and never show three cells of a 2\u00d72 with the fourth missing. Grounded in: 'FIRST BILL / THIS JOB / MO / NEW TOTAL / MO' collapses when \u00d7 whose into three tiles that all read the same number for a first job \u2014 the owner's 'mix two questions' \u2014 while /estimate answers a different four questions under different labels, so the number approved at creation cannot be found again.",
+  "**A control and the number it moves must be on screen together.** Put the levers inside the result, not above or below it; if a panel cannot recompute, it does not belong on a live page. Grounded in: the wizard's sticky card grows to ~14 blocks and buries the form it describes, while /estimate's hero is deliberately non-sticky with the what-if inputs seven cards beneath it \u2014 and its milestones table and cold-storage lock-in list never recompute at all, silently contradicting the hero after every edit.",
+  "**Express the model's causality in the structure, not in prose.** If a setting has no cost effect under the current assumptions, the interface should make that visible by arrangement \u2014 the assumption comes first, and the dependent control shows its consequence in place \u2014 instead of shipping a paragraph explaining why nothing happened. Grounded in: retention is inert at the default 0% churn, and the response was an explain block asserting the keep-policy settings 'correctly have no cost effect'. Treat that block as a bug report about layout, not a feature.",
+  "**Every number states where it came from and how sure it is.** Three provenance states \u2014 measured, assumed, invoiced \u2014 must be visually distinct wherever a figure appears, and where the app holds both a projection and an actual it must show the delta. Grounded in: /jobs/x/edit prices a 500 GB job as a few cents because an unfilled field falls back to a 20 GB placeholder rendered identically to a measured folder; `price_source` (bundled vs live AWS list) exists and is never shown; 'STEADY-STATE / MO' is printed for keep-everything jobs the model itself says have no plateau; and measured bucket spend sits two cards from the projection with no comparison line.",
+  "**Distinguish what you are configuring from what you are assuming \u2014 and never let an assumption evaporate.** Saved settings, measured facts and modelling inputs get different placement and different persistence rules; any what-if must be applyable, resettable, and diffed against the saved job. Grounded in: churn and bundling sit inside 'Storage & retention' looking exactly like real settings, post with the form, are dropped by jobs_io.validate, and reset on edit \u2014 so the edit screen's estimate contradicts the one the user approved \u2014 while /estimate's job fields look like settings but are throwaway URL parameters with no apply or reset.",
+  "**One severity scale, encoded once, with real consequences \u2014 and one name per concept, chosen by the user's vocabulary.** Info, advice and blocker are visually distinct and a blocker actually blocks; success and failure never share a style; long actions always show progress; failures land inside the app with the user's input intact. Every concept gets a single name across list, wizard, cost page and log, with implementation names (restic, rclone, catalog, prefix, ingest, rotation, egress, thaw) demoted to expandable detail. Grounded in: guidance, explanation and 'restic cannot operate on a thaw-required class' all render as `.advice-item` with only a border tint between them \u2014 and that last one saves cleanly, then reappears days later as the single word 'failure'; job types have three spellings and storage classes three; `abort(400)` on a routine validation slip discards the app's longest form onto a bare white page; and `tofu apply` runs for minutes with no feedback and no double-submit guard."
+ ],
+ "open_questions": [
+  "Should restore be a GUI operation \u2014 browse snapshots, pick a path and point in time, trigger a thaw, watch it, download to a target \u2014 or is it deliberately kept CLI-only because a restore should require a human at a shell? This single answer decides whether the job page gets a fourth section and the restore KPIs become a preview of a real flow, or whether the GUI must instead honestly say 'restore runs from a shell, here is the exact command for this job and what it will need'.",
+  "In a normal month, is this app opened mainly to *check* (did last night's backups run?) or mainly to *decide* (what will this cost me)? That determines whether home is a status board with cost as a secondary view, or the cost workbench with health as a strip \u2014 and how much of the 24-month projection machinery belongs on a daily surface at all.",
+  "If you were unavailable and someone else \u2014 or you on a freshly rebuilt machine with no notes \u2014 had to get data back, is that a scenario this GUI should handle? It sets how much AWS and restic vocabulary is acceptable, and whether things like RESTIC_PASSWORD, the shared-repo/tag model, and cold-class thaw times need to be explained in the interface rather than assumed."
+ ]
+}

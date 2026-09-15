@@ -1,0 +1,356 @@
+{
+ "name": "Night Shift \u2014 an operations control room for backup-engine",
+ "thesis": "Your backups are a night shift: they work at 03:00 while you sleep, and this GUI is the shift handover you read at 07:42 with a coffee. So every screen is organized by **state and time first**, and the whole app answers three questions in a fixed order \u2014 *what happened last night*, *what happens next*, *what would I do if it went wrong* \u2014 with cost as a well-placed fourth. The job becomes the object that owns all four answers: one page per job carrying its health, its run history as a 30-night ledger, its restore points and the restore button, its projected cost next to its real invoiced cost, and its settings. The list on the home Board is nothing but a roll-up of those pages, dense enough to read in eight seconds because every row carries a state token, two times, a duration, and a fourteen-cell run strip. Failure is a first-class record, not a badge word: it has a page, an error string, a stated cause, and a fix button. Restore stops being a price and becomes a verb with a list of dates. And because the cost model is genuinely accurate to ~1%, the Cost workbench leads not with a projection but with the proof \u2014 measured bucket, real invoice, model output, and the delta between them \u2014 so every projected number downstream inherits earned trust. Boldness is spent in exactly one place: the run ledger, the only element in the app allowed saturated color blocks. Everything else is hairline rules, tabular monospace figures, and quiet ink.",
+ "sitemap": [
+  {
+   "route": "/",
+   "name": "Board",
+   "question_it_answers": "Did my backups run last night, and is anything wrong right now?",
+   "contents": "Verdict bar (one sentence, worst-state colored) \u2192 Needs-you lane (blockers, warnings, setup gaps; collapses to 'Nothing needs you') \u2192 Jobs table, health-first, one row per job with state token, last run, duration vs median, next run, 14-night run strip, size, $/mo \u2192 Cost strip (in bucket now / last invoice / model + delta). Replaces the bare 302 redirect and the /jobs config table. Auto-refreshes every 30s; refresh clock shown in the topbar."
+  },
+  {
+   "route": "/jobs",
+   "name": "(redirect)",
+   "question_it_answers": "\u2014",
+   "contents": "301 to / . Old bookmarks and the brand link keep working; there is no separate 'Jobs' destination because the Board is the jobs list."
+  },
+  {
+   "route": "/jobs/<name>",
+   "name": "Job page",
+   "question_it_answers": "Everything about this one job: is it healthy, what did it do, how do I get the data back, what does it cost, how is it set up?",
+   "contents": "Header (state token, plain-language type, source \u2192 destination) + sticky Recovery-readiness rail \u2192 Status strip (last run / took / next / streak / restore points) \u2192 Failure record if the last run failed \u2192 30-night ledger with duration bars \u2192 Get data back (restore-point list, target, needs-line, Start restore) \u2192 Cost (projected vs in-bucket vs invoiced, with delta) \u2192 Settings summary with Edit \u2192 collapsed Tool detail (restic, shared store, tags, exact commands). This page is the fix for 'a job is not an object'."
+  },
+  {
+   "route": "/jobs/<name>/restore",
+   "name": "Get data back",
+   "question_it_answers": "I picked a restore point \u2014 what exactly is about to happen, what will it cost, and how long will it take?",
+   "contents": "Confirm-and-run flow: chosen restore point, target directory (defaults to a fresh /mnt/user/restores/<job>/<date>/, never the live source), what it needs (recovery passphrase status, warm-up hours if cold, egress $), type-the-job-name confirm, then a live operation record with progress, and on completion a file count + 'open the folder' path. Warm-up requests get their own waiting state with an ETA and survive a page close."
+  },
+  {
+   "route": "/jobs/<name>/runs/<timestamp>",
+   "name": "Run record",
+   "question_it_answers": "What happened in this specific run, and why did it fail?",
+   "contents": "One run as a record: outcome, start, duration, snapshot id, exit code, error string verbatim, the job-tagged slice of the log, the command line that ran, and a 'Why this happens / What to do' block for recognized error classes (repo lock collision, thaw-required class, missing passphrase, source empty). Reached from any ledger cell, any failure, and Activity."
+  },
+  {
+   "route": "/jobs/new",
+   "name": "Job setup",
+   "question_it_answers": "What am I protecting, what should happen to it, and what will that cost?",
+   "contents": "Six ordered steps \u2014 folder first (measured immediately), then the type+tier decision priced for that actual folder, then change rate as its own hoisted step, then the keep rule showing its cost consequence in place, then schedule, then name. Fixed-height sticky result bar at the bottom carrying the full 2\u00d72 of cost (this job / all jobs \u00d7 first bill / every month) and Save."
+  },
+  {
+   "route": "/jobs/<name>/edit",
+   "name": "Job setup (edit)",
+   "question_it_answers": "Same, for a job that exists.",
+   "contents": "Same template and order, pre-filled and diff-aware: changed fields carry an accent left rule and a 'was:' readout, assumptions (change rate, bundling) are loaded from the saved job rather than reset, and class changes surface the preserved 'affects FUTURE uploads only' + warm-up advice pair."
+  },
+  {
+   "route": "/cost",
+   "name": "Cost workbench",
+   "question_it_answers": "Is this model telling me the truth, and what will this cost me over time?",
+   "contents": "Proof first (in bucket now / last invoice / model says / delta) \u2192 per-job table keyed by the same job names used everywhere \u2192 projection chart with the levers docked to its right side and a month scrubber whose readout replaces the old static milestones table \u2192 what a restore costs, per job, with warm-up time \u2192 persisted assumptions with Apply-to-job / Reset \u2192 collapsed 'How this is calculated'. Replaces /estimate."
+  },
+  {
+   "route": "/activity",
+   "name": "Activity",
+   "question_it_answers": "What has this machine actually done, across all jobs?",
+   "contents": "Reverse-chronological feed of operations \u2014 scheduled runs, manual runs, restores, warm-ups, usage refreshes, destination provisioning \u2014 each tagged with its job, each expandable to its log slice, filterable by job and by outcome. Gives the orphaned /logs endpoint a home and a per-job tag. Long-running operations appear here live, which is how every slow action in the app reports progress."
+  },
+  {
+   "route": "/setup",
+   "name": "Setup readiness",
+   "question_it_answers": "Is this install actually able to back up \u2014 and actually able to restore?",
+   "contents": "A checklist of real checks, not a settings dump: destination reachable (last probe time), recovery passphrase set AND not the shipped example, bucket versioning on, at least one job scheduled, a restore tested (date or 'never'). Each row: state token, what it means in one plain sentence, [Fix \u2192]. Incomplete items mirror into the Board's needs-you lane. This is what 'Step 2 of 2' should have been."
+  },
+  {
+   "route": "/setup/destination",
+   "name": "Destination",
+   "question_it_answers": "Where do backups go, and can this container write there?",
+   "contents": "The preserved three-path provisioning picker (guided-manual / scripted / automated) with its honest trust trade-offs, the real list\u2192put\u2192get\u2192delete probe, transient admin creds zeroed, scrubbed tool stderr in an open details. Copy buttons on every block the user is told to copy; a validation failure re-renders with the walkthrough and both credential fields intact."
+  },
+  {
+   "route": "/setup/keys",
+   "name": "Keys & secrets",
+   "question_it_answers": "What credentials does this hold, and which ones are real?",
+   "contents": "The env values grouped by what they are for (destination / recovery / billing) instead of 15 identical inputs in a 3-column grid. Write-only secrets keep the '\u2022\u2022\u2022\u2022\u2022 (unchanged)' placeholder and per-key status, but status is a three-state \u2014 set / not set / still the shipped example \u2014 computed by comparing against the known placeholder, not bool(value)."
+  },
+  {
+   "route": "/setup/about",
+   "name": "About",
+   "question_it_answers": "What version is this and what is it built on?",
+   "contents": "Version as a standalone stamped figure, then the tools this app drives \u2014 restic, rclone, OpenTofu \u2014 each with the one sentence that explains what it does for you, then the licence rows. Every demoted tool term across the app links here."
+  }
+ ],
+ "key_screens": [
+  {
+   "screen": "Board (/) \u2014 Home/status",
+   "layout": "Dense container, max-width 1240px, 24px gutters, 12-column grid. Four horizontal bands separated by 1px --border rules and 32px, NOT by cards \u2014 the whole screen is one continuous board, so nothing floats. Band 1 is the verdict: full-width, 3px left rule in the worst current state's color, two lines (headline 1.05rem/600 in --ink-strong, sub-line .88rem mono in --muted), with a single right-aligned primary action that always points at the worst thing. Band 2 is the needs-you lane: a section label ('NEEDS YOU \u00b7 2', .72rem/uppercase/.1em in --faint) then one Signal row per item, each a two-column grid (signal text | action button, 140px). When empty the whole band collapses to one --faint line, 'Nothing needs you.' Band 3 is the jobs table: full-bleed, zero radius, hairline row rules, 8 columns \u2014 state, job (two lines: name in --ink 560, path in mono --faint), last run (clock time in mono --ink over relative in --faint), took (duration over ~median), next (countdown over clock), last 14 nights (the run strip \u2014 the one bold element, 14 cells of 9\u00d718px with 2px gaps, saturated --ok/--danger/--warn grounds for the last 7 nights and the *-dim variants for nights 8\u201314 so recency reads loudest), size, $/mo. Numeric columns are mono tabular and right-aligned; the strip column is fixed 168px so rows can never reflow. Band 4 is the cost strip: one row of three figures plus a delta, .88rem, and the only link to the workbench. Under 1000px the strip column drops to a text summary ('13 OK \u00b7 1 failed') and took/next merge. Nothing on this screen is a rounded card; nothing has a shadow.",
+   "information_order": [
+    "Verdict \u2014 one sentence naming the worst state, with the time it happened and a button straight to it",
+    "Counts and the next scheduled run, with a live countdown",
+    "Needs-you: blockers first, then warnings, then setup gaps \u2014 each with a fix destination",
+    "Jobs, sorted worst-state first then by next-run: state \u2192 identity \u2192 last run \u2192 duration \u2192 next run \u2192 14-night history \u2192 size \u2192 cost",
+    "Cost strip: measured bucket, last invoice, model, delta \u2014 four numbers, no chart"
+   ],
+   "interactions": "Row click opens the job page; the job name is a link everywhere in the app and is the single identifier used on the Board, the job page, the cost table, the activity feed and the log tags. Hovering a strip cell shows a one-line tooltip (date, outcome, duration, restore point id) and clicking opens that run record. 'Run now' disables itself on click, turns the row's state token to a pulsing RUNNING, appends a live line to Activity, and re-enables only when the operation record closes \u2014 a second concurrent run is impossible, which is the repo-lock collision the wizard warns about. The board polls every 30s; a state change flashes the changed cell for 400ms. A job whose cron time has passed with no run recorded derives the OVERDUE state and sorts to the top. Paused jobs show PAUSED and an em-dash for next run, never a live-looking cron.",
+   "layout_ascii": "see `layout` field's ASCII below"
+  },
+  {
+   "screen": "Job page (/jobs/<name>)",
+   "layout": "Two columns: minmax(0,1fr) main + 304px sticky rail at top 16px, collapsing to one column under 1000px with the rail moving under the status strip. Max-width 1240px. Header is not a card: job name at h1 1.6rem/680 preceded by its state token, plain-language type and the source\u2192destination line in mono --faint beneath, action cluster right-aligned ([Run now] secondary, [Get data back] primary, [\u22ef] for pause/edit/delete). The rail is the ops idea that earns its space: RECOVERY READINESS, five rows of check + value + timestamp, ending in a [Test restore] button that states its own price. Below the header, six bands separated by hairline rules with .72nf uppercase section labels: status strip (five mono figures on one line, label above value above sub-value), failure record (only when the last run failed \u2014 3px --danger left rule, error string verbatim in mono, then a two-column 'Why this happens / What to do' with a fix button), 30-night ledger (cells at 10\u00d720px plus a duration micro-bar row beneath at the same pitch, so a slow night lines up under its cell), Get data back, Cost, Settings summary as a two-column definition grid, then one collapsed Tool detail.",
+   "information_order": [
+    "State and identity \u2014 what this job is, in plain words, and where its data goes",
+    "Actions \u2014 run, restore",
+    "Recovery readiness (rail) \u2014 could I actually get this back right now, and what would it cost and take",
+    "Time: last run, duration vs median, next run, streak, how many restore points and how far back they go",
+    "The failure, if there is one \u2014 error, cause, fix \u2014 before any history",
+    "History: 30 nights of outcomes with duration under each",
+    "Restore: the list of dates you can go back to, the target, what it needs, the button",
+    "Cost: projected vs measured vs invoiced for this job only",
+    "Settings: what it is configured to do",
+    "Tool detail: restic, the shared store, tags, the exact commands \u2014 collapsed"
+   ],
+   "interactions": "Restore-point rows are radio-selectable and the [Start restore] button stays disabled until a target is chosen; the target defaults to a fresh dated directory under /mnt/user/restores/<job>/ and the live source path is rejected outright with a blocker. Starting a restore requires typing the job name. On a cold tier the restore section replaces [Start restore] with [Warm up first] and states the hours honestly before anything is spent. [Test restore] pulls one file to /tmp, costs about a cent, and writes its date into the rail's 'Last test' row and into the Setup checklist \u2014 the only cheap way to prove the passphrase works before you need it. Ledger cells and the failure record both link to the run record. Every figure in the Cost band carries a provenance underline and the band shows its own delta line rather than deferring to the workbench.",
+   "layout_ascii": "see `layout` field's ASCII below"
+  },
+  {
+   "screen": "Job setup (/jobs/new, /jobs/<name>/edit)",
+   "layout": "Reading container, 780px, single column \u2014 this is a decision, not a dashboard. Six numbered step panels, each a bordered surface with a 1.05rem/640 heading and a right-aligned state word (done / open / inert). Only one novel structure: each step carries its own local number, priced for this folder, physically inside the panel next to the control that moves it, so cause and effect are never separated by scroll. The type choice in step 2 is a three-column comparison strip with a real monthly price per option for the measured folder, not $/GB to four decimals. The tier select is followed by an always-visible three-row price list for that folder, with impossible combinations struck through and marked with a blocker glyph rather than silently selectable. Step 3 (change rate) is hoisted above step 4 (keep rule) and its consequence renders as a 3px --accent rule note inside step 4's header. Step 4's options each show their own +$/mo delta; at 0% change they all read +$0.00 and the panel is visually inert (options at --muted, a one-line reason attached) \u2014 the causality is expressed by arrangement, not by a defending paragraph. The result lives in a fixed-height sticky bottom bar, never taller than three lines: a labeled 2\u00d72 of cost with both axes named, a provenance line, and the Save cluster. Because the bar cannot grow, the form never scrolls underneath its own output and Save is always reachable.",
+   "information_order": [
+    "The folder \u2014 picked and measured first, because every downstream recommendation needs its size and object count",
+    "What happens to it \u2014 type and tier as one priced decision, with the alternatives priced side by side for this folder",
+    "How much changes between runs \u2014 the assumption that gives retention meaning, asked before retention",
+    "How long old versions are kept \u2014 each option showing its own cost consequence under the assumption above",
+    "When it runs \u2014 schedule builder, with collision advice against existing jobs",
+    "Name",
+    "Sticky bar: this job / all jobs \u00d7 first bill / every month, plus provenance, plus Save"
+   ],
+   "interactions": "Choosing a folder fires the measurement immediately and the step header flips to 'done' with size, file count and 'measured just now'; if the walk cannot finish, the preserved honest copy appears and every downstream figure switches to the assumed (dotted) provenance mark \u2014 a 500 GB media job can never again be priced at a few cents as if it were measured. Every recompute is the same debounced 250ms model call, and each changed figure flashes --accent-bg for 400ms so 'updates live' is observable. A blocker (snapshot backup on a thaw-required tier, no folder chosen, all-zero tiered keeps) replaces the Save button with a disabled one plus a one-line reason and a jump link to the offending step \u2014 a configuration the tool knows fails every run cannot be saved. A server-side validation error re-renders this same page with every value intact and a field-level message; abort(400) never reaches the user. On save you land on the new job page with a single offer: [Run it now].",
+   "layout_ascii": "see `layout` field's ASCII below"
+  },
+  {
+   "screen": "Cost workbench (/cost)",
+   "layout": "Dense container, 1240px. Five bands, rules not cards. Band 1 is the proof and it comes first: a four-column figure row \u2014 In the bucket now (measured, from rclone size), Last invoice (invoiced, Cost Explorer), Model says (projected), Difference \u2014 each with its sub-line stating the source and date, and the difference rendered as a percentage plus a one-word verdict. When Cost Explorer is unscoped, an honest note sits inside the band rather than two cards away. Band 2 is the per-job table keyed by the same job names used on the Board, columns size / tier / projected / in-bucket / \u0394, with a totals rule. Band 3 is the projection: a two-column grid, chart at 1fr and a 300px lever panel docked to its right, so every control is beside the curve it moves. Below the chart, a month scrubber whose readout is the component breakdown at the hovered month \u2014 this replaces the old server-rendered milestones table, which could disagree with the hero, with a live readout that structurally cannot. The two comparison curves get end-of-line labels carrying their 24-month totals. Band 4 is restore cost, per job, with warm-up hours and a link into each job's restore. Band 5 is the assumptions block: visible, persisted, with Apply to job and Reset. All figures are mono tabular with provenance underlines and one legend key per band.",
+   "information_order": [
+    "Proof: measured bucket, real invoice, model output, and the delta between them \u2014 before any projection",
+    "Per job, same names as everywhere else: size, tier, projected, actual, difference",
+    "The projection curve with its levers docked beside it, and the month readout under the scrubber",
+    "Whether it plateaus at all \u2014 a keep-everything job says 'still climbing', never a fake steady state",
+    "What a restore costs, per job, with the warm-up time it also costs you",
+    "Assumptions \u2014 named, saved, resettable, diffed",
+    "How this is calculated \u2014 collapsed"
+   ],
+   "interactions": "Levers are scratch state by default and carry a persistent chip: 'scratch \u2014 not saved \u00b7 [Apply to media-archive] [Reset]'. Any lever differing from the saved job gets an --accent left rule and a 'was: 512 GB' readout \u2014 so what you are configuring, what was measured, and what you are guessing are never confusable. Applying writes the assumption onto the job so the job page and the setup form agree with it forever after; nothing evaporates on edit. Every panel on this page recomputes from the same single server-side model; anything that could not recompute was removed rather than left to drift. The month scrubber drives the chart crosshair and the breakdown readout together. Refresh usage runs as an operation record in Activity with a live progress bar, not a synchronous block reporting success five cards away from its button.",
+   "layout_ascii": "see `layout` field's ASCII below"
+  },
+  {
+   "screen": "Setup readiness (/setup)",
+   "layout": "Reading container, 780px. No cards: a single checklist table, one row per check, columns state token / what it means in one plain sentence / when it was last verified / [Fix \u2192]. Rows that fail sort to the top and are mirrored into the Board's needs-you lane. Below, three quiet links to Destination, Keys & secrets, About. The topbar chip 'LAN only \u00b7 no auth' expands here into the full sentence the old permanent amber banner used to shout on every page.",
+   "information_order": [
+    "Can it write to the destination \u2014 probed, with the date of the last real list\u2192put\u2192get\u2192delete",
+    "Is the recovery passphrase set, and is it not the shipped example \u2014 the one value that decides recoverability",
+    "Is bucket versioning on",
+    "Is at least one job scheduled",
+    "Has a restore ever been tested, and when",
+    "Where to go next, explicitly, with nothing left unnamed"
+   ],
+   "interactions": "Each failing row's [Fix \u2192] lands on the exact control that fixes it, not a page containing it. The passphrase check string-compares against the known shipped placeholder, so 'CHANGEME-long-random-passphrase' reports as NOT SET with a blocker, never as '\u2014 set'. Completing the last item removes the setup block from the Board permanently; there is no step counter to abandon because the list always shows what remains."
+  }
+ ],
+ "visual_system": {
+  "palette": "Keeps the existing token set and its spirit exactly \u2014 ground #0E1116, surfaces #161A21 / #1E232B, borders #2A313B / #3A434F, ink #E6EAF0, muted #AAB2BF, faint #8A93A0, accent #4C8DFF, ok #46C08A, warn #E0B15A, danger #F0616B, and color-scheme: dark so native selects and scrollbars still match. Six additions, all derived: --ink-strong #F5F8FC for the verdict line and flashing figures only; --grid #20262F for empty ledger cells; and three recessed history tints --ok-dim #2C6B52, --warn-dim #6B5326, --danger-dim #7A3239 used for ledger nights 8+ so the last week reads loudest and the past recedes without changing meaning. Provenance uses three 55%-alpha derivatives \u2014 --prov-measured from ok, --prov-assumed from warn, --prov-invoiced from accent \u2014 deliberately dimmer than the severity colors so an underline can never be mistaken for an alert. No new hues, no gradients, no tints on large areas: the only saturated fills in the entire app are the run-ledger cells and the primary button.",
+  "type": "Two families, split by duty, which is the whole typographic idea. system-ui (the existing --font-sans stack) carries language: headings, labels, prose, buttons. The mono stack (--font-mono: ui-monospace, JetBrains Mono, Menlo, Consolas) carries every fact the ops eye scans \u2014 clock times, relative times, durations, byte sizes, money, percentages, restore-point ids, exit codes, cron expressions, paths, S3 URIs \u2014 all with font-variant-numeric: tabular-nums so columns align to the pixel. Scale: h1 1.6rem/680/-.01em (unchanged); h2 1.05rem/640; section labels .72rem/650 uppercase .1em --faint (the ops table convention, and the replacement for the old eyebrow inside dense screens \u2014 the preserved eyebrow \u2192 h1 \u2192 lead opening is kept intact on all reading-width pages); body 15px/1.55; mono figures .92rem/-.01em; sub-values and hints .82rem --faint. Nothing is larger than the h1 \u2014 there is no display type anywhere, because density beats drama on a board you read every morning.",
+  "layout_grid": "Two container widths, chosen by what the page is for. --w-dense 1240px for the Board, Job page, Cost workbench and Activity; --w-read 780px for job setup, restore confirm, setup, and about. Both centered with 24px gutters. The existing 4/8/12/16/24/32 spacing tokens are unchanged and are the only vertical values used. The structural rule that sets the look: sections are separated by a 1px --border rule plus 32px, not by card padding \u2014 cards exist only for things that are genuinely a bounded object (a form step, a run record, a lever panel), which is how this avoids the everything-is-a-rounded-card default. Radius stays 6px/4px on objects and drops to 0 on all tabular and ledger surfaces: sharp where it is data, soft where it is a thing. Board is a 12-column grid with the jobs table spanning all 12 and a fixed 168px run-strip column that never reflows. Job page is minmax(0,1fr) + 304px sticky rail, collapsing at 1000px. Cost projection is 1fr chart + 300px levers, docked side by side so a control and the number it moves are always in the same viewport.",
+  "components": [
+   "Verdict bar \u2014 full-width, 3px left rule in the worst current state, headline + mono sub-line, one right-aligned action pointing at the worst thing",
+   "Run ledger \u2014 the single bold element: 9\u00d718px cells, 2px gaps, 14 on the Board / 30 on a job page, saturated for the last 7 nights and dimmed beyond, with an aligned duration micro-bar row on the job page",
+   "State token \u2014 a 10px square-cut chip: OK, FAILED, RUNNING (pulsing), PAUSED, OVERDUE, NOT RUN YET; derived states included so a dead cron can never look healthy",
+   "Time cell \u2014 two stacked mono lines, absolute over relative (03:12 / 4h ago), used identically for last run and next run so both axes read the same",
+   "Duration cell \u2014 actual over ~median, with the median as the implicit baseline; a run 3\u00d7 median tints --warn",
+   "Signal \u2014 the one severity component, six levels, described below",
+   "Figure \u2014 mono tabular number carrying a provenance underline and an optional flash state",
+   "Delta line \u2014 'model $0.78 \u00b7 invoice $0.76 \u00b7 +1.3% close', the trust-earning primitive, repeated wherever a projection and an actual coexist",
+   "Lever \u2014 a labeled control that lives inside the result panel it moves, with a 'was:' readout and an accent rule when it differs from saved",
+   "Assumption bar \u2014 the persisted scratch chip: 'scratch \u2014 not saved \u00b7 [Apply to job] [Reset]'",
+   "Restore-point row \u2014 date, clock, id, size, files changed, radio-select",
+   "Run record \u2014 outcome, times, exit code, verbatim error, log slice, command line, cause/fix pair",
+   "Readiness row \u2014 check, plain sentence, last-verified timestamp, [Fix \u2192]",
+   "Command block \u2014 mono pre with a working copy button, on every block the user is told to copy",
+   "Progress bar \u2014 2px indeterminate strip under the topbar plus a live operation row in Activity; every long action uses this one pattern",
+   "Confirm-to-act \u2014 type the job name, used for restore and delete only",
+   "Empty state \u2014 one sentence and one button, never an illustrated panel"
+  ],
+  "severity_scale": "Six levels on two axes, and the axis split is what makes them impossible to confuse. PROSPECTIVE severities describe a configuration and always render inline beside the control that causes them, never with a timestamp. RETROSPECTIVE severities describe an event and always carry a time and a link to its record, never a fix button. Encoding is four simultaneous channels \u2014 left rule, ground, label word, and a 12px stroked SVG glyph in currentColor (never emoji) \u2014 so color is never the only carrier. (1) NOTE: no rule, no ground, no glyph, --faint ink, no label. Ambient explanation; the lowest-cost thing on screen. (2) ADVICE: 2px left rule --accent, ground --surface, glyph hollow circle-dot, label ADVICE, and it usually carries a one-click accept ('use 03:20'). Take it or leave it, no consequence. (3) WARNING: 2px left rule --warn, ground --warn-bg, glyph outline triangle, label WARNING. Reserved for things that will cost you money or surprise you later \u2014 cold-tier lock-in, an unset recovery passphrase, a class change that only affects future uploads. (4) BLOCKER: 3px left rule --danger, ground --danger-bg, glyph filled octagon, label BLOCKER, and it has a real consequence: it disables the primary action, names the two ways out, and jumps to the offending control. If the model can predict a failed run, this prevents it rather than narrating it. (5) SUCCESS: never a box. It is a state token (--ok) in the ledger plus a timestamped line; only transient post-action confirmations get a 2px --ok rule, and they auto-dismiss. (6) FAILURE: --danger state token in the ledger plus a Failure record \u2014 3px --danger rule, verbatim error in mono, exit code, cause and fix. Success and failure therefore share no component at all, which is the opposite of today's single accent-blue flash. The permanent amber 'No authentication' banner is retired to a topbar chip ('LAN only \u00b7 no auth') that expands on /setup, returning --warn to meaning something.",
+  "provenance_marks": "Every figure states where it came from, using a 1px underline style that marks the *input* class it inherits, plus a text stamp where the detail matters. MEASURED \u2014 solid 1px underline in --prov-measured; the value came from a real observation (the folder walk, rclone size on the bucket, a live AWS price list); hover/stamp gives 'measured 2026-09-14 07:40'. ASSUMED \u2014 dotted 1px underline in --prov-assumed AND the number renders in --muted instead of --ink, so an unmeasured figure is visibly weaker at a glance; stamp reads 'assumed \u2014 default 20 GB placeholder, not measured'. INVOICED \u2014 3px double underline in --prov-invoiced; the number came from the AWS invoice via Cost Explorer; stamp names the month and warns when it is account-wide rather than tag-scoped. PROJECTED \u2014 no underline at all, which is the default and keeps the cost pages from becoming a field of lines. The rule that makes this coherent: a projected figure inherits the weakest provenance of its inputs. A monthly cost built on an assumed size shows the dotted line and the muted ink; measure the folder and the same figure goes solid and bright \u2014 the change is legible without reading a word. price_source is rendered everywhere it applies as a stamp chip, 'prices: bundled table 2026-08-01' (dotted) or 'prices: live AWS 2026-09-15' (solid), preserving the existing habit of price-stamping every figure with its capture date. One three-item legend key ('\u2014 measured \u00b7 \u22ef assumed \u00b7 \u2550 invoiced') sits at the foot of each band that contains marked figures, and wherever the app holds both a projection and an actual for the same thing, the delta line is mandatory, not optional.",
+  "motion": "Two motions, both functional, and nothing else \u2014 no hover lifts, no card shadows, no entrance fades. (1) The change flash, 400ms ease-out: when a live recompute changes a figure, its ground goes --accent-bg \u2192 transparent and its ink goes --ink-strong \u2192 --ink. This is the fix for a page that promised 'every number updates live' and never let you see it happen; on the cost workbench it also makes clear which of twelve figures your lever actually moved. (2) The work bar: a 2px indeterminate strip under the topbar, 1.2s linear loop, for any operation that takes more than a moment \u2014 Run now, restore, warm-up, Refresh usage, Test & Validate, Provision now \u2014 paired with a disabled button and a live row in Activity, so no long action is ever silent and no button can be double-submitted. Supporting micro-motions: 180ms path morph on the projection curve, 120ms height on a run-record expand, and a 1.6s opacity pulse on the RUNNING state token. prefers-reduced-motion is respected as it already is: the flash becomes a static 2px --accent left rule held for 2s, the work bar becomes a static striped bar with a counting 'working\u2026 12s' label, and the curve snaps."
+ },
+ "vocabulary": [
+  {
+   "concept": "A restic-backed job (type: versioned)",
+   "user_name": "Snapshot backup \u2014 'point-in-time, restore any date'",
+   "demoted_terms": "versioned, 'Versioned & encrypted', restic, repository, repo, tag, snapshot id \u2192 all moved into the job page's collapsed 'Tool detail' and /setup/about"
+  },
+  {
+   "concept": "An rclone-backed job (type: archive)",
+   "user_name": "Bulk copy \u2014 'a straight copy of big, static files'",
+   "demoted_terms": "archive, rclone, sync, 'Archive (rclone)' \u2192 Tool detail"
+  },
+  {
+   "concept": "The catalog-backed job (type: versioned-files)",
+   "user_name": "File history \u2014 'keeps every version of every file'",
+   "demoted_terms": "versioned-files, catalog, vfiles, manifest, 'Versioned files (catalog)' \u2192 Tool detail"
+  },
+  {
+   "concept": "The S3 storage class",
+   "user_name": "Storage tier, always written as plain meaning + the AWS name as a mono chip, in that fixed order: 'Instant \u00b7 STANDARD', 'Instant, cheaper \u00b7 STANDARD_IA', 'Instant, archive-priced \u00b7 GLACIER_IR', 'Thaw first, minutes\u2013hours \u00b7 GLACIER', 'Thaw first, hours \u00b7 DEEP_ARCHIVE'",
+   "demoted_terms": "storage class, class, tier-as-in-retrieval-tier (renamed to 'retrieval speed' to free the word); the bare AWS constants never appear without their plain-language half"
+  },
+  {
+   "concept": "One point you can go back to",
+   "user_name": "Restore point \u2014 'Sep 14, 03:00 \u00b7 3f8a1c2'",
+   "demoted_terms": "snapshot, snapshot_id, 'latest' \u2192 the id stays visible as mono detail but is never the label"
+  },
+  {
+   "concept": "The shared restic repository",
+   "user_name": "The snapshot store \u2014 'all snapshot backups share one store, which is why two jobs must not run in the same minute'",
+   "demoted_terms": "restic repo, RESTIC_REPOSITORY, repository lock \u2192 Tool detail"
+  },
+  {
+   "concept": "RESTIC_PASSWORD",
+   "user_name": "Recovery passphrase \u2014 'without it, no snapshot backup can be read: not by you, not by AWS, not by anyone'",
+   "demoted_terms": "RESTIC_PASSWORD, encryption key, 'the runtime backup key' (kept only where it contrasts with the read-only billing credential)"
+  },
+  {
+   "concept": "How long replaced/deleted versions are kept",
+   "user_name": "Keep rule \u2014 'how long we keep old versions'",
+   "demoted_terms": "retention, retention policy, retention_days, keep-policy, tiered keep policy, prune, rotation-as-a-setting"
+  },
+  {
+   "concept": "The cost of storing versions that got replaced",
+   "user_name": "Replacing old versions (a cost line)",
+   "demoted_terms": "rotation, rotation_monthly, early-deletion proxy \u2192 collapsed 'How this is calculated'"
+  },
+  {
+   "concept": "The cost of uploading",
+   "user_name": "Uploading \u2014 'charged per request, not per GB, so usually pennies' (preserved copy)",
+   "demoted_terms": "ingest, ingest_monthly, upfront_onetime \u2192 'First upload (once)'"
+  },
+  {
+   "concept": "Data transfer out of AWS",
+   "user_name": "Data out of AWS",
+   "demoted_terms": "egress, data-transfer-out, DTO"
+  },
+  {
+   "concept": "Making cold data readable",
+   "user_name": "Warm up (verb) / Warm-up (noun), always with its honest duration \u2014 'up to 12 h on DEEP_ARCHIVE'",
+   "demoted_terms": "thaw, restore-request, Bulk/Standard/Expedited \u2192 kept as 'retrieval speed' options inside the warm-up step only"
+  },
+  {
+   "concept": "Where a job's data lives in the bucket",
+   "user_name": "Where it goes \u2014 shown as the literal mono URI s3://bw-backups/media/<job>/",
+   "demoted_terms": "prefix, 'Prefix' column header, S3 prefix, sub-prefix"
+  },
+  {
+   "concept": "How much data is replaced between runs",
+   "user_name": "How much changes between runs \u2014 keeping the preserved lived-experience options ('No change \u2014 files only get added', 'A little \u2014 rare replacements', 'Some \u2014 regular edits', 'A lot \u2014 churny'); the noun, where one is needed, is Change rate",
+   "demoted_terms": "churn, change_rate_pct, 'churn defaults to 0%'"
+  },
+  {
+   "concept": "Source files already packed into bigger archives",
+   "user_name": "My files are already bundled (e.g. one .cbz per chapter, or tar) \u2014 with the preserved honesty that this is an estimate input only, the tool will not bundle for you",
+   "demoted_terms": "packing, pack_member_gb, bundling, object-count collapse"
+  },
+  {
+   "concept": "retention_type = keep_all",
+   "user_name": "Keep everything \u2014 and wherever it is projected, 'Keeps growing \u2014 there is no plateau for this job'",
+   "demoted_terms": "unbounded; and critically, 'steady state' / 'STEADY-STATE / MO' is forbidden for these jobs rather than printed anyway"
+  },
+  {
+   "concept": "The month the curve flattens",
+   "user_name": "Settles at $X/mo from month N",
+   "demoted_terms": "steady_state_monthly, steady_state_month, plateau"
+  },
+  {
+   "concept": "The four cost questions",
+   "user_name": "First bill \u00b7 Every month \u00b7 Year one, total \u00b7 Cost to get everything back \u2014 each always paired with its 'whose' axis label (this job / all jobs)",
+   "demoted_terms": "'FIRST BILL / THIS JOB / MO / NEW TOTAL / MO' as three unlabeled cells; 'Full restore (once)' as a headline KPI divorced from the restore button"
+  },
+  {
+   "concept": "Job outcome states",
+   "user_name": "OK \u00b7 Failed \u00b7 Running \u00b7 Paused \u00b7 Overdue \u00b7 Not run yet",
+   "demoted_terms": "'success' / 'failure' as lowercase badge words with no time; enabled (a persisted flag that was never displayed, now Paused/Scheduled); exit_code and the raw error string kept, but as record fields in the run record"
+  },
+  {
+   "concept": "The provisioning flow",
+   "user_name": "Set up the destination, inside Setup \u2014 and the thing it produces is 'a bucket this container can write to and nothing else'",
+   "demoted_terms": "Provision, 'First-time setup \u00b7 Step 1 of 2' (replaced by a checklist with no step counter), tofu/OpenTofu \u2192 named only where its stderr is shown"
+  },
+  {
+   "concept": "The log",
+   "user_name": "Activity \u2014 a feed of operations, each tagged with its job",
+   "demoted_terms": "logs, tail, text/plain dump, the orphaned /logs route"
+  }
+ ],
+ "problem_resolutions": [
+  {
+   "problem_rank": 1,
+   "how_resolved": "/jobs/<name> becomes the object and everything hangs on it: identity, state, run history as a 30-night ledger, restore points and the restore verb, projected cost beside measured bucket usage beside the invoiced share, settings, and the job-tagged log slice. The job name is now a single identifier used verbatim on the Board, the job page, the cost table, the activity feed, the log tags and the S3 URI \u2014 the four different identifiers (row label, form title, raw engine string, S3 'Prefix') collapse to one, which is exactly what lets the estimate and the real bill for one job finally sit on the same line with a delta between them. The Board is nothing but a roll-up of these pages, and every job name everywhere is a link to one."
+  },
+  {
+   "problem_rank": 2,
+   "how_resolved": "Restore becomes a GUI verb on the job page: a list of restore points with dates and sizes, a target directory that defaults to a fresh dated folder and refuses the live source, a needs-line stating the recovery passphrase status, the warm-up hours if the tier is cold, and the egress cost \u2014 before you press. /jobs/<name>/restore runs it as a tracked operation with progress. scripts/restore.sh's existing per-type dispatch (list | restore | thaw | download) is surfaced, not reimplemented. Restore *cost* stops being a headline KPI divorced from a feature: on the workbench it lives in its own 'What a restore costs' band where every row ends in [Get data back \u2192], so the price is attached to the action it prices. And the rail's [Test restore] \u2014 one file, to /tmp, about a cent \u2014 makes 'can I actually restore' a question with a dated answer instead of a hope."
+  },
+  {
+   "problem_rank": 3,
+   "how_resolved": "The two axes are named and the 2\u00d72 is completed. The job setup sticky bar renders a literal labeled matrix \u2014 rows 'first bill' and 'every month', columns 'this job' and 'all jobs', four cells, none missing \u2014 which is the direct fix for mixing *when* with *whose*. The workbench uses the same four words for the same four things, so the number you approved at creation is findable later under the same label. Cost lives in exactly two places with one vocabulary: a per-job band on the job page (this job) and the workbench (all jobs), both reading the same server-side model. 'keep everything' is honored identically on both: no plateau is drawn, no steady state is printed, and the readout says 'still climbing at month 24' where model.py itself says the plateau is not real."
+  },
+  {
+   "problem_rank": 4,
+   "how_resolved": "Change rate is promoted out of card 4's grab-bag into its own ordered step 3, immediately above the keep rule in step 4, with the causal sentence rendered as a note inside step 4's header: 'At 0% change nothing is ever replaced, so there are no old versions to store.' Every keep-rule option then displays its own +$/mo under the assumption above it \u2014 all reading +$0.00 when change is 0, with the reason attached in place \u2014 and the whole panel renders visibly inert (muted options, an 'inert at 0%' state word in the header). Raising change rate wakes the panel and the four deltas diverge, visibly, with the flash. The defending paragraph ('the keep-policy settings correctly have no cost effect') is deleted: the arrangement now says it, so the prose does not have to."
+  },
+  {
+   "problem_rank": 5,
+   "how_resolved": "Controls and their numbers are co-located and the growing sticky card is abolished. In job setup each step carries its own local, priced consequence inside the panel, and the shared result sits in a fixed-height bottom bar that can never exceed three lines \u2014 so the form cannot scroll under its own output and Save is always on screen. On the workbench the levers are docked to the chart's right edge rather than seven cards below it, and the two panels that could not recompute are gone: the static milestones table becomes a live readout driven by a month scrubber, and the cold-storage lock-in list is recomputed from the same call as everything else. Nothing that cannot recompute is allowed on a live page. The 400ms change flash makes 'updates live' something you can actually watch happen."
+  },
+  {
+   "problem_rank": 6,
+   "how_resolved": "Three kinds of value get three treatments. Saved settings live in numbered form steps and persist through jobs_io. Measured facts are read-only readouts with a measured provenance mark and a timestamp, never inputs. Modeling assumptions (change rate, bundling, restore fraction, restores/year, retrieval speed) are named as assumptions in a labeled band, persisted with the job rather than dropped by validate, and therefore identical on the create form, the edit form and the workbench. Workbench levers are explicitly scratch \u2014 they carry a permanent 'scratch \u2014 not saved' chip with [Apply to job] and [Reset], and any lever differing from the saved value shows an accent rule and a 'was: 512 GB' readout. An assumption can no longer evaporate between creation and edit, so the edit screen's estimate can no longer contradict the one you approved."
+  },
+  {
+   "problem_rank": 7,
+   "how_resolved": "Provenance becomes a visual encoding on every figure: solid underline = measured, dotted underline plus muted ink = assumed, double underline = invoiced, no underline = projected, with a projected figure inheriting the weakest provenance of its inputs. A 500 GB job priced from an unfilled field renders in dotted, muted type with the stamp 'assumed \u2014 default 20 GB placeholder, not measured' \u2014 it can never again look identical to a measured folder. price_source, which exists in the model and was never rendered, becomes a visible stamp chip: 'prices: bundled table 2026-08-01' (dotted) versus 'prices: live AWS 2026-09-15' (solid). And the cheapest trust-builder in the app gets built: the workbench opens with measured bucket, real invoice, model output and the delta between them on one line, and each job page repeats that comparison for itself."
+  },
+  {
+   "problem_rank": 8,
+   "how_resolved": "One severity scale with four channels (left rule, ground, label word, stroked glyph) and a prospective/retrospective split, so guidance, explanation, warning, blocker, success and failure can never share a shape. And advice acquires consequences: a BLOCKER disables the primary action, states the two ways out, and jumps to the offending control. A snapshot backup on a thaw-required tier is now unsaveable \u2014 the impossible option is struck through in the tier list with a blocker glyph before you can even pick it \u2014 so a configuration the tool knows fails every run cannot quietly become the word 'failure' days later. Info-level guidance drops to a plain note with no box at all, which removes most of the visual noise the old undifferentiated .advice-item created."
+  },
+  {
+   "problem_rank": 9,
+   "how_resolved": "The Board leads with state and time. Every row shows last run as absolute-over-relative, duration against its own median, next run with a countdown, and fourteen nights of outcomes as a run strip \u2014 all from the state file fields (last_run, duration_s, snapshot_id, error, exit_code) that were already being written and never shown. Derived states close the remaining gaps: PAUSED renders for enabled=false instead of a live-looking cron, and OVERDUE renders when the cron time has passed with no run recorded, so a job whose schedule silently stopped three months ago sorts to the top in red rather than looking identical to last night's success. RUNNING is a real state: Run now disables itself, pulses the token, and writes a live operation row into Activity, so a second concurrent run \u2014 and the repo-lock collision it causes \u2014 is structurally impossible. Failure is no longer terminal: the failure record shows the verbatim error and exit code, names the likely cause, offers the fix, and links to the full run log."
+  },
+  {
+   "problem_rank": 10,
+   "how_resolved": "The step counter is replaced by a /setup readiness checklist of real checks that always shows what remains: destination probed, recovery passphrase set and not the shipped example, bucket versioning on, at least one job scheduled, a restore actually tested. Incomplete items mirror into the Board's needs-you lane, so the app never has to remember to tell you \u2014 the state is always visible. The passphrase check string-compares against the known 'CHANGEME-long-random-passphrase' placeholder instead of bool(value), so the most dangerous possible install state \u2014 an encrypted repo keyed by the example passphrase \u2014 reports as NOT SET with a blocker rather than as '\u2014 set'. All four provisioning exits now route to the same checklist, which gives one answer to 'what next' instead of three."
+  },
+  {
+   "problem_rank": 11,
+   "how_resolved": "One name per concept, chosen by what the owner is trying to do, and implementation names demoted to a single collapsed 'Tool detail' block on the job page plus /setup/about. Job types get one name each (Snapshot backup / File history / Bulk copy) used identically in the radio, the guidance, the comparison strip, the Board, the cost table and the log. Storage classes are always written as plain meaning plus the AWS constant as a mono chip in a fixed order, because the constant has to be recognizable in the AWS console but must never be the only label. restic, rclone, catalog, prefix, ingest, rotation, egress and thaw all get plain replacements (snapshot store, straight copy, file history, where it goes, uploading, replacing old versions, data out of AWS, warm up) with the original term available in detail \u2014 which is precisely what makes the app legible to future-you on a fresh machine with no notes."
+  },
+  {
+   "problem_rank": 12,
+   "how_resolved": "The shell gains the three vocabularies it lacked. Severity: the six-level Signal component above, with success and failure sharing no style. Progress: one pattern for every long action \u2014 button disables, a 2px indeterminate bar appears under the topbar, and a live operation row opens in Activity \u2014 applied to Run now, restore, warm-up, Refresh usage, Test & Validate and Provision now, which also gives each of them a double-submit guard. Failure containment: the 14 abort() calls get a real in-app error page, and every form POST re-renders its own page with values intact and field-level messages, so a double space in a hand-typed cron can never again discard the app's longest form onto a bare white Flask page. And the permanent amber 'No authentication' banner is demoted to a topbar chip that expands on /setup, returning --warn to meaning a real warning rather than wallpaper."
+  }
+ ],
+ "risks": [
+  "Density is the whole bet, and the run-strip column is the first casualty of a narrow window. Below ~1000px it degrades to a text summary ('13 OK \u00b7 1 failed'), which is honest but loses exactly the glanceability that justified the design. If the owner ever checks this from a phone in the morning, the primary value proposition quietly disappears at the breakpoint.",
+  "Provenance underlines are a second information channel that is invisible until explained. On the cost workbench, where a dozen figures each carry a hairline, they risk reading as rendering noise \u2014 and the per-band legend key I added is itself an admission that the encoding is not self-evident. The muted-ink treatment for 'assumed' does most of the real work; the underlines may be carrying less than they cost.",
+  "Putting restore in the GUI creates a genuinely destructive button this app has never had. The guards \u2014 a default target of a fresh dated directory, outright rejection of the live source path, and a typed-job-name confirm \u2014 are the right ones, but a one-click path to overwriting data is a new class of risk introduced by the redesign, not inherited from it.",
+  "Warm-up is hours long and asynchronous, which means the GUI now owns a long-running operation with no daemon behind it. If the operation record does not survive a container restart, the interface will confidently display a warm-up that is no longer being tracked \u2014 the interface lying about state is worse than never having shown it. This is real engine work, not styling, and it is the largest build cost in the direction.",
+  "The completed 2\u00d72 cost matrix is symmetric and honest, but 'all jobs / first bill' may be a number nobody ever needs. I added it because the missing cell was the complaint; there is a real chance it is dead weight defended by geometry rather than by use.",
+  "Hoisting change rate above the keep rule fixes causality but front-loads the hardest question in the form: the owner must estimate churn before anything has cost them money. The preserved lived-experience wording ('A little \u2014 rare replacements') carries almost all the weight there, and if it fails, step 3 becomes a guess that silently determines steps 4's entire meaning.",
+  "The OVERDUE state depends on parsing cron and comparing it to last_run. A timezone or DST mismatch turns a healthy install into a red board, and a board that cries wolf once gets ignored forever after. This state is the most valuable addition on the Board and the most fragile.",
+  "Making blockers actually block means a configuration the owner deliberately wants becomes unsaveable. Snapshot-on-DEEP_ARCHIVE is genuinely broken so that case is safe, but the pattern needs a deliberate, logged override path or the first false positive will be experienced as the tool being wrong about the owner's own machine.",
+  "The delta line that anchors trust on the whole cost workbench is only meaningful when Cost Explorer is tag-scoped. Comparing one install's model against account-wide S3 spend will show an enormous difference and destroy confidence in a model that is, in fact, accurate to about 1% \u2014 so the unscoped warning inside that band has to be prominent enough to survive being skimmed.",
+  "[Test restore] spends real retrieval and egress money. A button that costs money must carry its price on its face ('~$0.01'), and on a DEEP_ARCHIVE job the honest version of that button is not a button at all but a warm-up request measured in hours \u2014 which means the most valuable trust-builder in the design is weakest exactly on the jobs where trust matters most."
+ ]
+}

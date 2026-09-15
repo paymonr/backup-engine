@@ -1,0 +1,1231 @@
+<title>Ledger Runbook</title>
+<style>
+/* ============================================================
+   Quiet Ledger — direction mockup
+   Tokens are the shipped app's tokens (app/gui/static/style.css),
+   kept and disciplined, plus four derived additions for the run strip.
+   This design commits to dark only; body paints its own ground.
+   ============================================================ */
+:root{
+  color-scheme: dark;
+  --bg:#0E1116; --surface:#161A21; --surface-2:#1E232B;
+  --border:#2A313B; --border-strong:#3A434F;
+  --ink:#E6EAF0; --muted:#AAB2BF; --faint:#8A93A0;
+  --accent:#4C8DFF; --accent-ink:#0B0E13;
+  --ok:#46C08A; --warn:#E0B15A; --danger:#F0616B;
+  --ok-dim:#2C6B52; --warn-dim:#6B5326; --danger-dim:#7A3239;
+  --grid:#20262F;
+  --ok-bg:rgba(70,192,138,.10);
+  --warn-bg:rgba(224,177,90,.10);
+  --danger-bg:rgba(240,97,107,.10);
+  --accent-bg:rgba(76,141,255,.14);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --w-page:960px;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--font-sans);margin:0;
+  -webkit-text-size-adjust:100%}
+[hidden]{display:none!important}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------- five type steps, and only five ---------- */
+.lbl{font:11px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.12em;
+  color:var(--faint);font-variant-numeric:tabular-nums;margin:0}
+.sm{font-size:13px;line-height:1.5}
+.subh{font-size:15px;line-height:1.4;font-weight:620;color:var(--ink);margin:0;font-family:var(--font-sans)}
+.h{font-size:20px;line-height:1.3;font-weight:620;letter-spacing:-.005em;margin:0;text-wrap:balance}
+.verdict{font-size:34px;line-height:1.18;font-weight:680;letter-spacing:-.02em;margin:0;text-wrap:balance}
+p{margin:0}
+.muted{color:var(--muted)} .faint{color:var(--faint)}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+/* every machine name is a dotted-underline link to the plain-words glossary */
+.term{font-family:var(--font-mono);font-size:.92em;color:var(--faint);
+  text-decoration:underline dotted;text-underline-offset:3px;text-decoration-color:var(--border-strong);
+  font-variant-numeric:tabular-nums;cursor:help}
+
+/* ---------- mockup chrome (not the product) ---------- */
+.mocknav{position:sticky;top:0;z-index:50;display:flex;flex-wrap:wrap;align-items:center;
+  gap:4px 14px;min-height:32px;padding:6px 16px;background:#0A0D11;
+  border-bottom:1px solid var(--border);font:11px/1.4 var(--font-mono);
+  text-transform:uppercase;letter-spacing:.12em;color:var(--faint)}
+.mocknav .mark{color:var(--faint)}
+.mocknav button{font:inherit;text-transform:inherit;letter-spacing:inherit;
+  background:none;border:0;border-bottom:2px solid transparent;color:var(--faint);
+  padding:3px 0;cursor:pointer}
+.mocknav button:hover{color:var(--ink)}
+.mocknav button[aria-current="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+
+/* ---------- product shell ---------- */
+.topbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 20px;min-height:56px;
+  padding-block:8px;padding-inline:24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.brand{font-weight:640;letter-spacing:-.01em}
+.brand b{color:var(--accent);font-weight:640}
+.topnav{display:flex;gap:16px;font-size:14px}
+.topnav span{color:var(--faint)}
+.topnav .cur{color:var(--ink);font-weight:560}
+.chip-auth{margin-left:auto;font:11px/1.4 var(--font-mono);letter-spacing:.12em;color:var(--faint)}
+.wrap{max-width:var(--w-page);margin-inline:auto;padding-inline:24px;padding-block:24px 72px}
+
+/* ---------- sections: hairline + label, never card padding ---------- */
+.sec{margin-top:32px;border-top:1px solid var(--border);padding-top:24px}
+.sechead{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;
+  gap:8px 16px;margin-bottom:12px}
+.sechead .acts{display:flex;gap:16px;font-size:13px}
+
+/* ---------- THE LEDGER ROW — one primitive, reused everywhere ---------- */
+.row{display:grid;gap:4px 16px;padding-block:12px;border-bottom:1px solid var(--border);
+  grid-template-columns:3px minmax(0,1fr) auto 126px 9ch;
+  grid-template-areas:
+    "rail id    state strip num"
+    "rail sub   next  next  cost"
+    "rail more  more  more  more";
+  align-items:baseline}
+.row.tight{grid-template-areas:"rail id state strip num"}
+.rail{grid-area:rail;align-self:stretch;width:3px;background:var(--faint)}
+.rail.ok{background:var(--ok)} .rail.bad{background:var(--danger)}
+.rail.warn{background:var(--warn)}
+.rail.paused{background:none;border-left:3px dashed var(--faint)}
+.rail.running{background:linear-gradient(var(--accent),var(--accent)) 0 0/100% 40% no-repeat,var(--grid);
+  animation:sweep 1.2s linear infinite}
+@keyframes sweep{from{background-position:0 -40%}to{background-position:0 140%}}
+.r-id{grid-area:id;font-weight:560}
+.r-state{grid-area:state;color:var(--ink)}
+.r-strip{grid-area:strip}
+.r-num{grid-area:num;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.r-sub{grid-area:sub;font-size:13px;color:var(--faint);overflow-wrap:anywhere}
+.r-next{grid-area:next;font-size:13px;color:var(--faint)}
+.r-cost{grid-area:cost;font-size:13px;color:var(--faint);text-align:right;
+  font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.r-more{grid-area:more;margin-top:8px;display:grid;gap:6px}
+
+/* ---------- THE RUN STRIP — last 14 runs, newest right ---------- */
+.strip{display:flex;gap:2px;align-items:flex-end}
+.strip i{display:block;width:6px;height:14px;background:var(--grid)}
+.strip i.ok{background:var(--ok)} .strip i.okd{background:var(--ok-dim)}
+.strip i.warn{background:var(--warn)} .strip i.warnd{background:var(--warn-dim)}
+.strip i.bad{background:var(--danger)} .strip i.badd{background:var(--danger-dim)}
+.strip-sum{display:none;font:13px/1 var(--font-mono);color:var(--faint);white-space:nowrap}
+
+/* ---------- SEVERITY — four channels at once ---------- */
+.sev{display:grid;gap:6px;padding:12px 14px;border-left:2px solid var(--faint);margin-block:12px}
+.sev.rec{border-left-color:var(--accent);background:none;color:var(--ink)}
+.sev.heads{border-left-color:var(--warn);background:var(--warn-bg)}
+.sev.wont{border-left-width:3px;border-left-color:var(--danger);background:var(--danger-bg)}
+.sev.failed{border-left-width:3px;border-left-color:var(--danger);background:var(--danger-bg)}
+.sev.done{border-left-color:var(--ok);background:var(--ok-bg)}
+.sev.note{border-left:0;padding-inline:0;background:none;font-size:13px;color:var(--faint)}
+.sev-tab{display:flex;align-items:center;gap:6px;font:11px/1.4 var(--font-mono);
+  text-transform:uppercase;letter-spacing:.12em}
+.sev.rec .sev-tab{color:var(--accent)}
+.sev.heads .sev-tab{color:var(--warn)}
+.sev.wont .sev-tab,.sev.failed .sev-tab{color:var(--danger)}
+.sev.done .sev-tab{color:var(--ok)}
+.sev svg{flex:none}
+.sev .acts{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-top:2px}
+
+/* ---------- PROVENANCE: three textures on the figure itself ---------- */
+.n{font-family:var(--font-mono);font-variant-numeric:tabular-nums;color:var(--ink)}
+.n.assumed{color:var(--muted);text-decoration:underline dotted;text-underline-offset:3px}
+.n.obs{border:1px solid var(--border-strong);background:var(--surface-2);padding:1px 6px}
+.chip{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:13px}
+.chip.ok{color:var(--ok)} .chip.warn{color:var(--warn)}
+.chip.none{color:var(--faint)}
+
+/* ---------- buttons & controls ---------- */
+.btn{display:inline-flex;align-items:center;gap:.45rem;font:inherit;font-size:14px;font-weight:560;
+  padding:.44rem .85rem;border:1px solid var(--border-strong);border-radius:0;
+  background:transparent;color:var(--ink);cursor:pointer}
+.btn:hover{background:var(--surface-2)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn-primary:hover{background:#6AA1FF}
+.btn-ghost{border-color:var(--border)}
+.btn-danger{color:var(--danger);border-color:var(--border)}
+.btn-danger:hover{background:var(--danger-bg)}
+.btn-xs{font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.12em;
+  padding:.2rem .5rem}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn[disabled]:hover{background:transparent}
+.linkish{background:none;border:0;padding:0;font:inherit;font-size:13px;color:var(--accent);cursor:pointer}
+.linkish:hover{text-decoration:underline}
+input[type=text],input[type=time],select{font:inherit;font-size:14px;width:100%;
+  padding:.42rem .55rem;background:var(--surface-2);color:var(--ink);
+  border:1px solid var(--border-strong);border-radius:0}
+input.mono{font-family:var(--font-mono)}
+.radio{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px;
+  align-items:start;padding-block:6px;cursor:pointer}
+.radio input{margin-top:4px;accent-color:var(--accent)}
+.radio .why{grid-column:2;font-size:13px;color:var(--faint)}
+.inert{color:var(--muted)}
+
+/* ---------- the only three cards in the app ---------- */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:6px}
+.tree{padding:10px 12px;max-height:320px;overflow:auto;display:grid;gap:2px}
+.tree label{display:flex;gap:8px;align-items:center;padding:4px 6px;font-size:14px;cursor:pointer}
+.tree label:hover{background:var(--surface-2)}
+.tree input{accent-color:var(--accent)}
+.shell{background:var(--surface-2);border-color:var(--border-strong);padding:12px 14px;
+  display:grid;gap:8px}
+.shell .line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center}
+.shell code{font-family:var(--font-mono);font-size:13px;color:var(--ink);overflow-x:auto;min-width:0;
+  white-space:pre;display:block;padding-block:2px}
+
+/* ---------- tables ---------- */
+.tscroll{overflow-x:auto}
+table.classes{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+table.classes th{font:11px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.12em;
+  color:var(--faint);text-align:right;padding:10px 12px;border-bottom:1px solid var(--border);
+  vertical-align:bottom}
+table.classes th:first-child{text-align:left}
+table.classes td{padding:10px 12px;border-bottom:1px solid var(--border);text-align:right;
+  font-family:var(--font-mono);font-variant-numeric:tabular-nums;vertical-align:top}
+table.classes td:first-child{text-align:left;font-family:var(--font-sans)}
+table.classes tr:last-child td{border-bottom:0}
+table.classes tr.blocked td{color:var(--faint)}
+table.classes tr.blocked td.struck{text-decoration:line-through}
+td .reason{display:block;font-family:var(--font-sans);font-size:13px;color:var(--danger);
+  text-align:left;margin-top:2px}
+.cls{display:flex;gap:8px;align-items:baseline}
+.cls input{accent-color:var(--accent);margin-top:2px}
+
+/* ---------- definition rows ---------- */
+.defs{display:grid;gap:10px}
+.def{display:grid;grid-template-columns:11ch minmax(0,1fr);gap:4px 16px;align-items:baseline}
+.def>dt{font-size:13px;color:var(--faint)}
+.def>dd{margin:0}
+.def .subline{font-size:13px;color:var(--faint);margin-top:2px}
+
+/* ---------- cost component lines ---------- */
+.comp{display:grid;grid-template-columns:minmax(0,1fr) auto 9ch;gap:4px 16px;
+  padding-block:8px;border-bottom:1px solid var(--border);align-items:baseline}
+.comp .qty{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:13px;color:var(--faint)}
+.comp .amt{text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+
+/* ---------- the WHEN / WHOSE matrix ---------- */
+.seg{display:flex;flex-wrap:wrap;gap:0;border-bottom:1px solid var(--border)}
+.seg button{font:inherit;font-size:13px;background:none;border:0;border-bottom:2px solid transparent;
+  color:var(--faint);padding:8px 14px;cursor:pointer;margin-bottom:-1px}
+.seg button:hover{color:var(--ink)}
+.seg button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:560}
+.whose{display:grid;grid-template-columns:minmax(0,1fr) 12ch;gap:2px 16px;margin-top:12px}
+.whose .colhead{grid-column:2;text-align:right;font:11px/1.4 var(--font-mono);
+  text-transform:uppercase;letter-spacing:.12em;color:var(--faint);padding-bottom:6px;
+  border-bottom:1px solid var(--border);margin-bottom:6px}
+.whose .k{padding-block:6px}
+.whose .v{padding-block:6px;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.whose .v.total{border-top:1px solid var(--border)}
+.whose .k.total{border-top:1px solid var(--border);padding-top:6px}
+
+/* ---------- sticky footer: fixed height, cannot grow ---------- */
+.formfoot{position:sticky;bottom:0;z-index:20;height:44px;display:flex;align-items:center;
+  gap:12px;padding-inline:14px;background:var(--surface);border-top:1px solid var(--border);
+  margin-top:24px}
+.formfoot .figs{margin-left:auto;font-size:13px;color:var(--faint);white-space:nowrap}
+.formfoot .figs .n{color:var(--ink)}
+
+.flash{animation:flash .2s ease-out}
+@keyframes flash{from{background:var(--accent-bg)}to{background:transparent}}
+.altstate{margin-top:40px;border:1px dashed var(--border-strong);padding:16px}
+
+hr.rule{border:0;height:2px;background:var(--danger);margin:12px 0 0}
+hr.hair{border:0;height:1px;background:var(--border);margin:32px 0 16px}
+
+.stack{display:grid;gap:12px}
+.stack-sm{display:grid;gap:6px}
+.measure{max-width:64ch}
+
+/* ---------- responsive ---------- */
+@media (max-width:900px){
+  .row{grid-template-columns:3px minmax(0,1fr) auto;
+    grid-template-areas:
+      "rail id    num"
+      "rail state strip"
+      "rail sub   sub"
+      "rail next  cost"
+      "rail more  more"}
+  .row.tight{grid-template-areas:"rail id num" "rail state strip"}
+  .strip{display:none}
+  .strip-sum{display:block}
+  .r-strip{text-align:right}
+  .r-next,.r-cost{text-align:left}
+  .r-cost{text-align:right}
+}
+@media (max-width:640px){
+  .wrap{padding-inline:16px}
+  .topbar{padding-inline:16px}
+  .chip-auth{margin-left:0;flex-basis:100%}
+  .formfoot{height:auto;flex-wrap:wrap;padding-block:8px}
+  .formfoot .figs{margin-left:0;flex-basis:100%;white-space:normal}
+  .def{grid-template-columns:minmax(0,1fr)}
+  .whose{grid-template-columns:minmax(0,1fr) 10ch}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .rail.running{background:repeating-linear-gradient(180deg,var(--accent) 0 4px,var(--grid) 4px 8px)}
+}
+</style>
+
+<nav class="mocknav" aria-label="Mockup screens">
+  <span class="mark">Mockup nav — not part of the product</span>
+  <button type="button" data-screen="status" aria-current="true">Status</button>
+  <button type="button" data-screen="job">Job: appdata</button>
+  <button type="button" data-screen="new">New job</button>
+  <span class="mark" style="margin-left:auto">Quiet Ledger · 15 Sep 2026</span>
+</nav>
+
+<header class="topbar">
+  <span class="brand">backup<b>·</b>engine</span>
+  <nav class="topnav" aria-label="Product">
+    <span class="cur">Status</span><span>Recover</span><span>Cost</span><span>Setup</span>
+  </nav>
+  <span class="chip-auth">LAN ONLY · NO LOGIN</span>
+</header>
+
+<!-- ==================================================================
+     SCREEN 1 — STATUS
+     ================================================================== -->
+<main class="wrap" id="screen-status">
+
+  <p class="lbl">Last 24 hours · Tue 15 Sep 2026 · 09:12</p>
+  <p class="verdict" style="margin-top:8px">manga failed 2 days ago. appdata is fine.</p>
+  <hr class="rule">
+
+  <!-- PROSPECTIVE severity: about a configuration. No timestamp. Always a one-click fix. -->
+  <div class="sev wont" style="margin-top:20px">
+    <span class="sev-tab">
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M3.8 0h4.4L12 3.8v4.4L8.2 12H3.8L0 8.2V3.8z"/></svg>
+      Won't run
+    </span>
+    <p>The key this container runs with cannot clear old versions. It is missing
+      <span class="term" title="AWS IAM action">s3:DeleteObjectVersion</span>, a permission added in the last update.
+      Every <b>manga</b> run that has to remove an expired copy will fail the same way.</p>
+    <div class="acts">
+      <button class="btn btn-primary" type="button">Apply the missing permission</button>
+      <span class="sm faint">or run <span class="term" title="the provisioning script in the repo root">./setup.sh</span> · or add it in the AWS console</span>
+    </div>
+  </div>
+
+  <!-- THE LEDGER: sorted by how much it needs you -->
+  <div style="margin-top:20px">
+    <div class="row">
+      <span class="rail bad" aria-hidden="true"></span>
+      <span class="r-id">manga</span>
+      <span class="r-state">Failed 2 days ago · 1h 07m</span>
+      <span class="r-strip">
+        <span class="strip" role="img" aria-label="Last 14 runs: 12 clean, 1 skipped, most recent failed">
+          <i class="okd" title="Sun 14 Jun 04:00 · ran clean · 1h 02m"></i>
+          <i class="okd" title="Sun 21 Jun 04:00 · ran clean · 1h 05m"></i>
+          <i class="okd" title="Sun 28 Jun 04:00 · ran clean · 58m 40s"></i>
+          <i class="okd" title="Sun 5 Jul 04:00 · ran clean · 1h 01m"></i>
+          <i class="okd" title="Sun 12 Jul 04:00 · ran clean · 1h 09m"></i>
+          <i class="warnd" title="Sun 19 Jul 04:00 · no run recorded · job was paused"></i>
+          <i class="okd" title="Sun 26 Jul 04:00 · ran clean · 1h 03m"></i>
+          <i class="ok" title="Sun 2 Aug 04:00 · ran clean · 1h 06m"></i>
+          <i class="ok" title="Sun 9 Aug 04:00 · ran clean · 59m 12s"></i>
+          <i class="ok" title="Sun 16 Aug 04:00 · ran clean · 1h 02m"></i>
+          <i class="ok" title="Sun 23 Aug 04:00 · ran clean · 1h 08m"></i>
+          <i class="ok" title="Sun 30 Aug 04:00 · ran clean · 58m 12s"></i>
+          <i class="ok" title="Sun 6 Sep 04:00 · ran clean · 1h 04m"></i>
+          <i class="bad" title="Sun 13 Sep 04:00 · failed · 1h 07m · exit 1"></i>
+        </span>
+        <span class="strip-sum">13 ✓ · 1 ✕</span>
+      </span>
+      <span class="r-num">1.78 TB</span>
+      <span class="r-sub">Plain copy · <span class="mono">/mnt/user/data/media/comics/mangas</span></span>
+      <span class="r-next">next Sun 20 Sep 04:00</span>
+      <span class="r-cost">$1.85/mo</span>
+
+      <!-- RETROSPECTIVE severity: an event. Carries a time and a link to its record. -->
+      <div class="r-more">
+        <p class="sm"><span class="mono">Sun 13 Sep 04:00</span> · exit <span class="mono">1</span> · stopped after 1h 07m</p>
+        <p class="mono sm" style="color:var(--ink)">AccessDenied: s3:DeleteObjectVersion</p>
+        <p class="sm faint measure">The runtime key is missing a permission added in the last update.
+          The copy itself uploaded; clearing the expired week is what failed.</p>
+        <div class="acts" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <a href="#" class="sm">Show output →</a>
+          <button class="btn btn-ghost btn-xs" type="button">Back up now</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="rail ok" aria-hidden="true"></span>
+      <span class="r-id">appdata</span>
+      <span class="r-state">Ran clean 4h ago · 4m 12s</span>
+      <span class="r-strip">
+        <span class="strip" role="img" aria-label="Last 14 runs: all clean">
+          <i class="okd" title="Wed 2 Sep 05:00 · ran clean · 4m 02s"></i>
+          <i class="okd" title="Thu 3 Sep 05:00 · ran clean · 3m 58s"></i>
+          <i class="okd" title="Fri 4 Sep 05:00 · ran clean · 4m 19s"></i>
+          <i class="okd" title="Sat 5 Sep 05:00 · ran clean · 4m 04s"></i>
+          <i class="okd" title="Sun 6 Sep 05:00 · ran clean · 3m 51s"></i>
+          <i class="okd" title="Mon 7 Sep 05:00 · ran clean · 4m 11s"></i>
+          <i class="okd" title="Tue 8 Sep 05:00 · ran clean · 4m 26s"></i>
+          <i class="ok" title="Wed 9 Sep 05:00 · ran clean · 4m 08s"></i>
+          <i class="ok" title="Thu 10 Sep 05:00 · ran clean · 4m 15s"></i>
+          <i class="ok" title="Fri 11 Sep 05:00 · ran clean · 3m 57s"></i>
+          <i class="ok" title="Sat 12 Sep 05:00 · ran clean · 4m 30s"></i>
+          <i class="ok" title="Sun 13 Sep 05:00 · ran clean · 4m 21s"></i>
+          <i class="ok" title="Mon 14 Sep 05:00 · ran clean · 4m 06s"></i>
+          <i class="ok" title="Tue 15 Sep 05:00 · ran clean · 4m 12s · a81f3c2"></i>
+        </span>
+        <span class="strip-sum">14 ✓</span>
+      </span>
+      <span class="r-num">52.71 GB</span>
+      <span class="r-sub">Snapshots · <span class="mono">/mnt/user/appdata_backups</span></span>
+      <span class="r-next">next tomorrow 05:00</span>
+      <span class="r-cost">$2.69/mo</span>
+    </div>
+  </div>
+
+  <!-- RECOVERY -->
+  <section class="sec">
+    <div class="sechead">
+      <h2 class="lbl">If this machine died today</h2>
+      <span class="acts"><a href="#">What you can recover →</a></span>
+    </div>
+    <div class="row tight">
+      <span class="rail ok" aria-hidden="true"></span>
+      <span class="r-id">appdata</span>
+      <span class="r-state">14 restore points, newest 4h ago</span>
+      <span class="r-strip sm faint">instant</span>
+      <span class="r-num">52.71 GB</span>
+    </div>
+    <div class="row tight">
+      <span class="rail warn" aria-hidden="true"></span>
+      <span class="r-id">manga</span>
+      <span class="r-state">One copy, as of Sun 6 Sep <span class="faint">*</span></span>
+      <span class="r-strip sm faint">up to 48 h</span>
+      <span class="r-num">1.78 TB</span>
+    </div>
+    <p class="sm faint" style="margin-top:8px">* the 13 Sep run failed, so the copy is 9 days old.</p>
+    <p style="margin-top:12px" class="measure">All of it back: about 48 hours and <span class="n">$173.34</span>.
+      You will need the repository passphrase.</p>
+  </section>
+
+  <!-- COST — the second half of the split -->
+  <section class="sec">
+    <div class="sechead">
+      <h2 class="lbl">Cost</h2>
+      <span class="acts"><a href="#">Cost detail →</a></span>
+    </div>
+    <div class="row tight" style="border-bottom:0">
+      <span class="rail" aria-hidden="true" style="background:var(--grid)"></span>
+      <span class="r-id" style="font-weight:400">Forecast this month <span class="n" style="margin-left:8px">$4.54</span></span>
+      <span class="r-state sm">AWS invoice (Aug) <span class="n obs" style="margin-left:6px">$3.98</span></span>
+      <span class="r-strip"></span>
+      <span class="r-num chip warn">−12%</span>
+    </div>
+    <p class="sm faint measure">Beyond 10%, so the delta is amber rather than green. The invoice is one
+      account-level amount for the whole bucket; the forecast is the two jobs as they are configured today.
+      Per job the comparison is not valid — no cost-allocation tag splits the bill — so no per-job delta is printed.</p>
+    <p class="sm faint" style="margin-top:8px">The bucket holds <span class="n obs">1.86 TB</span> in 2 prefixes · walked 15 Sep 07:12.</p>
+  </section>
+
+  <hr class="hair">
+  <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center">
+    <button class="btn btn-primary" type="button" data-goto="new">+ New job</button>
+    <a href="#" class="sm">Activity →</a>
+  </div>
+  <p class="lbl" style="margin-top:32px">Prices: bundled table, us-east-1, captured 27 Aug 2026.</p>
+</main>
+
+<!-- ==================================================================
+     SCREEN 2 — JOB: appdata
+     ================================================================== -->
+<main class="wrap" id="screen-job" hidden>
+  <p><button class="linkish" type="button" data-goto="status">← Status</button></p>
+
+  <p class="lbl" style="margin-top:16px">Job</p>
+  <div class="sechead" style="margin-top:4px;margin-bottom:6px">
+    <h1 class="h">appdata</h1>
+    <span>Snapshots · <span class="term" title="jobs.json: type = versioned (restic)">versioned</span></span>
+  </div>
+  <p class="mono sm faint">/mnt/user/appdata_backups &nbsp;→&nbsp; s3://bw-backups/appdata/</p>
+  <p class="mono sm faint">(tag: appdata)</p>
+
+  <!-- 1 HEALTH -->
+  <section class="sec">
+    <h2 class="lbl">Health</h2>
+    <div class="sev done">
+      <span class="sev-tab">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M1.5 6.3 4.4 9.2 10.5 3"/></svg>
+        Done
+      </span>
+      <p style="font-size:15px">Ran clean 4h ago</p>
+      <p class="mono sm">Tue 15 Sep 05:00 · 4m 12s · restore point <span class="term" title="restic snapshot id">a81f3c2</span></p>
+      <p class="sm faint">Next run tomorrow 05:00 · <span class="mono">0 5 * * *</span></p>
+      <div class="acts">
+        <button class="btn btn-ghost" type="button">Back up now</button>
+        <a href="#" class="sm">Show output →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 GET IT BACK — restore is a verb on this page, branched by type -->
+  <section class="sec">
+    <div class="sechead">
+      <h2 class="lbl">Get it back</h2>
+      <span class="acts"><button class="linkish" type="button" data-toggle="restore-needs">What a restore needs ▸</button></span>
+    </div>
+
+    <div class="stack-sm measure">
+      <p>14 restore points, newest today 05:00, oldest 18 Mar.</p>
+      <p>Stored <b>Instant</b> · <span class="term" title="AWS S3 storage class">STANDARD</span> — no warm-up, downloads start immediately.</p>
+      <p>Getting all 52.71 GB back: about 25 min and <span class="n">$4.74</span> to download out of AWS.
+        That charge applies whatever the storage costs.</p>
+    </div>
+
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:14px">
+      <button class="btn btn-primary" type="button" data-toggle="restore-panel" aria-expanded="true">Restore…</button>
+      <button class="btn btn-ghost" type="button">Test restore &nbsp;<span class="mono">~$0.01</span></button>
+      <span class="sm faint">last rehearsed 1 Sep — it read a file back and diffed it</span>
+    </div>
+
+    <div id="restore-needs" hidden class="sev note" style="margin-top:12px">
+      <p><b>What this will need</b></p>
+      <p>· The repository passphrase. Without it nothing here can be read, by you or by anyone else.
+        <span class="term" title="backup.env key">RESTIC_PASSWORD</span> — it is set.</p>
+      <p>· The bucket <span class="mono">bw-backups</span> in <span class="mono">us-east-1</span>, and its access key. Set.</p>
+      <p>· Time: none for this job. It is on an instant class.</p>
+      <p>· Nothing on this machine. This works even if <span class="mono">/mnt/user/appdata_backups</span> no longer exists — that is the point.</p>
+    </div>
+
+    <!-- RESTORE panel: three numbered questions, branched by job type -->
+    <div id="restore-panel" style="margin-top:20px">
+      <div class="seg" role="tablist" aria-label="Restore branch">
+        <button type="button" role="tab" aria-selected="true" data-branch="snap">Snapshots · versioned &nbsp;— this job</button>
+        <button type="button" role="tab" aria-selected="false" data-branch="cold">Plain copy · archive &nbsp;— manga, cold</button>
+      </div>
+      <p class="sm faint" style="margin-top:8px">The engine has three recovery models and they are not interchangeable.
+        This tab shows what <b>appdata</b> actually supports; the second shows the cold branch, so you can see the difference before you need it.</p>
+
+      <!-- branch A: snapshots -->
+      <div data-branchpanel="snap" style="margin-top:16px">
+        <p class="lbl">1 · Which point in time</p>
+        <div style="margin-top:8px">
+          <label class="radio" for="rp-today"><input type="radio" id="rp-today" name="restore-point" checked>
+            <span>Today &nbsp; <span class="mono">15 Sep 05:00</span> &nbsp; <span class="mono faint">a81f3c2</span> &nbsp; <span class="mono faint">52.71 GB</span></span></label>
+          <label class="radio" for="rp-yest"><input type="radio" id="rp-yest" name="restore-point">
+            <span>Yesterday &nbsp; <span class="mono">14 Sep 05:00</span> &nbsp; <span class="mono faint">c70b18e</span> &nbsp; <span class="mono faint">52.68 GB</span></span></label>
+          <label class="radio" for="rp-old"><input type="radio" id="rp-old" name="restore-point">
+            <span>Oldest kept &nbsp; <span class="mono">18 Mar 05:00</span> &nbsp; <span class="mono faint">1ef8802</span> &nbsp; <span class="mono faint">41.02 GB</span></span></label>
+          <p class="sm" style="margin-top:4px"><a href="#">All 14 restore points ▸</a></p>
+        </div>
+
+        <p class="lbl" style="margin-top:20px">2 · What</p>
+        <div style="margin-top:8px">
+          <label class="radio" for="rw-all"><input type="radio" id="rw-all" name="restore-what" checked>
+            <span>Everything</span></label>
+          <label class="radio" for="rw-one"><input type="radio" id="rw-one" name="restore-what">
+            <span>One folder or file</span></label>
+        </div>
+
+        <p class="lbl" style="margin-top:20px">3 · Where it lands</p>
+        <div style="margin-top:8px;max-width:34rem">
+          <label class="sm faint" for="restore-target" style="display:block;margin-bottom:6px">Target directory</label>
+          <input type="text" class="mono" id="restore-target" value="/mnt/user/restore/appdata-2026-09-15"
+                 aria-describedby="restore-guard">
+        </div>
+        <p class="sm faint measure" id="restore-guard" style="margin-top:8px">Restores only ever write inside
+          <span class="mono">/mnt/user/restore/</span>. Your source folder is never touched, and this target is
+          refused if it resolves inside any job's source.</p>
+
+        <!-- the guard on the one genuinely destructive surface -->
+        <div class="sev wont" id="restore-blocker" hidden>
+          <span class="sev-tab">
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M3.8 0h4.4L12 3.8v4.4L8.2 12H3.8L0 8.2V3.8z"/></svg>
+            Won't run
+          </span>
+          <p id="restore-blocker-why">That target is outside <span class="mono">/mnt/user/restore/</span>.</p>
+          <div class="acts">
+            <button class="btn btn-ghost btn-xs" type="button" id="restore-fix">Put it back under /mnt/user/restore/</button>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:16px">
+          <button class="btn btn-primary" type="button" id="restore-go">Restore now</button>
+          <button class="linkish" type="button">Cancel</button>
+        </div>
+        <p class="sm faint" id="restore-go-why" style="margin-top:8px">Downloading 52.71 GB out of AWS costs about
+          <span class="n">$4.74</span>. No warm-up — this job is on Instant · <span class="mono">STANDARD</span>.</p>
+      </div>
+
+      <!-- branch B: cold archive -->
+      <div data-branchpanel="cold" hidden style="margin-top:16px">
+        <p class="sm faint measure">A Plain copy holds the folder as it was at the last clean run — Sun 6 Sep.
+          There are no earlier versions to choose from.</p>
+
+        <p class="lbl" style="margin-top:16px">1 · Which folder</p>
+        <div style="margin-top:8px">
+          <label class="radio" for="cw-all"><input type="radio" id="cw-all" name="cold-what" checked>
+            <span>Everything &nbsp; <span class="mono faint">media/manga/</span> &nbsp; <span class="mono faint">1.78 TB · 232,021 files</span></span></label>
+          <label class="radio" for="cw-one"><input type="radio" id="cw-one" name="cold-what">
+            <span>One folder under that prefix</span></label>
+        </div>
+
+        <p class="lbl" style="margin-top:20px">2 · Warm it up</p>
+        <div class="sev heads">
+          <span class="sev-tab">
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M6 1 11.2 10.6H.8z"/></svg>
+            Heads up
+          </span>
+          <p>This has to warm up before anything can download. <b>manga</b> is on
+            <b>Deepest</b> · <span class="term" title="AWS S3 storage class">DEEP_ARCHIVE</span>.</p>
+          <div style="max-width:24rem;margin-block:4px">
+            <label class="sm faint" for="thaw-tier" style="display:block;margin-bottom:6px">Tier</label>
+            <select id="thaw-tier">
+              <option>Bulk — cheapest, up to 48 h</option>
+              <option>Standard — up to 12 h</option>
+            </select>
+          </div>
+          <p class="sm">Warm-up <span class="n">$4.56</span> + download out of AWS <span class="n">$164.04</span>
+            = <span class="n">$168.60</span>.</p>
+          <p class="sm faint">You can close this page; the warm-up keeps going.</p>
+        </div>
+
+        <p class="lbl" style="margin-top:20px">3 · Where it lands</p>
+        <div style="margin-top:8px;max-width:34rem">
+          <input type="text" class="mono" id="cold-target" value="/mnt/user/restore/manga-2026-09-15">
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:16px">
+          <button class="btn btn-primary" type="button">Start warm-up</button>
+          <button class="linkish" type="button">Cancel</button>
+        </div>
+        <p class="sm faint" style="margin-top:8px">Downloading is a second step, and this page will tell you when.</p>
+      </div>
+    </div>
+
+    <!-- shell fallback, printed OPEN -->
+    <p class="lbl" style="margin-top:24px">If this page is not available</p>
+    <div class="card shell" style="margin-top:8px">
+      <div class="line">
+        <code>scripts/restore.sh appdata list</code>
+        <button class="btn btn-ghost btn-xs" type="button" data-copy>copy</button>
+      </div>
+      <div class="line">
+        <code id="shell-restore">scripts/restore.sh appdata restore latest /mnt/user/restore/appdata-2026-09-15</code>
+        <button class="btn btn-ghost btn-xs" type="button" data-copy>copy</button>
+      </div>
+    </div>
+    <p class="sm faint" style="margin-top:8px">The GUI is a convenience. The engine restores without it.
+      The second line is the one beside the button above — it follows the target you type.</p>
+  </section>
+
+  <!-- 3 COST -->
+  <section class="sec">
+    <div class="sechead">
+      <h2 class="lbl">Cost</h2>
+      <span class="acts">
+        <button class="linkish" type="button" data-toggle="job-working">Show working ▸</button>
+        <a href="#">Cost →</a>
+      </span>
+    </div>
+
+    <div class="row tight" style="border-bottom:1px solid var(--border)">
+      <span class="rail" aria-hidden="true" style="background:var(--grid)"></span>
+      <span class="r-id" style="font-weight:400">Typical month <span class="n" style="margin-left:8px">$2.69</span></span>
+      <span class="r-state sm">Measured now <span class="n obs" style="margin-left:6px">1.86 TB</span></span>
+      <span class="r-strip"></span>
+      <span class="r-num chip none">Δ —</span>
+    </div>
+    <p class="sm faint measure" style="margin-top:8px">
+      <b>Delta suppressed.</b> <i>Measured now</i> walked the whole bucket 2h ago — 1.86 TB across 2 prefixes —
+      and the August invoice is one account-level amount. Neither splits per job, so a per-job delta here would be
+      invented. The comparison that <i>is</i> valid: all jobs, August — forecast <span class="n">$4.54</span>
+      against invoiced <span class="n obs">$3.98</span>, <span class="chip warn">−12%</span>.
+      <a href="#">Split the bill by prefix →</a></p>
+
+    <div style="margin-top:16px">
+      <div class="comp"><span>Storing your files</span><span class="qty">52.71 GB</span><span class="amt">$1.21</span></div>
+      <div class="comp"><span>Keeping old versions</span><span class="qty">64.31 GB · about 1.22× your data</span><span class="amt">$1.48</span></div>
+      <div class="comp"><span>Uploading</span><span class="qty">533 files a night</span><span class="amt">&lt;$0.01</span></div>
+      <div class="comp"><span>Clearing out old versions</span><span class="qty"></span><span class="amt">&lt;$0.01</span></div>
+    </div>
+    <div id="job-working" hidden class="sev note" style="margin-top:12px">
+      <p>52.71 GB measured + 64.31 GB of old versions = 117.02 GB stored, at <span class="mono">$0.023</span>/GB·mo
+        on <span class="mono">STANDARD</span> = <span class="mono">$2.69</span>.
+        Old versions are an assumption, not a measurement: at <span class="n assumed">~1%</span> change they settle
+        at about 1.22× the data. Your first bill was <span class="n">$1.39</span>, because no old versions existed yet;
+        it reached <span class="n">$2.67</span> by month 6 and plateaus there.</p>
+    </div>
+  </section>
+
+  <!-- 4 SETTINGS -->
+  <section class="sec">
+    <div class="sechead">
+      <h2 class="lbl">Settings</h2>
+      <span class="acts"><a href="#">Edit →</a></span>
+    </div>
+    <div class="defs">
+      <dl class="def"><dt>Backs up</dt><dd><span class="mono">/mnt/user/appdata_backups</span>
+        <div class="subline">52.71 GB · 533 files · measured Mon 14 Sep · <a href="#">Re-measure</a></div></dd></dl>
+      <dl class="def"><dt>Runs</dt><dd>every day at 05:00 &nbsp;<span class="mono faint">0 5 * * *</span></dd></dl>
+      <dl class="def"><dt>Stores as</dt><dd>Instant · <span class="term" title="AWS S3 storage class">STANDARD</span></dd></dl>
+      <dl class="def"><dt>Keeps</dt><dd>Thin them out over time
+        <div class="subline"><span class="mono">last 3 · daily 7 · weekly 4 · monthly 6</span> · 14 restore points now · <a href="#">Why these ▸</a></div></dd></dl>
+    </div>
+  </section>
+
+  <!-- 5 ASSUMES -->
+  <section class="sec">
+    <div class="sechead">
+      <h2 class="lbl">Assumes</h2>
+      <span class="acts"><a href="#">Change ▸</a></span>
+    </div>
+    <div class="defs">
+      <dl class="def"><dt>How much changes</dt><dd><span class="n assumed">A little — rare replacements (~1%)</span>
+        <div class="subline">assumed · set 12 Sep</div></dd></dl>
+      <dl class="def"><dt>Already bundled</dt><dd><span class="n assumed">no</span>
+        <div class="subline">assumed</div></dd></dl>
+    </div>
+    <p class="sm faint measure" style="margin-top:10px">These describe your data, not your backups. They only move
+      the forecast; they never change what gets backed up.</p>
+  </section>
+
+  <!-- 6 LAST 14 RUNS -->
+  <section class="sec">
+    <div class="sechead">
+      <h2 class="lbl">Last 14 runs</h2>
+      <span class="acts"><a href="#">All runs →</a></span>
+    </div>
+    <span class="strip" role="img" aria-label="Last 14 runs: all clean" style="margin-bottom:12px">
+      <i class="okd" title="Wed 2 Sep 05:00 · ran clean · 4m 02s"></i>
+      <i class="okd" title="Thu 3 Sep 05:00 · ran clean · 3m 58s"></i>
+      <i class="okd" title="Fri 4 Sep 05:00 · ran clean · 4m 19s"></i>
+      <i class="okd" title="Sat 5 Sep 05:00 · ran clean · 4m 04s"></i>
+      <i class="okd" title="Sun 6 Sep 05:00 · ran clean · 3m 51s"></i>
+      <i class="okd" title="Mon 7 Sep 05:00 · ran clean · 4m 11s"></i>
+      <i class="okd" title="Tue 8 Sep 05:00 · ran clean · 4m 26s"></i>
+      <i class="ok" title="Wed 9 Sep 05:00 · ran clean · 4m 08s"></i>
+      <i class="ok" title="Thu 10 Sep 05:00 · ran clean · 4m 15s"></i>
+      <i class="ok" title="Fri 11 Sep 05:00 · ran clean · 3m 57s"></i>
+      <i class="ok" title="Sat 12 Sep 05:00 · ran clean · 4m 30s"></i>
+      <i class="ok" title="Sun 13 Sep 05:00 · ran clean · 4m 21s"></i>
+      <i class="ok" title="Mon 14 Sep 05:00 · ran clean · 4m 06s"></i>
+      <i class="ok" title="Tue 15 Sep 05:00 · ran clean · 4m 12s · a81f3c2"></i>
+    </span>
+
+    <div class="row tight">
+      <span class="rail ok" aria-hidden="true"></span>
+      <span class="r-id mono" style="font-weight:400">15 Sep 05:00</span>
+      <span class="r-state">ran clean</span>
+      <span class="r-strip mono sm faint">4m 12s</span>
+      <span class="r-num faint">a81f3c2</span>
+    </div>
+
+    <!-- the run record, open: what exactly ran, and this job's log lines -->
+    <div style="border-bottom:1px solid var(--border);padding-block:12px 16px;padding-left:19px">
+      <p class="lbl">Run record · 15 Sep 05:00</p>
+      <p class="sm faint" style="margin-top:6px">exit <span class="mono">0</span> · restore point
+        <span class="mono">a81f3c2</span> · started by the schedule</p>
+      <div class="card shell" style="margin-top:10px">
+        <div class="line"><code>restic -r $RESTIC_REPOSITORY backup --tag appdata /mnt/user/appdata_backups</code>
+          <button class="btn btn-ghost btn-xs" type="button" data-copy>copy</button></div>
+      </div>
+      <p class="lbl" style="margin-top:14px">Log lines tagged appdata</p>
+      <div class="card shell" style="margin-top:8px;background:var(--bg);border-color:var(--border)">
+        <code style="color:var(--muted);line-height:1.7">2026-09-15 05:00:02 [appdata] backup start · source /mnt/user/appdata_backups
+2026-09-15 05:00:04 [appdata] repository opened (version 2)
+2026-09-15 05:03:51 [appdata] Files:  12 new, 41 changed, 480 unmodified
+2026-09-15 05:04:09 [appdata] Added to the repository: 412.6 MiB (198.4 MiB stored)
+2026-09-15 05:04:12 [appdata] snapshot a81f3c2 saved
+2026-09-15 05:04:13 [appdata] forget --keep-last 3 --keep-daily 7 --keep-weekly 4 --keep-monthly 6
+2026-09-15 05:04:14 [appdata] 14 snapshots kept, 1 removed · oldest 2026-03-18
+2026-09-15 05:04:14 [appdata] done in 4m 12s · exit 0</code>
+      </div>
+    </div>
+
+    <div class="row tight">
+      <span class="rail ok" aria-hidden="true"></span>
+      <span class="r-id mono" style="font-weight:400">14 Sep 05:00</span>
+      <span class="r-state">ran clean</span>
+      <span class="r-strip mono sm faint">4m 06s</span>
+      <span class="r-num faint">c70b18e</span>
+    </div>
+    <div class="row tight">
+      <span class="rail ok" aria-hidden="true"></span>
+      <span class="r-id mono" style="font-weight:400">13 Sep 05:00</span>
+      <span class="r-state">ran clean</span>
+      <span class="r-strip mono sm faint">4m 21s</span>
+      <span class="r-num faint">9d31f04</span>
+    </div>
+  </section>
+
+  <hr class="hair">
+  <button class="btn btn-danger" type="button">Delete this job</button>
+  <p class="lbl" style="margin-top:32px">Prices: bundled table, us-east-1, captured 27 Aug 2026.</p>
+</main>
+
+<!-- ==================================================================
+     SCREEN 3 — NEW JOB
+     ================================================================== -->
+<main class="wrap" id="screen-new" hidden>
+  <p class="lbl">New job</p>
+  <h1 class="h" style="margin-top:6px">What do you want to protect?</h1>
+  <p class="measure muted" style="margin-top:10px">Three kinds of thing on this page: <b>settings</b> change what
+    gets backed up, <b>measured facts</b> come off disk, and <b>assumptions</b> are your estimate and only move
+    the forecast.</p>
+
+  <!-- 1 -->
+  <section class="sec">
+    <h2 class="lbl">1 · Which folder</h2>
+    <p class="mono sm faint" style="margin-block:10px 8px">/mnt/user</p>
+    <div class="card tree" style="max-width:34rem">
+      <label for="f-appdata"><input type="checkbox" id="f-appdata" checked><span class="mono">appdata_backups</span></label>
+      <label for="f-manga"><input type="checkbox" id="f-manga"><span class="mono">data/media/comics/mangas</span></label>
+      <label for="f-photos"><input type="checkbox" id="f-photos"><span class="mono">photos</span></label>
+      <label for="f-domains"><input type="checkbox" id="f-domains"><span class="mono">domains</span></label>
+    </div>
+    <p style="margin-top:12px">Selected &nbsp;<span class="mono">/mnt/user/appdata_backups</span></p>
+    <p class="sm faint" style="margin-top:4px">52.71 GB · 533 files · measured just now ·
+      <button class="linkish" type="button">Re-measure</button></p>
+  </section>
+
+  <!-- 2 -->
+  <section class="sec">
+    <h2 class="lbl">2 · The plan</h2>
+
+    <h3 class="subh" style="margin-top:14px">What kind of backup</h3>
+
+    <div class="sev rec" style="margin-top:8px">
+      <span class="sev-tab">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="6" r="2" fill="currentColor"/></svg>
+        Recommended for this folder
+      </span>
+      <label class="radio" for="t-snap"><input type="radio" id="t-snap" name="jobtype" checked>
+        <span><b>Snapshots</b> &nbsp;<span class="term" title="jobs.json: type = versioned (restic)">versioned</span></span>
+        <span class="why">Roll the whole folder back to any night. Encrypted, de-duplicated, and it needs a
+          class it can read every run.</span></label>
+      <p class="sm faint measure">Why: 533 files in 52.71 GB that change a little between runs is the shape this
+        is for. Rule: under 10,000 files and some churn → Snapshots.</p>
+    </div>
+
+    <label class="radio" for="t-vfiles"><input type="radio" id="t-vfiles" name="jobtype">
+      <span><b>File history</b> &nbsp;<span class="term" title="jobs.json: type = versioned-files">versioned-files</span></span>
+      <span class="why">Keeps every version of each file. Restores one file at a time, and works on cold storage.</span></label>
+    <label class="radio" for="t-archive"><input type="radio" id="t-archive" name="jobtype">
+      <span><b>Plain copy</b> &nbsp;<span class="term" title="jobs.json: type = archive (rclone)">archive</span></span>
+      <span class="why">Cheapest. The current state of the folder, no history.</span></label>
+
+    <h3 class="subh" style="margin-top:24px">Where it's stored — priced for your 52.71 GB</h3>
+    <div class="tscroll card" style="margin-top:8px">
+      <table class="classes">
+        <thead><tr>
+          <th scope="col">Class</th><th scope="col">Per month</th><th scope="col">Getting it back</th>
+          <th scope="col">Minimum stay</th><th scope="col">All of it, once</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td><label class="cls" for="c-std"><input type="radio" id="c-std" name="class" checked>
+              <span>Instant<br><span class="term" title="AWS S3 storage class">STANDARD</span></span></label></td>
+            <td id="p-std">$2.69</td><td>instant</td><td>—</td><td>$4.74</td>
+          </tr>
+          <tr>
+            <td><label class="cls" for="c-ia"><input type="radio" id="c-ia" name="class">
+              <span>Instant, cheaper to keep<br><span class="term" title="AWS S3 storage class">STANDARD_IA</span></span></label></td>
+            <td id="p-ia">$1.46</td><td>instant</td><td>30 d</td><td>$4.74</td>
+          </tr>
+          <tr class="blocked">
+            <td><label class="cls" for="c-gla"><input type="radio" id="c-gla" name="class">
+              <span>Cold<br><span class="term" title="AWS S3 storage class">GLACIER</span></span></label></td>
+            <td class="struck">$0.43</td><td>3–5 h</td><td>90 d</td><td class="struck">$4.74
+              <span class="reason">can't be read by Snapshots</span></td>
+          </tr>
+          <tr class="blocked">
+            <td><label class="cls" for="c-deep"><input type="radio" id="c-deep" name="class">
+              <span>Deepest<br><span class="term" title="AWS S3 storage class">DEEP_ARCHIVE</span></span></label></td>
+            <td class="struck">$0.12</td><td>≤48 h</td><td>180 d</td><td class="struck">$4.74
+              <span class="reason">can't be read by Snapshots</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sm faint measure" style="margin-top:8px">Getting it back is warm-up plus download out of AWS.
+      It does not get cheaper when the storage does.</p>
+
+    <!-- the blocker, raised live by picking a cold class -->
+    <div class="sev wont" id="class-blocker" hidden>
+      <span class="sev-tab">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M3.8 0h4.4L12 3.8v4.4L8.2 12H3.8L0 8.2V3.8z"/></svg>
+        Won't run
+      </span>
+      <p id="class-blocker-why">Snapshots can't read from <b>Cold</b> · <span class="mono">GLACIER</span>.
+        <span class="term" title="the snapshot engine">restic</span> re-reads its whole store every run, so every
+        scheduled run would fail on a data read.</p>
+      <div class="acts">
+        <button class="btn btn-ghost btn-xs" type="button" data-fix="vfiles">Use File history instead</button>
+        <button class="btn btn-ghost btn-xs" type="button" data-fix="ia">Use Instant, cheaper</button>
+        <button class="linkish" type="button">Save it anyway ▸</button>
+        <span class="sm faint">records an acknowledgement on the job</span>
+      </div>
+    </div>
+
+    <!-- churn: the lever, sitting directly above the number it moves -->
+    <h3 class="subh" style="margin-top:24px">How much of it changes each backup?</h3>
+    <div style="margin-top:6px">
+      <label class="radio" for="ch-0"><input type="radio" id="ch-0" name="churn" value="0"><span>Nothing — files only get added &nbsp;<span class="mono faint">(0%)</span></span></label>
+      <label class="radio" for="ch-1"><input type="radio" id="ch-1" name="churn" value="1" checked><span>A little — rare replacements &nbsp;<span class="mono faint">(~1%)</span></span></label>
+      <label class="radio" for="ch-10"><input type="radio" id="ch-10" name="churn" value="10"><span>Some — regular edits &nbsp;<span class="mono faint">(~10%)</span></span></label>
+      <label class="radio" for="ch-30"><input type="radio" id="ch-30" name="churn" value="30"><span>A lot — churny &nbsp;<span class="mono faint">(~30%)</span></span></label>
+    </div>
+    <p class="sm faint">An assumption. It never changes what gets backed up.</p>
+
+    <!-- retention: never removed at 0%, only made visibly inert -->
+    <h3 class="subh" id="keep-head" style="margin-top:24px">How long to keep old versions</h3>
+    <div id="keep-block" style="margin-top:6px">
+      <label class="radio" for="k-all"><input type="radio" id="k-all" name="keep"><span>Keep everything</span>
+        <span class="why"><span class="k-delta" data-keep="all">still growing</span> · never plateaus</span></label>
+      <label class="radio" for="k-thin"><input type="radio" id="k-thin" name="keep" checked><span>Thin them out over time</span>
+        <span class="why"><span class="k-delta" data-keep="thin">+$1.48/mo</span> · <span class="mono">last 3 · daily 7 · weekly 4 · monthly 6</span> — 20 restore points over about 190 days · <a href="#">Advanced ▸</a></span></label>
+      <label class="radio" for="k-days"><input type="radio" id="k-days" name="keep"><span>Keep for 180 days</span>
+        <span class="why"><span class="k-delta" data-keep="days">+$13.32/mo</span> · 180 restore points</span></label>
+      <label class="radio" for="k-n"><input type="radio" id="k-n" name="keep"><span>Keep the last 30 versions</span>
+        <span class="why"><span class="k-delta" data-keep="n">+$2.22/mo</span> · 30 restore points</span></label>
+    </div>
+    <p class="sm faint measure" id="keep-consequence" style="margin-top:6px">At ~1% change, old versions settle at
+      about 1.22× your data — <span class="n">$1.48</span> of the <span class="n">$2.69</span>. Keeping less also
+      limits how far back you can restore, which is worth something at 0% too.</p>
+
+    <!-- WHEN and WHOSE, never in the same row -->
+    <hr class="hair" style="margin:24px 0 16px">
+    <p class="lbl">What it costs · pick a <b style="color:var(--ink)">when</b>, read the <b style="color:var(--ink)">whose</b> row</p>
+    <div class="seg" role="tablist" aria-label="When" style="margin-top:10px">
+      <button type="button" role="tab" data-when="first" aria-selected="false">Your first bill</button>
+      <button type="button" role="tab" data-when="typical" aria-selected="true">A typical month</button>
+      <button type="button" role="tab" data-when="six" aria-selected="false">The first 6 months</button>
+    </div>
+    <div class="whose">
+      <span class="colhead" id="when-head">a typical month, per month</span>
+      <span class="k">this job — appdata</span><span class="v n" id="fig-job">$2.69</span>
+      <span class="k total">all jobs — appdata + manga</span><span class="v n total" id="fig-all">$4.54</span>
+    </div>
+    <p class="sm faint measure" id="when-note" style="margin-top:10px">About <span class="n" id="s-typical">$2.69</span>
+      a month once history has built up. Your first bill is <span class="n" id="s-first">$1.39</span>, because no old
+      versions exist yet. <button class="linkish" type="button" data-toggle="new-working">Show working ▸</button></p>
+    <div id="new-working" hidden class="sev note" style="margin-top:10px">
+      <p id="working-text">52.71 GB measured × <span class="mono">$0.023</span>/GB·mo = <span class="mono">$1.21</span>
+        to store the files. Old versions at ~1% change = 1.22 × 52.71 GB = 64.31 GB = <span class="mono">$1.48</span>.
+        Together <span class="mono">$2.69</span>. Month 1 holds about an eighth of that version store, so the first
+        bill is <span class="mono">$1.39</span>; it reaches <span class="mono">$2.67</span> by month 6 and plateaus.
+        Six months add up to <span class="mono">$12.19</span>.</p>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="sec">
+    <h2 class="lbl">3 · How often</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:12px">
+      <div style="min-width:0;flex:1 1 12rem;max-width:16rem">
+        <label class="sm faint" for="freq" style="display:block;margin-bottom:6px">Frequency</label>
+        <select id="freq"><option selected>Daily</option><option>Weekly</option><option>Monthly</option></select>
+      </div>
+      <div style="min-width:0;flex:0 1 9rem">
+        <label class="sm faint" for="attime" style="display:block;margin-bottom:6px">At</label>
+        <input type="time" id="attime" value="05:00">
+      </div>
+    </div>
+    <p class="sm" style="margin-top:10px">Runs every day at 05:00 — <span class="mono faint">0 5 * * *</span> ·
+      <a href="#">Advanced ▸</a></p>
+    <label class="radio" for="enabled" style="margin-top:6px"><input type="checkbox" id="enabled" checked>
+      <span>Run on this schedule</span></label>
+    <p class="sm faint measure">No other Snapshots job runs at 05:00. Snapshots jobs share one store and cannot overlap.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="sec">
+    <h2 class="lbl">4 · Name it</h2>
+    <div style="margin-top:12px;max-width:24rem">
+      <label class="sm faint" for="jobname" style="display:block;margin-bottom:6px">Job name</label>
+      <input type="text" class="mono" id="jobname" value="appdata">
+    </div>
+    <p class="sm faint measure" style="margin-top:8px">Letters, digits, dot, dash, underscore. Used as the tag on
+      each snapshot and as the folder name in the bucket — <span class="mono">s3://bw-backups/appdata/</span>.</p>
+  </section>
+
+  <div class="formfoot">
+    <button class="btn btn-primary" type="button" id="create-btn">Create job</button>
+    <button class="btn btn-ghost" type="button" id="create-run-btn">Create and run it now</button>
+    <button class="linkish" type="button">Cancel</button>
+    <span class="figs" id="foot-figs">a typical month — this job <span class="n">$2.69</span> ·
+      all jobs <span class="n">$4.54</span> &nbsp; <a href="#">over time →</a></span>
+  </div>
+  <p class="sm" id="create-why" hidden style="margin-top:8px;color:var(--danger)">Fix the blocker above first.</p>
+
+  <p class="lbl" style="margin-top:20px" id="pricestamp">Prices: bundled table, us-east-1, captured 27 Aug 2026.
+    <button class="linkish" type="button" id="live-toggle" style="letter-spacing:0;text-transform:none">Use live AWS prices ▸</button></p>
+
+  <!-- the blocker state, rendered at rest so it is visible without hunting -->
+  <div class="altstate">
+    <p class="lbl" style="color:var(--muted)">Alternate state — blocker (shown here so you can see it at rest;
+      picking Cold or Deepest above raises the live one)</p>
+    <div class="sev wont" style="margin-top:12px">
+      <span class="sev-tab">
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M3.8 0h4.4L12 3.8v4.4L8.2 12H3.8L0 8.2V3.8z"/></svg>
+        Won't run
+      </span>
+      <p>Snapshots can't read from <b>Deepest</b> · <span class="mono">DEEP_ARCHIVE</span>.
+        <span class="mono">restic</span> re-reads its whole store every run, so every scheduled run would fail on
+        a data read.</p>
+      <div class="acts">
+        <button class="btn btn-ghost btn-xs" type="button">Use File history instead</button>
+        <button class="btn btn-ghost btn-xs" type="button">Use Instant, cheaper</button>
+        <button class="linkish" type="button">Save it anyway ▸</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:12px;align-items:center;margin-top:12px">
+      <button class="btn btn-primary" type="button" disabled>Create job</button>
+    </div>
+    <p class="sm" style="margin-top:8px;color:var(--danger)">Fix the blocker above first.</p>
+  </div>
+</main>
+
+<script>
+(function(){
+  "use strict";
+  var $  = function(s,r){ return (r||document).querySelector(s); };
+  var $$ = function(s,r){ return Array.prototype.slice.call((r||document).querySelectorAll(s)); };
+
+  /* ---------- screen switcher ---------- */
+  var screens = { status:$('#screen-status'), job:$('#screen-job'), "new":$('#screen-new') };
+  function show(name){
+    Object.keys(screens).forEach(function(k){ screens[k].hidden = (k !== name); });
+    $$('.mocknav button').forEach(function(b){
+      b.setAttribute('aria-current', String(b.dataset.screen === name));
+    });
+    window.scrollTo(0,0);
+  }
+  $$('.mocknav button').forEach(function(b){
+    b.addEventListener('click', function(){ show(b.dataset.screen); });
+  });
+  $$('[data-goto]').forEach(function(b){
+    b.addEventListener('click', function(){ show(b.dataset.goto); });
+  });
+
+  /* ---------- disclosures ---------- */
+  $$('[data-toggle]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var t = document.getElementById(b.dataset.toggle);
+      if(!t) return;
+      t.hidden = !t.hidden;
+      b.setAttribute('aria-expanded', String(!t.hidden));
+    });
+  });
+
+  /* ---------- copy buttons ---------- */
+  $$('[data-copy]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var code = b.parentNode.querySelector('code');
+      var done = function(){ var o=b.textContent; b.textContent='copied'; setTimeout(function(){b.textContent=o;},1200); };
+      try{
+        if(navigator.clipboard && code){ navigator.clipboard.writeText(code.textContent).then(done, done); }
+        else { done(); }
+      }catch(e){ done(); }
+    });
+  });
+
+  /* ---------- restore branch tabs ---------- */
+  $$('[data-branch]').forEach(function(b){
+    b.addEventListener('click', function(){
+      $$('[data-branch]').forEach(function(x){ x.setAttribute('aria-selected', String(x===b)); });
+      $$('[data-branchpanel]').forEach(function(p){ p.hidden = (p.dataset.branchpanel !== b.dataset.branch); });
+    });
+  });
+
+  /* ---------- the guard on the destructive surface ---------- */
+  var target = $('#restore-target'), blocker = $('#restore-blocker'),
+      why = $('#restore-blocker-why'), go = $('#restore-go'),
+      goWhy = $('#restore-go-why'), shellLine = $('#shell-restore');
+  var OKROOT = '/mnt/user/restore/';
+  var SOURCES = ['/mnt/user/appdata_backups','/mnt/user/data/media/comics/mangas'];
+  function checkTarget(){
+    if(!target) return;
+    var v = target.value.trim(), bad = null;
+    for(var i=0;i<SOURCES.length;i++){
+      if(v.indexOf(SOURCES[i]) === 0){ bad = "That target is inside a job's source folder (<span class=\"mono\">"+SOURCES[i]+"</span>). A restore there would overwrite the thing you are backing up. It is refused before it is offered."; break; }
+    }
+    if(!bad && v.indexOf(OKROOT) !== 0){
+      bad = 'That target is outside <span class="mono">/mnt/user/restore/</span>. Restores only ever write inside it.';
+    }
+    blocker.hidden = !bad;
+    if(bad) why.innerHTML = bad;
+    go.disabled = !!bad;
+    goWhy.hidden = !!bad;
+    if(shellLine){ shellLine.textContent = 'scripts/restore.sh appdata restore latest ' + (v || OKROOT + 'appdata-2026-09-15'); }
+  }
+  if(target){
+    target.addEventListener('input', checkTarget);
+    $('#restore-fix').addEventListener('click', function(){
+      target.value = OKROOT + 'appdata-2026-09-15'; checkTarget(); target.focus();
+    });
+    checkTarget();
+  }
+
+  /* ---------- the cost model (new job) ----------
+     Anchored on the measured folder and the one datum the estimate gives:
+     at ~1% change, old versions settle at 1.22x the data.                */
+  var DATA_GB = 52.71;
+  var RATE = { std:0.023, ia:0.0125, gla:0.0036, deep:0.00099 };
+  var MANGA = { first:1.85, typical:1.85, six:11.10 };
+  var F1 = 0.1216, FSUM = 3.3243;          /* month-1 share, and the 6-month sum of shares */
+  var KEEP_POINTS = { all:null, thin:20, days:180, n:30 };
+
+  function usd(v){ return '$' + v.toFixed(2); }
+  function pct(c){ return c === 0 ? '0%' : '~' + c + '%'; }
+  function churn(){ var r = $('input[name=churn]:checked'); return r ? parseFloat(r.value) : 1; }
+  function keepSel(){ var r = $('input[name=keep]:checked'); return r ? r.id.replace('k-','') : 'thin'; }
+  function classSel(){ var r = $('input[name=class]:checked'); return r ? r.id.replace('c-','') : 'std'; }
+
+  function oldGB(c, points){ /* 1.22x the data at 1% over the 20-point tiered policy */
+    if(points === null) return DATA_GB * 1.22 * c * 4;   /* keep-everything: unbounded, shown as "still growing" */
+    return DATA_GB * 1.22 * c * (points / 20);
+  }
+  function model(){
+    var c = churn(), k = keepSel(), cls = classSel(), rate = RATE[cls];
+    var pts = KEEP_POINTS[k];
+    var store = DATA_GB * rate;
+    var old   = oldGB(c, pts) * rate;
+    return { store:store, old:old, typical:store + old, first:store + old*F1,
+             six:6*store + old*FSUM, unbounded:(pts===null), churn:c };
+  }
+
+  var whenKey = 'typical';
+  var HEADS = { first:'your first bill', typical:'a typical month, per month', six:'the first 6 months, a total not a rate' };
+
+  function flash(el){
+    if(!el) return;
+    el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+  }
+
+  function render(){
+    if(!$('#fig-job')) return;
+    var m = model();
+
+    /* class table reprices for the folder AND the current churn — the lever sits with the number */
+    var pts = KEEP_POINTS[keepSel()];
+    ['std','ia','gla','deep'].forEach(function(cls){
+      var cell = $('#p-' + cls);
+      if(!cell) return;
+      var v = (DATA_GB + oldGB(churn(), pts)) * RATE[cls];
+      var txt = m.unbounded ? '—' : usd(v);
+      if(cell.textContent !== txt){ cell.textContent = txt; flash(cell); }
+    });
+
+    /* retention deltas: each option prices the versions it retains */
+    $$('.k-delta').forEach(function(s){
+      var k = s.dataset.keep, p = KEEP_POINTS[k], txt;
+      if(p === null) txt = 'still growing';
+      else txt = '+' + usd(oldGB(churn(), p) * RATE[classSel()]) + '/mo';
+      if(s.textContent !== txt){ s.textContent = txt; flash(s); }
+    });
+
+    /* at 0% change the control stays — it still bounds how far back you can restore */
+    var head = $('#keep-head'), block = $('#keep-block'), cons = $('#keep-consequence');
+    if(m.churn === 0){
+      head.innerHTML = 'How long to keep old versions <span style="font-weight:400;font-size:13px;color:var(--warn)">— no cost effect at 0% change · still bounds how far back you can restore</span>';
+      block.classList.add('inert');
+      cons.innerHTML = 'Nothing gets replaced, so there are no old versions to store — every option above adds <span class="n">$0.00</span>. It is still a real choice: it bounds how far back you can restore, and how much one bad night can cost you.';
+    } else {
+      head.textContent = 'How long to keep old versions';
+      block.classList.remove('inert');
+      if(m.unbounded){
+        cons.innerHTML = 'Keep everything never plateaus, so no typical month is printed for it — only "still growing". At ' +
+          pct(m.churn) + ' change the store grows without bound.';
+      } else {
+        var mult = (oldGB(m.churn, KEEP_POINTS[keepSel()]) / DATA_GB);
+        cons.innerHTML = 'At ' + pct(m.churn) +
+          ' change, old versions settle at about ' + mult.toFixed(2) + '× your data — <span class="n">' + usd(m.old) +
+          '</span> of the <span class="n">' + usd(m.typical) +
+          '</span>. Keeping less also limits how far back you can restore, which is worth something at 0% too.';
+      }
+    }
+
+    /* WHEN chosen by the tabs; WHOSE read down the rows. Never mixed. */
+    var jobVal = m.unbounded && whenKey !== 'first' ? null : m[whenKey];
+    var allVal = jobVal === null ? null : jobVal + MANGA[whenKey];
+    var fj = $('#fig-job'), fa = $('#fig-all');
+    var jt = jobVal === null ? 'still growing' : usd(jobVal);
+    var at = allVal === null ? 'at least ' + usd(m.first + MANGA[whenKey]) : usd(allVal);
+    if(fj.textContent !== jt){ fj.textContent = jt; flash(fj); }
+    if(fa.textContent !== at){ fa.textContent = at; flash(fa); }
+    $('#when-head').textContent = HEADS[whenKey];
+
+    $('#s-typical').textContent = m.unbounded ? 'still growing' : usd(m.typical);
+    $('#s-first').textContent = usd(m.first);
+
+    $('#foot-figs').innerHTML = HEADS[whenKey].replace(', per month','').replace(', a total not a rate','') +
+      ' — this job <span class="n">' + jt + '</span> · all jobs <span class="n">' + at +
+      '</span> &nbsp; <a href="#">over time →</a>';
+
+    var wHead = '52.71 GB measured × <span class="mono">$' + RATE[classSel()].toFixed(5).replace(/0+$/,'') +
+      '</span>/GB·mo = <span class="mono">' + usd(m.store) + '</span> to store the files. ';
+    if(m.unbounded){
+      $('#working-text').innerHTML = wHead + 'Keep everything retains every copy ever made, so the version store has ' +
+        'no settling point at ' + pct(m.churn) + ' change and no typical month can be printed for it — only ' +
+        '"still growing". Your first bill is <span class="mono">' + usd(m.first) + '</span>, because no old ' +
+        'versions exist yet.';
+    } else {
+      $('#working-text').innerHTML = wHead + 'Old versions at ' + pct(m.churn) + ' change = <span class="mono">' +
+        oldGB(m.churn, KEEP_POINTS[keepSel()]).toFixed(2) + ' GB</span> = <span class="mono">' + usd(m.old) +
+        '</span>. Together <span class="mono">' + usd(m.typical) +
+        '</span>. Month 1 holds about an eighth of that version store, so the first bill is <span class="mono">' +
+        usd(m.first) + '</span>; it reaches <span class="mono">' + usd(m.store + m.old*0.9865) +
+        '</span> by month 6 and plateaus. Six months add up to <span class="mono">' + usd(m.six) + '</span>.';
+    }
+  }
+
+  $$('input[name=churn], input[name=keep], input[name=class], input[name=jobtype]').forEach(function(r){
+    r.addEventListener('change', function(){ classBlocker(); render(); });
+  });
+  $$('[data-when]').forEach(function(b){
+    b.addEventListener('click', function(){
+      whenKey = b.dataset.when;
+      $$('[data-when]').forEach(function(x){ x.setAttribute('aria-selected', String(x===b)); });
+      render();
+    });
+  });
+
+  /* ---------- WON'T RUN: Snapshots on a cold class ---------- */
+  function classBlocker(){
+    var cb = $('#class-blocker'); if(!cb) return;
+    var type = ($('input[name=jobtype]:checked')||{}).id;
+    var cls  = classSel();
+    var cold = (cls === 'gla' || cls === 'deep');
+    var bad  = (type === 't-snap') && cold;
+    cb.hidden = !bad;
+    if(bad){
+      $('#class-blocker-why').innerHTML = "Snapshots can't read from <b>" +
+        (cls === 'gla' ? 'Cold</b> · <span class=\"mono\">GLACIER</span>' : 'Deepest</b> · <span class="mono">DEEP_ARCHIVE</span>') +
+        '. <span class="mono">restic</span> re-reads its whole store every run, so every scheduled run would fail on a data read.';
+    }
+    $('#create-btn').disabled = bad;
+    $('#create-run-btn').disabled = bad;
+    $('#create-why').hidden = !bad;
+  }
+  $$('[data-fix]').forEach(function(b){
+    b.addEventListener('click', function(){
+      if(b.dataset.fix === 'vfiles'){ $('#t-vfiles').checked = true; }
+      else { $('#c-ia').checked = true; }
+      classBlocker(); render();
+    });
+  });
+
+  /* ---------- the live-AWS price toggle ---------- */
+  var live = false, stamp = $('#pricestamp'), lt = $('#live-toggle');
+  if(lt){
+    lt.addEventListener('click', function(){
+      live = !live;
+      stamp.firstChild.nodeValue = live
+        ? 'Prices: live AWS price list, us-east-1, fetched 15 Sep 09:04. '
+        : 'Prices: bundled table, us-east-1, captured 27 Aug 2026. ';
+      lt.textContent = live ? 'Back to the bundled table ▸' : 'Use live AWS prices ▸';
+    });
+  }
+
+  render();
+  classBlocker();
+})();
+</script>
