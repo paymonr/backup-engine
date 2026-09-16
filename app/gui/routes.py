@@ -41,7 +41,7 @@ def config_page():
 @bp.post("/config")
 def config_save():
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     cfg = current_app.config
     keys = [k for k in config_io.template_keys(cfg["TEMPLATE_PATH"]) if k not in config_io.SECRET_KEYS]
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
@@ -71,7 +71,7 @@ def provision_manual():
 @bp.post("/provision/manual/render")
 def provision_manual_render():
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     bucket = request.form.get("bucket", "").strip()
     region = request.form.get("region", "").strip()
     if not bucket or not region:
@@ -91,7 +91,7 @@ def provision_scripted():
 @bp.post("/provision/validate")
 def provision_validate():
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     cfg = current_app.config
     bucket = request.form.get("bucket", "").strip()
     region = request.form.get("region", "").strip()
@@ -121,7 +121,7 @@ def provision_automated():
 @bp.post("/provision/automated")
 def provision_automated_run():
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     cfg = current_app.config
     override = request.form.get("bucket", "").strip()
     region = request.form.get("region", "").strip() or "us-east-1"
@@ -189,7 +189,7 @@ def job_edit(name):
     cfg = current_app.config
     job = jobs_io.get(cfg["CONFIG_DIR"], name)
     if job is None:
-        abort(404)
+        abort(404, description=f"There is no job called {name}")
     class_info, price_stamp = _class_panel_context(cfg)
     return render_template("job_form.html", job=job, source_root=cfg["SOURCE_ROOT"],
                            storage_classes=jobs_io.STORAGE_CLASSES,
@@ -203,7 +203,7 @@ def jobs_browse():
         # Every browsed path is confined to SOURCE_ROOT via safe_resolve/list_dirs.
         dirs = fsbrowse.list_dirs(cfg["SOURCE_ROOT"], request.args.get("path", ""))
     except fsbrowse.PathError:
-        abort(404)  # no path echo
+        abort(404, description="That folder is outside the source root.")  # no path echo
     base = request.args.get("path", "").strip("/")
     return jsonify({"entries": [{"name": d, "path": f"{base}/{d}" if base else d} for d in dirs]})
 
@@ -215,7 +215,7 @@ def jobs_source_size():
         # contract as /jobs/browse above. The wizard only ever passes FOLDER paths.
         d = dirsize.dir_size(cfg["SOURCE_ROOT"], request.args.get("path", ""))
     except fsbrowse.PathError:
-        abort(404)  # no path echo
+        abort(404, description="That folder is outside the source root.")  # no path echo
     return jsonify(d)
 
 @bp.get("/jobs/estimate.json")
@@ -244,7 +244,7 @@ def jobs_estimate_json():
 @bp.post("/jobs")
 def job_save():
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     cfg = current_app.config
     f = request.form
     job = {"name": f.get("name", "").strip(), "type": f.get("type", ""),
@@ -280,10 +280,10 @@ def job_save():
 @bp.post("/jobs/<name>/run")
 def job_run(name):
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     cfg = current_app.config
     if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
-        abort(404)
+        abort(404, description=f"There is no job called {name}")
     runner.trigger_job(cfg["SCRIPTS_DIR"], name)
     flash(f"Started {name}.")
     return redirect(url_for("gui.jobs_page"))
@@ -291,7 +291,7 @@ def job_run(name):
 @bp.post("/jobs/<name>/delete")
 def job_delete(name):
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     try:
         jobs_io.delete(current_app.config["CONFIG_DIR"], name)
     except jobs_io.JobsFileError as e:
@@ -354,7 +354,7 @@ def estimate_json():
 @bp.post("/costs/refresh")
 def costs_refresh():
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     cfg = current_app.config
     bucket = config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_BUCKET", "").strip()
     if not bucket:
@@ -376,7 +376,7 @@ def costs_refresh():
 @bp.post("/costs/billing")
 def costs_billing():
     if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400)
+        abort(400, description="csrf")
     cfg = current_app.config
     if request.form.get("disconnect"):
         config_io.clear_cost_explorer_creds(cfg["CONFIG_DIR"])
