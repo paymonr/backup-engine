@@ -35,5 +35,8 @@ htmlcov/
 .DS_Store
 *.swp
 
+# Claude Code local state (settings, worktrees, session scratch) — never distributable
+.claude/
+
 # Internal working docs (specs/plans) — not part of the distributable tool
 docs/
