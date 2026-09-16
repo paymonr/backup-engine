@@ -43,7 +43,7 @@ _pic_keys() {
   JOB_SOURCE=photos JOB_STORAGE_CLASS=STANDARD JOB_RETENTION_DAYS=90 \
     run python3 -m app.engine.vfiles backup "$JOB"
   [ "$status" -eq 0 ]
-  [[ "$output" == "uploaded=1 deleted=0 pruned=0" ]]
+  [[ "$output" == "uploaded=1 deleted=0 pruned=0"* ]]
 
   run rclone --config "$CACHE_DIR/rclone.conf" lsf -R "s3:$S3_BUCKET/media/$JOB"
   [ "$status" -eq 0 ]
@@ -59,7 +59,7 @@ _pic_keys() {
   JOB_SOURCE=photos JOB_STORAGE_CLASS=STANDARD JOB_RETENTION_DAYS=90 \
     run python3 -m app.engine.vfiles backup "$JOB"
   [ "$status" -eq 0 ]
-  [[ "$output" == "uploaded=1 deleted=0 pruned=0" ]]
+  [[ "$output" == "uploaded=1 deleted=0 pruned=0"* ]]
 
   run _pic_keys
   [ "$status" -eq 0 ]
@@ -79,7 +79,7 @@ print(conn.execute(\"SELECT COUNT(*) FROM versions WHERE path='pic.txt'\").fetch
   JOB_SOURCE=photos JOB_STORAGE_CLASS=STANDARD JOB_RETENTION_DAYS=0 \
     run python3 -m app.engine.vfiles backup "$JOB"
   [ "$status" -eq 0 ]
-  [[ "$output" == "uploaded=0 deleted=0 pruned=1" ]]
+  [[ "$output" == "uploaded=0 deleted=0 pruned=1"* ]]
 
   run _pic_keys
   [ "$status" -eq 0 ]

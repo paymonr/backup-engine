@@ -308,6 +308,8 @@ ALL_PAGES = [
     "/setup/about",                   # About / glossary
     "/jobs/new",                      # Create job
     "/jobs/appdata/edit",             # Edit job
+    "/jobs/appdata/restore",          # restore-confirm — warm (5.4)
+    "/jobs/manga/restore",            # restore-confirm — thaw-first (5.4)
 ]
 
 

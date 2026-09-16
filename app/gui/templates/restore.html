@@ -51,7 +51,7 @@
       <dd><span class="mono">{{ choice.target }}</span>{% if is_versioned %} <span class="hint">Inside it the files keep their original path.</span>{% endif %}</dd>
       {% endif %}
       <dt>Size</dt>
-      <dd>{% if size_bytes is not none %}<span class="p-{{ size_provenance }}">{{ humanbytes(size_bytes) }}</span>{% if file_count %} · {{ '{:,}'.format(file_count) }} files{% endif %}{% else %}not measured yet{% endif %}</dd>
+      <dd>{% if size_bytes is not none %}<span class="mono p-{{ size_provenance }}">{{ humanbytes(size_bytes) }}</span>{% if file_count %} · {{ '{:,}'.format(file_count) }} files{% endif %}{% else %}not measured yet{% endif %}</dd>
       <dt>Needs</dt>
       <dd>
         {% if is_versioned %}<div>{% if rec.passphrase.state == 'set' %}Recovery passphrase: set, and not the shipped example.{% else %}<span style="color:var(--danger)">Recovery passphrase: not set — still the shipped example.</span>{% endif %}</div>{% endif %}

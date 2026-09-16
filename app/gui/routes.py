@@ -848,7 +848,9 @@ def _error_class_dict(cache_dir, rec) -> dict | None:
     tail = ""
     if rec.log:
         try:
-            tail, _, _ = runs.read_log(cache_dir, rec, offset=0, max_bytes=65536)
+            p = runs.log_file(cache_dir, rec)
+            size = p.stat().st_size if p is not None else 0
+            tail, _, _ = runs.read_log(cache_dir, rec, offset=max(0, size - 65536), max_bytes=65536)
         except Exception:
             tail = ""
     ec = errors.classify(rec.error, rec.exit_code, rec.outcome, tail)
@@ -859,7 +861,7 @@ def _error_class_dict(cache_dir, rec) -> dict | None:
             "fix_route": ec.fix_route, "blocker": ec.blocker}
 
 
-def _run_record_json(rec, *, live, median_s, error_class, progress) -> dict:
+def _run_record_json(rec, *, live, median_s, error_class, progress, is_system=False) -> dict:
     d = asdict(rec)
     d["started_at"] = status._iso(rec.started_at)
     d["finished_at"] = status._iso(rec.finished_at)
@@ -867,6 +869,11 @@ def _run_record_json(rec, *, live, median_s, error_class, progress) -> dict:
     d["median_s"] = median_s
     d["error_class"] = error_class
     d["progress"] = progress
+    if is_system:
+        # A `_system` record has NO snapshot_id and NO median_s (spec 8.3) — absent,
+        # not null, so a consumer checking `"median_s" in record` reads it correctly.
+        d.pop("snapshot_id", None)
+        d.pop("median_s", None)
     return d
 
 
@@ -1041,7 +1048,8 @@ def _run_record_json_response(cfg, *, run_id, records, rec, is_system):
     error_class = _error_class_dict(cfg["CACHE_DIR"], rec)
     progress = _progress_from_log(cfg["CACHE_DIR"], rec)
     return jsonify(_run_record_json(rec, live=live, median_s=median_s,
-                                    error_class=error_class, progress=progress))
+                                    error_class=error_class, progress=progress,
+                                    is_system=is_system))
 
 
 def _log_response(cfg, rec, *, pending):

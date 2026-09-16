@@ -195,6 +195,27 @@ def test_failed_record_renders_error_class(client, example):
     assert "/setup/destination" in body                        # the fix route
 
 
+def test_error_class_reads_log_tail_not_head(client, example):
+    # `_error_class_dict` must classify off the log TAIL, not the first 64 KB
+    # (routes.py:842, mirroring the progress reader at routes.py:817). Build a
+    # log well over 64 KB whose decisive error line sits only at the very end
+    # -- past the first 64 KB -- with no `error` field on the record, so
+    # classification is forced through the log-tail path (errors.classify
+    # step 3). Reading the head would see only padding and misclassify as
+    # `unknown`; reading the tail finds "no space left on device".
+    cache = client.application.config["CACHE_DIR"]
+    rid = "20260915T060000Z-7f7f"
+    log_rel = f"logs/runs/appdata/{rid}.log"
+    log_abs = Path(cache, log_rel)
+    log_abs.parent.mkdir(parents=True, exist_ok=True)
+    padding = "INFO padding line to pad the log past sixty-five thousand bytes so the head read misses the tail\n"
+    log_abs.write_text(padding * 800 + "no space left on device\n")
+    assert log_abs.stat().st_size > 65536
+    _end(cache, "appdata", rid, outcome="failed", duration=99, log=log_rel)
+    j = client.get(f"/jobs/appdata/runs/{rid}.json").get_json()
+    assert j["error_class"]["code"] == "no-space"
+
+
 def test_ok_record_renders_and_json_shape(client, example):
     r = client.get(f"/jobs/appdata/runs/{APPDATA_OK}")
     assert r.status_code == 200
@@ -285,6 +306,10 @@ def test_system_record_detail_renders(client, example):
     j = client.get(f"/activity/{rid}.json").get_json()
     assert j["job"] is None
     assert j["outcome"] == "ok"
+    # spec 8.3: a `_system` record carries NO snapshot_id and NO median_s -- absent
+    # keys, not null values.
+    assert "snapshot_id" not in j
+    assert "median_s" not in j
     log = client.get(f"/activity/{rid}/log")
     assert log.status_code == 200
     assert "usage-refresh ok" in log.get_data(as_text=True)
