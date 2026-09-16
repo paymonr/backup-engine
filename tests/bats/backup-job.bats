@@ -88,6 +88,8 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   run_job x
   [ "$status" -ne 0 ]
   grep -q '"outcome":"failure"' "$CACHE_DIR/state/x.json"
+  # the run started (lock held, start line written) so it also owns a per-run failure record
+  grep -q '"outcome":"failed"' "$CACHE_DIR/state/x.runs.jsonl"
 }
 
 @test "unknown job -> failure" {
@@ -145,7 +147,10 @@ run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
   export PYTHONPATH="$BATS_TEST_DIRNAME/../.."
   export JOBS_IO_CMD="python3 -m app.gui.jobs_io"
   export CONFIG_DIR="$BATS_TEST_TMPDIR/config"; mkdir -p "$CONFIG_DIR"
-  printf '%s\n' '{"jobs":[{"name":"movies","type":"archive","source":"media/movies","schedule":"0 4 * * 0","enabled":true,"storage_class":"DEEP_ARCHIVE","mirror":false}]}' >"$CONFIG_DIR/jobs.json"
+  # keep_all isolates this test to its actual intent (real jobs_io CLI -> rclone copy). Without it the
+  # default archive retention is days/180, which now (7.1.6, prune failures are failures) runs the real
+  # archive_prune against a bucket that does not exist in the sandbox and correctly fails the job.
+  printf '%s\n' '{"jobs":[{"name":"movies","type":"archive","source":"media/movies","schedule":"0 4 * * 0","enabled":true,"storage_class":"DEEP_ARCHIVE","mirror":false,"retention":{"type":"keep_all"}}]}' >"$CONFIG_DIR/jobs.json"
   run_job movies
   [ "$status" -eq 0 ]
   grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
@@ -176,4 +181,157 @@ STUB
   grep -q "JOB_SOURCE=appdata" "$PYENV_LOG"
   grep -q "JOB_RETENTION_DAYS=30" "$PYENV_LOG"
   grep -q '"outcome":"success"' "$CACHE_DIR/state/vf.json"
+}
+
+# --- Task 2 (7.1.5): append-only run records, honest prune failures, stat parsing --------------
+# JSON is parsed with a REAL python3 in the TEST only; the runner never shells to python for
+# bookkeeping (constraint asserted by the archive_prune / vfiles argv-log tests above).
+
+@test "archive run: start+end records, rclone stats parsed, argv drops --stats-one-line, manual trigger" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/rclone" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RCLONE_LOG"
+case "$1" in check|version) exit 0 ;; esac
+cat <<'OUT'
+Transferred:   	    3.100 GiB / 3.100 GiB, 100%, 8.912 MiB/s, ETA 0s
+Errors:                 0
+Transferred:         1204 / 1204, 100%
+OUT
+exit 0
+STUB
+  chmod +x "$b/rclone"
+  export BE_TRIGGER=manual
+  printf 'echo JOB_NAME=manga; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job manga
+  [ "$status" -eq 0 ]
+  ! grep -q -- "--stats-one-line" "$RCLONE_LOG"
+  python3 -c 'import json,sys
+recs=[json.loads(l) for l in sys.stdin if l.strip()]
+st=[r for r in recs if r["event"]=="start"]; en=[r for r in recs if r["event"]=="end"]
+assert len(st)==1 and len(en)==1, (len(st),len(en))
+assert st[0]["trigger"]=="manual" and st[0]["type"]=="archive" and st[0]["storage_class"]=="DEEP_ARCHIVE"
+e=en[0]
+assert e["outcome"]=="ok", e["outcome"]
+assert e["files_added"]==1204 and e["bytes_added"]==3328599654, (e["files_added"], e["bytes_added"])
+assert e["files_total"] is None and e["bytes_total"] is None and e["rclone_errors"]==0
+assert e["command"].startswith("rclone copy ")' <"$CACHE_DIR/state/manga.runs.jsonl"
+}
+
+@test "versioned run: start+end records carry snapshot_id and restic summary stats" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/restic" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RESTIC_LOG"
+cmd=""; for a in "$@"; do case "$a" in cat|init|backup|forget|snapshots) cmd="$a"; break ;; esac; done
+case "$cmd" in
+  cat) exit 1 ;;
+  init) exit 0 ;;
+  backup) printf '%s\n' '{"message_type":"summary","files_new":2,"files_changed":4,"data_added":228589568,"total_files_processed":533,"total_bytes_processed":56594862080,"snapshot_id":"a81f3c2e9d7bdeadbeef01"}'; exit 0 ;;
+  forget) exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$b/restic"
+  printf 'echo JOB_NAME=appdata; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=count; echo JOB_RETENTION_COUNT=5\n' >"$JOBS_IO_STUB"
+  run_job appdata
+  [ "$status" -eq 0 ]
+  python3 -c 'import json,sys
+recs=[json.loads(l) for l in sys.stdin if l.strip()]
+e=[r for r in recs if r["event"]=="end"][0]
+assert e["outcome"]=="ok" and e["snapshot_id"]=="a81f3c2e", e["snapshot_id"]
+assert e["files_new"]==2 and e["files_changed"]==4 and e["files_added"]==6
+assert e["bytes_added"]==228589568 and e["files_total"]==533 and e["bytes_total"]==56594862080' <"$CACHE_DIR/state/appdata.runs.jsonl"
+  grep -q '"snapshot_id":"a81f3c2e"' "$CACHE_DIR/state/appdata.json"
+}
+
+@test "versioned prune AccessDenied -> failed, phase prune, copied true, snapshot_id + error carried" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/restic" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RESTIC_LOG"
+cmd=""; for a in "$@"; do case "$a" in cat|init|backup|forget|snapshots) cmd="$a"; break ;; esac; done
+case "$cmd" in
+  cat) exit 1 ;;
+  init) exit 0 ;;
+  backup) printf '%s\n' '{"message_type":"summary","files_new":2,"files_changed":4,"data_added":228589568,"total_files_processed":533,"total_bytes_processed":56594862080,"snapshot_id":"a81f3c2edeadbeef"}'; exit 0 ;;
+  forget) printf '%s\n' 'AccessDenied: s3:DeleteObjectVersion'; exit 1 ;;
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$b/restic"
+  printf 'echo JOB_NAME=appdata; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=count; echo JOB_RETENTION_COUNT=5\n' >"$JOBS_IO_STUB"
+  run_job appdata
+  [ "$status" -ne 0 ]
+  python3 -c 'import json,sys
+recs=[json.loads(l) for l in sys.stdin if l.strip()]
+e=[r for r in recs if r["event"]=="end"][0]
+assert e["outcome"]=="failed", e["outcome"]
+assert e["phase"]=="prune", e.get("phase")
+assert e["copied"] is True, e.get("copied")
+assert e["snapshot_id"]=="a81f3c2e", e.get("snapshot_id")
+assert "AccessDenied: s3:DeleteObjectVersion" in (e["error"] or ""), e.get("error")' <"$CACHE_DIR/state/appdata.runs.jsonl"
+  grep -q '"outcome":"failure"' "$CACHE_DIR/state/appdata.json"
+}
+
+@test "rclone copy prints a full stats block then exits 1 -> failed, phase copy, files_added still parsed" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/rclone" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RCLONE_LOG"
+case "$1" in check|version) exit 0 ;; esac
+cat <<'OUT'
+Transferred:   	    3.100 GiB / 3.100 GiB, 100%, 8.912 MiB/s, ETA 0s
+Errors:                 3
+Transferred:         1204 / 1204, 100%
+OUT
+exit 1
+STUB
+  chmod +x "$b/rclone"
+  printf 'echo JOB_NAME=manga; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job manga
+  [ "$status" -ne 0 ]
+  python3 -c 'import json,sys
+recs=[json.loads(l) for l in sys.stdin if l.strip()]
+e=[r for r in recs if r["event"]=="end"][0]
+assert e["outcome"]=="failed" and e["phase"]=="copy", (e["outcome"], e.get("phase"))
+assert e["files_added"]==1204, e.get("files_added")
+assert e["bytes_added"]==3328599654 and e["rclone_errors"]==3
+assert e["copied"] is False, e.get("copied")' <"$CACHE_DIR/state/manga.runs.jsonl"
+}
+
+@test "lock collision before runs_start: no run record, legacy state untouched (GUI pre-set BE_RUN_ID)" {
+  mkdir -p "$CACHE_DIR/locks" "$CACHE_DIR/state"
+  local lock="$CACHE_DIR/locks/appdata.lock"; : >"$lock"
+  printf '%s\n' '{"last_run":"2026-09-14T05:00:00Z","outcome":"success","type":"versioned"}' >"$CACHE_DIR/state/appdata.json"
+  local before; before="$(cat "$CACHE_DIR/state/appdata.json")"
+  flock -x "$lock" -c 'sleep 30' &
+  local holder=$!
+  sleep 0.4
+  export BE_RUN_ID=20260915T050001Z-3f9a   # ops.launch pre-assigns it in the child env
+  printf 'echo JOB_NAME=appdata; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job appdata
+  kill "$holder" 2>/dev/null || true
+  [ "$status" -ne 0 ]
+  [ ! -e "$CACHE_DIR/state/appdata.runs.jsonl" ]
+  [ "$(cat "$CACHE_DIR/state/appdata.json")" = "$before" ]
+}
+
+@test "acquire_lock (flock -w 5) outlasts a ~1s holder — the GUI poll probe must not skip a backup" {
+  mkdir -p "$CACHE_DIR/locks"; local lock="$CACHE_DIR/locks/poll.lock"; : >"$lock"
+  flock -x "$lock" -c 'sleep 1' &
+  sleep 0.2
+  run bash -c "CACHE_DIR='$CACHE_DIR' source '$BATS_TEST_DIRNAME/../../scripts/lib/common.sh'; acquire_lock poll"
+  [ "$status" -eq 0 ]
+}
+
+@test "acquire_lock (flock -w 5) fails when a genuine holder keeps the lock past the wait" {
+  mkdir -p "$CACHE_DIR/locks"; local lock="$CACHE_DIR/locks/busy.lock"; : >"$lock"
+  flock -x "$lock" -c 'sleep 30' &
+  local holder=$!
+  sleep 0.3
+  run bash -c "CACHE_DIR='$CACHE_DIR' source '$BATS_TEST_DIRNAME/../../scripts/lib/common.sh'; acquire_lock busy"
+  kill "$holder" 2>/dev/null || true
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"in progress"* ]]
 }

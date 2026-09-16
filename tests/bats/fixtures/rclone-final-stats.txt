@@ -1,0 +1,8 @@
+2026-09-13 04:03:12 INFO  : Starting transfer
+Transferred:   	    3.100 GiB / 3.100 GiB, 100%, 8.912 MiB/s, ETA 0s
+Errors:                 0
+Checks:                 0 / 0, -
+Deleted:                0
+Renamed:                0
+Transferred:         1204 / 1204, 100%
+Elapsed time:      5m58.1s

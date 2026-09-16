@@ -33,7 +33,7 @@ log_info() { log INFO "$*"; }
 log_warn() { log WARN "$*"; }
 log_error() { log ERROR "$*"; }
 
-die() { log_error "$*"; exit 1; }
+die() { _BE_LAST_ERR="$*"; log_error "$*"; exit 1; }
 
 require_env() {
   local missing=() v
@@ -51,7 +51,7 @@ acquire_lock() {
   mkdir -p "$dir"
   local lock="$dir/$name.lock"
   exec 9>"$lock"
-  if ! flock -n 9; then
+  if ! flock -w 5 9; then
     die "another $name run is in progress (lock: $lock)"
   fi
 }
