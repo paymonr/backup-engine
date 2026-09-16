@@ -510,15 +510,23 @@ def _confirm_choice(cfg, job, form) -> dict:
             "target": target, "tier": tier}
 
 
-def _render_confirm(cfg, job, form, *, errors=None, blocker=None, status_code=200):
+def _render_confirm(cfg, job, form, *, errors=None, blocker=None, status_code=200,
+                    intent_override=None):
     """Server-render the confirmation page (5.4). Reused for the GET render and for
-    every 400/409 POST re-render (values intact, the field error shown)."""
+    every 400/409 POST re-render (values intact, the field error shown).
+
+    `intent_override` pins the resolved intent for a POST re-render: the thaw confirm
+    form omits the `intent` field (its POST goes to /thaw), so without this a 400
+    re-render of a warm-up would recompute the intent from the intent-less form and
+    silently fall back to restore/download — the wrong page. (§5.4 "values intact".)"""
     name = job["name"]
     typ = job.get("type")
     cls = job.get("storage_class", "STANDARD")
     cold = cls in points.COLD_CLASSES
     tz = cron.local_tz()
     choice = _confirm_choice(cfg, job, form)
+    if intent_override is not None:
+        choice["intent"] = intent_override
     intent = choice["intent"]
 
     # Impossible intents render a BLOCKER and no primary button (5.4), unless the
@@ -613,32 +621,40 @@ def _mutate_restore(name, *, thaw_route):
     if typ == "archive" and intent == "restore":
         intent = "download"
 
+    # The thaw form has no `intent` field (its POST goes to /thaw), so every re-render
+    # on this path must pin the resolved thaw intent — otherwise _render_confirm would
+    # recompute it from the intent-less form and fall back to restore/download (§5.4
+    # "values intact").
+    intent_override = intent if thaw_route else None
+
     # An intent the tier cannot do → 400 re-render with the blocker, launch nothing.
     if intent == "thaw" and not cold:
-        return _render_confirm(cfg, job, f, status_code=400,
+        return _render_confirm(cfg, job, f, status_code=400, intent_override=intent_override,
                                blocker=("This job is on an instant tier — there is nothing to "
                                         "warm up. Files can be read the second you ask."))
 
     writes = intent in ("restore", "download")
     if writes and not _mount_ok(cfg):
-        return _render_confirm(cfg, job, f, blocker=_MOUNT_BLOCKER, status_code=400)
+        return _render_confirm(cfg, job, f, blocker=_MOUNT_BLOCKER, status_code=400,
+                               intent_override=intent_override)
 
     # The typed-name confirm is the real gate (5.4): no correct name → no work.
     if (f.get("confirm") or "").strip() != name:
-        return _render_confirm(cfg, job, f, status_code=400,
+        return _render_confirm(cfg, job, f, status_code=400, intent_override=intent_override,
                                errors={"confirm": "Type the job name exactly as shown to start."})
 
     container = None
     if writes:
         v = ops.validate_target(cfg, job, (f.get("target") or "").strip())
         if not v.get("ok"):
-            return _render_confirm(cfg, job, f, status_code=400, errors={"target": v["message"]})
+            return _render_confirm(cfg, job, f, status_code=400, intent_override=intent_override,
+                                   errors={"target": v["message"]})
         container = v["container_path"]
 
     try:
         ops.ensure_free(cfg, name)
     except ops.OpsLocked:
-        return _render_confirm(cfg, job, f, status_code=409,
+        return _render_confirm(cfg, job, f, status_code=409, intent_override=intent_override,
                                blocker=(f"{name} is busy — a backup or restore is already "
                                         "running. Wait for it to finish."))
 

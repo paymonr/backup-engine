@@ -209,6 +209,19 @@ def test_cold_band_flips_to_download_when_ready(client, example):
     assert 'value="download"' in body
 
 
+def test_job_page_wires_inline_target_blocker_script(client, example):
+    # §5.2 target-validation blocker: a progressive-enhancement script disables
+    # #go-restore and shows an inline BLOCKER with the exact copy when the typed
+    # target resolves under the source. Server-side confinement (ops.validate_target)
+    # still enforces on POST regardless — this only rules out a doomed round trip.
+    # The JS behavior itself isn't unit-testable in pytest: assert it is wired in.
+    body = client.get("/jobs/appdata").get_data(as_text=True)
+    assert 'id="restore-target-blocker"' in body
+    assert "This is the folder the job protects. Pick a folder under /mnt/user/restore." in body
+    assert 'getElementById("restore-target")' in body
+    assert 'getElementById("go-restore")' in body
+
+
 # --- the confirmation page (GET) launches NOTHING (5.4) ---------------------
 
 def test_get_confirm_renders_typed_name_gate_and_launches_nothing(client, example, launched):
@@ -307,6 +320,25 @@ def test_post_thaw_argv_for_cold_plain_copy(client, example, launched):
     call = launched[0]
     assert call["kind"] == "thaw"
     assert call["argv"][1:] == ["manga", "thaw", ".", "--tier", "Standard"]
+
+
+def test_post_thaw_wrong_name_rerenders_thaw_not_download(client, example, launched):
+    # The thaw confirm form carries no `intent` field (its POST goes to /thaw). A 400
+    # re-render must still show the THAW page — not fall back to recomputing intent
+    # from the intent-less form, which would land on Download (manga is a Plain copy,
+    # so a bare "restore" intent downgrades to "download"). (§5.4 "values intact".)
+    t = _csrf(client, "/jobs/manga")
+    r = client.post("/jobs/manga/thaw",
+                    data={"csrf": t, "scope": ".", "tier": "Standard", "confirm": "wrong"})
+    assert r.status_code == 400
+    body = r.get_data(as_text=True)
+    assert "Type the job name exactly as shown to start." in body
+    assert "Warm up manga" in body                  # the thaw h1, not "Download manga"
+    assert "Warm up first" in body                  # the thaw verb, not "Download now"
+    assert 'action="/jobs/manga/thaw"' in body       # posts to /thaw, not /restore
+    assert 'action="/jobs/manga/restore"' not in body
+    assert "Download manga" not in body
+    assert launched == []
 
 
 def test_post_thaw_on_warm_tier_is_400(client, example, launched):

@@ -97,7 +97,7 @@
         <div class="confirm">
           <label class="fld" for="confirm-name">Type <span class="mono">{{ name }}</span></label>
           <input type="text" id="confirm-name" name="confirm" autocomplete="off" spellcheck="false"
-                 placeholder="{{ name }}" data-name="{{ name }}" value="{{ choice_confirm_value if choice_confirm_value }}">
+                 placeholder="{{ name }}" data-name="{{ name }}">
           <button type="submit" class="btn btn-primary" id="start-restore">{{ verb }}{% if intent == 'thaw' %} — up to {{ hi }} h{% endif %}</button>
         </div>
         {% if errors.confirm %}

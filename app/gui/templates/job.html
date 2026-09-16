@@ -315,6 +315,7 @@
                  value="{{ restore.default_target }}" data-source="{{ restore.source_under }}"
                  data-restore-root="{{ restore.restore_root_host }}">
           <p class="hint" id="restore-target-hint">A new, dated folder. Typing the live source path here is refused — a restore can never overwrite what it is protecting.</p>
+          <p class="sig sig-blocker" id="restore-target-blocker" style="display:none">This is the folder the job protects. Pick a folder under /mnt/user/restore.</p>
 
           <div class="needsline" style="margin-top:var(--sp-4)">
             {% if is_versioned %}
@@ -458,4 +459,32 @@
     <aside class="rail">{{ rail() }}</aside>
   </div>
 </section>
+
+<script>
+// Progressive enhancement (5.2): a target under the live source is refused
+// server-side (ops.validate_target on POST) no matter what — this only gives instant
+// feedback so the GET-navigate band never sends someone to the confirm page with a
+// target that can only fail. Guarded throughout; absent elements are a no-op.
+(function () {
+  var input = document.getElementById("restore-target");
+  var btn = document.getElementById("go-restore");
+  var blocker = document.getElementById("restore-target-blocker");
+  if (!input || !btn) return;
+  var source = input.getAttribute("data-source") || "";
+  function norm(p) { return (p || "").trim().replace(/\/+$/, ""); }
+  function under(child, parent) {
+    if (!parent) return false;
+    child = norm(child);
+    parent = norm(parent);
+    return child === parent || child.indexOf(parent + "/") === 0;
+  }
+  function sync() {
+    var bad = under(input.value, source);
+    btn.disabled = bad;
+    if (blocker) blocker.style.display = bad ? "" : "none";
+  }
+  input.addEventListener("input", sync);
+  sync();
+})();
+</script>
 {% endblock %}
