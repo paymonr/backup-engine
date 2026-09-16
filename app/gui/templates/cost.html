@@ -121,6 +121,9 @@
         {% endfor %}
         <label class="check"><input type="checkbox" name="{{ p.name }}_packing" value="1"{% if a.bundled %} checked{% endif %}> Already bundled</label>
         <label class="fld">Bundle size (GB) <input type="number" step="any" min="0" name="{{ p.name }}_pack_member_gb" value="{{ a.pack_member_gb }}" style="width:6ch"></label>
+        {# Persist THIS job's assumption on the job (8.10): the change-rate row + wizard read it back. #}
+        <div class="lever-acts"><button type="submit" class="btn btn-sm" formmethod="post"
+          formaction="{{ url_for('gui.job_assumptions', name=p.name) }}">Apply to {{ p.name }}</button></div>
       </fieldset>
       {% endfor %}
 

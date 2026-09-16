@@ -11,7 +11,6 @@ from flask import (Blueprint, redirect, url_for, render_template, request, flash
                    current_app, abort, Response, jsonify)
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
                dirsize, attributions, status, vocab, points, readiness, ops)
-from .storage_advice import storage_class_info
 from ..estimator.prices import load_prices
 from ..estimator import usage
 from ..engine import cron, runs, errors
@@ -1468,26 +1467,160 @@ def jobs_page():
     # lands the user on the Board.
     return redirect(url_for("gui.index"), code=301)
 
-def _class_panel_context(cfg):
-    """Pricing-derived storage-class panel data for the job form. Guarded: a
-    pricing failure must degrade the panel to empty rather than 500 the page."""
-    region = estimate_io._region(cfg["CONFIG_DIR"])
+# --- create/edit job wizard (spec 5.8 / 5.9 / 8.6 / 8.10) ------------------
+#
+# The "Ledger Runbook" create-job screen: every cost consequence beside the
+# control that moves it. The figures come from estimate_io.wizard_estimate (the
+# frozen model, read-only); the template renders an initial server-computed state
+# so the page is honest with JS off, and app.js re-fetches /jobs/estimate.json on
+# every change to repaint live.
+
+_RETENTION_DEFAULT_BY_TYPE = {"versioned": "tiered", "versioned-files": "days",
+                              "archive": "days"}
+
+
+def _wizard_prices(cfg, kind=None):
+    """(prices, live_failed) honouring ?prices=bundled|live (spec 7.9). Guarded so a
+    pricing failure degrades to (None, False) rather than 500 the wizard."""
+    live = cfg["PRICES_LIVE"] if kind not in ("bundled", "live") else (kind == "live")
     try:
-        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
-        class_info = storage_class_info(prices)
-        price_stamp = {"source": prices.source, "date": prices.date}
+        prices = load_prices(estimate_io._region(cfg["CONFIG_DIR"]),
+                             cache_dir=cfg["CACHE_DIR"], live=live)
     except Exception:
-        class_info, price_stamp = [], {"source": None, "date": None}
-    return class_info, price_stamp
+        return None, False
+    live_failed = kind == "live" and not str(prices.source or "").startswith("aws-price-list")
+    return prices, live_failed
+
+
+def _other_jobs(cfg, exclude=None):
+    """The OTHER saved jobs (spec 8.9 `other_jobs`): schedule-collision + all-jobs
+    total. Excludes the job being edited so an edit never collides with itself."""
+    return [{"name": j.get("name"), "schedule": j.get("schedule", ""),
+             "type": j.get("type"), "enabled": j.get("enabled", True)}
+            for j in jobs_io.load(cfg["CONFIG_DIR"]) if j.get("name") != exclude]
+
+
+def _keep_defaults(job):
+    """The tiered fieldset prefill (Fix 1b carry-forward): the saved keep tiers, or
+    3/7/4/6 when the derived legacy `keep` mirror is all-zero (a count/days job)."""
+    k = (job or {}).get("keep") or {}
+    if any(int(k.get(x, 0) or 0) for x in ("last", "daily", "weekly", "monthly")):
+        return {x: int(k.get(x, 0) or 0) for x in ("last", "daily", "weekly", "monthly")}
+    return {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}
+
+
+def _fresh_form_values():
+    """Create-screen defaults (spec 5.8): Snapshot backup, STANDARD, daily 05:00,
+    the ~1% change default (Appendix B #17), tiered keep 3/7/4/6."""
+    return {"type": "versioned", "source": "", "storage_class": "STANDARD",
+            "schedule": "0 5 * * *", "enabled": "1", "name": "",
+            "retention_type": "tiered", "retention_days": "180", "retention_count": "30",
+            "keep_last": "3", "keep_daily": "7", "keep_weekly": "4", "keep_monthly": "6",
+            "change_rate_pct": "1", "change_rate_touched": "", "packing": "",
+            "pack_member_gb": "0.05", "mirror": "0", "size_gb": "", "file_count": "",
+            "measured_bytes": "", "measured_capped": "", "measured_at": ""}
+
+
+def _saved_form_values(job):
+    """Edit-screen prefill from the saved job (spec 5.9): retention → the selector,
+    the persisted assumptions, and the saved measurement. change_rate is always
+    'set' on edit (a saved assumption is a real answer, 5.8 §3.1)."""
+    fv = _fresh_form_values()
+    ret = job.get("retention") or {}
+    rtype = ret.get("type") or _RETENTION_DEFAULT_BY_TYPE.get(job.get("type"), "days")
+    keep = _keep_defaults(job)
+    a = job.get("assumptions") or {}
+    m = job.get("measured") or {}
+    fv.update({
+        "type": job.get("type", "versioned"), "source": job.get("source", ""),
+        "storage_class": job.get("storage_class", "STANDARD"),
+        "schedule": job.get("schedule", ""), "name": job.get("name", ""),
+        "enabled": "1" if job.get("enabled", True) else "",
+        "retention_type": rtype,
+        "retention_days": str(ret.get("days", 180)) if rtype == "days" else "180",
+        "retention_count": str(ret.get("count", 30)) if rtype == "count" else "30",
+        "keep_last": str(keep["last"]), "keep_daily": str(keep["daily"]),
+        "keep_weekly": str(keep["weekly"]), "keep_monthly": str(keep["monthly"]),
+        "change_rate_pct": _g(a.get("change_rate_pct"), "0"), "change_rate_touched": "1",
+        "packing": "1" if a.get("bundled") else "",
+        "pack_member_gb": _g(a.get("pack_member_gb"), "0.05"),
+        "mirror": "1" if job.get("mirror") else "0",
+    })
+    if isinstance(m.get("bytes"), (int, float)) and m["bytes"] > 0:
+        fv["size_gb"] = repr(m["bytes"] / (1024 ** 3))
+        fv["measured_bytes"] = str(int(m["bytes"]))
+        fv["file_count"] = str(int(m.get("count", 0)))
+        fv["measured_capped"] = "1" if m.get("capped") else ""
+        if isinstance(m.get("at"), str):
+            fv["measured_at"] = m["at"]
+    return fv
+
+
+def _g(v, default):
+    return default if v is None else (f"{v:g}" if isinstance(v, float) else str(v))
+
+
+def _form_values_from_request(f):
+    """The submitted form as a plain dict (POST re-render / recalc), so every typed
+    value round-trips intact (spec 5.8 §8). Missing keys fall back to the fresh
+    default, so a control the browser omitted (an unchecked box) still renders."""
+    fv = _fresh_form_values()
+    for k in list(fv):
+        if f.get(k) is not None:
+            fv[k] = f.get(k)
+    # checkboxes: absent means unchecked
+    fv["enabled"] = "1" if f.get("enabled") else ""
+    fv["packing"] = "1" if f.get("packing") else ""
+    fv["change_rate_touched"] = "1" if f.get("change_rate_touched") else ""
+    return fv
+
+
+def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
+                     status_code=200, acknowledged=None):
+    """Server-render the wizard (create or edit), computing the initial figures from
+    the frozen model so the page is honest with JS off (spec 5.8 §8). Reused by
+    GET /jobs/new, /jobs/<name>/edit, the POST re-render paths and the recalc path."""
+    kind = fv.get("prices")
+    prices, live_failed = _wizard_prices(cfg, kind)
+    saved_class = job.get("storage_class") if job else None
+    other = _other_jobs(cfg, exclude=(job or {}).get("name"))
+    est, est_error = None, None
+    if prices is not None:
+        try:
+            est = estimate_io.wizard_estimate(fv, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"],
+                                              prices, saved_class=saved_class,
+                                              other_jobs=other, live_failed=live_failed)
+        except ValueError as e:
+            est_error = str(e)
+    price_stamp = {"kind": (est or {}).get("price_kind", "bundled"),
+                   "date": prices.date if prices else None,
+                   "region": prices.region if prices else "us-east-1",
+                   "live_failed": live_failed}
+    # Server-side blocker enforcement is UX-mirrored here: the footer is disabled and
+    # the block opens whenever an unacknowledged server blocker stands (5.8 §3.3).
+    ack = set(acknowledged or [])
+    blockers = (est or {}).get("blockers") or []
+    unacked = [b for b in blockers if b["code"] not in ack]
+    return render_template(
+        "job_form.html", is_edit=bool(job), job=job, fv=fv, est=est, est_error=est_error,
+        has_source=bool(fv.get("source")),
+        measured=((est or {}).get("provenance") or {}).get("size") == "measured",
+        source_root_host=cfg.get("SOURCE_ROOT_HOST", "/mnt/user"),
+        source_root=cfg["SOURCE_ROOT"], storage_classes=jobs_io.STORAGE_CLASSES,
+        other_jobs=other, saved_json=(json.dumps(job) if job else "null"),
+        price_stamp=price_stamp, errors=errors or {}, jobsfile_error=jobsfile_error,
+        blockers=blockers, unacked=unacked, acknowledged=sorted(ack),
+        csrf=security.issue_csrf()), status_code
+
 
 @bp.get("/jobs/new")
 def job_new():
     cfg = current_app.config
-    class_info, price_stamp = _class_panel_context(cfg)
-    return render_template("job_form.html", job=None, source_root=cfg["SOURCE_ROOT"],
-                           storage_classes=jobs_io.STORAGE_CLASSES,
-                           class_info=class_info, price_stamp=price_stamp,
-                           csrf=security.issue_csrf())
+    fv = _fresh_form_values()
+    if request.args.get("prices"):
+        fv["prices"] = request.args.get("prices")
+    return _render_job_form(cfg, job=None, fv=fv)
+
 
 @bp.get("/jobs/<name>/edit")
 def job_edit(name):
@@ -1495,11 +1628,14 @@ def job_edit(name):
     job = jobs_io.get(cfg["CONFIG_DIR"], name)
     if job is None:
         abort(404, description=f"There is no job called {name}")
-    class_info, price_stamp = _class_panel_context(cfg)
-    return render_template("job_form.html", job=job, source_root=cfg["SOURCE_ROOT"],
-                           storage_classes=jobs_io.STORAGE_CLASSES,
-                           class_info=class_info, price_stamp=price_stamp,
-                           csrf=security.issue_csrf())
+    fv = _saved_form_values(job)
+    if request.args.get("prices"):
+        fv["prices"] = request.args.get("prices")
+    # A blocker already acknowledged on the saved job renders pre-acknowledged (5.9).
+    ack = [e.get("code") for e in (job.get("acknowledged") or [])
+           if e.get("class") == job.get("storage_class")]
+    return _render_job_form(cfg, job=job, fv=fv, acknowledged=ack)
+
 
 @bp.get("/jobs/browse")
 def jobs_browse():
@@ -1525,26 +1661,63 @@ def jobs_source_size():
 
 @bp.get("/jobs/estimate.json")
 def jobs_estimate_json():
-    # Live wizard cost: GET, side-effect-free -> no CSRF needed.
+    # Live wizard cost: GET, side-effect-free -> no CSRF needed. `?prices=` overrides
+    # PRICES_LIVE for this request (spec 7.9); the extended 8.6 response carries the
+    # classes/keep_options/all_jobs/blockers/warnings the create screen re-paints from.
     cfg = current_app.config
-    region = estimate_io._region(cfg["CONFIG_DIR"])
-    try:
-        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
-    except Exception:
-        # Belt-and-suspenders: load_prices no longer raises for an un-bundled region
-        # (it falls back to us-east-1), but any future pricing failure must degrade
-        # the wizard to "—" rather than 500.
+    prices, live_failed = _wizard_prices(cfg, request.args.get("prices"))
+    if prices is None:
+        # Any pricing failure degrades the wizard to "—" rather than 500 it.
         return jsonify({"this_job_monthly": None, "new_total_monthly": None,
                         "price_source": None, "price_date": None})
     name = str(request.args.get("name", "")).strip()
     saved = jobs_io.get(cfg["CONFIG_DIR"], name) if name else None
     saved_class = saved.get("storage_class") if saved else None
+    other = _other_jobs(cfg, exclude=name)
     try:
         result = estimate_io.wizard_estimate(request.args, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"],
-                                             prices, saved_class=saved_class)
+                                             prices, saved_class=saved_class,
+                                             other_jobs=other, live_failed=live_failed)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({**result, "price_source": prices.source, "price_date": prices.date})
+
+
+@bp.post("/jobs/<name>/assumptions")
+def job_assumptions(name):
+    # Persist one job's per-job assumptions (change-rate/bundling) so the Cost
+    # workbench and the job page light up their [Apply to <job>] control (spec 8.10,
+    # Task-12 carry-forward). Accepts unprefixed fields (the contract) OR the cost
+    # lever form's `<name>_`-prefixed ones, so both surfaces post here with no JS.
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    cfg = current_app.config
+    if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
+        abort(404, description=f"There is no job called {name}")
+    f = request.form
+
+    def _pick(key):
+        v = f.get(key)
+        return v if v is not None else f.get(f"{name}_{key}")
+    try:
+        change_rate = float(_pick("change_rate_pct") or 0)
+        pack_member = float(_pick("pack_member_gb") or 0.05)
+    except (TypeError, ValueError):
+        abort(400, description="assumptions must be numbers")
+    packing = str(_pick("packing") or "").lower() in ("1", "true", "on")
+    try:
+        jobs_io.set_assumptions(cfg["CONFIG_DIR"], name,
+                                {"change_rate_pct": change_rate, "bundled": packing,
+                                 "pack_member_gb": pack_member})
+    except jobs_io.JobsFileError as e:
+        flash(str(e))
+        return redirect(url_for("gui.cost_page_view"))
+    flash(f"Saved assumptions for {name}.", "success")
+    return redirect(url_for("gui.cost_page_view"))
+
+
+_COLD_CLASSES = ("GLACIER", "DEEP_ARCHIVE")
+
 
 @bp.post("/jobs")
 def job_save():
@@ -1552,35 +1725,82 @@ def job_save():
         abort(400, description="csrf")
     cfg = current_app.config
     f = request.form
-    job = {"name": f.get("name", "").strip(), "type": f.get("type", ""),
-           "source": f.get("source", "").strip(), "schedule": f.get("schedule", "").strip(),
-           "enabled": bool(f.get("enabled")), "storage_class": f.get("storage_class", "STANDARD")}
+    fv = _form_values_from_request(f)
+
+    # The edit screen LOCKS the kind and the name (spec 5.9): for an existing job the
+    # saved type/name win server-side, so a posted `type` for an existing job is
+    # ignored and can never move what is already stored under a recovery model.
+    posted_name = f.get("name", "").strip()
+    existing = jobs_io.get(cfg["CONFIG_DIR"], posted_name) if posted_name else None
+    engine = existing.get("type") if existing else f.get("type", "")
+    fv["type"] = engine or fv["type"]
+
+    # The <noscript> Recalculate button (5.8 §8): re-render server-side, SAVE NOTHING.
+    if f.get("recalc"):
+        return _render_job_form(cfg, job=existing, fv=fv)
+
+    # SERVER-SIDE blocker enforcement (correctness, not just UX): a Snapshot backup on
+    # a cold class WON'T RUN. The client-disabled footer is UX only — the server must
+    # refuse to save unless every raised blocker is acknowledged (5.8 §3.3 / 8.10).
+    cls = f.get("storage_class", "STANDARD")
+    acked = set(f.getlist("acknowledge_blocker"))
+    blockers = estimate_io._wizard_blockers(engine or "versioned", cls)
+    unacked = [b["code"] for b in blockers if b["code"] not in acked]
+    if unacked:
+        return _render_job_form(cfg, job=existing, fv=fv, acknowledged=acked,
+                                status_code=200)
+
+    job = {"name": posted_name, "type": engine, "source": f.get("source", "").strip(),
+           "schedule": f.get("schedule", "").strip(),
+           "enabled": bool(f.get("enabled")), "storage_class": cls}
+    # Persist the change-rate/bundling assumption (7.8) and the measurement (7.8/8.6)
+    # taken on the form so the job page and Cost workbench read them back.
     try:
-        # The wizard's retention-policy selector posts retention_type + the matching
-        # field (retention_days/retention_count/keep_*); jobs_io.upsert -> validate ->
-        # _normalize_retention normalizes/validates it. Older/direct callers (no
-        # retention_type) fall back to the pre-selector per-type params, same as
-        # before. retention_from_form raises ValueError on an unrecognized
-        # retention_type -- inside this try so it 400s like any other bad-input
-        # ValueError, rather than an unhandled 500.
+        job["assumptions"] = {"change_rate_pct": float(f.get("change_rate_pct") or 0),
+                              "bundled": bool(f.get("packing")),
+                              "pack_member_gb": float(f.get("pack_member_gb") or 0.05),
+                              "set_at": _now_iso()}
+        mb = f.get("measured_bytes")
+        if mb and str(mb).strip():
+            job["measured"] = {"bytes": int(float(mb)),
+                               "count": int(float(f.get("file_count") or 0)),
+                               "capped": bool(f.get("measured_capped")),
+                               "at": f.get("measured_at") or _now_iso()}
+    except (TypeError, ValueError):
+        return _render_job_form(cfg, job=existing, fv=fv,
+                                errors={"size": "measurement must be numeric"})
+    # An acknowledged blocker is recorded on the job (7.8) so the Board never nags.
+    if acked:
+        job["acknowledged"] = [{"code": c, "class": cls, "at": _now_iso()} for c in acked]
+    try:
         if "retention_type" in f:
-            job["retention"] = estimate_io.retention_from_form(f)
-        elif job["type"] == "versioned":
+            job["retention"] = estimate_io.retention_from_form(
+                f, default_type=_RETENTION_DEFAULT_BY_TYPE.get(engine, "days"))
+        elif engine == "versioned":
             job["keep"] = {k: f.get(f"keep_{k}", "0") for k in ("last", "daily", "weekly", "monthly")}
-        elif job["type"] == "versioned-files":
+        elif engine == "versioned-files":
             job["retention_days"] = f.get("retention_days", "90")
-        if job["type"] == "archive":
+        if engine == "archive":
             job["mirror"] = bool(f.get("mirror"))
         jobs_io.upsert(cfg["CONFIG_DIR"], job, source_root=cfg["SOURCE_ROOT"])
     except jobs_io.JobsFileError as e:
-        # The on-disk jobs.json is corrupt: don't clobber the user's bytes, and
-        # don't 500 — tell them to fix the file (message has no path echo).
-        flash(str(e))
-        return redirect(url_for("gui.jobs_page"))
-    except ValueError:
-        abort(400)  # normal validation failure; no echo of paths
-    flash(f"Saved job {job['name']}.")
-    return redirect(url_for("gui.jobs_page"))
+        # Corrupt jobs.json (5.8 §8): a 200 RE-RENDER with the sig-failure and every
+        # typed value intact — NOT the error page, NOT a flash-and-redirect that would
+        # throw away four sections the owner just filled in.
+        return _render_job_form(cfg, job=existing, fv=fv, jobsfile_error=str(e))
+    except ValueError as e:
+        # A validation failure re-renders this page (200) with the message anchored to
+        # its section (5.8 §8), keeping every typed value — never the error page.
+        return _render_job_form(cfg, job=existing, fv=fv, errors={"form": str(e)})
+
+    # After a successful save re-render the crontab so status.crontab_stale doesn't
+    # read true right after creating/editing (Task-4 carry-forward).
+    jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
+                           source_root=cfg["SOURCE_ROOT"])
+    flash(f"Saved {job['name']}.", "success")
+    if f.get("run_now"):
+        runner.trigger_job(cfg["SCRIPTS_DIR"], job["name"])
+    return redirect(url_for("gui.job_page", name=job["name"]))
 
 @bp.post("/jobs/<name>/run")
 def job_run(name):

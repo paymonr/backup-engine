@@ -114,16 +114,17 @@ def test_create_archive_job_with_keep_all_retention_round_trips(client, app):
     assert jobs[0]["retention"] == {"type": "keep_all"}
 
 
-def test_create_job_unknown_retention_type_is_400(client):
-    # retention_from_form fails loud (matches jobs_io._normalize_retention) on an
-    # unrecognized retention_type -- and it must still map to a clean 400, not an
-    # unhandled 500, same as any other bad-input ValueError from this route.
+def test_create_job_unknown_retention_type_rerenders(client, app):
+    # 5.8 §8: a validation failure RE-RENDERS this page (200) with the message and
+    # every typed value intact -- never the error page, and nothing is saved (the
+    # owner has just filled in four sections).
     t = _csrf(client, "/jobs/new")
     r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
                                     "source": "media/movies", "schedule": "0 4 * * 0",
                                     "storage_class": "STANDARD", "enabled": "1",
                                     "retention_type": "bogus"})
-    assert r.status_code == 400
+    assert r.status_code == 200 and b"job-form" in r.data
+    assert not pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").exists()
 
 
 def test_create_archive_job_with_days_retention_round_trips(client, app):
@@ -183,11 +184,18 @@ def test_jobs_page_nameless_entry_no_500(client, app):
         json.dumps({"jobs": [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}]}))
     assert client.get("/").status_code == 200
 
-def test_create_rejects_bad_source(client):
+def test_create_rejects_bad_source(client, app):
+    # 5.8 §8: a bad source re-renders the form (200) with the message anchored, saves
+    # nothing, and never echoes the attempted path.
     t = _csrf(client, "/jobs/new")
-    assert client.post("/jobs", data={"csrf": t, "name": "x", "type": "archive",
-                                       "source": "../../etc", "schedule": "0 4 * * 0",
-                                       "storage_class": "STANDARD"}).status_code == 400
+    r = client.post("/jobs", data={"csrf": t, "name": "x", "type": "archive",
+                                   "source": "../../etc", "schedule": "0 4 * * 0",
+                                   "storage_class": "STANDARD"})
+    assert r.status_code == 200 and b"job-form" in r.data
+    # The typed source is reflected back intact (5.8 §8), but escapes the mount, so
+    # nothing is saved and the error is shown without leaking a resolved path.
+    assert b"source escapes the mount" in r.data
+    assert not pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").exists()
 
 def test_create_requires_csrf(client):
     assert client.post("/jobs", data={"name": "x"}).status_code == 400
@@ -232,14 +240,18 @@ def test_jobs_page_200_on_corrupt_file(client, app):
     _corrupt(app)
     assert client.get("/").status_code == 200   # the Board is not 500 on corrupt jobs.json
 
-def test_job_save_on_corrupt_file_flashes_not_500(client, app):
+def test_job_save_on_corrupt_file_rerenders_not_500(client, app):
+    # 5.8 §8: corrupt jobs.json on save -> a 200 RE-RENDER of this form with the
+    # sig-failure and every typed value intact (not the error page, not a
+    # flash-and-redirect that throws away four filled-in sections); bytes untouched.
     p = _corrupt(app)
     t = _csrf(client, "/jobs/new")
     r = client.post("/jobs", data={"csrf": t, "name": "movies", "type": "archive",
                                    "source": "media/movies", "schedule": "0 4 * * 0",
                                    "storage_class": "STANDARD", "enabled": "1"})
-    assert r.status_code in (302, 303)              # flash + redirect, not 500/bare 400
-    assert p.read_text() == "{ this is not valid json"   # user's bytes untouched
+    assert r.status_code == 200 and b"job-form" in r.data
+    assert b"not valid JSON" in r.data                    # the sig-failure sentence
+    assert p.read_text() == "{ this is not valid json"    # user's bytes untouched
 
 def test_job_delete_on_corrupt_file_flashes_not_500(client, app):
     p = _corrupt(app)
@@ -248,32 +260,34 @@ def test_job_delete_on_corrupt_file_flashes_not_500(client, app):
     assert r.status_code in (302, 303)
     assert p.read_text() == "{ this is not valid json"
 
-def test_wizard_class_panel_lists_every_class_with_min_and_retrieval(client):
+def test_wizard_class_table_lists_every_class_with_min_and_access(client):
+    # 5.8 §3.2: the storage-class TABLE (not a disclosure panel) is on the form,
+    # priced for the folder, every class in STORAGE_CLASSES order.
     body = client.get("/jobs/new").get_data(as_text=True)
-    assert "class-panel" in body
+    assert 'class="classes"' in body
     for cls in ("STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE"):
         assert cls in body
-    assert "180" in body            # Deep Archive minimum days
-    assert "thaw required" in body  # cold read-access surfaced
+    assert "180 d" in body            # Deep Archive minimum stay
+    assert "≤48 h" in body       # Deep Archive read-access
 
-def test_wizard_has_advice_container_and_original_class(client):
+def test_wizard_has_blocker_and_price_stamp(client):
+    # 5.8 §3.3/§7: the WON'T RUN blocker container, the keep consequence, and the
+    # price stamp replace the old advice container / restore line.
     body = client.get("/jobs/new").get_data(as_text=True)
-    assert 'id="job-advice"' in body
-    assert 'data-original-class' in body
-    assert 'id="job-cost-restore"' in body
+    assert 'id="class-blocker"' in body
+    assert 'id="pricestamp"' in body
+    assert 'id="keep-consequence"' in body
 
-def test_wizard_has_sizing_readout_and_type_gated_retention(client):
+def test_wizard_has_measurement_line_and_type_gated_controls(client):
     body = client.get("/jobs/new").get_data(as_text=True)
-    # folder-size readout: its own "calculating" line + a "what we found" line
-    assert 'id="job-cost-sizing"' in body and "Calculating Directory Size and Info" in body
-    assert 'id="source-info"' in body
-    # retention controls gated per backup type (tiered/mirror) and per chosen
-    # retention policy (days/count/tiered field) -- JS shows only the relevant ones
+    # the measurement line + its calculating readout are present
+    assert 'id="measure-line"' in body and 'id="job-cost-sizing"' in body
+    assert 'id="source-info"' in body and "Calculating Directory Size and Info" in body
+    # type-gated controls keep the preserved data-when-* mechanism (2.3):
     assert 'data-when-type="versioned"' in body
     assert 'data-when-type="archive"' in body
-    assert 'data-when-retention="days"' in body
-    assert 'data-when-retention="count"' in body
-    assert 'data-when-retention="tiered"' in body
+    assert 'data-when-retention="tiered"' in body     # the tiered Advanced fieldset
+    assert 'data-when-packing="1"' in body
 
 
 def test_wizard_has_retention_policy_selector(client):

@@ -308,6 +308,25 @@ def delete(config_dir, name, cache_dir=None) -> None:
     if cache_dir is not None and valid_name(name):
         _remove_job_caches(cache_dir, name)
 
+def set_assumptions(config_dir, name, assumptions: dict, *, now=None) -> dict | None:
+    """Persist one job's per-job `assumptions` (change-rate/bundling, spec 7.8/8.10).
+    Strict load so a corrupt jobs.json raises JobsFileError rather than clobbering it.
+    Stamps `set_at` so the Cost workbench / job page can date the assumption. Only the
+    `assumptions` object is touched; everything else round-trips untouched."""
+    jobs = _load_strict(config_dir)
+    out = None
+    for j in jobs:
+        if j.get("name") == name:
+            a = dict(assumptions or {})
+            a["set_at"] = _now_iso(now)
+            j["assumptions"] = a
+            out = _normalize_assumptions(j)
+            j["assumptions"] = out
+    if out is not None:
+        _path(config_dir).write_text(json.dumps({"jobs": jobs}, indent=2) + "\n")
+    return out
+
+
 def set_enabled(config_dir, name, enabled: bool) -> dict | None:
     """Flip one job's `enabled` flag (Pause/Resume). Strict load so a corrupt
     jobs.json raises JobsFileError like delete() rather than clobbering it."""

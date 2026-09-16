@@ -7,16 +7,30 @@ from datetime import datetime, timezone
 from dataclasses import asdict, replace
 from typing import Mapping
 from . import config_io, jobs_io, storage_advice, vocab
+from .storage_advice import COLD_CLASSES
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, estimate,
     restore_cost, project, job_retention_days, cold_lockin_onetime, upfront_onetime,
-    effective_object_count,
+    effective_object_count, cold_object_overhead_monthly, _tiered_reach_days,
 )
 from ..estimator.schedule import backups_per_month, backup_interval_days
 from ..estimator import tiered
 from ..estimator import usage, billing
+from ..engine import cron
 
 RETRIEVAL_TIERS: tuple[str, ...] = ("Bulk", "Standard", "Expedited")
+
+# The create-screen ("blend") class phrasing (spec 5.8 §3.2) — DIFFERENT from the
+# global vocab.CLASS_NAMES, which is why it lives with the wizard rather than there.
+_CLASS_PLAIN = {"STANDARD": "Instant", "STANDARD_IA": "Instant, cheaper to keep",
+                "GLACIER_IR": "Instant, cold price", "GLACIER": "Cold",
+                "DEEP_ARCHIVE": "Deepest"}
+# "Getting it back" is a static, per-class map (spec 5.8 §3.2), NOT derived from a
+# tier: GLACIER prints its Standard-speed window, DEEP_ARCHIVE its Bulk ceiling.
+_CLASS_READ_ACCESS = {"STANDARD": "instant", "STANDARD_IA": "instant",
+                      "GLACIER_IR": "instant", "GLACIER": "3–5 h",
+                      "DEEP_ARCHIVE": "≤48 h"}
+_KEEP_OPTION_KEYS = ("keep_all", "tiered", "days", "count")
 
 # Per-job fallback size/count for a job with no cached usage yet (never backed up).
 # Deliberately modest so an un-measured job doesn't dominate the estimate.
@@ -282,7 +296,233 @@ def _explain(cand: JobInputs, prices, proj, steady_versioning: float) -> dict | 
     }
 
 
-def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_class=None) -> dict:
+def _job_monthly(li) -> float:
+    """A job's recurring monthly total from its LineItems (the four recurring
+    terms), matching estimate().monthly_total's per-job contribution."""
+    return li.storage + li.versioning + li.ingest_monthly + li.rotation_monthly
+
+
+def _job_typical(scn_job: JobInputs, base: Scenario, prices) -> tuple[float, bool]:
+    """(typical monthly, is-unbounded) for one job, with the keep_all-at-0% override
+    of 7.9 applied: keep_all is unbounded ONLY when something actually changes."""
+    proj = project(replace(base, jobs=(scn_job,)), prices)
+    unbounded = proj.unbounded and scn_job.change_rate_pct > 0
+    typical = proj.months[0].total if unbounded else proj.steady_state_monthly
+    return typical, unbounded
+
+
+def _wizard_classes(candidate: JobInputs, base: Scenario, prices, engine: str) -> list[dict]:
+    """One priced row per model.STORAGE_CLASSES (spec 8.6 `classes`): the candidate
+    re-priced on that class with the current type/change/keep rule, its full restore,
+    the static read-access map, the minimum stay and per-run retrieval, and whether a
+    Snapshot backup is BLOCKED on it. Calls the frozen model only."""
+    unbounded = candidate.retention_type == "keep_all" and candidate.change_rate_pct > 0
+    rows = []
+    for cls in STORAGE_CLASSES:
+        cand = replace(candidate, storage_class=cls)
+        li = estimate(replace(base, jobs=(cand,)), prices).jobs[cand.name]
+        blocked = engine == "versioned" and cls in COLD_CLASSES
+        retr = prices.retrieval_per_gb.get(cls) or {}
+        rows.append({
+            "class": cls, "plain": _CLASS_PLAIN[cls],
+            "monthly": None if unbounded else _job_monthly(li),
+            "restore_once": restore_cost(cand, base, prices, 1.0),
+            "read_access": _CLASS_READ_ACCESS[cls],
+            "min_days": int(prices.min_storage_duration_days.get(cls, 0)),
+            "blocked": blocked,
+            "reason": "can't be read by a Snapshot backup" if blocked else None,
+            "retrieval_per_run": candidate.size_gb * (retr.get("Standard") or 0.0),
+        })
+    return rows
+
+
+def _wizard_keep_options(candidate: JobInputs, base: Scenario, prices, engine: str, *,
+                         days_val: int, count_val: int, keep: dict) -> list[dict]:
+    """One priced row per keep preset (spec 8.6 `keep_options`): delta_monthly is the
+    old-version + rotation cost of that policy at the current class/change/size; the
+    keep_all-at-0% override makes it BOUNDED (delta 0.0, not null) at 0% change."""
+    def _variant(key: str) -> JobInputs:
+        base_kw = dict(retention_count=0, keep_last=0, keep_daily=0, keep_weekly=0,
+                       keep_monthly=0, versioning_retention_days=None)
+        if key == "keep_all":
+            return replace(candidate, retention_type="keep_all", **base_kw)
+        if key == "days":
+            return replace(candidate, retention_type="days",
+                           **{**base_kw, "versioning_retention_days": days_val})
+        if key == "count":
+            return replace(candidate, retention_type="count",
+                           **{**base_kw, "retention_count": count_val})
+        return replace(candidate, retention_type="tiered",
+                       retention_count=0, versioning_retention_days=None,
+                       keep_last=keep["last"], keep_daily=keep["daily"],
+                       keep_weekly=keep["weekly"], keep_monthly=keep["monthly"])
+
+    out = []
+    for key in _KEEP_OPTION_KEYS:
+        kc = _variant(key)
+        li = estimate(replace(base, jobs=(kc,)), prices).jobs[kc.name]
+        delta = li.versioning + li.rotation_monthly
+        unbounded = key == "keep_all" and candidate.change_rate_pct > 0
+        row = {"key": key, "unbounded": unbounded,
+               "allowed": (engine == "versioned") if key == "tiered" else True}
+        if key == "keep_all":
+            row.update(delta_monthly=None if unbounded else delta, points=None, reach_days=None)
+        elif key == "tiered":
+            row.update(delta_monthly=delta,
+                       points=sum(keep[k] for k in ("last", "daily", "weekly", "monthly")),
+                       reach_days=round(_tiered_reach_days(kc)), keep=dict(keep))
+        elif key == "days":
+            iv = kc.backup_interval_days or 1.0
+            row.update(delta_monthly=delta,
+                       points=int(round(days_val / iv)) if iv else days_val,
+                       reach_days=days_val, days=days_val)
+        else:  # count
+            row.update(delta_monthly=delta, points=count_val,
+                       reach_days=round(count_val * (kc.backup_interval_days or 1.0)),
+                       count=count_val)
+        out.append(row)
+    return out
+
+
+def _wizard_all_jobs(candidate: JobInputs, base: Scenario, prices, name: str) -> dict:
+    """The whole-account row (spec 8.6 `all_jobs`): this candidate ADDED to every
+    other saved job (replacing any same-named one). typical_floor is the sum of each
+    job's typical-if-bounded-else-first-bill, for the `at least $X` cell."""
+    others = tuple(j for j in base.jobs if j.name != name)
+    total_scn = replace(base, jobs=others + (candidate,))
+    proj = project(total_scn, prices)
+    unbounded = proj.unbounded and any(j.change_rate_pct > 0 for j in total_scn.jobs)
+    floor = sum(_job_typical(j, base, prices)[0] for j in total_scn.jobs)
+    return {"first_bill": proj.months[0].total, "typical": proj.steady_state_monthly,
+            "typical_floor": floor, "total_6mo": sum(m.total for m in proj.months[:6]),
+            "unbounded": unbounded, "others": [j.name for j in others]}
+
+
+def _wizard_blockers(engine: str, cls: str) -> list[dict]:
+    """Server-side blocker list (spec 5.8 §3.3 / 8.6 `blockers`). A Snapshot backup
+    on a cold class is the one OVERRIDABLE blocker (logged acknowledgement). Source
+    and all-zero-tiered are enforced by jobs_io.validate, not listed here."""
+    if engine == "versioned" and cls in COLD_CLASSES:
+        plain = _CLASS_PLAIN[cls]
+        return [{
+            "code": "snapshots_on_cold_class", "class": cls, "plain": plain,
+            "text": (f"A Snapshot backup can't read from {plain} · {cls}. It re-reads "
+                     f"its whole store every run, so every scheduled run would fail on a "
+                     f"data read."),
+            "fixes": [{"label": "Use File history instead", "set": {"type": "versioned-files"}},
+                      {"label": "Use Instant, cheaper", "set": {"storage_class": "STANDARD_IA"}}],
+            "overridable": True}]
+    return []
+
+
+def _wizard_warnings(engine: str, cls: str, candidate: JobInputs, prices, saved_class) -> list[dict]:
+    """The Heads-up blocks (spec 5.8 §3.7 / 8.6 `warnings`) — the same findings
+    class_advice fires, RE-VOICED in the blend vocabulary. Additive to `advice`."""
+    out = []
+    plain = _CLASS_PLAIN[cls]
+    eoc = effective_object_count(candidate)
+    min_days = int(prices.min_storage_duration_days.get(cls, 0))
+    if (cls in COLD_CLASSES and eoc >= 50_000 and candidate.size_gb
+            and (candidate.size_gb * 1024 / eoc) < 10.0):
+        upload_once = upfront_onetime(candidate, prices)
+        overhead = cold_object_overhead_monthly(candidate, prices)
+        out.append({"code": "per_object", "text": (
+            f"{eoc:,} objects × 40 KB of per-object overhead on {plain} · {cls}, and "
+            f"uploads cost ~10× more per request there — ${upload_once:,.2f}, once, and "
+            f"${overhead:,.2f} a month on top of the data. Bundling them first (one .cbz per "
+            f"chapter, or tar) collapses the count."),
+            "fix": {"label": "My files are already bundled", "set": {"packing": "1"}}})
+    if min_days >= 90:
+        lockin = cold_lockin_onetime(candidate, prices)
+        out.append({"code": "min_stay", "text": (
+            f"{min_days}-day minimum stay on {plain} · {cls}. Delete it tomorrow and you "
+            f"still pay through day {min_days} — ${lockin:,.2f}."), "fix": None})
+    if engine == "versioned" and cls not in COLD_CLASSES and prices.retrieval_per_gb.get(cls):
+        per_run = candidate.size_gb * (prices.retrieval_per_gb[cls].get("Standard") or 0.0)
+        out.append({"code": "snapshots_on_ia", "text": (
+            f"A Snapshot backup re-reads its store every run, and {plain} · {cls} charges "
+            f"$0.01 a GB for every read — on {candidate.size_gb:,.2f} GB that is about "
+            f"${per_run:,.2f} a run, often more than the cheaper storage saves."),
+            "fix": {"label": "Use Instant · STANDARD", "set": {"storage_class": "STANDARD"}}})
+    if (engine in ("archive", "versioned-files") and min_days >= 180
+            and candidate.backups_per_month >= 4 and candidate.change_rate_pct > 0):
+        out.append({"code": "frequent_on_long_min", "text": (
+            f"You back up {int(round(candidate.backups_per_month))} times a month onto a "
+            f"{min_days}-day-minimum tier. Each replaced file re-incurs that minimum, so a "
+            f"shorter-minimum tier can be cheaper despite a higher rate."),
+            "fix": {"label": "Use Instant, cold price · GLACIER_IR",
+                    "set": {"storage_class": "GLACIER_IR"}}})
+    if saved_class and saved_class != cls:
+        sp = _CLASS_PLAIN.get(saved_class, saved_class)
+        out.append({"code": "class_change", "text": (
+            f"Changing the tier affects future uploads only — files already stored stay in "
+            f"{sp} · {saved_class}. Moving existing data is a separate admin action."),
+            "fix": None})
+        if STORAGE_CLASSES.index(cls) < STORAGE_CLASSES.index(saved_class):
+            out.append({"code": "class_change_warmer", "text": (
+                f"This is a warm-up change ({sp} · {saved_class} → {plain} · {cls}): "
+                f"existing objects can't move to a warmer tier on their own — they need a "
+                f"warm-up and a copy, which costs retrieval + requests."), "fix": None})
+    return out
+
+
+def _wizard_schedule(sched: str, other_jobs, engine: str) -> dict:
+    """The `schedule` block (spec 8.6): human phrase, cron, backups/month, and a
+    collision when another enabled Snapshot backup fires the same minute+hour."""
+    try:
+        human = cron.describe(sched) if sched else ""
+    except Exception:
+        human = sched
+    return {"human": human, "cron": sched, "backups_per_month": backups_per_month(sched),
+            "collision": _schedule_collision(sched, other_jobs, engine)}
+
+
+def _schedule_collision(sched: str, other_jobs, engine: str) -> dict | None:
+    if engine != "versioned" or not other_jobs:
+        return None
+    f = sched.split()
+    if len(f) != 5 or not (f[0].isdigit() and f[1].isdigit()):
+        return None
+    minute, hour = int(f[0]), int(f[1])
+    versioned = [o for o in other_jobs if o.get("type") == "versioned"
+                 and o.get("enabled", True)]
+    taken = set()
+    hit = None
+    for o in versioned:
+        of = str(o.get("schedule", "")).split()
+        if len(of) == 5 and of[1] == str(hour) and of[0].isdigit():
+            taken.add(int(of[0]))
+            if int(of[0]) == minute and hit is None:
+                hit = o
+    if hit is None:
+        return None
+    suggest = (minute + 20) % 60
+    while suggest in taken:
+        suggest = (suggest + 1) % 60
+    return {"job": hit.get("name"), "at": f"{hour:02d}:{minute:02d}",
+            "suggest": f"{hour:02d}:{suggest:02d}",
+            "suggest_cron": f"{suggest} {hour} {f[2]} {f[3]} {f[4]}"}
+
+
+def _first_bill_reason(first: float, typical: float, versioning: float,
+                       steady_month: int, upload_onetime: float, eoc: int, put_1k: float) -> tuple:
+    """(reason, text) for the create screen's first-bill clause (spec 5.8 §3.6)."""
+    ramp = versioning > 0 and steady_month > 1
+    upload = upload_onetime >= 0.05
+    if ramp and upload:
+        return "both", (f"because no old versions exist yet, and uploading {eoc:,} objects "
+                        f"costs ${upload_onetime:,.2f}, once.")
+    if ramp:
+        return "ramp", "because no old versions exist yet"
+    if upload:
+        return "upload", (f"because uploading {eoc:,} objects to a cold tier costs "
+                          f"${put_1k:,.2f} per 1,000 requests — ${upload_onetime:,.2f}, once. "
+                          f"Charged per request, not per GB.")
+    return "flat", "Your first bill is the same — nothing builds up."
+
+
+def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_class=None,
+                    other_jobs=None, live_failed=False) -> dict:
     """Live cost for the job create/edit WIZARD: prices a CANDIDATE job built from
     the in-progress form params (not yet saved), plus what the total across every
     saved job becomes with this candidate added in — replacing any existing job of
@@ -359,6 +599,51 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
                                          saved_class, prices,
                                          object_count=effective_object_count(candidate),
                                          size_gb=candidate.size_gb)
+
+    # --- Task 14 wizard extensions (spec 5.8 / 7.9 / 8.6) ---------------------
+    # `measured` == a real folder walk stands behind size_gb (the exact byte count
+    # threaded via measured_bytes); a capped/failed walk or the 20 GB placeholder is
+    # `assumed` (5.8 §2/§3.6). Only this drives .n.assumed on the create screen.
+    mb = params.get("measured_bytes")
+    capped = str(params.get("measured_capped", "")).strip().lower() in ("1", "true", "on")
+    measured = False
+    if mb is not None and str(mb).strip() != "" and not capped:
+        try:
+            measured = int(float(mb)) > 0
+        except (TypeError, ValueError):
+            measured = False
+    # Tri-state for the recommendation (5.8 §3.1): the rate is "set" once a radio is
+    # clicked (change_rate_touched=1); the edit screen always sends it.
+    change_rate_set = str(params.get("change_rate_touched", "")).strip().lower() in ("1", "true", "on")
+
+    days_val = int(_num(params, "retention_days", 180, label="days")) or 180
+    count_val = int(_num(params, "retention_count", 30, label="count")) or 30
+    keep = {k: int(_num(params, f"keep_{k}", d, label=k))
+            for k, d in _KEEP_DEFAULTS.items()}
+
+    classes = _wizard_classes(candidate, base, prices, engine)
+    keep_options = _wizard_keep_options(candidate, base, prices, engine,
+                                        days_val=days_val, count_val=count_val, keep=keep)
+    all_jobs = _wizard_all_jobs(candidate, base, prices, name)
+    blockers = _wizard_blockers(engine, cls)
+    warnings = _wizard_warnings(engine, cls, candidate, prices, saved_class)
+    schedule = _wizard_schedule(str(params.get("schedule", "")), other_jobs, engine)
+    recommendation = storage_advice.recommend_type(
+        size_gb=candidate.size_gb, file_count=candidate.file_count,
+        change_rate_pct=candidate.change_rate_pct, measured=measured,
+        change_rate_set=change_rate_set)
+
+    unbounded = proj.unbounded and candidate.change_rate_pct > 0       # 7.9 override
+    first_bill, typical = ms[0].total, proj.steady_state_monthly
+    reason, reason_text = _first_bill_reason(
+        first_bill, typical, li.versioning, proj.steady_state_month,
+        li.upfront_onetime, effective_object_count(candidate), prices.put_rate(cls))
+    size_prov = "measured" if measured else "assumed"
+    money_prov = "projected" if measured else "assumed"
+    rate = prices.storage_gb_month.get(cls, 0.0)
+    old_gb = (li.versioning / rate) if rate else 0.0
+    price_kind = "live" if str(prices.source or "").startswith("aws-price-list") else "bundled"
+
     return {
         "this_job_monthly": this_est.monthly_total,
         "new_total_monthly": estimate(total_scn, prices).monthly_total,
@@ -366,9 +651,10 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
         "advice": advice,
         "guidance": storage_advice.type_advice(engine, cls),
         "explain": _explain(candidate, prices, proj, li.versioning),
+        "price_kind": price_kind, "price_region": prices.region, "live_failed": bool(live_failed),
         "projection": {
-            "first_bill": ms[0].total,
-            "steady_monthly": proj.steady_state_monthly,
+            "first_bill": first_bill,
+            "steady_monthly": typical,
             "steady_month": proj.steady_state_month,
             "at_6": ms[min(5, len(ms) - 1)].total,
             "at_12": ms[min(11, len(ms) - 1)].total,
@@ -376,9 +662,20 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
             # What you'll actually pay across the first six months (cumulative),
             # so the card can answer "what does the next half-year cost me?".
             "total_6mo": sum(m.total for m in ms[:6]),
-            # keep_all never plateaus: the card must show growth, not a fake "settles at".
-            "unbounded": proj.unbounded,
+            # keep_all never plateaus UNLESS nothing changes (7.9 override).
+            "unbounded": unbounded,
         },
+        "all_jobs": all_jobs,
+        "classes": classes,
+        "keep_options": keep_options,
+        "recommendation": recommendation,
+        "blockers": blockers,
+        "warnings": warnings,
+        "schedule": schedule,
+        "first_bill_reason": reason,
+        "first_bill_reason_text": reason_text,
+        "provenance": {"this_job_monthly": money_prov, "first_bill": money_prov,
+                       "total_6mo": money_prov, "classes": money_prov, "size": size_prov},
         "breakdown": {
             "billed_gb": li.billed_gb,
             "storage": li.storage,
@@ -389,6 +686,12 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
             "lockin_onetime": cold_lockin_onetime(candidate, prices),
             "change_rate_pct": candidate.change_rate_pct,
             "retention_days": candidate.versioning_retention_days,
+            "rate_gb_month": rate,
+            "old_gb": old_gb,
+            "old_multiplier": (old_gb / candidate.size_gb) if candidate.size_gb else 0.0,
+            "effective_object_count": effective_object_count(candidate),
+            "put_rate_per_1k": prices.put_rate(cls),
+            "cold_overhead_monthly": cold_object_overhead_monthly(candidate, prices),
         },
     }
 

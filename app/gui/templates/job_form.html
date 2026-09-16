@@ -1,134 +1,328 @@
-{% extends "base.html" %}{% block body %}
-<p class="eyebrow">Backups</p>
-<h1>{{ 'Edit job' if job else 'Create a backup job' }}</h1>
+{% extends "base.html" %}
+{#- Create / edit job — the "Ledger Runbook" wizard (spec 5.8 / 5.9 / 8.6 / 8.10).
+    Every cost consequence sits beside the control that moves it. The figures are
+    computed by estimate_io.wizard_estimate (the frozen model, read-only); this
+    template server-renders the initial state so the page is honest with JS off, and
+    app.js re-fetches /jobs/estimate.json on every change to repaint live. The folder
+    browser, schedule builder and data-when-* visibility are PRESERVED (spec 2.3). -#}
+{% block title %}{{ 'Edit job' if is_edit else 'New job' }} · backup-engine{% endblock %}
 
-<div class="card card-hero" id="job-cost">
-  <ul class="totals">
-    <li class="med"><span class="lbl">First bill</span><span id="job-cost-first">—</span></li>
-    <li class="med"><span class="lbl">This job / mo</span><span id="job-cost-this">—</span></li>
-    <li class="med"><span class="lbl">New total / mo</span><span id="job-cost-total">—</span></li>
-  </ul>
-  <p class="hint" id="job-cost-breakdown" hidden></p>
-  <p class="hint" id="job-cost-future" hidden></p>
-  <p class="hint" id="job-cost-milestones" hidden></p>
-  <div id="job-guidance" class="advice" hidden></div>
-  <div id="job-explain" class="advice" hidden></div>
-  <p class="hint">Full restore (once): <span id="job-cost-restore">—</span> <small>(retrieval + egress)</small></p>
-  <p class="hint">Prices as of <span id="job-cost-date">—</span>. Updates live as you fill in the form.</p>
-  <p id="job-cost-sizing" class="sizing" hidden>Calculating Directory Size and Info…</p>
-  <p id="source-info" class="source-info" hidden></p>
-  <p id="job-cost-error" class="alert alert-error" hidden></p>
-  <div id="job-advice" class="advice" hidden></div>
-</div>
+{% macro money(v) %}{% if v is none %}—{% else %}${{ '%.2f'|format(v) }}{% endif %}{% endmacro %}
+{% macro dash(cond, v) %}{% if cond %}{{ v }}{% else %}—{% endif %}{% endmacro %}
 
-<form id="job-form" method="post" action="{{ url_for('gui.job_save') }}">
+{% block body %}
+{% if jobsfile_error %}
+<div class="sig sig-failure" style="margin-bottom:16px"><span class="glyph" aria-hidden="true">
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4"/><path d="M4.4 4.4 7.6 7.6M7.6 4.4 4.4 7.6"/></svg></span>
+  <div class="body"><span class="label">Failed</span>{{ jobsfile_error }}</div></div>
+{% endif %}
+
+<p class="lbl">{{ 'Edit job' if is_edit else 'New job' }}</p>
+<h1 class="h" style="margin-top:6px">{{ job.name if is_edit else 'What do you want to protect?' }}</h1>
+{% if not is_edit %}
+<p class="measure muted" style="margin-top:10px">Three kinds of thing on this page:
+  <b>settings</b> change what gets backed up, <b>measured facts</b> come off disk, and
+  <b>assumptions</b> are your estimate and only move the forecast.</p>
+{% endif %}
+
+<form id="job-form" method="post" action="{{ url_for('gui.job_save') }}"
+      data-est-url="{{ url_for('gui.jobs_estimate_json') }}"
+      data-source-size-url="{{ url_for('gui.jobs_source_size') }}"
+      {% if is_edit %}data-edit="1"{% endif %}>
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <div class="card"><h2>1 · What kind of backup?</h2>
-    <label class="inline"><input type="radio" name="type" value="versioned" {{ 'checked' if not job or job.type=='versioned' }}> Versioned &amp; encrypted <small>— configs, databases, docs (snapshots, restore any point in time)</small></label>
-    <label class="inline"><input type="radio" name="type" value="archive" {{ 'checked' if job and job.type=='archive' }}> Bulk archive <small>— media, large static files (cheap cold storage)</small></label>
-    <label class="inline"><input type="radio" name="type" value="versioned-files" {{ 'checked' if job and job.type=='versioned-files' }}> Versioned files <small>— incremental + keeps old versions (any storage class, incl. Deep Archive)</small></label>
-  </div>
-  <div class="card"><h2>2 · Which folder?</h2>
-    <p class="hint">Browse <code>{{ source_root }}</code> and pick one folder.</p>
-    <input type="hidden" name="source" id="source-input" value="{{ job.source if job else '' }}">
-    <input type="hidden" name="size_gb" id="size-gb-input" value="">
-    <ul class="tree" id="source-tree" data-selected="{{ job.source if job else '' }}" data-single="1"></ul>
-    <p class="hint">Selected: <code id="source-shown">{{ job.source if job else '(none)' }}</code></p>
-  </div>
-  <div class="card"><h2>3 · How often?</h2>
-    <div class="sched-builder" id="sched-builder" hidden>
-      <div class="field-row">
-        <label>Frequency
-          <select id="sched-freq">
-            <option value="hourly">Hourly</option>
-            <option value="daily" selected>Daily</option>
-            <option value="weekly">Weekly</option>
-            <option value="monthly">Monthly</option>
-          </select>
-        </label>
-        <label>At <input type="time" id="sched-time" value="03:00"></label>
-        <label id="sched-dow-wrap" hidden>On
-          <select id="sched-dow"><option value="0">Sun</option><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option></select>
-        </label>
-        <label id="sched-dom-wrap" hidden>Day <input type="number" id="sched-dom" min="1" max="28" value="1"></label>
+  <input type="hidden" name="source" id="source-input" value="{{ fv.source }}">
+  <input type="hidden" name="size_gb" id="size-gb-input" value="{{ fv.size_gb }}">
+  <input type="hidden" name="file_count" id="file-count-input" value="{{ fv.file_count }}">
+  <input type="hidden" name="measured_bytes" id="measured-bytes-input" value="{{ fv.measured_bytes }}">
+  <input type="hidden" name="measured_capped" id="measured-capped-input" value="{{ fv.measured_capped }}">
+  <input type="hidden" name="measured_at" id="measured-at-input" value="{{ fv.measured_at }}">
+  <input type="hidden" name="change_rate_touched" id="change-rate-touched" value="{{ fv.change_rate_touched }}">
+  {% for code in acknowledged %}<input type="hidden" name="acknowledge_blocker" value="{{ code }}">{% endfor %}
+  {% if is_edit %}
+  {#- Kind + name are LOCKED after creation (5.9). The hidden CHECKED radio keeps the
+      preserved data-when-* visibility working (it reads input[name=type]:checked) and
+      carries the value for the POST, where job_save ignores it in favour of the saved
+      type. -#}
+  <input type="radio" name="type" value="{{ fv.type }}" checked hidden>
+  <input type="hidden" name="name" value="{{ fv.name }}">
+  {% endif %}
+
+  <!-- 1 · Which folder -->
+  <section class="sec">
+    <h2 class="lbl">1 · Which folder</h2>
+    <p class="mono sm faint" style="margin-block:10px 8px">{{ source_root_host }}</p>
+    <ul class="tree card" id="source-tree" data-selected="{{ fv.source }}" data-single="1"
+        style="max-width:34rem;list-style:none;margin:0"></ul>
+    <p style="margin-top:12px">Selected
+      <span class="mono" id="source-shown">{% if fv.source %}{{ source_root_host }}/{{ fv.source }}{% else %}<span class="faint">nothing yet</span>{% endif %}</span></p>
+    <p class="sm faint" id="measure-line" style="margin-top:4px">
+      {% if measured %}<span class="n">{{ '%.2f'|format(est.breakdown.billed_gb) }} GB</span> · <span class="mono">{{ fv.file_count }} files</span> · measured
+        {% if is_edit and fv.measured_at %}{{ fv.measured_at[8:10] }} {{ fv.measured_at[5:7] }}{% else %}just now{% endif %} ·
+        <button type="button" class="linkish" id="remeasure-btn">Re-measure</button>
+      {% elif fv.source %}<span class="n assumed">measuring…</span>
+      {% else %}Pick a folder above to price everything for it.{% endif %}</p>
+    <p class="sm faint" id="source-info" hidden></p>
+    <p id="job-cost-sizing" class="sm faint" hidden>Calculating Directory Size and Info…</p>
+  </section>
+
+  {% set dim = '' if fv.source else ' dimmed' %}
+
+  <!-- 2 · The plan -->
+  <section class="sec{{ dim }}">
+    <h2 class="lbl">2 · The plan</h2>
+    {% if not fv.source %}<p class="pickfirst">Pick a folder first — everything below is priced for it.</p>{% endif %}
+
+    {% if est_error %}<div class="sev note" id="est-error">{{ est_error }}</div>{% endif %}
+
+    <h3 class="subh" style="margin-top:14px">What kind of backup</h3>
+    {% if not is_edit %}
+    <div id="rec-block">
+      {% if est and est.recommendation %}
+      <div class="sev rec" style="margin-top:8px">
+        <span class="sev-tab"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="6" r="2" fill="currentColor"/></svg>
+          Recommended for this folder</span>
+        <p class="sm faint measure"><span id="rec-why">{{ est.recommendation.why }}</span>
+          Rule: <span id="rec-rule">{{ est.recommendation.rule }}</span>.</p>
       </div>
-      <p class="hint">Runs <span id="sched-human">daily at 03:00</span> — cron <code id="sched-preview">0 3 * * *</code>. <button type="button" class="btn btn-ghost" id="sched-advanced-toggle">Advanced</button></p>
+      {% elif measured %}
+      <div class="sev note">No recommendation for this folder — none of the rules fit its shape.
+        Pick the kind yourself; the table below is priced for all three.</div>
+      {% endif %}
     </div>
-    <div id="sched-raw">
-      <label>Schedule (cron) <input name="schedule" id="sched-input" value="{{ job.schedule if job else '0 3 * * *' }}" required></label>
-      <p class="hint">e.g. <code>0 3 * * *</code> = daily 3am, <code>0 4 * * 0</code> = weekly Sun 4am. Or run on demand from the Jobs list. <button type="button" class="btn btn-ghost" id="sched-simple-toggle" hidden>Use the builder</button></p>
-    </div>
-    <p class="hint" data-when-type="versioned">Versioned jobs share one restic repo, so give each a <strong>different minute</strong> — two firing the same minute collide on the repo lock (one fails and recovers next run).</p>
-    <label class="inline"><input type="checkbox" name="enabled" value="1" {{ 'checked' if not job or job.enabled }}> Enabled (scheduled)</label>
-  </div>
-  <div class="card"><h2>4 · Storage &amp; retention</h2>
-    <label>Storage class <select name="storage_class" data-original-class="{{ job.storage_class if job else '' }}">{% for c in storage_classes %}<option value="{{c}}" {{ 'selected' if job and job.storage_class==c }}>{{c}}</option>{% endfor %}</select></label>
-    <details class="class-panel">
-      <summary>Compare storage classes</summary>
-      <div class="table-scroll">
-      <table>
-        <thead><tr><th>Class</th><th class="num">$/GB·mo</th><th>Read</th><th class="num">Min days</th><th>Retrieval</th><th class="num">Egress $/GB</th></tr></thead>
+    {% set rec = (est.recommendation.type if est and est.recommendation else None) %}
+    {% for value, name, term, why in [
+        ('versioned', 'Snapshot backup', 'versioned', 'Roll the whole folder back to any night. Encrypted, de-duplicated, and it needs a tier it can read every run.'),
+        ('versioned-files', 'File history', 'versioned-files', 'Keeps every version of each file. Restores one file at a time, and works on cold storage.'),
+        ('archive', 'Plain copy', 'archive', 'Cheapest. The current state of the folder, no history.')] %}
+    <label class="radio" for="t-{{ value }}"><input type="radio" id="t-{{ value }}" name="type" value="{{ value }}"
+        {{ 'checked' if fv.type == value or (fv.type not in ['versioned','versioned-files','archive'] and value == rec) }}>
+      <span><b>{{ name }}</b> &nbsp;<a class="term" href="/setup/about#{{ value }}" title="jobs.json: type = {{ value }}">{{ term }}</a></span>
+      <span class="why">{{ why }}</span></label>
+    {% endfor %}
+    {% else %}
+    <dl class="def"><dt>Kind</dt><dd>{{ {'versioned':'Snapshot backup','versioned-files':'File history','archive':'Plain copy'}[fv.type] }}
+      <a class="term" title="jobs.json: type = {{ fv.type }}">{{ fv.type }}</a>
+      <div class="sm faint measure" style="margin-top:4px">Set at creation. Changing the kind would leave what is already
+        stored under a different recovery model. To change it, create a new job.</div></dd></dl>
+    {% endif %}
+
+    <!-- 2b · Where it's stored -->
+    <h3 class="subh" style="margin-top:24px">Where it's stored —
+      priced for {% if measured %}your <span class="n">{{ '%.2f'|format(est.breakdown.billed_gb) }} GB</span>{% else %}an assumed <span class="n assumed">20 GB</span>{% endif %}</h3>
+    <div class="tscroll card" style="margin-top:8px">
+      <table class="classes">
+        <thead><tr><th scope="col">Class</th><th scope="col">Per month</th><th scope="col">Getting it back</th>
+          <th scope="col">Minimum stay</th><th scope="col">All of it, once</th></tr></thead>
         <tbody>
-          {% for c in class_info %}
-          <tr>
-            <th>{{ c.name }}{% if c.cold %} <span class="badge badge-idle">cold</span>{% endif %}</th>
-            <td class="num">{{ "%.4f"|format(c.rate_gb_month) }}</td>
+        {% for c in (est.classes if est else []) %}
+          <tr class="{{ 'blocked' if c.blocked }}" data-cls-row="{{ c.class }}">
+            <td><label class="cls" for="c-{{ c.class }}"><input type="radio" id="c-{{ c.class }}" name="storage_class"
+                value="{{ c.class }}" {{ 'checked' if fv.storage_class == c.class }}>
+              <span>{{ c.plain }}<br><a class="term" href="/setup/about#tiers" title="AWS S3 storage class">{{ c.class }}</a></span></label></td>
+            <td class="{{ 'struck' if c.blocked }}" data-cls-monthly="{{ c.class }}">{{ money(c.monthly) }}</td>
             <td>{{ c.read_access }}</td>
-            <td class="num">{{ c.min_duration_days or '—' }}</td>
-            <td>{{ c.retrieval }}</td>
-            <td class="num">{{ "%.2f"|format(c.egress_per_gb) }}</td>
+            <td>{{ (c.min_days ~ ' d') if c.min_days else '—' }}</td>
+            <td class="{{ 'struck' if c.blocked }}" data-cls-restore="{{ c.class }}">{{ money(c.restore_once) }}{% if c.reason %}<span class="reason"> {{ c.reason }}</span>{% endif %}</td>
           </tr>
-          <tr class="class-use"><td colspan="6" class="hint">{{ c.use_case }}</td></tr>
-          {% endfor %}
+        {% endfor %}
         </tbody>
       </table>
+    </div>
+    <p class="sm faint measure" style="margin-top:8px">Getting it back is warm-up plus download out of AWS.
+      It does not get cheaper when the storage does.</p>
+
+    <!-- Heads-up blocks (5.8 §3.7) -->
+    <div id="warnings">
+      {% for w in (est.warnings if est else []) %}
+      <div class="sev heads" data-warn="{{ w.code }}">
+        <span class="sev-tab"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M6 1 11.2 10.6H.8z"/></svg>
+          Heads up</span>
+        <p class="sm">{{ w.text }}</p>
+        {% if w.fix %}<div class="acts"><button type="button" class="btn btn-ghost btn-xs" data-warn-fix="{{ w.code }}">{{ w.fix.label }}</button></div>{% endif %}
       </div>
-      <p class="hint">Restoring is retrieval + egress ($/GB out of AWS), independent of how cheap storage is. Prices: {{ price_stamp.source or '—' }} @ {{ price_stamp.date or '—' }}.</p>
-    </details>
-    {% set retention = job.retention if job else {'type': 'days', 'days': 90} %}
-    <p class="hint">Retention policy — how long to keep replaced/deleted versions.</p>
-    <label class="inline"><input type="radio" name="retention_type" value="keep_all" {{ 'checked' if retention.type=='keep_all' }}> Keep everything</label>
-    <label class="inline"><input type="radio" name="retention_type" value="days" {{ 'checked' if retention.type=='days' }}> Keep for N days</label>
-    <label class="inline"><input type="radio" name="retention_type" value="count" {{ 'checked' if retention.type=='count' }}> Keep last N versions</label>
-    <label class="inline" data-when-type="versioned"><input type="radio" name="retention_type" value="tiered" {{ 'checked' if retention.type=='tiered' }}> Tiered (last/daily/weekly/monthly)</label>
-    <label data-when-retention="days">Keep old versions for
-      <input type="number" min="0" name="retention_days" value="{{ retention.days if retention.type=='days' else 90 }}">
-      days <small>(how long a replaced/deleted version is kept before it's pruned)</small>
-    </label>
-    <label data-when-retention="count">Keep last
-      <input type="number" min="1" name="retention_count" value="{{ retention.count if retention.type=='count' else 5 }}">
-      versions <small>(the N most recent versions of each file/path are kept, older ones pruned)</small>
-    </label>
-    <fieldset class="retention" data-when-type="versioned" data-when-retention="tiered"><legend>Tiered keep policy (restic)</legend>
-      {% set k = job.keep if job and job.keep and (job.keep.last or job.keep.daily or job.keep.weekly or job.keep.monthly) else {'last':3,'daily':7,'weekly':4,'monthly':6} %}
-      <div class="field-row">
-        <label>last <input type="number" min="0" name="keep_last" value="{{ k.last }}"></label>
-        <label>daily <input type="number" min="0" name="keep_daily" value="{{ k.daily }}"></label>
-        <label>weekly <input type="number" min="0" name="keep_weekly" value="{{ k.weekly }}"></label>
-        <label>monthly <input type="number" min="0" name="keep_monthly" value="{{ k.monthly }}"></label>
+      {% endfor %}
+    </div>
+
+    <!-- The WON'T RUN blocker (5.8 §3.3) -->
+    {% set blk = blockers[0] if blockers else None %}
+    <div class="sev wont" id="class-blocker" {{ '' if blk else 'hidden' }}>
+      <span class="sev-tab"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M3.8 0h4.4L12 3.8v4.4L8.2 12H3.8L0 8.2V3.8z"/></svg>
+        Won't run</span>
+      <p id="class-blocker-why">{% if blk %}A Snapshot backup can't read from <b>{{ blk.plain }}</b> · <span class="mono">{{ blk.class }}</span>.
+        <a class="term" title="the snapshot engine">restic</a> re-reads its whole store every run, so every scheduled run would fail on a data read.{% endif %}</p>
+      <div class="acts">
+        <button type="button" class="btn btn-ghost btn-xs" data-fix-type="versioned-files">Use File history instead</button>
+        <button type="button" class="btn btn-ghost btn-xs" data-fix-class="STANDARD_IA">Use Instant, cheaper</button>
+        <button type="button" class="linkish" id="save-anyway">Save it anyway ▸</button>
+        <span class="sm faint">records an acknowledgement on the job</span>
       </div>
-    </fieldset>
-    <label class="inline" data-when-type="archive"><input type="checkbox" name="mirror" value="1" {{ 'checked' if job and job.mirror }}> Mirror (archive: delete removed files too)</label>
-    <label class="inline" data-when-type="archive versioned-files"><input type="checkbox" name="packing" value="1"> My source files are already bundled into larger archives (e.g. <code>.cbz</code> per chapter, tar) <small>— cost estimate only; the tool copies files as-is and won't bundle for you. Leave off if you're pointing at loose files.</small></label>
-    <label data-when-type="archive versioned-files" data-when-packing="1">Typical archive size
-      <input type="number" min="0.001" step="0.01" name="pack_member_gb" value="0.05"> GB each
-      <small>(rough average size of each bundle — with millions of tiny files on a cold class, bundling collapses the object count and slashes the one-time upload + per-object overhead)</small>
-    </label>
-    {% set churn_default = '0' %}
-    <label data-when-type="versioned versioned-files">How much changes each backup?
-      <select name="change_rate_pct" id="job-change-rate">
-        <option value="0"{{ ' selected' if churn_default=='0' }}>No change — files only get added (0%)</option>
-        <option value="1"{{ ' selected' if churn_default=='1' }}>A little — rare replacements (~1%)</option>
-        <option value="10"{{ ' selected' if churn_default=='10' }}>Some — regular edits (~10%)</option>
-        <option value="30"{{ ' selected' if churn_default=='30' }}>A lot — churny (~30%)</option>
-      </select>
-      <small>Defaults to no change, so the estimate is pure storage. Raise it only if you replace or overwrite existing files — adding new files doesn't count as churn.</small>
-    </label>
+    </div>
+
+    <!-- 2c · How much of it changes (5.8 §3.4) — the lever above the keep rule -->
+    <h3 class="subh" style="margin-top:24px">How much of it changes each backup?</h3>
+    <div style="margin-top:6px">
+      {% for val, label in [(0, 'Nothing — files only get added'), (1, 'A little — rare replacements'),
+                            (10, 'Some — regular edits'), (30, 'A lot — churny')] %}
+      <label class="radio" for="ch-{{ val }}"><input type="radio" id="ch-{{ val }}" name="change_rate_pct" value="{{ val }}"
+          {{ 'checked' if fv.change_rate_pct|int == val }}>
+        <span>{{ label }} &nbsp;<span class="mono faint">({{ '0%' if val == 0 else '~' ~ val ~ '%' }})</span></span></label>
+      {% endfor %}
+    </div>
+    <p class="sm faint">An assumption. It never changes what gets backed up.</p>
+
+    <!-- 2d · How long to keep old versions (5.8 §3.5) -->
+    {% set ko = {} %}{% for o in (est.keep_options if est else []) %}{% set _ = ko.update({o.key: o}) %}{% endfor %}
+    <h3 class="subh" id="keep-head" style="margin-top:24px">How long to keep old versions</h3>
+    <div id="keep-block" style="margin-top:6px">
+      <label class="radio" for="k-all"><input type="radio" id="k-all" name="retention_type" value="keep_all" {{ 'checked' if fv.retention_type == 'keep_all' }}>
+        <span>Keep everything</span>
+        <span class="why"><span class="k-delta" data-keep="keep_all">still growing</span> · never plateaus</span></label>
+      <label class="radio" for="k-thin" data-when-type="versioned"><input type="radio" id="k-thin" name="retention_type" value="tiered" {{ 'checked' if fv.retention_type == 'tiered' }}>
+        <span>Thin them out over time</span>
+        <span class="why"><span class="k-delta" data-keep="tiered">{{ money((ko.get('tiered') or {}).get('delta_monthly')) }}/mo</span> ·
+          <span class="mono">last {{ fv.keep_last }} · daily {{ fv.keep_daily }} · weekly {{ fv.keep_weekly }} · monthly {{ fv.keep_monthly }}</span> —
+          <span class="mono" data-keep-points="tiered">{{ (ko.get('tiered') or {}).get('points', 0) }}</span> restore points over about
+          <span class="mono" data-keep-reach="tiered">{{ (ko.get('tiered') or {}).get('reach_days', 0) }}</span> days ·
+          <button type="button" class="linkish" id="advanced-keep">Advanced ▸</button></span></label>
+      <fieldset class="retention" id="tiered-advanced" data-when-type="versioned" data-when-retention="tiered" hidden style="border:0;padding:0;margin:8px 0 0 34px">
+        <div style="display:flex;flex-wrap:wrap;gap:10px 16px">
+          <label class="sm">last <input type="number" min="0" name="keep_last" value="{{ fv.keep_last }}" style="width:5ch" class="mono"></label>
+          <label class="sm">daily <input type="number" min="0" name="keep_daily" value="{{ fv.keep_daily }}" style="width:5ch" class="mono"></label>
+          <label class="sm">weekly <input type="number" min="0" name="keep_weekly" value="{{ fv.keep_weekly }}" style="width:5ch" class="mono"></label>
+          <label class="sm">monthly <input type="number" min="0" name="keep_monthly" value="{{ fv.keep_monthly }}" style="width:5ch" class="mono"></label>
+        </div>
+      </fieldset>
+      <label class="radio" for="k-days"><input type="radio" id="k-days" name="retention_type" value="days" {{ 'checked' if fv.retention_type == 'days' }}>
+        <span>Keep for <input type="number" name="retention_days" value="{{ fv.retention_days }}" style="width:5ch" class="mono"> days</span>
+        <span class="why"><span class="k-delta" data-keep="days">{{ money((ko.get('days') or {}).get('delta_monthly')) }}/mo</span> ·
+          <span class="mono" data-keep-points="days">{{ (ko.get('days') or {}).get('points', 0) }}</span> restore points</span></label>
+      <label class="radio" for="k-n"><input type="radio" id="k-n" name="retention_type" value="count" {{ 'checked' if fv.retention_type == 'count' }}>
+        <span>Keep the last <input type="number" name="retention_count" value="{{ fv.retention_count }}" style="width:5ch" class="mono"> versions</span>
+        <span class="why"><span class="k-delta" data-keep="count">{{ money((ko.get('count') or {}).get('delta_monthly')) }}/mo</span> ·
+          <span class="mono" data-keep-points="count">{{ (ko.get('count') or {}).get('points', 0) }}</span> restore points</span></label>
+    </div>
+    <p class="sm faint measure" id="keep-consequence" style="margin-top:6px">
+      {% if est and est.breakdown.change_rate_pct == 0 %}Nothing gets replaced, so there are no old versions to store —
+        every option above adds <span class="n">$0.00</span>. It is still a real choice: it bounds how far back you can
+        restore, and how much one bad night can cost you.
+      {% elif est and est.projection.unbounded %}Keep everything never plateaus, so no typical month is printed for it —
+        only "still growing".
+      {% elif est %}At ~{{ est.breakdown.change_rate_pct|int }}% change, old versions settle at about
+        {{ '%.2f'|format(est.breakdown.old_multiplier) }}× your data — <span class="n">{{ money(est.breakdown.versioning) }}</span>
+        of the <span class="n">{{ money(est.this_job_monthly) }}</span>. Keeping less also limits how far back you can restore,
+        which is worth something at 0% too.{% endif %}</p>
+
+    <!-- type-specific settings (5.8 §3.8) -->
+    <label class="radio" data-when-type="archive" style="margin-top:12px">
+      <span data-when-type="archive"><b>When you delete a file locally</b></span></label>
+    <div data-when-type="archive">
+      <label class="radio" for="mir-0"><input type="radio" id="mir-0" name="mirror" value="0" {{ 'checked' if fv.mirror != '1' }}><span>keep it in the copy</span></label>
+      <label class="radio" for="mir-1"><input type="radio" id="mir-1" name="mirror" value="1" {{ 'checked' if fv.mirror == '1' }}><span>delete it from the copy too</span></label>
+    </div>
+    <label class="radio" data-when-type="archive versioned-files"><input type="checkbox" name="packing" value="1" {{ 'checked' if fv.packing == '1' }}>
+      <span>My files are already bundled (.cbz, tar)</span></label>
+    <label class="sm" data-when-type="archive versioned-files" data-when-packing="1" style="display:block;margin-left:34px">
+      Typical archive size <input type="number" name="pack_member_gb" value="{{ fv.pack_member_gb }}" step="0.01" min="0.001" style="width:6ch" class="mono"> GB each
+      <span class="faint"> — cost estimate only; the tool copies files as they are and won't bundle for you.</span></label>
+
+    <!-- 2e · What it costs — WHEN × WHOSE (5.8 §3.6) -->
+    <hr class="hair" style="margin:24px 0 16px">
+    <p class="lbl">What it costs · pick a <b style="color:var(--ink)">when</b>, read the <b style="color:var(--ink)">whose</b> row</p>
+    <div class="seg" role="tablist" aria-label="When" style="margin-top:10px">
+      <button type="button" role="tab" data-when="first" aria-selected="false">Your first bill</button>
+      <button type="button" role="tab" data-when="typical" aria-selected="true">A typical month</button>
+      <button type="button" role="tab" data-when="six" aria-selected="false">The first 6 months</button>
+    </div>
+    {% set this_typical = 'still growing' if (est and est.projection.unbounded) else money(est.this_job_monthly if est else none) %}
+    {% set all_typical = ('at least ' ~ money(est.all_jobs.typical_floor)) if (est and est.all_jobs.unbounded) else money(est.all_jobs.typical if est else none) %}
+    <div class="whose">
+      <span class="colhead" id="when-head">a typical month, per month</span>
+      <span class="k">this job — {{ fv.name or 'this job' }}</span><span class="v n{{ ' assumed' if not measured }}" id="fig-job">{{ dash(fv.source, this_typical) }}</span>
+      <span class="k total">all jobs{% if est and est.all_jobs.others %} — {{ fv.name or 'this job' }} + {{ est.all_jobs.others|join(' + ') }}{% endif %}</span>
+      <span class="v n total{{ ' assumed' if not measured }}" id="fig-all">{{ dash(fv.source, all_typical) }}</span>
+    </div>
+    <p class="sm faint measure" id="when-note" style="margin-top:10px">
+      About <span class="n" id="s-typical">{{ this_typical }}</span> a month once history has built up.
+      Your first bill is <span class="n" id="s-first">{{ money(est.projection.first_bill if est else none) }}</span>,
+      <span id="first-reason">{{ est.first_bill_reason_text if est else '' }}</span>.
+      <button type="button" class="linkish" data-toggle="new-working">Show working ▸</button></p>
+    <div id="new-working" hidden class="sev note" style="margin-top:10px">
+      <p id="working-text">{% if est %}{{ '%.2f'|format(est.breakdown.billed_gb) }} GB measured ×
+        <span class="mono">${{ '%.3f'|format(est.breakdown.rate_gb_month) }}</span>/GB·mo =
+        <span class="mono">{{ money(est.breakdown.storage) }}</span> to store the files.{% endif %}</p>
+    </div>
+  </section>
+
+  <!-- 3 · How often -->
+  <section class="sec{{ dim }}">
+    <h2 class="lbl">3 · How often</h2>
+    <div class="sched-builder" id="sched-builder" hidden style="margin-top:12px">
+      <div style="display:flex;flex-wrap:wrap;gap:16px">
+        <label class="sm faint">Frequency
+          <select id="sched-freq"><option value="hourly">Hourly</option><option value="daily" selected>Daily</option>
+            <option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label>
+        <label class="sm faint">At <input type="time" id="sched-time" value="05:00"></label>
+        <label class="sm faint" id="sched-dow-wrap" hidden>On
+          <select id="sched-dow"><option value="0">Sun</option><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option></select></label>
+        <label class="sm faint" id="sched-dom-wrap" hidden>Day <input type="number" id="sched-dom" min="1" max="28" value="1"></label>
+      </div>
+      <p class="sm" style="margin-top:10px">Runs <span id="sched-human">every day at 05:00</span> —
+        <span class="mono faint" id="sched-preview">0 5 * * *</span> ·
+        <button type="button" class="linkish" id="sched-advanced-toggle">Advanced ▸</button></p>
+    </div>
+    <div id="sched-raw">
+      <label class="sm">Schedule (cron) <input name="schedule" id="sched-input" value="{{ fv.schedule }}" class="mono" required></label>
+      <p class="sm faint">e.g. <code>0 3 * * *</code> = daily 3am, <code>0 4 * * 0</code> = weekly Sun 4am.
+        <button type="button" class="linkish" id="sched-simple-toggle" hidden>Use the builder</button></p>
+    </div>
+    <label class="radio" for="enabled" style="margin-top:6px"><input type="checkbox" id="enabled" name="enabled" value="1" {{ 'checked' if fv.enabled == '1' }}>
+      <span>Run on this schedule</span></label>
+    <p class="sm faint measure" id="collision-line" data-when-type="versioned">
+      {% if est and est.schedule.collision %}<b>{{ est.schedule.collision.job }}</b> also runs at {{ est.schedule.collision.at }}.
+        Snapshot backups share one store and cannot overlap — use {{ est.schedule.collision.suggest }}.
+        <button type="button" class="btn btn-ghost btn-xs" id="use-suggest" data-suggest-cron="{{ est.schedule.collision.suggest_cron }}">Use {{ est.schedule.collision.suggest }}</button>
+      {% else %}No other Snapshot backup runs at this time. Snapshot backups share one store and cannot overlap.{% endif %}</p>
+  </section>
+
+  <!-- 4 · Name it -->
+  <section class="sec{{ dim }}">
+    <h2 class="lbl">4 · Name it</h2>
+    {% if is_edit %}
+    <dl class="def"><dt>Job name</dt><dd><span class="mono">{{ fv.name }}</span>
+      <div class="sm faint measure" style="margin-top:4px">The name is the tag on every snapshot and the folder name in
+        the bucket. To rename, create a new job and delete this one.</div></dd></dl>
+    {% else %}
+    <div style="margin-top:12px;max-width:24rem">
+      <label class="sm faint" for="jobname" style="display:block;margin-bottom:6px">Job name</label>
+      <input type="text" class="mono" id="jobname" name="name" value="{{ fv.name }}" maxlength="64">
+    </div>
+    <p class="sm faint measure" id="name-hint" style="margin-top:8px">Letters, digits, dot, dash, underscore.
+      Used as the tag on each snapshot and as the folder name in the bucket.</p>
+    {% endif %}
+    {% if errors.get('form') %}<p class="sm" style="color:var(--danger)">{{ errors.get('form') }}</p>{% endif %}
+    {% if errors.get('size') %}<p class="sm" style="color:var(--danger)">{{ errors.get('size') }}</p>{% endif %}
+  </section>
+
+  <div class="formfoot">
+    <button type="submit" class="btn btn-primary" id="create-btn" {{ 'disabled' if unacked }}>{{ 'Save changes' if is_edit else 'Create job' }}</button>
+    <button type="submit" class="btn btn-ghost" id="create-run-btn" name="run_now" value="1" {{ 'disabled' if unacked }}>{{ 'Save and run it now' if is_edit else 'Create and run it now' }}</button>
+    <a class="linkish" href="{{ url_for('gui.job_page', name=fv.name) if is_edit else url_for('gui.index') }}">Cancel</a>
+    <span class="figs" id="foot-figs">a typical month — this job <span class="n" id="foot-job">{{ dash(fv.source, this_typical) }}</span> ·
+      all jobs <span class="n" id="foot-all">{{ dash(fv.source, all_typical) }}</span> &nbsp;<a href="{{ url_for('gui.cost_page_view') }}">over time →</a></span>
   </div>
-  <div class="card"><h2>5 · Name it</h2>
-    <label>Job name <input name="name" value="{{ job.name if job else '' }}" {{ 'readonly' if job }} required placeholder="nightly-configs"></label>
-    <p class="hint">Letters, digits, dot, dash, underscore. Used as the S3 prefix / restic tag.</p>
-  </div>
-  <div class="actions"><button type="submit" class="btn btn-primary">Save job</button> <a class="btn" href="{{ url_for('gui.jobs_page') }}">Cancel</a></div>
+  <p class="sm" id="create-why" style="margin-top:8px;color:var(--danger)" {{ '' if unacked or not fv.source else 'hidden' }}>
+    {% if unacked %}Fix the blocker above first.{% elif not fv.source %}Pick a folder first.{% endif %}</p>
+
+  <p class="lbl" style="margin-top:20px" id="pricestamp">
+    Prices: {{ 'live AWS price list' if price_stamp.kind == 'live' else 'bundled table' }}, {{ price_stamp.region }},
+    {{ 'fetched' if price_stamp.kind == 'live' else 'captured' }} {{ price_stamp.date or '—' }}.
+    {% if price_stamp.live_failed %}— the live list could not be fetched.{% endif %}
+    <button type="button" class="linkish" id="live-toggle" data-kind="{{ price_stamp.kind }}" style="letter-spacing:0;text-transform:none">
+      {{ 'Back to the bundled table ▸' if price_stamp.kind == 'live' else 'Use live AWS prices ▸' }}</button></p>
+
+  <noscript><button type="submit" name="recalc" value="1" class="btn btn-ghost">Recalculate</button></noscript>
+
+  <script type="application/json" id="other-jobs">{{ other_jobs|tojson }}</script>
+  <script type="application/json" id="saved-job">{{ saved_json|safe }}</script>
 </form>
 {% endblock %}

@@ -67,7 +67,7 @@ def class_advice(job_type: str, storage_class: str, schedule: str,
     #    Triggered on AVERAGE object size (post-bundling), so it clears once files
     #    are packed. `object_count` is the EFFECTIVE count (already reflects packing).
     if (storage_class in COLD_CLASSES and object_count and object_count >= 50_000
-            and size_gb and (size_gb * 1024 / object_count) < 1.0):
+            and size_gb and (size_gb * 1024 / object_count) < 10.0):
         avg_kb = size_gb * 1024 * 1024 / object_count
         out.append({"level": "warn", "text": (
             "{:,} objects averaging ~{:.0f} KB on {}. Cold storage adds ~40 KB "
@@ -166,6 +166,63 @@ TYPE_GUIDANCE = {
                    "since cold restores need a thaw first."),
     },
 }
+
+
+# Churn phrases for the recommendation `Why:` sentence (spec 5.8 §3.1).
+_CHURN_PHRASE = {0: "never", 1: "a little", 10: "some", 30: "a lot"}
+
+# The user-facing type label used by the recommendation (matches vocab.TYPE_NAMES;
+# duplicated here so this pure module keeps no template/vocab import surface).
+_TYPE_LABEL = {"versioned": "Snapshot backup", "archive": "Plain copy",
+               "versioned-files": "File history"}
+
+
+def _churn_phrase(pct: float) -> str:
+    key = int(round(pct))
+    return _CHURN_PHRASE.get(key, ("a lot" if pct >= 20 else "some" if pct >= 5
+                                   else "a little" if pct > 0 else "never"))
+
+
+def _fmt_gb(size_gb: float) -> str:
+    return f"{size_gb:,.2f} GB"
+
+
+def recommend_type(*, size_gb: float, file_count: int, change_rate_pct: float,
+                   measured: bool, change_rate_set: bool = True) -> dict | None:
+    """Which backup kind fits this folder's SHAPE (spec 5.8 §3.1). Keyword-only —
+    the numeric args are easy to transpose, so the signature forbids positional
+    calls. Returns None on an unmeasured folder or when no rule fires.
+
+    Tri-state on `change_rate_set`: while the change-rate radios are untouched in a
+    session (`change_rate_set=False`), the change-rate clause of every rule is
+    dropped so a fresh form still recommends for both example jobs; once the owner
+    picks a rate (`change_rate_set=True`, always so on the edit screen) the
+    predicates read literally. Only the PREDICATE ignores the rate — the printed
+    `Why:` sentence always uses the form's current value."""
+    if not measured:
+        return None
+    avg_gb = (size_gb / file_count) if file_count else float("inf")
+    # A rule's change clause is satisfied EITHER when the rate matches OR when the
+    # rate is still unset (fresh form): the shape alone then decides (5.8 §3.1).
+    changes = change_rate_pct > 0 or not change_rate_set          # rule 1
+    static = change_rate_pct == 0 or not change_rate_set          # rules 2 & 3
+    if file_count < 10_000 and changes:
+        return {"type": "versioned", "label": _TYPE_LABEL["versioned"],
+                "rule": "under 10,000 files and some change → Snapshot backup",
+                "why": (f"{file_count:,} files in {_fmt_gb(size_gb)} that change "
+                        f"{_churn_phrase(change_rate_pct)} between runs is the shape "
+                        f"this is for.")}
+    if file_count >= 50_000 and avg_gb < 0.01 and static:
+        return {"type": "archive", "label": _TYPE_LABEL["archive"],
+                "rule": "more than 50,000 files and nothing changes → Plain copy",
+                "why": (f"{file_count:,} files in {_fmt_gb(size_gb)} that only ever "
+                        f"get added is the shape this is for.")}
+    if size_gb >= 500 and static:
+        return {"type": "archive", "label": _TYPE_LABEL["archive"],
+                "rule": "large and nothing changes → Plain copy",
+                "why": (f"{_fmt_gb(size_gb)} that only ever gets added is the shape "
+                        f"this is for.")}
+    return None
 
 
 def type_advice(job_type: str, storage_class: str | None = None) -> dict | None:

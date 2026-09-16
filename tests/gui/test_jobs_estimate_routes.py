@@ -139,11 +139,21 @@ def test_jobs_estimate_warns_and_bundling_fixes_many_small_on_cold(client):
     assert packed["breakdown"]["upload_onetime"] < loose["breakdown"]["upload_onetime"] / 100
 
 
-def test_jobs_estimate_no_bundle_warning_for_large_objects(client):
-    # ~8MB .cbz objects (real manga) on DEEP_ARCHIVE -> no warning; already fine.
+def test_jobs_estimate_bundle_warning_at_manga_shape(client):
+    # Appendix B #43 raised the bundling threshold 1 MB -> 10 MB so the owner's real
+    # manga example (232,021 files in 1824 GB = 8.05 MB avg) on DEEP_ARCHIVE now DOES
+    # fire the per-object bundling advice (it is the case the warning exists for).
     j = client.get("/jobs/estimate.json", query_string={
         "name": "manga", "type": "archive", "source": "movies", "storage_class": "DEEP_ARCHIVE",
         "schedule": "0 4 * * 0", "size_gb": "1824", "file_count": "232021"}).get_json()
+    assert "bundle" in " ".join(a["text"] for a in j["advice"]).lower()
+
+
+def test_jobs_estimate_no_bundle_warning_above_ten_mb_average(client):
+    # Above 10 MB average (1824 GB / 100,000 files = 18.7 MB) the warning stays silent.
+    j = client.get("/jobs/estimate.json", query_string={
+        "name": "big", "type": "archive", "source": "movies", "storage_class": "DEEP_ARCHIVE",
+        "schedule": "0 4 * * 0", "size_gb": "1824", "file_count": "100000"}).get_json()
     assert "bundle" not in " ".join(a["text"] for a in j["advice"]).lower()
 
 
@@ -322,17 +332,16 @@ def test_jobs_estimate_churn_param_changes_monthly(client):
     assert hi["this_job_monthly"] > lo["this_job_monthly"]
 
 
-def test_wizard_page_has_churn_selector_and_projection_cells(client):
+def test_wizard_page_has_change_rate_radios_and_when_matrix(client):
     body = client.get("/jobs/new").get_data(as_text=True)
-    assert 'name="change_rate_pct"' in body          # churn selector
-    assert "How much changes each backup" in body
-    assert 'id="job-cost-first"' in body             # First-bill headline cell
-    assert 'id="job-cost-breakdown"' in body         # plain-English breakdown line
+    assert 'name="change_rate_pct"' in body          # change-rate radios (5.8 §3.4)
+    assert "How much of it changes each backup?" in body
+    assert 'id="fig-job"' in body                    # WHEN x WHOSE this-job cell (5.8 §3.6)
+    assert 'id="new-working"' in body                # Show working disclosure
 
 
-def test_wizard_churn_selector_defaults_to_no_change(client):
+def test_wizard_change_rate_defaults_to_a_little(client):
     import re
     body = client.get("/jobs/new").get_data(as_text=True)
-    assert "No change" in body
-    # the 0% option is the pre-selected default
-    assert re.search(r'<option value="0"[^>]*\bselected', body)
+    # The fresh form starts at ~1% (Appendix B #17): the ch-1 radio is checked.
+    assert re.search(r'id="ch-1"[^>]*\bvalue="1"[^>]*\bchecked', body)

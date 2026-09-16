@@ -500,3 +500,210 @@ def test_cost_page_applies_saved_scenario_defaults(tmp_path):
     page = estimate_io.cost_page({}, cfg, _cache(tmp_path), _prices(), SRC)
     assert page["assumptions"]["scenario"]["retrieval_tier"] == "Standard"
     assert page["assumptions"]["scenario"]["restore_fraction"] == 0.5
+
+
+# ===========================================================================
+# Task 14: the create/edit-job WIZARD extensions (spec 5.8 / 7.9 / 8.6).
+# recommend_type (pure), and wizard_estimate's classes / keep_options /
+# all_jobs / recommendation / warnings / blockers / first_bill_reason /
+# provenance keys + the keep_all-at-0% adapter override. All CALL the frozen
+# model; the Task-1 guard stays green.
+# ===========================================================================
+from app.gui import storage_advice as _sa
+
+
+# --- recommend_type (5.8 §3.1): keyword-only, tri-state on change_rate_set --
+
+def test_recommend_type_rule_1_snapshot_on_small_folder():
+    r = _sa.recommend_type(size_gb=52.71, file_count=533, change_rate_pct=1, measured=True)
+    assert r["type"] == "versioned" and r["label"] == "Snapshot backup"
+    assert "under 10,000 files" in r["rule"]
+    assert "a little" in r["why"]                       # 1% churn phrase
+
+
+def test_recommend_type_rule_2_plain_copy_on_manga_shape():
+    # 232,021 files / 1780 GB = 7.85 MB avg (< 10 MB), nothing changes -> Plain copy.
+    r = _sa.recommend_type(size_gb=1780, file_count=232021, change_rate_pct=0, measured=True)
+    assert r["type"] == "archive" and r["label"] == "Plain copy"
+    assert "more than 50,000 files" in r["rule"]
+
+
+def test_recommend_type_rule_3_large_static():
+    r = _sa.recommend_type(size_gb=600, file_count=10, change_rate_pct=0, measured=True)
+    assert r["type"] == "archive"
+    assert "large and nothing changes" in r["rule"]
+
+
+def test_recommend_type_none_when_unmeasured():
+    assert _sa.recommend_type(size_gb=52.71, file_count=533,
+                              change_rate_pct=1, measured=False) is None
+
+
+def test_recommend_type_fresh_form_tri_state():
+    # Fresh form: change rate is UNSET, so rules 2/3 fire on shape alone and rule 1
+    # needs only the file-count clause (5.8 §3.1).
+    manga_fresh = _sa.recommend_type(size_gb=1780, file_count=232021, change_rate_pct=1,
+                                     measured=True, change_rate_set=False)
+    assert manga_fresh is not None and "more than 50,000 files" in manga_fresh["rule"]
+    # A deliberate answer (change_rate_set=True, change=1%) is honoured literally:
+    # the manga shape then matches no rule at all.
+    assert _sa.recommend_type(size_gb=1780, file_count=232021, change_rate_pct=1,
+                              measured=True, change_rate_set=True) is None
+    # A small folder still lands on rule 1 either way.
+    appdata_fresh = _sa.recommend_type(size_gb=52.71, file_count=533, change_rate_pct=1,
+                                       measured=True, change_rate_set=False)
+    assert appdata_fresh["type"] == "versioned"
+
+
+def test_recommend_type_always_keyword_only():
+    with pytest.raises(TypeError):
+        _sa.recommend_type(52.71, 533, 1, True)            # positional is forbidden
+
+
+# --- wizard_estimate: the class table (8.6 `classes`) ----------------------
+
+def _wiz(cfg, **over):
+    p = {"name": "appdata", "type": "versioned", "source": "appdata",
+         "schedule": "0 5 * * *", "storage_class": "STANDARD", "size_gb": "52.71",
+         "file_count": "533", "retention_type": "tiered",
+         "keep_last": "3", "keep_daily": "7", "keep_weekly": "4", "keep_monthly": "6",
+         "change_rate_pct": "1", "change_rate_touched": "1",
+         "measured_bytes": str(int(52.71 * 1024 ** 3))}
+    p.update(over)
+    return estimate_io.wizard_estimate(p, cfg, SRC, _prices())
+
+
+def test_wizard_estimate_classes_five_rows_blocked_for_versioned_cold(tmp_path):
+    r = _wiz(_cfg(tmp_path, []))
+    classes = r["classes"]
+    assert [c["class"] for c in classes] == list(_model.STORAGE_CLASSES)
+    blocked = {c["class"] for c in classes if c["blocked"]}
+    assert blocked == {"GLACIER", "DEEP_ARCHIVE"}           # versioned can't read cold
+    std = next(c for c in classes if c["class"] == "STANDARD")
+    assert std["read_access"] == "instant" and std["min_days"] == 0
+    assert std["monthly"] is not None and std["restore_once"] > 0
+    deep = next(c for c in classes if c["class"] == "DEEP_ARCHIVE")
+    assert deep["read_access"] == "≤48 h" and deep["reason"] == "can't be read by a Snapshot backup"
+
+
+def test_wizard_estimate_classes_not_blocked_for_archive(tmp_path):
+    r = _wiz(_cfg(tmp_path, []), type="archive", retention_type="days", retention_days="180")
+    assert not any(c["blocked"] for c in r["classes"])
+
+
+# --- wizard_estimate: keep_options (8.6 `keep_options`) --------------------
+
+def test_wizard_estimate_keep_options_deltas(tmp_path):
+    r = _wiz(_cfg(tmp_path, []))                            # change 1%
+    opts = {o["key"]: o for o in r["keep_options"]}
+    assert set(opts) == {"keep_all", "tiered", "days", "count"}
+    assert all(o["delta_monthly"] is None or o["delta_monthly"] >= 0 for o in r["keep_options"])
+    assert opts["keep_all"]["delta_monthly"] is None and opts["keep_all"]["unbounded"] is True
+    assert opts["keep_all"]["points"] is None and opts["keep_all"]["reach_days"] is None
+    assert opts["tiered"]["points"] == 20                   # 3+7+4+6
+    assert opts["tiered"]["allowed"] is True
+
+
+def test_wizard_estimate_keep_options_all_zero_at_zero_change(tmp_path):
+    r = _wiz(_cfg(tmp_path, []), change_rate_pct="0")
+    opts = {o["key"]: o for o in r["keep_options"]}
+    assert all(o["delta_monthly"] == 0.0 for o in r["keep_options"])
+    # keep_all is BOUNDED at 0% (adapter override): not unbounded, delta 0.0, points null.
+    assert opts["keep_all"]["unbounded"] is False
+    assert opts["keep_all"]["delta_monthly"] == 0.0
+    assert opts["keep_all"]["points"] is None
+
+
+def test_wizard_estimate_keep_all_at_zero_is_bounded(tmp_path):
+    # 7.9 override: keep_all + 0% -> unbounded False, typical == first_bill, steady_month 1.
+    r = _wiz(_cfg(tmp_path, []), retention_type="keep_all", change_rate_pct="0")
+    assert r["projection"]["unbounded"] is False
+    # typical == first bill up to the negligible month-1 one-time upload (no ramp).
+    assert r["projection"]["steady_monthly"] == pytest.approx(r["projection"]["first_bill"], abs=0.01)
+    assert r["projection"]["steady_month"] == 1
+    assert r["all_jobs"]["unbounded"] is False
+
+
+# --- wizard_estimate: all_jobs (8.6 `all_jobs`) ----------------------------
+
+def test_wizard_estimate_all_jobs_totals(tmp_path):
+    r = _wiz(_cfg(tmp_path, [AJOB]))
+    aj = r["all_jobs"]
+    assert aj["first_bill"] >= r["projection"]["first_bill"]   # adds the other job's first bill
+    assert aj["typical"] >= r["this_job_monthly"]
+    assert "movies" in aj["others"]
+    assert aj["typical_floor"] >= 0
+
+
+# --- wizard_estimate: recommendation / first_bill_reason / provenance ------
+
+def test_wizard_estimate_recommendation_on_measured_form(tmp_path):
+    r = _wiz(_cfg(tmp_path, []))                            # measured 52.71GB/533 files, 1%
+    assert r["recommendation"]["type"] == "versioned"
+    assert r["provenance"]["size"] == "measured"
+    assert r["provenance"]["this_job_monthly"] == "projected"
+
+
+def test_wizard_estimate_recommendation_none_when_unmeasured(tmp_path):
+    # No measured_bytes -> assumed placeholder -> no recommendation, size assumed.
+    p = {"name": "x", "type": "versioned", "source": "appdata", "schedule": "0 5 * * *",
+         "storage_class": "STANDARD", "change_rate_pct": "1", "change_rate_touched": "1"}
+    r = estimate_io.wizard_estimate(p, _cfg(tmp_path, []), SRC, _prices())
+    assert r["recommendation"] is None
+    assert r["provenance"]["size"] == "assumed"
+    assert r["provenance"]["this_job_monthly"] == "assumed"
+
+
+def test_wizard_estimate_first_bill_reason(tmp_path):
+    r = _wiz(_cfg(tmp_path, []))                            # versioned, tiered, 1% -> ramps
+    assert r["first_bill_reason"] in ("ramp", "upload", "both", "flat")
+    assert isinstance(r["first_bill_reason_text"], str) and r["first_bill_reason_text"]
+
+
+# --- wizard_estimate: blockers + warnings (8.6) ----------------------------
+
+def test_wizard_estimate_blocker_snapshots_on_cold(tmp_path):
+    r = _wiz(_cfg(tmp_path, []), storage_class="DEEP_ARCHIVE")
+    codes = {b["code"] for b in r["blockers"]}
+    assert "snapshots_on_cold_class" in codes
+    b = next(b for b in r["blockers"] if b["code"] == "snapshots_on_cold_class")
+    assert b["overridable"] is True and b["class"] == "DEEP_ARCHIVE"
+    assert {f["label"] for f in b["fixes"]} >= {"Use File history instead", "Use Instant, cheaper"}
+
+
+def test_wizard_estimate_no_blocker_for_archive_cold(tmp_path):
+    r = _wiz(_cfg(tmp_path, []), type="archive", storage_class="DEEP_ARCHIVE",
+             retention_type="days", retention_days="180")
+    assert r["blockers"] == []
+
+
+def test_wizard_estimate_warning_many_small_on_cold(tmp_path):
+    # manga shape on DEEP_ARCHIVE -> the per-object heads-up warning fires.
+    r = _wiz(_cfg(tmp_path, []), type="archive", storage_class="DEEP_ARCHIVE",
+             retention_type="days", retention_days="180",
+             size_gb="1780", file_count="232021",
+             measured_bytes=str(int(1780 * 1024 ** 3)))
+    codes = {w["code"] for w in r["warnings"]}
+    assert "per_object" in codes
+
+
+def test_wizard_estimate_price_kind_bundled(tmp_path):
+    r = _wiz(_cfg(tmp_path, []))
+    assert r["price_kind"] == "bundled"
+    assert r["price_region"] == "us-east-1"
+    assert r["live_failed"] is False
+
+
+def test_wizard_estimate_breakdown_additions(tmp_path):
+    r = _wiz(_cfg(tmp_path, []))
+    b = r["breakdown"]
+    for k in ("rate_gb_month", "old_gb", "old_multiplier", "effective_object_count",
+              "put_rate_per_1k", "cold_overhead_monthly"):
+        assert k in b
+    assert b["effective_object_count"] == 533
+
+
+def test_wizard_estimate_schedule_block(tmp_path):
+    r = _wiz(_cfg(tmp_path, []))
+    assert r["schedule"]["cron"] == "0 5 * * *"
+    assert r["schedule"]["backups_per_month"] > 0

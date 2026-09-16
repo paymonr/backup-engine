@@ -242,35 +242,25 @@
   })();
 })();
 
-// Wizard live cost (job_form.html): recompute "this job" + "new total" as the
-// create/edit form changes, and look up a picked source folder's real size so an
-// un-backed-up job's estimate reflects it. Guarded by the wizard's cost card so
-// this never runs on other pages; does not touch the source-tree IIFE above or
-// the /estimate page's own IIFE below — absolute paths since this template is
-// served from both /jobs/new and /jobs/<name>/edit (different path depths).
+// Create/edit job WIZARD (job_form.html, spec 5.8/5.9): the server owns the cost
+// model — this fetches /jobs/estimate.json on every change and repaints every cell
+// beside its control. It LAYERS ON TOP of the preserved folder browser, schedule
+// builder and data-when-* visibility (spec 2.3) — it never touches their elements.
 (function () {
-  var card = document.getElementById("job-cost");
   var form = document.getElementById("job-form");
-  if (!card || !form) return;
-  var thisEl = document.getElementById("job-cost-this");
-  var totalEl = document.getElementById("job-cost-total");
-  var dateEl = document.getElementById("job-cost-date");
-  var errEl = document.getElementById("job-cost-error");
-  var sizeInput = document.getElementById("size-gb-input");
-  var sourceTree = document.getElementById("source-tree");
-  var sizingEl = document.getElementById("job-cost-sizing");
-  var restoreEl = document.getElementById("job-cost-restore");
-  var adviceEl = document.getElementById("job-advice");
-  var infoEl = document.getElementById("source-info");
-  var firstEl = document.getElementById("job-cost-first");
-  var breakdownEl = document.getElementById("job-cost-breakdown");
-  var futureEl = document.getElementById("job-cost-future");
-  var milestonesEl = document.getElementById("job-cost-milestones");
-  var guidanceEl = document.getElementById("job-guidance");
-  var explainEl = document.getElementById("job-explain");
-  var timer;
+  if (!form || !form.dataset.estUrl) return;
+  var estUrl = form.dataset.estUrl, sizeUrl = form.dataset.sourceSizeUrl;
+  var isEdit = form.dataset.edit === "1";
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  var whenKey = "typical", lastData = null, typeTouched = isEdit, timer;
+  var acked = {};
+  $$('input[name="acknowledge_blocker"]', form).forEach(function (i) { acked[i.value] = true; });
 
-  function sizing(on) { if (sizingEl) sizingEl.hidden = !on; }
+  function money(v) {
+    if (v === null || v === undefined) return "—";
+    return "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
   function fmtBytes(b) {
     var gb = b / (1024 * 1024 * 1024);
     if (gb >= 1) return gb.toLocaleString(undefined, { maximumFractionDigits: 2 }) + " GB";
@@ -278,211 +268,279 @@
     if (mb >= 1) return mb.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " MB";
     return Math.max(0, Math.round(b / 1024)).toLocaleString() + " KB";
   }
-  function showInfo(d) {
-    if (!infoEl) return;
-    if (!d) { infoEl.hidden = true; infoEl.textContent = ""; return; }
-    if (d.capped && !d.bytes) {
-      infoEl.textContent = "Couldn't finish measuring this folder — it may be extremely large or unreadable.";
-      infoEl.hidden = false;
-      return;
+  function flash(el) { if (!el) return; el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+  function set(el, txt) { if (el && el.textContent !== txt) { el.textContent = txt; flash(el); } }
+  function priceKind() { var t = $("#live-toggle"); return t ? t.dataset.kind : "bundled"; }
+
+  // ---- folder measurement: fetch the real size async, thread it into size_gb +
+  //      measured_bytes so the estimate (which never walks the disk) reflects it.
+  function measure(path) {
+    var sizeIn = $("#size-gb-input"), fcIn = $("#file-count-input"),
+        mbIn = $("#measured-bytes-input"), capIn = $("#measured-capped-input"),
+        atIn = $("#measured-at-input"), line = $("#measure-line"), sizing = $("#job-cost-sizing");
+    if (!path) {
+      sizeIn.value = fcIn.value = mbIn.value = capIn.value = ""; if (line) line.textContent = "";
+      schedule(); return;
     }
-    var msg = "This folder holds " + fmtBytes(Number(d.bytes || 0));
-    if (Number(d.count || 0) > 0) msg += " across " + Number(d.count).toLocaleString() + " files";
-    if (d.capped) msg += " (measurement may be incomplete)";
-    infoEl.textContent = msg + ".";
-    infoEl.hidden = false;
+    if (sizing) sizing.hidden = false;
+    if (line) line.innerHTML = '<span class="n assumed">measuring…</span>';
+    fetch(sizeUrl + "?path=" + encodeURIComponent(path))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (sizing) sizing.hidden = true;
+        if (!d) { if (line) line.textContent = "Couldn't measure that folder."; return; }
+        capIn.value = d.capped ? "1" : "";
+        if (d.capped && !d.bytes) {
+          sizeIn.value = ""; mbIn.value = ""; fcIn.value = "";
+          if (line) line.innerHTML = "Couldn't finish measuring this folder — it may be extremely large or unreadable.";
+          schedule(); return;
+        }
+        sizeIn.value = String(d.bytes / (1024 * 1024 * 1024));
+        mbIn.value = d.capped ? "" : String(d.bytes);   // partial walk -> assumed
+        fcIn.value = String(d.count || 0);
+        atIn.value = "";
+        if (line) line.innerHTML = '<span class="n">' + fmtBytes(d.bytes) + "</span> · <span class=\"mono\">" +
+          Number(d.count || 0).toLocaleString() + " files</span> · measured just now" +
+          (d.capped ? " (measurement may be incomplete)" : "") +
+          ' · <button type="button" class="linkish" id="remeasure-btn">Re-measure</button>';
+        schedule();
+      })
+      .catch(function () { if (sizing) sizing.hidden = true; });
+  }
+  var tree = document.getElementById("source-tree");
+  if (tree && sizeUrl) {
+    tree.addEventListener("change", function (ev) {
+      if (!ev.target || ev.target.type !== "checkbox") return;
+      undim(ev.target.checked);
+      measure(ev.target.checked ? ev.target.value : "");
+    });
+  }
+  function undim(on) {
+    $$("section.sec").forEach(function (s, i) { if (i > 0) s.classList.toggle("dimmed", !on); });
   }
 
-  function money(v) {
-    if (v === null || v === undefined) return "—";
-    return "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-  function paintAdvice(list) {
-    if (!adviceEl) return;
-    while (adviceEl.firstChild) adviceEl.removeChild(adviceEl.firstChild);
-    if (!list || !list.length) { adviceEl.hidden = true; return; }
-    for (var i = 0; i < list.length; i++) {
-      var item = document.createElement("p");
-      item.className = "advice-item advice-" + (list[i].level || "info");
-      item.textContent = list[i].text;
-      adviceEl.appendChild(item);
+  // ---- the live repaint ----------------------------------------------------
+  function paint(d) {
+    lastData = d;
+    // price stamp
+    var stamp = $("#pricestamp"), lt = $("#live-toggle");
+    if (stamp && lt) {
+      var live = d.price_kind === "live";
+      stamp.firstChild.nodeValue = "Prices: " + (live ? "live AWS price list" : "bundled table") +
+        ", " + (d.price_region || "us-east-1") + ", " + (live ? "fetched " : "captured ") + (d.price_date || "—") +
+        ". " + (d.live_failed ? "— the live list could not be fetched. " : "");
+      lt.dataset.kind = d.price_kind; lt.textContent = live ? "Back to the bundled table ▸" : "Use live AWS prices ▸";
     }
-    adviceEl.hidden = false;
-  }
-  function fmtGb(gb) { return Number(gb).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " GB"; }
-  function paintBreakdown(b) {
-    if (!breakdownEl) return;
-    if (!b) { breakdownEl.hidden = true; breakdownEl.textContent = ""; return; }
-    var parts = ["Storage " + fmtGb(b.billed_gb) + ": " + money(b.storage) + "/mo"];
-    if (b.versioning > 0) {
-      var window = (b.retention_days != null) ? b.retention_days + "d, " : "";
-      parts.push("old versions (" + window + "~" + b.change_rate_pct + "% churn): " + money(b.versioning) + "/mo");
-    }
-    if (b.rotation > 0) parts.push("early-deletion: " + money(b.rotation) + "/mo");
-    var onetime = (b.upload_onetime || 0) + (b.lockin_onetime || 0);
-    if (onetime > 0) parts.push("one-time: " + money(onetime));
-    breakdownEl.textContent = parts.join(" · ");
-    breakdownEl.hidden = false;
-  }
-  // Always shows something (unlike the old ramp-only line): a flat job gets a
-  // "steady, no increase" summary; a ramping job gets start → rise → steady plus
-  // the monthly milestones. Both surface the cumulative next-6-months figure.
-  function paintFuture(p) {
-    if (!futureEl) return;
-    if (!p) {
-      futureEl.hidden = true; futureEl.textContent = "";
-      if (milestonesEl) { milestonesEl.hidden = true; milestonesEl.textContent = ""; }
-      return;
-    }
-    var first = p.first_bill || 0, steady = p.steady_monthly || 0;
-    var sixmo = (p.total_6mo != null) ? money(p.total_6mo) : "—";
-    if (p.unbounded) {
-      // keep_all ("Keep everything"): never settles — show the growth, not a plateau.
-      futureEl.textContent = "Keeps growing — “Keep everything” has no steady state: " +
-        "versions pile up to ~" + money(p.at_12) + "/mo by year 1, ~" + money(p.at_24) +
-        "/mo by year 2, and rising. About " + sixmo + " total over the next 6 months.";
-      futureEl.hidden = false;
-      if (milestonesEl) {
-        milestonesEl.textContent = "Monthly bill — M1 " + money(first) + " · M6 " + money(p.at_6) +
-          " · M12 " + money(p.at_12) + " · M24 " + money(p.at_24) + " (climbing).";
-        milestonesEl.hidden = false;
+    // class table
+    (d.classes || []).forEach(function (c) {
+      var m = $('[data-cls-monthly="' + c.class + '"]'), rq = $('[data-cls-restore="' + c.class + '"]'),
+          row = $('[data-cls-row="' + c.class + '"]');
+      if (m) { set(m, money(c.monthly)); m.classList.toggle("struck", !!c.blocked); }
+      if (rq) {
+        rq.classList.toggle("struck", !!c.blocked);
+        rq.innerHTML = money(c.restore_once) + (c.reason ? '<span class="reason"> ' + c.reason + "</span>" : "");
       }
-      return;
-    }
-    var flat = Math.abs(first - steady) < 0.005;
-    if (flat) {
-      futureEl.textContent = "≈ " + money(steady) + "/mo, steady — no monthly increase. " +
-        "About " + sixmo + " total over the next 6 months.";
+      if (row) row.classList.toggle("blocked", !!c.blocked);
+    });
+    // keep deltas + points
+    (d.keep_options || []).forEach(function (o) {
+      var el = $('.k-delta[data-keep="' + o.key + '"]');
+      if (el) set(el, o.unbounded ? "still growing" : money(o.delta_monthly) + "/mo");
+      var pts = $('[data-keep-points="' + o.key + '"]'); if (pts && o.points != null) set(pts, String(o.points));
+      var rch = $('[data-keep-reach="' + o.key + '"]'); if (rch && o.reach_days != null) set(rch, String(o.reach_days));
+    });
+    paintKeepState(d);
+    paintWhen(d);
+    paintBlocker(d);
+    paintWarnings(d);
+    paintRecommendation(d);
+    paintProvenance(d);
+  }
+  function paintKeepState(d) {
+    var head = $("#keep-head"), block = $("#keep-block"), cons = $("#keep-consequence");
+    if (!head) return;
+    var change = d.breakdown ? d.breakdown.change_rate_pct : 0;
+    if (change === 0) {
+      head.innerHTML = 'How long to keep old versions <span style="font-weight:400;font-size:13px;color:var(--warn)">' +
+        '— no cost effect at 0% change · still bounds how far back you can restore</span>';
+      if (block) block.classList.add("inert");
+      if (cons) cons.innerHTML = 'Nothing gets replaced, so there are no old versions to store — every option above adds ' +
+        '<span class="n">$0.00</span>. It is still a real choice: it bounds how far back you can restore, and how much ' +
+        'one bad night can cost you.';
     } else {
-      futureEl.textContent = "Starts " + money(first) + "/mo and rises " + money(steady - first) +
-        " to " + money(steady) + "/mo by month " + p.steady_month + ". " +
-        "About " + sixmo + " total over the next 6 months.";
-    }
-    futureEl.hidden = false;
-    if (milestonesEl) {
-      // Always show the monthly milestones — for a flat job the equal numbers make
-      // "it doesn't grow" concrete rather than leaving the trajectory blank.
-      milestonesEl.textContent = "Monthly bill — M1 " + money(first) + " · M6 " + money(p.at_6) +
-        " · M12 " + money(p.at_12) + " · M24 " + money(p.at_24) + ".";
-      milestonesEl.hidden = false;
+      head.textContent = "How long to keep old versions";
+      if (block) block.classList.remove("inert");
+      if (cons) {
+        if (d.projection.unbounded) {
+          cons.innerHTML = 'Keep everything never plateaus, so no typical month is printed for it — only "still growing".';
+        } else {
+          cons.innerHTML = "At ~" + Math.round(change) + "% change, old versions settle at about " +
+            (d.breakdown.old_multiplier).toFixed(2) + "× your data — <span class=\"n\">" + money(d.breakdown.versioning) +
+            "</span> of the <span class=\"n\">" + money(d.this_job_monthly) +
+            "</span>. Keeping less also limits how far back you can restore, which is worth something at 0% too.";
+        }
+      }
     }
   }
-  // Reactive "which type / class, and why" — updates through the same live
-  // estimate round-trip whenever the type or storage-class selection changes.
-  function paintGuidance(g) {
-    if (!guidanceEl) return;
-    while (guidanceEl.firstChild) guidanceEl.removeChild(guidanceEl.firstChild);
-    if (!g) { guidanceEl.hidden = true; return; }
-    var when = document.createElement("p");
-    when.className = "advice-item advice-info";
-    when.textContent = g.type_label + " — " + g.type_when;
-    guidanceEl.appendChild(when);
-    var cls = document.createElement("p");
-    if (g.on_recommended === true) {
-      cls.className = "advice-item advice-good";
-      cls.textContent = "✓ " + g.recommend_class + " is the recommended storage class for this type.";
-    } else {
-      cls.className = "advice-item advice-info";
-      cls.textContent = "Recommended storage class: " + g.recommend_class + " — " + g.class_reason;
-    }
-    guidanceEl.appendChild(cls);
-    guidanceEl.hidden = false;
+  var HEADS = { first: "your first bill", typical: "a typical month, per month", six: "the first 6 months, a total not a rate" };
+  function jobFig(d, key) {
+    if (key === "first") return money(d.projection.first_bill);
+    if (key === "six") return money(d.projection.total_6mo);
+    return d.projection.unbounded ? "still growing" : money(d.projection.steady_monthly);
   }
-  // "Why these numbers" — plain-language facts derived from the validated model
-  // (never restated by hand), so the explanation can't drift from the estimate.
-  function paintExplain(x) {
-    if (!explainEl) return;
-    while (explainEl.firstChild) explainEl.removeChild(explainEl.firstChild);
-    if (!x) { explainEl.hidden = true; return; }
-    function line(text, level) {
-      var p = document.createElement("p");
-      p.className = "advice-item advice-" + (level || "info");
-      p.textContent = text;
-      explainEl.appendChild(p);
-    }
-    if (x.zero_churn) {
-      line("Retention only costs money when files get REPLACED. With “No change (0%)” there are no old " +
-        "versions, so the keep-policy settings correctly have no cost effect — raise “How much changes " +
-        "each backup?” to see them matter.");
-      explainEl.hidden = false;
-      return;
-    }
-    var pct = (x.month1_pct_of_steady != null) ? Math.round(x.month1_pct_of_steady * 100) : null;
-    line("Old versions build up for about " + x.plateau_month + " months (your longest tier is " +
-      x.longest_tier + "=" + x.longest_keep + "), then level off" +
-      (pct != null ? " — month 1 carries only ~" + pct + "% of the eventual " + money(x.steady_versioning) + "/mo." : "."));
-    if (x.ladder && x.ladder.length) {
-      var parts = x.ladder.map(function (t) { return t.tier + "=" + t.keep + ": +" + money(t.adds_per_month) + "/mo"; });
-      line("Where it comes from — " + parts.join(" · ") + ". The long tail (monthly) usually dominates: " +
-        "a snapshot kept months back holds months of changes.");
-    }
-    if (x.keep_last_redundant) {
-      line("keep last=" + x.keep_last + " is already covered by keep daily=" + x.keep_daily +
-        ": at one backup a day they are the same rule, so raising it costs nothing until it exceeds " +
-        x.keep_daily + ".", "good");
-    }
-    line("At steady state old versions ≈ " + x.old_multiplier.toFixed(2) + "× your data (~" +
-      Math.round(x.old_gb) + " GB on top of " + Math.round(x.size_gb) + " GB). That is expected, not a " +
-      "bug — each retained gap keeps a distinct version.");
-    line("Upper-end estimate: it assumes a changed file is fully rewritten. Partial-file dedup and " +
-      "compression make the real number lower.");
-    explainEl.hidden = false;
+  function allFig(d, key) {
+    if (key === "first") return money(d.all_jobs.first_bill);
+    if (key === "six") return money(d.all_jobs.total_6mo);
+    return d.all_jobs.unbounded ? "at least " + money(d.all_jobs.typical_floor) : money(d.all_jobs.typical);
   }
-  function paint(data) {
-    if (firstEl) firstEl.textContent = money(data && data.projection && data.projection.first_bill);
-    thisEl.textContent = money(data && data.this_job_monthly);
-    totalEl.textContent = money(data && data.new_total_monthly);
-    if (dateEl) dateEl.textContent = (data && data.price_date) || "—";
-    if (restoreEl) restoreEl.textContent = money(data && data.this_job_restore);
-    paintBreakdown(data && data.breakdown);
-    paintFuture(data && data.projection);
-    paintGuidance(data && data.guidance);
-    paintExplain(data && data.explain);
-    paintAdvice(data && data.advice);
+  function paintWhen(d) {
+    var jt = jobFig(d, whenKey), at = allFig(d, whenKey);
+    set($("#fig-job"), jt); set($("#fig-all"), at);
+    set($("#foot-job"), jt); set($("#foot-all"), at);
+    set($("#when-head"), HEADS[whenKey]);
+    set($("#s-typical"), jobFig(d, "typical")); set($("#s-first"), money(d.projection.first_bill));
+    var fr = $("#first-reason"); if (fr) fr.textContent = d.first_bill_reason_text || "";
+    var foot = $("#foot-figs");
+    if (foot) {
+      var lead = HEADS[whenKey].replace(", per month", "").replace(", a total not a rate", "");
+      foot.innerHTML = lead + ' — this job <span class="n" id="foot-job">' + jt + '</span> · all jobs ' +
+        '<span class="n" id="foot-all">' + at + '</span> &nbsp;<a href="/cost">over time →</a>';
+    }
+    var wt = $("#working-text");
+    if (wt && d.breakdown) {
+      wt.innerHTML = (d.breakdown.billed_gb).toFixed(2) + " GB measured × <span class=\"mono\">$" +
+        (d.breakdown.rate_gb_month).toFixed(3) + "</span>/GB·mo = <span class=\"mono\">" + money(d.breakdown.storage) +
+        "</span> to store the files.";
+    }
   }
+  function footerEnabled(on) {
+    var b = $("#create-btn"), r = $("#create-run-btn"), why = $("#create-why");
+    if (b) b.disabled = !on; if (r) r.disabled = !on;
+    if (why) { why.hidden = on; if (!on) why.textContent = "Fix the blocker above first."; }
+  }
+  function paintBlocker(d) {
+    var cb = $("#class-blocker"); if (!cb) return;
+    var blk = (d.blockers || [])[0];
+    var unacked = blk && !acked[blk.code];
+    cb.hidden = !blk;
+    if (blk) {
+      $("#class-blocker-why").innerHTML = "A Snapshot backup can't read from <b>" + blk.plain + "</b> · " +
+        '<span class="mono">' + blk.class + "</span>. <span class=\"term\" title=\"the snapshot engine\">restic</span> " +
+        "re-reads its whole store every run, so every scheduled run would fail on a data read.";
+    }
+    footerEnabled(!unacked);
+  }
+  function paintWarnings(d) {
+    var box = $("#warnings"); if (!box) return;
+    box.innerHTML = "";
+    (d.warnings || []).forEach(function (w) {
+      var div = document.createElement("div"); div.className = "sev heads"; div.setAttribute("data-warn", w.code);
+      var fixHtml = w.fix ? '<div class="acts"><button type="button" class="btn btn-ghost btn-xs" data-warn-fix="' +
+        w.code + '">' + w.fix.label + "</button></div>" : "";
+      div.innerHTML = '<span class="sev-tab"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">' +
+        '<path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M6 1 11.2 10.6H.8z"/>' +
+        "</svg> Heads up</span><p class=\"sm\">" + w.text + "</p>" + fixHtml;
+      div._fix = w.fix; box.appendChild(div);
+    });
+  }
+  function paintRecommendation(d) {
+    var box = $("#rec-block"); if (!box) return;   // create screen only
+    if (d.recommendation) {
+      box.innerHTML = '<div class="sev rec" style="margin-top:8px"><span class="sev-tab">' +
+        '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="none" ' +
+        'stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="6" r="2" fill="currentColor"/></svg> ' +
+        "Recommended for this folder</span><p class=\"sm faint measure\">" + d.recommendation.why +
+        " Rule: " + d.recommendation.rule + ".</p></div>";
+      if (!typeTouched) {
+        var r = $('input[name="type"][value="' + d.recommendation.type + '"]');
+        if (r && !r.checked) { r.checked = true; applyType(); }
+      }
+    } else if (d.provenance && d.provenance.size === "measured") {
+      box.innerHTML = '<div class="sev note">No recommendation for this folder — none of the rules fit its shape. ' +
+        "Pick the kind yourself; the table below is priced for all three.</div>";
+    } else { box.innerHTML = ""; }
+  }
+  function paintProvenance(d) {
+    var assumed = d.provenance && d.provenance.size === "assumed";
+    ["#fig-job", "#fig-all"].forEach(function (s) { var e = $(s); if (e) e.classList.toggle("assumed", assumed); });
+  }
+  function applyType() {
+    // nudge the preserved data-when-* visibility to re-evaluate.
+    var t = $('input[name="type"]:checked'); if (t) t.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // ---- fetch + debounce ----------------------------------------------------
   function update() {
-    var qs = new URLSearchParams(new FormData(form)).toString();
-    fetch("/jobs/estimate.json?" + qs)
+    var qs = new URLSearchParams(new FormData(form)); qs.set("prices", priceKind());
+    fetch(estUrl + "?" + qs.toString())
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
-        if (res.ok) {
-          if (errEl) { errEl.hidden = true; errEl.textContent = ""; }
-          paint(res.j);
-        } else {
-          if (errEl) { errEl.hidden = false; errEl.textContent = res.j.error || "invalid input"; }
-          paint({});
-        }
+        var err = $("#est-error");
+        if (res.ok && !res.j.error) { if (err) err.hidden = true; paint(res.j); }
+        else if (err) { err.hidden = false; err.textContent = res.j.error || "invalid input"; }
       })
       .catch(function () {});
   }
   function schedule() { clearTimeout(timer); timer = setTimeout(update, 250); }
-
   form.addEventListener("input", schedule);
   form.addEventListener("change", schedule);
 
-  if (sourceTree && sizeInput) {
-    sourceTree.addEventListener("change", function (ev) {
-      var t = ev.target;
-      if (!t || t.type !== "checkbox") return;
-      var path = t.checked ? t.value : "";
-      if (!path) { sizeInput.value = ""; sizing(false); showInfo(null); schedule(); return; }
-      // The estimate is NEVER blocked on the folder walk: recompute right away with
-      // the current/default size, show the "calculating…" line, and fetch the real
-      // folder size + file count async. When it returns, seed #size-gb-input, show
-      // what we found, and recompute once more.
-      sizeInput.value = "";
-      showInfo(null);
-      sizing(true);
-      schedule();
-      fetch("/jobs/source-size?path=" + encodeURIComponent(path))
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (d) {
-          sizing(false);
-          if (d) { sizeInput.value = String(d.bytes / (1024 * 1024 * 1024)); showInfo(d); schedule(); }
-        })
-        .catch(function () { sizing(false); });
+  // ---- delegated clicks ----------------------------------------------------
+  form.addEventListener("click", function (e) {
+    var el = e.target;
+    if (el.closest("#remeasure-btn")) { measure($("#source-input").value); return; }
+    var tab = el.closest("[data-when]");
+    if (tab) {
+      whenKey = tab.getAttribute("data-when");
+      $$("[data-when]", form).forEach(function (x) { x.setAttribute("aria-selected", String(x === tab)); });
+      if (lastData) paintWhen(lastData); return;
+    }
+    var tog = el.closest("[data-toggle]");
+    if (tog) { var tg = document.getElementById(tog.getAttribute("data-toggle"));
+      if (tg) { tg.hidden = !tg.hidden; tog.setAttribute("aria-expanded", String(!tg.hidden)); } return; }
+    if (el.closest("#advanced-keep")) { var adv = $("#tiered-advanced"); if (adv) adv.hidden = !adv.hidden; return; }
+    if (el.closest("#save-anyway")) {
+      var blk = lastData && (lastData.blockers || [])[0]; if (!blk) return;
+      acked[blk.code] = true;
+      var h = document.createElement("input"); h.type = "hidden"; h.name = "acknowledge_blocker"; h.value = blk.code;
+      form.appendChild(h);
+      var b = el.closest("#save-anyway"); b.textContent = "Acknowledged — will save anyway"; b.disabled = true;
+      footerEnabled(true);
+      var why = $("#create-why"); if (why) { why.hidden = false; why.style.color = "var(--faint)"; why.textContent = "Saving with the blocker acknowledged."; }
+      return;
+    }
+    var ft = el.closest("[data-fix-type]");
+    if (ft) { setRadio("type", ft.getAttribute("data-fix-type")); typeTouched = true; applyType(); schedule(); return; }
+    var fc = el.closest("[data-fix-class]");
+    if (fc) { setRadio("storage_class", fc.getAttribute("data-fix-class")); schedule(); return; }
+    var wf = el.closest("[data-warn-fix]");
+    if (wf) { var wrap = wf.closest("[data-warn]"); if (wrap && wrap._fix) applyFix(wrap._fix.set); schedule(); return; }
+    if (el.closest("#use-suggest")) {
+      var sc = el.closest("#use-suggest").getAttribute("data-suggest-cron"), si = $("#sched-input");
+      if (si && sc) { si.value = sc; si.dispatchEvent(new Event("input", { bubbles: true })); } schedule(); return;
+    }
+    if (el.closest("#live-toggle")) {
+      var lt = el.closest("#live-toggle"); lt.dataset.kind = lt.dataset.kind === "live" ? "bundled" : "live"; update(); return;
+    }
+  });
+  function setRadio(name, value) {
+    var r = $('input[name="' + name + '"][value="' + value + '"]'); if (r) r.checked = true;
+  }
+  function applyFix(set) {
+    Object.keys(set || {}).forEach(function (k) {
+      var v = set[k];
+      var box = $('input[type="checkbox"][name="' + k + '"]');
+      if (box) { box.checked = (v === "1" || v === true); return; }
+      setRadio(k, v);
     });
   }
+  // mark the change rate "set" the first time a radio is clicked (5.8 §3.1 tri-state)
+  $$('input[name="change_rate_pct"]', form).forEach(function (r) {
+    r.addEventListener("change", function () { var h = $("#change-rate-touched"); if (h) h.value = "1"; });
+  });
+  $$('input[name="type"]', form).forEach(function (r) {
+    r.addEventListener("change", function () { typeTouched = true; });
+  });
 
   update();
 })();
