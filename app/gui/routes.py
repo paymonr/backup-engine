@@ -1,6 +1,8 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
+import re
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
@@ -10,7 +12,7 @@ from .storage_advice import storage_class_info
 from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
 from ..estimator import usage
-from ..engine import cron, runs
+from ..engine import cron, runs, errors
 
 bp = Blueprint("gui", __name__)
 
@@ -323,6 +325,452 @@ def _set_paused(name, paused):
     flash(f"{'Paused' if paused else 'Resumed'} {name}.")
     return redirect(url_for("gui.job_page", name=name))
 
+
+# --- run record + Activity (spec 5.3, 5.5, 8.3, 8.4) -----------------------
+
+# The one user-facing name for each operation (spec 5.5 `What` column). `backup`
+# depends on the trigger; everything else is a fixed label.
+_WHAT_LABELS = {
+    "restore": "restore", "download": "download", "thaw": "warm-up",
+    "test-restore": "test restore", "usage-refresh": "usage refresh",
+    "billing-check": "billing check", "probe": "destination probe",
+    "provision": "destination setup",
+}
+_OUTCOME_LABELS = {"ok": "OK", "failed": "Failed", "running": "Running", "aborted": "Stopped"}
+# The record kinds each Activity `kind` filter selects (spec 8.4).
+_KIND_GROUPS = {
+    "runs": set(runs.BACKUP_KINDS),
+    "restores": set(runs.OP_KINDS),
+    "setup": {"usage-refresh", "billing-check", "probe", "provision"},
+}
+# The outcomes each Activity `outcome` filter selects (spec 5.5).
+_OUTCOME_GROUPS = {"ok": {"ok"}, "failed": {"failed", "aborted"}, "running": {"running"}}
+
+
+def _what_label(rec) -> str:
+    if rec.kind in runs.BACKUP_KINDS:
+        return "manual run" if rec.trigger == "manual" else "scheduled run"
+    return _WHAT_LABELS.get(rec.kind, rec.kind)
+
+
+def _outcome_label(outcome) -> str:
+    return _OUTCOME_LABELS.get(outcome, (outcome or "").title() or "—")
+
+
+def _record_href(rec) -> str:
+    """Where this record's page lives: a job record under its job, a `_system`
+    record (job is null) under /activity (spec 8.4)."""
+    if rec.job:
+        return f"/jobs/{rec.job}/runs/{rec.id}"
+    return f"/activity/{rec.id}"
+
+
+# rclone progress lines: `Transferred: 1.234 GiB / 52.700 GiB, 2%, …, ETA 4h12m`.
+_XFER_RE = re.compile(r"Transferred:\s*([\d.]+)\s*([KMGTP]?i?B)\s*/\s*([\d.]+)\s*([KMGTP]?i?B)", re.I)
+_ETA_RE = re.compile(r"ETA\s*([0-9dhms.]+)", re.I)
+_UNITS = {"B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12, "PB": 10**15,
+          "KIB": 2**10, "MIB": 2**20, "GIB": 2**30, "TIB": 2**40, "PIB": 2**50}
+
+
+def _to_bytes(num: str, unit: str) -> int:
+    return int(float(num) * _UNITS.get(unit.upper(), 1))
+
+
+def _parse_eta(s: str) -> int | None:
+    total = 0.0
+    for val, unit in re.findall(r"([\d.]+)\s*([dhms])", s):
+        total += float(val) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[unit]
+    return int(total) if total else None
+
+
+def _progress_from_log(cache_dir, rec) -> dict | None:
+    """`{"done_bytes","total_bytes","eta_s"}` parsed from the log tail while a run
+    is live (spec 5.3/8.3), else None. Reads only the last few KB, and never raises."""
+    if rec is None or rec.outcome != "running" or not rec.log:
+        return None
+    p = runs.log_file(cache_dir, rec)
+    if p is None:
+        return None
+    try:
+        size = p.stat().st_size
+        text, _, _ = runs.read_log(cache_dir, rec, offset=max(0, size - 8192), max_bytes=8192)
+    except OSError:
+        return None
+    done = total = eta = None
+    for line in text.splitlines():
+        m = _XFER_RE.search(line)
+        if m:
+            done, total = _to_bytes(m.group(1), m.group(2)), _to_bytes(m.group(3), m.group(4))
+            e = _ETA_RE.search(line)
+            eta = _parse_eta(e.group(1)) if e else None
+    if done is None:
+        return None
+    return {"done_bytes": done, "total_bytes": total, "eta_s": eta}
+
+
+def _error_class_dict(cache_dir, rec) -> dict | None:
+    """The run's `errors.classify` class as a dict (spec 8.2 shape), classified from
+    the run's error field AND its own log tail (the run record is where the full log
+    is available). None for a healthy or still-running record."""
+    if rec is None:
+        return None
+    tail = ""
+    if rec.log:
+        try:
+            tail, _, _ = runs.read_log(cache_dir, rec, offset=0, max_bytes=65536)
+        except Exception:
+            tail = ""
+    ec = errors.classify(rec.error, rec.exit_code, rec.outcome, tail)
+    if ec is None:
+        return None
+    return {"code": ec.code, "short": ec.short, "verdict": ec.verdict, "cause": ec.cause,
+            "board": ec.board, "fix": ec.fix, "fix_label": ec.fix_label,
+            "fix_route": ec.fix_route, "blocker": ec.blocker}
+
+
+def _run_record_json(rec, *, live, median_s, error_class, progress) -> dict:
+    d = asdict(rec)
+    d["started_at"] = status._iso(rec.started_at)
+    d["finished_at"] = status._iso(rec.finished_at)
+    d["live"] = live
+    d["median_s"] = median_s
+    d["error_class"] = error_class
+    d["progress"] = progress
+    return d
+
+
+def _lookup_run(cache_dir, job, run_id):
+    """Return (records, rec) for `job` (a name or `_system`), never reconciling — a
+    start-line-only record must read as `running`, not be aborted by a free-lock
+    probe (5.3), and a live `_system` op is guarded by the reader elsewhere."""
+    records = runs.read_runs(cache_dir, job, reconcile=False).records
+    rec = next((r for r in records if r.id == run_id), None)
+    return records, rec
+
+
+def _humanbytes(b) -> str | None:
+    if b is None:
+        return None
+    for lim, unit, dec in ((2**40, "TB", 2), (2**30, "GB", 2), (2**20, "MB", 1)):
+        if b >= lim:
+            return f"{b / lim:.{dec}f} {unit}"
+    return f"{int(b)} B"
+
+
+def _human_dur(s) -> str:
+    if s is None:
+        return "—"
+    s = int(s)
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} m {s % 60:02d} s"
+    if s < 86400:
+        return f"{s // 3600} h {(s % 3600) // 60:02d} m"
+    return f"{s // 86400} d {(s % 86400) // 3600:02d} h"
+
+
+_STARTED_BY = {"scheduled": "the schedule", "manual": "you (Run now)", "command": "the command line"}
+_KIND_TITLE_PREFIX = {"restore": "Restore", "download": "Download", "thaw": "Warm-up",
+                      "test-restore": "Test restore"}
+
+
+def _what_it_did(rec) -> str | None:
+    """The `What it did` defgrid line, from the record's stats (spec 5.3). Only the
+    pieces present are shown; None when nothing meaningful is recorded."""
+    if rec is None:
+        return None
+    if rec.kind in runs.BACKUP_KINDS:
+        left = []
+        if rec.files_changed is not None:
+            left.append(f"{rec.files_changed:,} files changed")
+        if rec.bytes_added is not None:
+            left.append(f"{_humanbytes(rec.bytes_added)} new")
+        right = []
+        if rec.files_total is not None:
+            right.append(f"{rec.files_total:,} files")
+        if rec.bytes_total is not None:
+            right.append(f"{_humanbytes(rec.bytes_total)} in the folder")
+        parts = [", ".join(left)] if left else []
+        if right:
+            parts.append(", ".join(right))
+        return " · ".join(p for p in parts if p) or None
+    if rec.kind in ("restore", "download"):
+        if rec.files_restored is not None or rec.bytes_restored is not None:
+            fc = f"{rec.files_restored:,} files" if rec.files_restored is not None else ""
+            bs = _humanbytes(rec.bytes_restored) if rec.bytes_restored is not None else ""
+            head = ", ".join(x for x in (fc, bs) if x)
+            tgt = (rec.params or {}).get("target")
+            return f"{head} written to {tgt}" if tgt else (f"{head} written" if head else None)
+    if rec.kind == "thaw" and rec.objects_requested is not None:
+        return f"{rec.objects_requested:,} files requested"
+    return None
+
+
+def _render_run_record(cfg, *, name, run_id, records, rec, is_system):
+    """Server-render the run-record page (5.3) for a job record or a `_system`
+    record. `rec` is None only in the job pending state."""
+    cache = cfg["CACHE_DIR"]
+    tzobj = cron.local_tz()
+    live = bool(rec and rec.outcome == "running")
+    pending = rec is None
+    median_s = None
+    if not is_system:
+        median_s = runs.median_duration_s([r for r in records if r.kind in runs.BACKUP_KINDS])
+    error_class = _error_class_dict(cache, rec)
+    log_text, log_offset, log_eof = "", 0, True
+    if rec is not None and rec.log:
+        try:
+            log_text, log_offset, log_eof = runs.read_log(cache, rec)
+        except Exception:
+            log_text, log_offset, log_eof = "", 0, True
+    elapsed_s = None
+    if live and rec.started_at:
+        elapsed_s = max(0, int((datetime.now(timezone.utc) - rec.started_at).total_seconds()))
+
+    def _short(dt):
+        return status._iso_short(dt, tzobj) if dt else None            # "Sun 13 Sep 04:00"
+
+    def _full(dt):
+        if dt is None:
+            return None
+        d = dt.astimezone(tzobj)
+        return (f"{status._WEEKDAYS[d.weekday()][:3]} {d.day} {status._MONTHS[d.month - 1][:3]} "
+                f"{d.year} {d:%H:%M:%S}")
+
+    outcome_label = _outcome_label(rec.outcome) if rec else "Running"
+    what = _what_label(rec) if rec else "run record"
+
+    # eyebrow / back link / poll base
+    if is_system:
+        eyebrow = f"system · {what}"
+        base_url, back_href, back_label = f"/activity/{run_id}", "/activity", "← All activity"
+    else:
+        eyebrow = (f"{name} · {what}" if (rec and rec.kind not in runs.BACKUP_KINDS)
+                   else f"{name} · run record")
+        base_url = f"/jobs/{name}/runs/{run_id}"
+        back_href, back_label = f"/jobs/{name}", f"← {name}"
+
+    # h1
+    if rec is None:
+        title = "Starting…"
+    elif is_system:
+        title = f"{what[:1].upper()}{what[1:]} {_short(rec.started_at)} — {outcome_label}"
+    elif rec.kind in runs.BACKUP_KINDS:
+        title = f"{_short(rec.started_at)} — {outcome_label}"
+    else:
+        prefix = _KIND_TITLE_PREFIX.get(rec.kind, what[:1].upper() + what[1:])
+        title = f"{prefix} {_short(rec.started_at)} — {outcome_label}"
+
+    # lead
+    started_by = _STARTED_BY.get(rec.trigger, rec.trigger) if rec else None
+    if rec is None:
+        lead = "Starting the run — waiting for it to report in."
+    elif rec.outcome == "running":
+        lead = f"Started by {started_by}. Running for {_human_dur(elapsed_s)}."
+    elif rec.outcome == "aborted":
+        lead = (f"Started by {started_by}. Stopped without reporting — the container was probably "
+                f"restarted or the process was killed.")
+    elif rec.outcome == "failed":
+        tail = f" with exit code {rec.exit_code}." if rec.exit_code is not None else "."
+        lead = f"Started by {started_by}. Stopped after {_human_dur(rec.duration_s)}{tail}"
+    else:
+        lead = f"Started by {started_by}. Finished in {_human_dur(rec.duration_s)}."
+
+    detail = None
+    if rec is not None:
+        detail = {
+            "started_by": started_by,
+            "started_full": _full(rec.started_at),
+            "finished_full": _full(rec.finished_at),
+            "took_txt": _human_dur(rec.duration_s) if rec.duration_s is not None else None,
+            "typical_txt": (f"~{_human_dur(median_s)} typical" if median_s else None),
+            "what_it_did": _what_it_did(rec),
+            # Restore point only for a successful Snapshot backup (5.3).
+            "restore_point": (rec.snapshot_id if (rec.kind in runs.BACKUP_KINDS
+                                                  and rec.outcome == "ok" and rec.snapshot_id)
+                              else None),
+        }
+
+    return render_template(
+        "run_record.html", name=name, run_id=run_id, rec=rec, is_system=is_system,
+        pending=pending, pending_since=status._iso(runs.run_id_started_at(run_id)),
+        live=live, median_s=median_s, error_class=error_class, elapsed_s=elapsed_s,
+        log_text=log_text, log_offset=log_offset, log_eof=log_eof,
+        what=what, eyebrow=eyebrow, base_url=base_url, back_href=back_href, back_label=back_label,
+        outcome_label=outcome_label, title=title, lead=lead, detail=detail,
+        humanbytes=_humanbytes)
+
+
+def _run_record_json_response(cfg, *, run_id, records, rec, is_system):
+    live = bool(rec and rec.outcome == "running")
+    median_s = None
+    if not is_system:
+        median_s = runs.median_duration_s([r for r in records if r.kind in runs.BACKUP_KINDS])
+    error_class = _error_class_dict(cfg["CACHE_DIR"], rec)
+    progress = _progress_from_log(cfg["CACHE_DIR"], rec)
+    return jsonify(_run_record_json(rec, live=live, median_s=median_s,
+                                    error_class=error_class, progress=progress))
+
+
+def _log_response(cfg, rec, *, pending):
+    """The …/log tail (spec 8.3): a text/plain chunk with X-Log-Offset / X-Log-Eof.
+    Pending → empty 200; a record with no log → 404 JSON."""
+    if pending:
+        r = Response("", mimetype="text/plain")
+        r.headers["X-Log-Offset"], r.headers["X-Log-Eof"] = "0", "0"
+        return r
+    if not rec.log:
+        abort(404, description="This run has no log of its own.")
+    offset = request.args.get("offset", default=0, type=int)
+    text, new_offset, eof = runs.read_log(cfg["CACHE_DIR"], rec, offset=offset)
+    r = Response(text, mimetype="text/plain")
+    r.headers["X-Log-Offset"], r.headers["X-Log-Eof"] = str(new_offset), "1" if eof else "0"
+    return r
+
+
+@bp.get("/jobs/<name>/runs/<run_id>")
+def run_record(name, run_id):
+    cfg = current_app.config
+    if not runs.valid_run_id(run_id):
+        abort(404, description=f"There is no run {run_id} for {name}")
+    if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
+        abort(404, description=f"There is no job called {name}")
+    records, rec = _lookup_run(cfg["CACHE_DIR"], name, run_id)
+    if rec is None and not runs.is_pending(run_id):
+        abort(404, description=f"There is no run {run_id} for {name}")
+    return _render_run_record(cfg, name=name, run_id=run_id, records=records, rec=rec,
+                              is_system=False)
+
+
+@bp.get("/jobs/<name>/runs/<run_id>.json")
+def run_record_json(name, run_id):
+    cfg = current_app.config
+    if not runs.valid_run_id(run_id):
+        abort(404, description=f"There is no run {run_id} for {name}")
+    if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
+        abort(404, description=f"There is no job called {name}")
+    records, rec = _lookup_run(cfg["CACHE_DIR"], name, run_id)
+    if rec is None:
+        if not runs.is_pending(run_id):
+            abort(404, description=f"There is no run {run_id} for {name}")
+        return jsonify({"generated_at": status._iso(datetime.now(timezone.utc)),
+                        "tz": status._tzname(cron.local_tz()), "id": run_id, "job": name,
+                        "outcome": "pending", "live": True,
+                        "pending_since": status._iso(runs.run_id_started_at(run_id))})
+    return _run_record_json_response(cfg, run_id=run_id, records=records, rec=rec, is_system=False)
+
+
+@bp.get("/jobs/<name>/runs/<run_id>/log")
+def run_record_log(name, run_id):
+    cfg = current_app.config
+    if not runs.valid_run_id(run_id):
+        abort(404, description=f"There is no run {run_id} for {name}")
+    if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
+        abort(404, description=f"There is no job called {name}")
+    _records, rec = _lookup_run(cfg["CACHE_DIR"], name, run_id)
+    if rec is None:
+        if not runs.is_pending(run_id):
+            abort(404, description=f"There is no run {run_id} for {name}")
+        return _log_response(cfg, None, pending=True)
+    return _log_response(cfg, rec, pending=False)
+
+
+def _activity_items(cfg, *, job=None, kind=None, outcome=None, limit=100):
+    """Merged job + `_system` records, newest-first, filtered (spec 5.5/8.4). Read
+    without reconcile so a live run stays `running` in the feed."""
+    config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+    names = list(dict.fromkeys([j["name"] for j in jobs_io.load(config_dir)]
+                               + runs.all_jobs_with_runs(cache)))
+    recs = runs.read_all(cache, names, limit=10**9, job=job)
+    kinds = _KIND_GROUPS.get(kind)
+    outcomes = _OUTCOME_GROUPS.get((outcome or "").lower())
+    if kinds is not None:
+        recs = [r for r in recs if r.kind in kinds]
+    if outcomes is not None:
+        recs = [r for r in recs if r.outcome in outcomes]
+    recs = recs[:limit]
+    items = [{
+        "id": r.id, "job": r.job, "kind": r.kind, "what": _what_label(r),
+        "trigger": r.trigger, "outcome": r.outcome, "label": _outcome_label(r.outcome),
+        "started_at": status._iso(r.started_at), "finished_at": status._iso(r.finished_at),
+        "duration_s": r.duration_s, "error": r.error, "record": _record_href(r),
+        "log": bool(r.log),
+    } for r in recs]
+    return items
+
+
+@bp.get("/activity")
+def activity():
+    cfg = current_app.config
+    job = request.args.get("job") or None
+    if job in ("all", ""):
+        job = None
+    kind = request.args.get("kind") or None
+    outcome = request.args.get("outcome") or None
+    limit = request.args.get("limit", default=100, type=int)
+    items = _activity_items(cfg, job=job, kind=kind, outcome=outcome, limit=limit)
+    job_names = [j["name"] for j in jobs_io.load(cfg["CONFIG_DIR"])]
+    # The first enabled job powers the empty-state "Run <job> now" button (5.5).
+    first_enabled = next((j for j in jobs_io.load(cfg["CONFIG_DIR"]) if j.get("enabled", True)), None)
+    return render_template("activity.html", items=items, jobs=job_names,
+                           filters={"job": job or "all", "kind": kind or "all",
+                                    "outcome": outcome or "all", "limit": limit},
+                           first_enabled=first_enabled["name"] if first_enabled else None,
+                           csrf=security.issue_csrf())
+
+
+@bp.get("/activity.json")
+def activity_json():
+    cfg = current_app.config
+    job = request.args.get("job") or None
+    if job in ("all", ""):
+        job = None
+    kind = request.args.get("kind") or None
+    outcome = request.args.get("outcome") or None
+    limit = request.args.get("limit", default=100, type=int)
+    items = _activity_items(cfg, job=job, kind=kind, outcome=outcome, limit=limit)
+    return jsonify({"generated_at": status._iso(datetime.now(timezone.utc)),
+                    "tz": status._tzname(cron.local_tz()),
+                    "filters": {"job": job or "all", "kind": kind or "all",
+                                "outcome": outcome or "all", "limit": limit},
+                    "items": items})
+
+
+@bp.get("/activity/<run_id>")
+def activity_record(run_id):
+    cfg = current_app.config
+    if not runs.valid_run_id(run_id):
+        abort(404, description=f"There is no record {run_id}")
+    records, rec = _lookup_run(cfg["CACHE_DIR"], runs.SYSTEM_JOB, run_id)
+    if rec is None:                    # no pending state for system ops (5.5/8.3)
+        abort(404, description=f"There is no record {run_id}")
+    return _render_run_record(cfg, name=None, run_id=run_id, records=records, rec=rec,
+                              is_system=True)
+
+
+@bp.get("/activity/<run_id>.json")
+def activity_record_json(run_id):
+    cfg = current_app.config
+    if not runs.valid_run_id(run_id):
+        abort(404, description=f"There is no record {run_id}")
+    records, rec = _lookup_run(cfg["CACHE_DIR"], runs.SYSTEM_JOB, run_id)
+    if rec is None:
+        abort(404, description=f"There is no record {run_id}")
+    return _run_record_json_response(cfg, run_id=run_id, records=records, rec=rec, is_system=True)
+
+
+@bp.get("/activity/<run_id>/log")
+def activity_record_log(run_id):
+    cfg = current_app.config
+    if not runs.valid_run_id(run_id):
+        abort(404, description=f"There is no record {run_id}")
+    _records, rec = _lookup_run(cfg["CACHE_DIR"], runs.SYSTEM_JOB, run_id)
+    if rec is None:
+        abort(404, description=f"There is no record {run_id}")
+    return _log_response(cfg, rec, pending=False)
+
+
 @bp.get("/config")
 def config_page():
     cfg = current_app.config
@@ -407,6 +855,8 @@ def provision_validate():
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": region, "S3_BUCKET": bucket})
+    # Record the successful destination setup so Activity shows it (spec 5.5).
+    provision.record_setup(cfg["CACHE_DIR"], bucket=bucket, region=region, mode="validate")
     flash("Runtime key validated and saved. Reminder: confirm bucket versioning is ON. Next: create your first backup job.")
     return redirect(url_for("gui.jobs_page"))
 
@@ -451,6 +901,9 @@ def provision_automated_run():
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"]})
+    # Record the successful automated provisioning so Activity shows it (spec 5.5).
+    provision.record_setup(cfg["CACHE_DIR"], bucket=result["bucket"], region=result["region"],
+                           mode="automated")
     flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key. Next: create your first backup job.")
     return redirect(url_for("gui.jobs_page"))
 

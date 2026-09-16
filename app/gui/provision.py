@@ -11,8 +11,11 @@ import secrets as _secrets
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from string import Template
+
+from ..engine import runs
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POLICY_TEMPLATE = REPO_ROOT / "provisioning" / "iam-policy.json.tmpl"
@@ -212,3 +215,28 @@ def run_tofu_apply(bucket, region, admin_key, admin_secret, session_token=None,
         }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+# --- Activity record for a provisioning success (spec 5.5 / 7.7.3) ---------
+
+def record_setup(cache_dir, *, bucket: str, region: str, mode: str, detail: str = "") -> str:
+    """Append a `provision` run record (a `start`+`end` pair) to `_system.runs.jsonl`
+    so a provisioning SUCCESS shows in Activity as `destination setup` (spec 5.5).
+    Both events are written synchronously at the success path — the tool has already
+    run and blocked — with a scrubbed one-line summary as the record's own log."""
+    run_id = runs.new_run_id()
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log_rel = f"logs/runs/{runs.SYSTEM_JOB}/{run_id}.log"
+    log_path = Path(cache_dir, log_rel)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    summary = f"{ts} destination setup ({mode}): bucket {bucket} · region {region} · OK"
+    if detail:
+        summary += f"\n{ts} {detail}"
+    log_path.write_text(summary + "\n")
+    runs.append_event(cache_dir, None, {
+        "v": 1, "id": run_id, "job": None, "kind": "provision", "event": "start",
+        "trigger": "manual", "started_at": ts, "log": log_rel})
+    runs.append_event(cache_dir, None, {
+        "v": 1, "id": run_id, "job": None, "kind": "provision", "event": "end",
+        "outcome": "ok", "finished_at": ts, "duration_s": 0, "exit_code": 0, "error": None})
+    return run_id

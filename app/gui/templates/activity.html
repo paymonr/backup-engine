@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{#- Activity — `/activity` (spec 5.5, 8.4). Reverse-chronological feed of every
+    operation across all jobs — scheduled/manual runs, restores, warm-ups,
+    downloads, test restores, and system operations (`_system`: usage refresh,
+    billing check, destination probe, destination setup). Filters submit as query
+    parameters; every row resolves to its record; a row expands to its log tail. -#}
+{% set MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+{%- macro hhmm(iso) -%}{% if iso %}{{ iso[11:16] }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro datelabel(iso) -%}{% if iso %}{{ iso[8:10]|int }} {{ MON[iso[5:7]|int - 1] }}{% endif %}{%- endmacro -%}
+{%- macro dur(s) -%}
+{%- if s is none -%}—
+{%- elif s < 60 -%}{{ s|int }} s
+{%- elif s < 3600 -%}{{ (s // 60)|int }} m {{ '%02d'|format((s % 60)|int) }} s
+{%- elif s < 86400 -%}{{ (s // 3600)|int }} h {{ '%02d'|format(((s % 3600) // 60)|int) }} m
+{%- else -%}{{ (s // 86400)|int }} d {{ '%02d'|format(((s % 86400) // 3600)|int) }} h
+{%- endif -%}
+{%- endmacro -%}
+
+{% block title %}Activity · backup-engine{% endblock %}
+
+{% block body %}
+<section class="screen" aria-label="Activity">
+  {% if items and items[0].outcome == 'running' %}<div class="workbar" aria-hidden="true"></div>{% endif %}
+
+  <p class="slabel">Activity</p>
+  <h1>What this machine has done</h1>
+
+  {# ---- filters (submit as query parameters) ---------------------------- #}
+  <form method="get" action="/activity" class="filterrow" style="display:flex;flex-wrap:wrap;gap:var(--sp-3);margin:var(--sp-5) 0" id="activity-filters">
+    <label class="fld">Job
+      <select name="job" onchange="this.form.submit()">
+        <option value="all"{{ ' selected' if filters.job == 'all' }}>all</option>
+        {% for j in jobs %}<option value="{{ j }}"{{ ' selected' if filters.job == j }}>{{ j }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="fld">What
+      <select name="kind" onchange="this.form.submit()">
+        <option value="all"{{ ' selected' if filters.kind == 'all' }}>all</option>
+        <option value="runs"{{ ' selected' if filters.kind == 'runs' }}>runs</option>
+        <option value="restores"{{ ' selected' if filters.kind == 'restores' }}>restores</option>
+        <option value="setup"{{ ' selected' if filters.kind == 'setup' }}>setup</option>
+      </select>
+    </label>
+    <label class="fld">Outcome
+      <select name="outcome" onchange="this.form.submit()">
+        <option value="all"{{ ' selected' if filters.outcome == 'all' }}>all</option>
+        <option value="ok"{{ ' selected' if filters.outcome == 'ok' }}>OK</option>
+        <option value="failed"{{ ' selected' if filters.outcome == 'failed' }}>failed</option>
+        <option value="running"{{ ' selected' if filters.outcome == 'running' }}>running</option>
+      </select>
+    </label>
+    <noscript><button type="submit" class="btn btn-sm">Filter</button></noscript>
+  </form>
+
+  {% if not items %}
+  {# ---- empty state --------------------------------------------------- #}
+  <div class="sig sig-note"><div class="body">Nothing has run yet.
+    {% if first_enabled %}
+    <form method="post" action="/jobs/{{ first_enabled }}/run" style="display:inline;margin-left:var(--sp-2)">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="btn btn-sm">Run {{ first_enabled }} now</button>
+    </form>
+    {% else %}
+    <a class="linklike" href="/jobs/new">Create the first job →</a>
+    {% endif %}
+  </div></div>
+  {% else %}
+  <div class="scroll">
+    <table class="activity">
+      <thead><tr><th>When</th><th>Job</th><th>What</th><th>Outcome</th><th>Took</th><th>Record</th></tr></thead>
+      <tbody>
+        {% for it in items %}
+        {% set tokcls = 'tok-ok' if it.outcome == 'ok' else ('tok-running' if it.outcome == 'running' else 'tok-failed') %}
+        <tr class="actrow{{ ' has-log' if it.log }}" data-log="{{ it.record }}/log"{% if it.log %} tabindex="0"{% endif %}>
+          <td class="mono" data-when="{{ it.started_at }}">{{ datelabel(it.started_at) }} {{ hhmm(it.started_at) }}</td>
+          <td>{% if it.job %}<a href="/jobs/{{ it.job }}">{{ it.job }}</a>{% else %}—{% endif %}</td>
+          <td>{{ it.what }}</td>
+          <td><span class="tok {{ tokcls }}">{{ it.label }}</span></td>
+          <td class="mono">{{ dur(it.duration_s) }}</td>
+          <td><a class="linklike" href="{{ it.record }}">open →</a></td>
+        </tr>
+        {% if it.log %}
+        <tr class="actlog" hidden><td colspan="6"><pre class="mono" data-loaded="0"></pre></td></tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if items|length >= filters.limit %}
+  <p style="margin-top:var(--sp-4)">
+    <a class="btn btn-sm" href="/activity?job={{ filters.job }}&amp;kind={{ filters.kind }}&amp;outcome={{ filters.outcome }}&amp;limit={{ filters.limit + 100 }}">Show 100 more</a>
+  </p>
+  {% endif %}
+  {% endif %}
+
+  <p class="hint" style="margin-top:var(--sp-6)"><a class="linklike" href="/logs">Raw shared log →</a></p>
+</section>
+
+<script>
+// Activity row expand → tail the row's log once (spec 5.5). Guarded, non-critical.
+(function () {
+  "use strict";
+  try {
+    var rows = document.querySelectorAll(".actrow.has-log");
+    Array.prototype.forEach.call(rows, function (row) {
+      function toggle() {
+        var panel = row.nextElementSibling;
+        if (!panel || panel.className !== "actlog") return;
+        panel.hidden = !panel.hidden;
+        var pre = panel.querySelector("pre");
+        if (!panel.hidden && pre && pre.getAttribute("data-loaded") === "0") {
+          pre.setAttribute("data-loaded", "1");
+          fetch(row.getAttribute("data-log")).then(function (r) { return r.text(); })
+            .then(function (t) { pre.textContent = t || "(no log)"; })
+            .catch(function () { pre.textContent = "(log unavailable)"; });
+        }
+      }
+      row.addEventListener("click", function (ev) {
+        if (ev.target.closest("a")) return;         // let record / job links work
+        toggle();
+      });
+      row.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); }
+      });
+    });
+  } catch (e) {}
+})();
+</script>
+{% endblock %}

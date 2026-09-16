@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{#- Run record — `/jobs/<name>/runs/<run_id>` and the system-op detail
+    `/activity/<run_id>` (spec 5.3, 5.5, 8.3). One run as a record: outcome,
+    timings, restore point, exit code, the verbatim error, the recognised-error
+    cause/fix, the command line, and the run's own log tailed while live. When no
+    record exists yet but the id is inside the pending window it renders the live
+    `Starting…` state and polls `<id>.json`; the route reserves 404 for a
+    malformed id, an unknown job, or a stale id (5.3). -#}
+
+{% block title %}{{ title }} · backup-engine{% endblock %}
+
+{% block body %}
+<section class="screen read" aria-label="Run record">
+
+  {% if pending or live %}<div class="workbar" aria-hidden="true"></div>{% endif %}
+
+  <p class="slabel">{{ eyebrow }}</p>
+  <div class="titleline" style="margin-top:var(--sp-2)">
+    {% set tokcls = 'tok-ok' if outcome_label == 'OK' else ('tok-running' if outcome_label == 'Running' else 'tok-failed') %}
+    <span class="tok {{ tokcls }}" id="run-token">{{ outcome_label }}</span>
+    <h1 id="run-title">{{ title }}</h1>
+  </div>
+  <p class="lead" id="run-lead" style="margin-top:var(--sp-3)">{{ lead }}</p>
+
+  {% if pending %}
+  {# ---- pending: the landing page of every launch (5.3) ------------------ #}
+  <div class="step" style="margin-top:var(--sp-5)" data-base="{{ base_url }}" id="pending-card">
+    <p>Starting the run — waiting for it to report in. This page will fill in the moment the run reports its first line.</p>
+    <div class="sig sig-note" id="pending-stale" hidden style="margin-top:var(--sp-4)">
+      <div class="body">This run never reported starting. The job was probably busy (another run held its lock) — check Activity.
+        <p style="margin-top:var(--sp-3)"><a class="btn" href="{{ back_href }}">Back to {{ name or 'the Board' }}</a></p>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  {# ---- the record card -------------------------------------------------- #}
+  <div class="step" style="margin-top:var(--sp-5)" data-base="{{ base_url }}"{% if live %} data-live="1"{% endif %} id="record-card">
+
+    {% if live %}<p class="progress" id="run-progress" style="margin-bottom:var(--sp-4)">working… {{ ('%d m %02d s'|format(elapsed_s // 60, elapsed_s % 60)) if elapsed_s is not none else '' }}</p>{% endif %}
+
+    <dl class="defgrid">
+      <dt>Outcome</dt><dd><span class="tok {{ tokcls }}">{{ outcome_label }}</span></dd>
+      <dt>Started</dt><dd class="mono">{{ detail.started_full or '—' }}</dd>
+      <dt>Finished</dt><dd class="mono">{{ detail.finished_full or '—' }}</dd>
+      <dt>Took</dt><dd>{{ detail.took_txt or '—' }}{% if detail.typical_txt %} <span class="hint">{{ detail.typical_txt }}</span>{% endif %}</dd>
+      <dt>Started by</dt><dd>{{ detail.started_by }}</dd>
+      {% if detail.restore_point %}<dt>Restore point</dt><dd class="mono">{{ detail.restore_point }}</dd>{% endif %}
+      {% if detail.what_it_did %}<dt>What it did</dt><dd>{{ detail.what_it_did }}</dd>{% endif %}
+      {% if rec.exit_code is not none %}<dt>Exit code</dt><dd class="mono">{{ rec.exit_code }}</dd>{% endif %}
+      {% if rec.error %}<dt>Error</dt><dd><code class="errline">{{ rec.error }}</code></dd>{% endif %}
+    </dl>
+
+    {% if error_class %}
+    {# ---- recognised error class: why / what to do (7.4) ----------------- #}
+    <div class="grid2" style="margin-top:var(--sp-5)">
+      <div>
+        <p class="slabel">Why this happens</p>
+        <p>{% if rec.phase == 'prune' %}The files themselves were copied; the clean-up of old versions was refused, so the keep rule is not being applied. {% endif %}{{ error_class.cause }}</p>
+      </div>
+      <div>
+        <p class="slabel">What to do</p>
+        <p>{{ error_class.fix }}</p>
+        {% if error_class.fix_label %}<p style="margin-top:var(--sp-3)"><a class="btn btn-primary" href="{{ error_class.fix_route.replace('<name>', name) if error_class.fix_route and name else (error_class.fix_route or '#') }}">{{ error_class.fix_label }}</a></p>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if rec.command %}
+    {# ---- the exact command line that ran (no secrets) ------------------- #}
+    <p class="slabel" style="margin-top:var(--sp-5)">Command</p>
+    <div class="cmd" style="margin-top:var(--sp-2)">
+      <pre>{{ rec.command }}</pre>
+      <button type="button" class="btn btn-sm copy" data-copy="{{ rec.command }}">Copy</button>
+    </div>
+    {% endif %}
+
+    {# ---- the run's own log ---------------------------------------------- #}
+    <div class="band-head" style="margin-top:var(--sp-5)">
+      <p class="slabel">Log</p>
+      {% if rec.log %}<button type="button" class="btn btn-sm copy" data-copy-target="runlog">Copy</button>{% endif %}
+    </div>
+    {% if rec.log %}
+    <pre id="runlog" data-offset="{{ log_offset }}" data-eof="{{ 1 if log_eof else 0 }}">{{ log_text }}</pre>
+    {% else %}
+    <p class="hint">This run predates run history; only the shared log exists. <a class="linklike" href="/logs">Open the shared log →</a></p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <p style="margin-top:var(--sp-5)">
+    <a class="linklike" href="{{ back_href }}">{{ back_label }}</a>
+    &nbsp;·&nbsp;
+    <a class="linklike" href="/activity">All activity →</a>
+  </p>
+</section>
+
+<script>
+// Run record live/pending poll (spec 5.3/9). Non-load-bearing: the server already
+// rendered the correct state; this just advances it in place. All guarded.
+(function () {
+  "use strict";
+  try {
+    var card = document.getElementById("pending-card") || document.getElementById("record-card");
+    if (!card) return;
+    var base = card.getAttribute("data-base");
+    var pending = !!document.getElementById("pending-card");
+    var live = card.getAttribute("data-live") === "1";
+    if (!pending && !live) return;               // a closed record: nothing to poll
+    var start = Date.now();
+
+    function stopWork() {
+      var wb = document.querySelector(".workbar");
+      if (wb) { wb.hidden = true; wb.style.display = "none"; }
+    }
+
+    function tailLog() {
+      var pre = document.getElementById("runlog");
+      if (!pre) return;
+      if (pre.getAttribute("data-eof") === "1") return;
+      var off = parseInt(pre.getAttribute("data-offset") || "0", 10) || 0;
+      fetch(base + "/log?offset=" + off).then(function (r) {
+        var no = r.headers.get("X-Log-Offset"); var eof = r.headers.get("X-Log-Eof");
+        return r.text().then(function (t) {
+          if (t) { pre.textContent += t; pre.scrollTop = pre.scrollHeight; }
+          if (no !== null) pre.setAttribute("data-offset", no);
+          if (eof !== null) pre.setAttribute("data-eof", eof);
+        });
+      }).catch(function () {});
+    }
+
+    function poll() {
+      fetch(base + ".json").then(function (r) { return r.json(); }).then(function (j) {
+        if (j && j.outcome && j.outcome !== "pending" && j.outcome !== "running") {
+          window.location.reload();              // it closed — re-render in place
+          return;
+        }
+        if (!pending && live) tailLog();
+        if (pending && (Date.now() - start) > 30000) {
+          var stale = document.getElementById("pending-stale");
+          if (stale) stale.hidden = false;
+          stopWork();
+          return;                                // stop polling after 30 s pending
+        }
+        setTimeout(poll, 2000);
+      }).catch(function () { setTimeout(poll, 2000); });
+    }
+    setTimeout(poll, 2000);
+  } catch (e) {}
+})();
+</script>
+{% endblock %}
