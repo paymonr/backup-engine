@@ -139,11 +139,15 @@ _write_state() { local outcome="$1" msg="$2" rc="$3"; mkdir -p "$CACHE_DIR/state
 _record_failure() { local msg="$1" rc="${2:-1}" phase="${3:-copy}"; _BE_FAIL_HANDLED=1
   runs_end failed "$rc" "$msg" "\"phase\":\"$phase\",\"copied\":$([ "${COPIED:-0}" -eq 1 ] && echo true || echo false),\"snapshot_id\":$(_runs_str "${SNAP_ID:-}")${RUN_STATS:+,$RUN_STATS}" || true
   # Same guard as runs_end, and for the same reason: only a run that actually started owns the legacy
-  # state file. A lock collision (BE_RUN_ID pre-set by the GUI, runs_start never reached) must leave
-  # state/<job>.json exactly as the last real run wrote it. The `-z JOB_TYPE` arm keeps a pre-lock
-  # config failure ("job not found") visible in the legacy file, which is all that exists for it.
-  if [ "${BE_RUN_STARTED:-0}" -eq 1 ] || [ -z "${JOB_TYPE:-}" ]; then _write_state failure "$msg" "$rc"; fi
-  notify failure "backup '$JOB' FAILED" "$msg"; healthcheck failure; }
+  # state file AND its failure alerting. A lock collision (BE_RUN_ID pre-set by the GUI, runs_start
+  # never reached) must leave state/<job>.json exactly as the last real run wrote it and send NO
+  # failure notify / healthcheck ping — a run IS in progress and the holder owns it; the collision's
+  # only report is the die() WARN in the shared log. The `-z JOB_TYPE` arm keeps a pre-lock config
+  # failure ("job not found") visible in the legacy file and alerting, which is all that exists for it.
+  if [ "${BE_RUN_STARTED:-0}" -eq 1 ] || [ -z "${JOB_TYPE:-}" ]; then
+    _write_state failure "$msg" "$rc"
+    notify failure "backup '$JOB' FAILED" "$msg"; healthcheck failure
+  fi; }
 _fail()       { _record_failure "$1" 1 copy; die "$1"; }
 _fail_phase() { _record_failure "$2" 1 "$1"; die "$2"; }
 _usb_exit_trap() { local rc="$1"

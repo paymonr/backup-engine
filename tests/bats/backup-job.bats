@@ -15,6 +15,18 @@ setup() {
 }
 run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
 
+# Make notify()/healthcheck() observable: they no-op without their env, so point APPRISE/HEALTHCHECK
+# at stubbed `apprise`/`curl` binaries that append to marker files. A test can then assert an alert
+# fired (marker present) or was correctly suppressed (marker absent).
+_install_alert_probes() {
+  local b="$BATS_TEST_TMPDIR/bin"
+  export NOTIFY_MARKER="$BATS_TEST_TMPDIR/notify.marker" HC_MARKER="$BATS_TEST_TMPDIR/hc.marker"
+  printf '#!/usr/bin/env bash\nprintf "notify %%s\\n" "$*" >>"$NOTIFY_MARKER"\nexit 0\n' >"$b/apprise"
+  printf '#!/usr/bin/env bash\nprintf "curl %%s\\n" "$*" >>"$HC_MARKER"\nexit 0\n' >"$b/curl"
+  chmod +x "$b/apprise" "$b/curl"
+  export APPRISE_URLS="json://marker.local/x" HEALTHCHECK_URL="http://hc.local/deadmans-uuid"
+}
+
 @test "archive job -> rclone copy to media/<name>" {
   printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
   run_job movies
@@ -334,4 +346,37 @@ assert e["copied"] is False, e.get("copied")' <"$CACHE_DIR/state/manga.runs.json
   kill "$holder" 2>/dev/null || true
   [ "$status" -eq 1 ]
   [[ "$output" == *"in progress"* ]]
+}
+
+@test "lock collision sends NO failure notification and does NOT trip the healthcheck" {
+  _install_alert_probes
+  mkdir -p "$CACHE_DIR/locks" "$CACHE_DIR/state"
+  local lock="$CACHE_DIR/locks/appdata.lock"; : >"$lock"
+  printf '%s\n' '{"last_run":"2026-09-14T05:00:00Z","outcome":"success","type":"versioned"}' >"$CACHE_DIR/state/appdata.json"
+  local before; before="$(cat "$CACHE_DIR/state/appdata.json")"
+  flock -x "$lock" -c 'sleep 30' &
+  local holder=$!
+  sleep 0.4
+  export BE_RUN_ID=20260915T050001Z-3f9a   # ops.launch pre-assigns it in the child env
+  printf 'echo JOB_NAME=appdata; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job appdata
+  kill "$holder" 2>/dev/null || true
+  [ "$status" -ne 0 ]
+  # the collision's only report is the die() WARN in the shared log: no per-run record, legacy state
+  # untouched, and crucially NO failure alert and NO dead-man ping (a run IS in progress).
+  [ ! -e "$CACHE_DIR/state/appdata.runs.jsonl" ]
+  [ "$(cat "$CACHE_DIR/state/appdata.json")" = "$before" ]
+  [ ! -e "$NOTIFY_MARKER" ]
+  [ ! -e "$HC_MARKER" ]
+}
+
+@test "a post-start failure DOES notify + ping the healthcheck (the guard is not over-broad)" {
+  _install_alert_probes
+  # a missing source dir fails AFTER runs_start (BE_RUN_STARTED=1), so the alert block must run
+  printf 'echo JOB_NAME=x; echo JOB_TYPE=archive; echo JOB_SOURCE=media/gone; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job x
+  [ "$status" -ne 0 ]
+  grep -q '"outcome":"failed"' "$CACHE_DIR/state/x.runs.jsonl"
+  [ -s "$NOTIFY_MARKER" ] && grep -q "notify" "$NOTIFY_MARKER"
+  [ -s "$HC_MARKER" ] && grep -q "/fail" "$HC_MARKER"
 }
