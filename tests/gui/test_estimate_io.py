@@ -707,3 +707,31 @@ def test_wizard_estimate_schedule_block(tmp_path):
     r = _wiz(_cfg(tmp_path, []))
     assert r["schedule"]["cron"] == "0 5 * * *"
     assert r["schedule"]["backups_per_month"] > 0
+
+
+# --- Task 14 review fixes -----------------------------------------------------
+
+def test_wizard_blockers_all_zero_tiered():
+    # 5.8 §3.3: an all-zero tiered keep is a hard (non-overridable) WON'T RUN, caught
+    # in the wizard (not only by jobs_io.validate on POST).
+    b = _sa  # noqa: keep import warm
+    bl = estimate_io._wizard_blockers("versioned", "STANDARD", retention_type="tiered",
+                                      keep={"last": 0, "daily": 0, "weekly": 0, "monthly": 0})
+    codes = {x["code"] for x in bl}
+    assert "all_zero_tiered" in codes
+    az = next(x for x in bl if x["code"] == "all_zero_tiered")
+    assert az["overridable"] is False
+    assert az["fixes"][0]["set"] == {"keep_last": "3", "keep_daily": "7",
+                                     "keep_weekly": "4", "keep_monthly": "6"}
+    # a non-zero tiered keep raises no such block
+    ok = estimate_io._wizard_blockers("versioned", "STANDARD", retention_type="tiered",
+                                      keep={"last": 3, "daily": 7, "weekly": 4, "monthly": 6})
+    assert all(x["code"] != "all_zero_tiered" for x in ok)
+
+
+def test_wizard_estimate_all_zero_tiered_does_not_raise_and_blocks(tmp_path):
+    # The live estimate must NOT 400 on an all-zero tiered keep (it substitutes the
+    # defaults for pricing) and must surface the block instead.
+    r = _wiz(_cfg(tmp_path, []), keep_last="0", keep_daily="0", keep_weekly="0", keep_monthly="0")
+    assert "all_zero_tiered" in {b["code"] for b in r["blockers"]}
+    assert r["this_job_monthly"] >= 0

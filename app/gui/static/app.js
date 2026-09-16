@@ -256,6 +256,8 @@
   var whenKey = "typical", lastData = null, typeTouched = isEdit, timer;
   var acked = {};
   $$('input[name="acknowledge_blocker"]', form).forEach(function (i) { acked[i.value] = true; });
+  var savedCmp = {};
+  try { savedCmp = JSON.parse((document.getElementById("saved-cmp") || {}).textContent || "{}") || {}; } catch (e) {}
 
   function money(v) {
     if (v === null || v === undefined) return "—";
@@ -355,6 +357,27 @@
     paintWarnings(d);
     paintRecommendation(d);
     paintProvenance(d);
+    paintDiff(d);
+  }
+  function curRadio(name) { var r = $('input[name="' + name + '"]:checked'); return r ? r.value : ""; }
+  // Diff-aware `was:` on the edit screen (5.9): toggle each changed row vs the SAVED
+  // values; the `was:` text itself is fixed (server-rendered), so this only shows/hides.
+  function footChanged(d) {
+    return isEdit && savedCmp.typical != null && d && d.this_job_monthly != null
+      && Math.abs(savedCmp.typical - d.this_job_monthly) >= 0.005;
+  }
+  function paintDiff(d) {
+    if (!isEdit) return;
+    var cur = {
+      storage_class: curRadio("storage_class"), change_rate_pct: curRadio("change_rate_pct"),
+      source: ($("#source-input") || {}).value || "", retention_type: curRadio("retention_type"),
+      schedule: ($("#sched-input") || {}).value || ""
+    };
+    Object.keys(cur).forEach(function (f) {
+      var el = $('[data-was="' + f + '"]');
+      if (el) el.hidden = String(cur[f]) === String(savedCmp[f] == null ? "" : savedCmp[f]);
+    });
+    var fw = $("#foot-was"); if (fw) fw.hidden = !footChanged(d);
   }
   function paintKeepState(d) {
     var head = $("#keep-head"), block = $("#keep-block"), cons = $("#keep-consequence");
@@ -403,8 +426,12 @@
     var foot = $("#foot-figs");
     if (foot) {
       var lead = HEADS[whenKey].replace(", per month", "").replace(", a total not a rate", "");
-      foot.innerHTML = lead + ' — this job <span class="n" id="foot-job">' + jt + '</span> · all jobs ' +
-        '<span class="n" id="foot-all">' + at + '</span> &nbsp;<a href="/cost">over time →</a>';
+      // `(was $X)` follows this-job only when the typical-month cost changed on an edit (5.9).
+      var wasHtml = (isEdit && whenKey === "typical")
+        ? ' <span id="foot-was"' + (footChanged(d) ? "" : " hidden") + ">(was <span>" +
+          money(savedCmp.typical) + "</span>)</span>" : "";
+      foot.innerHTML = lead + ' — this job <span class="n" id="foot-job">' + jt + '</span>' + wasHtml +
+        ' · all jobs <span class="n" id="foot-all">' + at + '</span> &nbsp;<a href="/cost">over time →</a>';
     }
     var wt = $("#working-text");
     if (wt && d.breakdown) {
@@ -418,16 +445,21 @@
     if (b) b.disabled = !on; if (r) r.disabled = !on;
     if (why) { why.hidden = on; if (!on) why.textContent = "Fix the blocker above first."; }
   }
+  function blockerOf(d, code) { return (d.blockers || []).filter(function (b) { return b.code === code; })[0]; }
   function paintBlocker(d) {
-    var cb = $("#class-blocker"); if (!cb) return;
-    var blk = (d.blockers || [])[0];
-    var unacked = blk && !acked[blk.code];
-    cb.hidden = !blk;
-    if (blk) {
-      $("#class-blocker-why").innerHTML = "A Snapshot backup can't read from <b>" + blk.plain + "</b> · " +
-        '<span class="mono">' + blk.class + "</span>. <span class=\"term\" title=\"the snapshot engine\">restic</span> " +
+    var cb = $("#class-blocker");
+    var cold = blockerOf(d, "snapshots_on_cold_class");
+    if (cb) {
+      cb.hidden = !cold;
+      if (cold) $("#class-blocker-why").innerHTML = "A Snapshot backup can't read from <b>" + cold.plain + "</b> · " +
+        '<span class="mono">' + cold.class + "</span>. <span class=\"term\" title=\"the snapshot engine\">restic</span> " +
         "re-reads its whole store every run, so every scheduled run would fail on a data read.";
     }
+    var tb = $("#tiered-blocker"), tiered = blockerOf(d, "all_zero_tiered");
+    if (tb) tb.hidden = !tiered;
+    // The footer is disabled while ANY blocker stands unacknowledged (an all-zero
+    // tiered keep is a hard WON'T RUN — never overridable, so it always disables).
+    var unacked = (d.blockers || []).some(function (b) { return !acked[b.code]; });
     footerEnabled(!unacked);
   }
   function paintWarnings(d) {
@@ -499,8 +531,15 @@
     if (tog) { var tg = document.getElementById(tog.getAttribute("data-toggle"));
       if (tg) { tg.hidden = !tg.hidden; tog.setAttribute("aria-expanded", String(!tg.hidden)); } return; }
     if (el.closest("#advanced-keep")) { var adv = $("#tiered-advanced"); if (adv) adv.hidden = !adv.hidden; return; }
+    if (el.closest("#fix-tiered-keeps")) {
+      var kk = { keep_last: "3", keep_daily: "7", keep_weekly: "4", keep_monthly: "6" };
+      Object.keys(kk).forEach(function (n) { var i = $('input[name="' + n + '"]'); if (i) i.value = kk[n]; });
+      schedule(); return;
+    }
     if (el.closest("#save-anyway")) {
-      var blk = lastData && (lastData.blockers || [])[0]; if (!blk) return;
+      // Only the OVERRIDABLE cold blocker can be acknowledged (an all-zero tiered keep
+      // is a hard WON'T RUN with its own fix — never a Save-anyway).
+      var blk = lastData && blockerOf(lastData, "snapshots_on_cold_class"); if (!blk) return;
       acked[blk.code] = true;
       var h = document.createElement("input"); h.type = "hidden"; h.name = "acknowledge_blocker"; h.value = blk.code;
       form.appendChild(h);

@@ -9,6 +9,10 @@
 
 {% macro money(v) %}{% if v is none %}—{% else %}${{ '%.2f'|format(v) }}{% endif %}{% endmacro %}
 {% macro dash(cond, v) %}{% if cond %}{{ v }}{% else %}—{% endif %}{% endmacro %}
+{%- macro wasrow(field) -%}
+{% if is_edit %}{% set dd = (diff or {}).get(field) or {} %}
+<p class="was-row" data-was="{{ field }}" {{ '' if dd.changed else 'hidden' }}>was: <span>{{ dd.was }}</span></p>{% endif %}
+{%- endmacro -%}
 
 {% block body %}
 {% if jobsfile_error %}
@@ -63,6 +67,7 @@
       {% else %}Pick a folder above to price everything for it.{% endif %}</p>
     <p class="sm faint" id="source-info" hidden></p>
     <p id="job-cost-sizing" class="sm faint" hidden>Calculating Directory Size and Info…</p>
+    {{ wasrow('source') }}
   </section>
 
   {% set dim = '' if fv.source else ' dimmed' %}
@@ -130,6 +135,7 @@
     </div>
     <p class="sm faint measure" style="margin-top:8px">Getting it back is warm-up plus download out of AWS.
       It does not get cheaper when the storage does.</p>
+    {{ wasrow('storage_class') }}
 
     <!-- Heads-up blocks (5.8 §3.7) -->
     <div id="warnings">
@@ -144,7 +150,8 @@
     </div>
 
     <!-- The WON'T RUN blocker (5.8 §3.3) -->
-    {% set blk = blockers[0] if blockers else None %}
+    {% set blk = (blockers | selectattr('code', 'equalto', 'snapshots_on_cold_class') | first) if blockers else None %}
+    {% set tblk = (blockers | selectattr('code', 'equalto', 'all_zero_tiered') | first) if blockers else None %}
     <div class="sev wont" id="class-blocker" {{ '' if blk else 'hidden' }}>
       <span class="sev-tab"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M3.8 0h4.4L12 3.8v4.4L8.2 12H3.8L0 8.2V3.8z"/></svg>
         Won't run</span>
@@ -169,6 +176,7 @@
       {% endfor %}
     </div>
     <p class="sm faint">An assumption. It never changes what gets backed up.</p>
+    {{ wasrow('change_rate_pct') }}
 
     <!-- 2d · How long to keep old versions (5.8 §3.5) -->
     {% set ko = {} %}{% for o in (est.keep_options if est else []) %}{% set _ = ko.update({o.key: o}) %}{% endfor %}
@@ -192,6 +200,13 @@
           <label class="sm">monthly <input type="number" min="0" name="keep_monthly" value="{{ fv.keep_monthly }}" style="width:5ch" class="mono"></label>
         </div>
       </fieldset>
+      <!-- all-zero tiered keep: a WON'T RUN beside the Advanced inputs (5.8 §3.3) -->
+      <div class="sev wont" id="tiered-blocker" {{ '' if tblk else 'hidden' }} style="margin-left:34px">
+        <span class="sev-tab"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path fill="currentColor" d="M3.8 0h4.4L12 3.8v4.4L8.2 12H3.8L0 8.2V3.8z"/></svg>
+          Won't run</span>
+        <p>Keeping 0 of everything would remove every restore point. Keep at least one.</p>
+        <div class="acts"><button type="button" class="btn btn-ghost btn-xs" id="fix-tiered-keeps">Use last 3 · daily 7 · weekly 4 · monthly 6</button></div>
+      </div>
       <label class="radio" for="k-days"><input type="radio" id="k-days" name="retention_type" value="days" {{ 'checked' if fv.retention_type == 'days' }}>
         <span>Keep for <input type="number" name="retention_days" value="{{ fv.retention_days }}" style="width:5ch" class="mono"> days</span>
         <span class="why"><span class="k-delta" data-keep="days">{{ money((ko.get('days') or {}).get('delta_monthly')) }}/mo</span> ·
@@ -211,6 +226,7 @@
         {{ '%.2f'|format(est.breakdown.old_multiplier) }}× your data — <span class="n">{{ money(est.breakdown.versioning) }}</span>
         of the <span class="n">{{ money(est.this_job_monthly) }}</span>. Keeping less also limits how far back you can restore,
         which is worth something at 0% too.{% endif %}</p>
+    {{ wasrow('retention_type') }}
 
     <!-- type-specific settings (5.8 §3.8) -->
     <label class="radio" data-when-type="archive" style="margin-top:12px">
@@ -282,22 +298,29 @@
         Snapshot backups share one store and cannot overlap — use {{ est.schedule.collision.suggest }}.
         <button type="button" class="btn btn-ghost btn-xs" id="use-suggest" data-suggest-cron="{{ est.schedule.collision.suggest_cron }}">Use {{ est.schedule.collision.suggest }}</button>
       {% else %}No other Snapshot backup runs at this time. Snapshot backups share one store and cannot overlap.{% endif %}</p>
+    {{ wasrow('schedule') }}
   </section>
 
   <!-- 4 · Name it -->
   <section class="sec{{ dim }}">
     <h2 class="lbl">4 · Name it</h2>
+    {% set dest = ('s3://' ~ bucket ~ '/appdata/') if fv.type == 'versioned' else ('s3://' ~ bucket ~ '/media/' ~ (fv.name or '<name>') ~ '/') %}
     {% if is_edit %}
     <dl class="def"><dt>Job name</dt><dd><span class="mono">{{ fv.name }}</span>
       <div class="sm faint measure" style="margin-top:4px">The name is the tag on every snapshot and the folder name in
         the bucket. To rename, create a new job and delete this one.</div></dd></dl>
+    <dl class="def"><dt>Where it goes</dt><dd><span class="mono">{{ dest }}</span></dd></dl>
     {% else %}
     <div style="margin-top:12px;max-width:24rem">
       <label class="sm faint" for="jobname" style="display:block;margin-bottom:6px">Job name</label>
       <input type="text" class="mono" id="jobname" name="name" value="{{ fv.name }}" maxlength="64">
     </div>
-    <p class="sm faint measure" id="name-hint" style="margin-top:8px">Letters, digits, dot, dash, underscore.
-      Used as the tag on each snapshot and as the folder name in the bucket.</p>
+    {#- §5.8 §5: the hint names the concrete destination, and is type-aware (a Snapshot
+        backup shares one store; the others get their own media/<name>/ folder). -#}
+    <p class="sm faint measure name-hint" id="name-hint-versioned" data-when-type="versioned" style="margin-top:8px">Letters, digits, dot, dash, underscore.
+      Used as the tag on each snapshot. All Snapshot backups share one store — <span class="mono">s3://{{ bucket }}/appdata/</span>.</p>
+    <p class="sm faint measure name-hint" id="name-hint-other" data-when-type="archive versioned-files" style="margin-top:8px">Letters, digits, dot, dash, underscore.
+      Used as the folder name in the bucket — <span class="mono">s3://{{ bucket }}/media/<span id="dest-name">{{ fv.name or '<name>' }}</span>/</span>.</p>
     {% endif %}
     {% if errors.get('form') %}<p class="sm" style="color:var(--danger)">{{ errors.get('form') }}</p>{% endif %}
     {% if errors.get('size') %}<p class="sm" style="color:var(--danger)">{{ errors.get('size') }}</p>{% endif %}
@@ -307,7 +330,8 @@
     <button type="submit" class="btn btn-primary" id="create-btn" {{ 'disabled' if unacked }}>{{ 'Save changes' if is_edit else 'Create job' }}</button>
     <button type="submit" class="btn btn-ghost" id="create-run-btn" name="run_now" value="1" {{ 'disabled' if unacked }}>{{ 'Save and run it now' if is_edit else 'Create and run it now' }}</button>
     <a class="linkish" href="{{ url_for('gui.job_page', name=fv.name) if is_edit else url_for('gui.index') }}">Cancel</a>
-    <span class="figs" id="foot-figs">a typical month — this job <span class="n" id="foot-job">{{ dash(fv.source, this_typical) }}</span> ·
+    <span class="figs" id="foot-figs">a typical month — this job <span class="n" id="foot-job">{{ dash(fv.source, this_typical) }}</span><!--
+      -->{% if is_edit %} <span id="foot-was" {{ '' if (diff or {}).get('footer_was') else 'hidden' }}>(was <span>{{ (diff or {}).get('footer_was') }}</span>)</span>{% endif %} ·
       all jobs <span class="n" id="foot-all">{{ dash(fv.source, all_typical) }}</span> &nbsp;<a href="{{ url_for('gui.cost_page_view') }}">over time →</a></span>
   </div>
   <p class="sm" id="create-why" style="margin-top:8px;color:var(--danger)" {{ '' if unacked or not fv.source else 'hidden' }}>
@@ -324,5 +348,8 @@
 
   <script type="application/json" id="other-jobs">{{ other_jobs|tojson }}</script>
   <script type="application/json" id="saved-job">{{ saved_json|safe }}</script>
+  {#- The saved values the JS diffs the live form against (5.9), in the same fields the
+      form posts, plus the saved typical + schedule prose the JS can't recompute. -#}
+  <script type="application/json" id="saved-cmp">{{ (saved_cmp or {}) | tojson }}</script>
 </form>
 {% endblock %}

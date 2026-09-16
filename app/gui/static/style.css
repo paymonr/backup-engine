@@ -468,6 +468,11 @@ input:focus, select:focus, textarea:focus{ outline:2px solid var(--accent); outl
 /* keep-rule delta chips (5.8 §3.5) + a section dimmed until a folder is picked
    (5.8 §1: color faint, controls inert, NEVER hidden). */
 .k-delta{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; color:var(--ink); }
+/* diff-aware `was:` on the edit screen (5.9): a changed control gets a 2px accent
+   left rule and the old value in its own idiom. */
+.was-row{ border-left:2px solid var(--accent); padding-left:8px; font-size:13px; color:var(--muted);
+  margin:6px 0 0; }
+.was-row span{ font-family:var(--font-mono); }
 .sec.dimmed{ color:var(--faint); }
 .sec.dimmed .radio, .sec.dimmed label, .sec.dimmed input, .sec.dimmed select,
 .sec.dimmed button, .sec.dimmed .seg, .sec.dimmed table.classes{ pointer-events:none; }

@@ -241,3 +241,82 @@ def test_assumptions_round_trip_edit_save_edit(client, app):
     # the edit screen prefills that change rate back (ch-10 checked)
     body = client.get("/jobs/appdata/edit").get_data(as_text=True)
     assert 'id="ch-10"' in body and 'value="10"' in body
+
+
+# --- Task 14 review fixes -----------------------------------------------------
+
+def test_all_zero_tiered_shows_inline_block_and_disables_footer(client):
+    # Minor (a): an all-zero tiered keep raises the inline WON'T RUN beside the
+    # Advanced inputs (via _wizard_blockers), caught in the wizard not only on POST.
+    t = _csrf(client)
+    r = client.post("/jobs", data={
+        "csrf": t, "recalc": "1", "name": "appdata", "type": "versioned",
+        "source": "appdata", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "retention_type": "tiered", "keep_last": "0", "keep_daily": "0",
+        "keep_weekly": "0", "keep_monthly": "0", "change_rate_pct": "1",
+        "size_gb": "52.71", "file_count": "533", "measured_bytes": MEASURED})
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200
+    assert '<div class="sev wont" id="tiered-blocker" ' in body      # visible, not hidden
+    assert "Keeping 0 of everything" in body
+    assert 'id="create-btn" disabled' in body
+
+
+def _edit_job(app):
+    _seed(app, {"name": "appdata", "type": "versioned", "source": "appdata",
+                "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6},
+                "measured": {"bytes": int(52.71 * 1024 ** 3), "count": 533},
+                "assumptions": {"change_rate_pct": 1.0, "bundled": False, "pack_member_gb": 0.05}})
+
+
+def test_edit_class_change_shows_was_and_footer_was(client, app):
+    # Important (5.9): a changed class renders `was: Instant · STANDARD` on that row
+    # and `(was $X)` in the footer (server-side, via the recalc re-render).
+    _edit_job(app)
+    t = _csrf(client)
+    r = client.post("/jobs", data={
+        "csrf": t, "recalc": "1", "name": "appdata", "type": "versioned",
+        "source": "appdata", "schedule": "0 5 * * *", "storage_class": "STANDARD_IA",
+        "retention_type": "tiered", "keep_last": "3", "keep_daily": "7",
+        "keep_weekly": "4", "keep_monthly": "6", "change_rate_pct": "1",
+        "size_gb": "52.71", "file_count": "533", "measured_bytes": MEASURED,
+        "change_rate_touched": "1"})
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200
+    # the storage-class row is marked changed (not hidden) with the SAVED class idiom
+    assert '<p class="was-row" data-was="storage_class" >' in body
+    assert "was: <span>Instant · STANDARD</span>" in body
+    assert 'id="foot-was" >' in body and "(was <span>$" in body
+
+
+def test_edit_no_change_shows_no_was(client, app):
+    # Reverting / submitting the saved values shows neither `was:` nor `(was $X)`.
+    _edit_job(app)
+    t = _csrf(client)
+    r = client.post("/jobs", data={
+        "csrf": t, "recalc": "1", "name": "appdata", "type": "versioned",
+        "source": "appdata", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "retention_type": "tiered", "keep_last": "3", "keep_daily": "7",
+        "keep_weekly": "4", "keep_monthly": "6", "change_rate_pct": "1",
+        "size_gb": "52.71", "file_count": "533", "measured_bytes": MEASURED,
+        "change_rate_touched": "1"})
+    body = r.get_data(as_text=True)
+    # the was-row for storage_class renders hidden (unchanged), and the footer-was too
+    assert 'data-was="storage_class" hidden' in body
+    assert 'id="foot-was" hidden' in body
+
+
+def test_edit_renders_where_it_goes_and_destination(client, app):
+    # Minor (b) / 5.9: the locked "Where it goes" identity row + concrete destination.
+    _edit_job(app)
+    body = client.get("/jobs/appdata/edit").get_data(as_text=True)
+    assert "Where it goes" in body
+    assert "s3://bw-backups/appdata/" in body          # versioned shares the appdata store
+
+
+def test_new_name_hint_names_the_destination(client):
+    # 5.8 §5: the create name hint names the concrete destination, type-aware.
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert "s3://bw-backups/appdata/" in body          # Snapshot backup hint
+    assert "s3://bw-backups/media/" in body            # the others' hint

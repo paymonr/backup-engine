@@ -1478,6 +1478,48 @@ def jobs_page():
 _RETENTION_DEFAULT_BY_TYPE = {"versioned": "tiered", "versioned-files": "days",
                               "archive": "days"}
 
+# `was:` idioms for the diff-aware edit screen (spec 5.9). Each renders a saved value
+# in the SAME idiom the control shows it in, so a changed row reads e.g.
+# `was: Instant · STANDARD` / `was: A little — rare replacements (~1%)`.
+_CLASS_WAS = {c: f"{estimate_io._CLASS_PLAIN[c]} · {c}" for c in jobs_io.STORAGE_CLASSES}
+_CHANGE_WAS = {0: "Nothing — files only get added (0%)", 1: "A little — rare replacements (~1%)",
+               10: "Some — regular edits (~10%)", 30: "A lot — churny (~30%)"}
+_RETENTION_WAS = {"keep_all": "Keep everything", "tiered": "Thin them out over time",
+                  "days": "Keep for N days", "count": "Keep the last N versions"}
+
+
+def _edit_diff(saved, fv, saved_typical, current_typical):
+    """Per-field `was:` treatment for the edit screen (spec 5.9): a control whose
+    submitted value differs from the SAVED value carries the old value in its idiom;
+    the footer gains `(was $X)` when the typical-month cost changed. Reverting a field
+    (submitted == saved) removes both. `{}` on create (no saved job)."""
+    if saved is None:
+        return {}
+    d = {}
+
+    def _row(field, was):
+        d[field] = {"changed": str(saved.get(field, "")) != str(fv.get(field, "")), "was": was}
+    _row("storage_class", _CLASS_WAS.get(saved.get("storage_class"), saved.get("storage_class")))
+    try:
+        chg = int(float(saved.get("change_rate_pct") or 0))
+    except (TypeError, ValueError):
+        chg = 0
+    _row("change_rate_pct", _CHANGE_WAS.get(chg, f"{chg}%"))
+    _row("source", saved.get("source"))
+    _row("retention_type", _RETENTION_WAS.get(saved.get("retention_type"), saved.get("retention_type")))
+    try:
+        sched_human = cron.describe(saved.get("schedule", ""))
+    except Exception:
+        sched_human = saved.get("schedule", "")
+    d["schedule"] = {"changed": str(saved.get("schedule", "")) != str(fv.get("schedule", "")),
+                     "was": sched_human}
+    d["footer_was"] = None
+    if (saved_typical is not None and current_typical is not None
+            and abs(saved_typical - current_typical) >= 0.005):
+        d["footer_was"] = f"${saved_typical:.2f}"
+    d["saved_sched_human"] = sched_human
+    return d
+
 
 def _wizard_prices(cfg, kind=None):
     """(prices, live_failed) honouring ?prices=bundled|live (spec 7.9). Guarded so a
@@ -1601,6 +1643,25 @@ def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
     ack = set(acknowledged or [])
     blockers = (est or {}).get("blockers") or []
     unacked = [b for b in blockers if b["code"] not in ack]
+    # Diff-aware `was:` on the edit screen (5.9): compare the SUBMITTED/current values
+    # against the SAVED job (re-priced once for the footer's `(was $X)`).
+    diff, saved_typical, saved_cmp = {}, None, {}
+    if job is not None:
+        saved_fv = _saved_form_values(job)
+        try:
+            saved_typical = estimate_io.wizard_estimate(
+                saved_fv, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"], prices, saved_class=saved_class,
+                other_jobs=other)["this_job_monthly"] if prices is not None else None
+        except ValueError:
+            saved_typical = None
+        diff = _edit_diff(saved_fv, fv, saved_typical, (est or {}).get("this_job_monthly"))
+        # The JS diffs the LIVE form against these SAVED values (never `fv`, which on a
+        # re-render is the submitted state); plus the saved typical + schedule prose.
+        saved_cmp = {k: saved_fv[k] for k in ("storage_class", "change_rate_pct", "source",
+                                              "retention_type", "schedule")}
+        saved_cmp["typical"] = saved_typical
+        saved_cmp["sched_human"] = diff.get("saved_sched_human")
+    bucket = (config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_BUCKET") or "bw-backups").strip() or "bw-backups"
     return render_template(
         "job_form.html", is_edit=bool(job), job=job, fv=fv, est=est, est_error=est_error,
         has_source=bool(fv.get("source")),
@@ -1610,6 +1671,7 @@ def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
         other_jobs=other, saved_json=(json.dumps(job) if job else "null"),
         price_stamp=price_stamp, errors=errors or {}, jobsfile_error=jobsfile_error,
         blockers=blockers, unacked=unacked, acknowledged=sorted(ack),
+        diff=diff, saved_typical=saved_typical, saved_cmp=saved_cmp, bucket=bucket,
         csrf=security.issue_csrf()), status_code
 
 
@@ -1714,9 +1776,6 @@ def job_assumptions(name):
         return redirect(url_for("gui.cost_page_view"))
     flash(f"Saved assumptions for {name}.", "success")
     return redirect(url_for("gui.cost_page_view"))
-
-
-_COLD_CLASSES = ("GLACIER", "DEEP_ARCHIVE")
 
 
 @bp.post("/jobs")

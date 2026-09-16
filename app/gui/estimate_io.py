@@ -398,21 +398,33 @@ def _wizard_all_jobs(candidate: JobInputs, base: Scenario, prices, name: str) ->
             "unbounded": unbounded, "others": [j.name for j in others]}
 
 
-def _wizard_blockers(engine: str, cls: str) -> list[dict]:
-    """Server-side blocker list (spec 5.8 §3.3 / 8.6 `blockers`). A Snapshot backup
-    on a cold class is the one OVERRIDABLE blocker (logged acknowledgement). Source
-    and all-zero-tiered are enforced by jobs_io.validate, not listed here."""
+def _wizard_blockers(engine: str, cls: str, *, retention_type=None, keep=None) -> list[dict]:
+    """Server-side blocker list (spec 5.8 §3.3 / 8.6 `blockers`). A Snapshot backup on
+    a cold class is the OVERRIDABLE blocker (logged acknowledgement). An all-zero
+    tiered keep is a hard WON'T-RUN surfaced in the wizard beside the Advanced inputs
+    (jobs_io.validate rejects it too, on POST) — passed `retention_type`/`keep` so this
+    can catch it live; the enforcement gate is unchanged (source stays with validate)."""
+    out = []
     if engine == "versioned" and cls in COLD_CLASSES:
         plain = _CLASS_PLAIN[cls]
-        return [{
+        out.append({
             "code": "snapshots_on_cold_class", "class": cls, "plain": plain,
             "text": (f"A Snapshot backup can't read from {plain} · {cls}. It re-reads "
                      f"its whole store every run, so every scheduled run would fail on a "
                      f"data read."),
             "fixes": [{"label": "Use File history instead", "set": {"type": "versioned-files"}},
                       {"label": "Use Instant, cheaper", "set": {"storage_class": "STANDARD_IA"}}],
-            "overridable": True}]
-    return []
+            "overridable": True})
+    if (engine == "versioned" and retention_type == "tiered" and keep is not None
+            and not any(int(keep.get(k, 0) or 0) for k in ("last", "daily", "weekly", "monthly"))):
+        out.append({
+            "code": "all_zero_tiered", "class": None, "plain": None,
+            "text": "Keeping 0 of everything would remove every restore point. Keep at least one.",
+            "fixes": [{"label": "Use last 3 · daily 7 · weekly 4 · monthly 6",
+                       "set": {"keep_last": "3", "keep_daily": "7",
+                               "keep_weekly": "4", "keep_monthly": "6"}}],
+            "overridable": False})
+    return out
 
 
 def _wizard_warnings(engine: str, cls: str, candidate: JobInputs, prices, saved_class) -> list[dict]:
@@ -536,10 +548,19 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
         raise ValueError(f"unknown storage class '{cls}'")
     job = {"name": name, "type": engine, "source": source,
            "schedule": params.get("schedule", ""), "storage_class": cls}
+    # All-zero tiered keep is a WON'T-RUN (5.8 §3.3): jobs_io._normalize_retention
+    # rejects it, so building the candidate with it would 400 the live estimate. When
+    # it is posted, substitute the sane defaults for the candidate (so the rest of the
+    # estimate still prices) and let _wizard_blockers raise the inline block instead.
+    keep_posted = {k: int(_num(params, f"keep_{k}", 0, label=k)) for k in ("last", "daily", "weekly", "monthly")}
+    all_zero_tiered = (engine == "versioned" and params.get("retention_type") == "tiered"
+                       and not any(keep_posted.values()))
     # The wizard's retention-policy selector posts retention_type + the matching
     # field; older/direct callers (no retention_type) fall back to the pre-selector
     # per-type params so this stays backward compatible.
-    if "retention_type" in params:
+    if all_zero_tiered:
+        job["retention"] = {"type": "tiered", "keep": dict(_KEEP_DEFAULTS)}
+    elif "retention_type" in params:
         job["retention"] = retention_from_form(params)
     elif engine == "versioned":
         # No keep_* params posted (pre-selector caller / first live estimate before
@@ -625,7 +646,8 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
     keep_options = _wizard_keep_options(candidate, base, prices, engine,
                                         days_val=days_val, count_val=count_val, keep=keep)
     all_jobs = _wizard_all_jobs(candidate, base, prices, name)
-    blockers = _wizard_blockers(engine, cls)
+    blockers = _wizard_blockers(engine, cls,
+                                retention_type=params.get("retention_type"), keep=keep_posted)
     warnings = _wizard_warnings(engine, cls, candidate, prices, saved_class)
     schedule = _wizard_schedule(str(params.get("schedule", "")), other_jobs, engine)
     recommendation = storage_advice.recommend_type(
