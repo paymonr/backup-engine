@@ -448,3 +448,147 @@ def test_emit_shell_retention_vars(tmp_path):
                    retention={"type": "tiered", "keep": {"last": 2, "daily": 5, "weekly": 1, "monthly": 0}}))
     assert "JOB_RETENTION_TYPE=tiered" in v and "JOB_KEEP_LAST=2" in v and "JOB_KEEP_DAILY=5" in v
     assert "JOB_RETENTION_TYPE=keep_all" in emit(_base(retention={"type": "keep_all"}))
+
+# =====================================================================
+# Task 4: created_at / assumptions / measured / acknowledged;
+#         set_enabled; render_crontab; delete removes cache files.
+# =====================================================================
+
+def test_validate_defaults_assumptions_when_absent(tmp_path):
+    # 7.8: assumptions is backfilled with defaults on read so an edit never
+    # resets them (change_rate 0%, not bundled, 0.05 GB pack member).
+    v = jobs_io.validate(_job(), _root(tmp_path))
+    assert v["assumptions"]["change_rate_pct"] == 0.0
+    assert v["assumptions"]["bundled"] is False
+    assert v["assumptions"]["pack_member_gb"] == 0.05
+
+def test_validate_passes_assumptions_through_and_typechecks(tmp_path):
+    root = _root(tmp_path)
+    a = {"change_rate_pct": 10, "bundled": True, "pack_member_gb": 2.0, "set_at": "2026-09-12T00:00:00Z"}
+    v = jobs_io.validate(_job(assumptions=a), root)
+    assert v["assumptions"]["change_rate_pct"] == 10.0
+    assert v["assumptions"]["bundled"] is True
+    assert v["assumptions"]["pack_member_gb"] == 2.0
+    assert v["assumptions"]["set_at"] == "2026-09-12T00:00:00Z"
+    # wrong-typed members fall back to defaults rather than 500
+    v2 = jobs_io.validate(_job(assumptions={"change_rate_pct": "lots", "bundled": "yes"}), root)
+    assert v2["assumptions"]["change_rate_pct"] == 0.0
+    assert v2["assumptions"]["bundled"] is True   # any truthy -> bool
+
+def test_validate_measured_present_only_when_valid(tmp_path):
+    root = _root(tmp_path)
+    m = {"bytes": 56594862080, "count": 533, "at": "2026-09-15T05:00:01Z", "capped": True}
+    v = jobs_io.validate(_job(measured=m), root)
+    assert v["measured"] == {"bytes": 56594862080, "count": 533,
+                             "at": "2026-09-15T05:00:01Z", "capped": True}
+    # measured with a non-int bytes is unusable -> the key is dropped, never a 500
+    v2 = jobs_io.validate(_job(measured={"bytes": "big"}), root)
+    assert "measured" not in v2
+    # absent measured stays absent
+    assert "measured" not in jobs_io.validate(_job(), root)
+
+def test_validate_acknowledged_round_trip_and_drop_bad(tmp_path):
+    root = _root(tmp_path)
+    ack = [{"code": "snapshots_on_cold_class", "class": "DEEP_ARCHIVE", "at": "2026-09-12T00:00:00Z"}]
+    v = jobs_io.validate(_job(acknowledged=ack), root)
+    assert v["acknowledged"] == ack
+    assert "acknowledged" not in jobs_io.validate(_job(acknowledged="nope"), root)
+
+def test_validate_created_at_kept_when_parseable_dropped_when_garbage(tmp_path):
+    root = _root(tmp_path)
+    v = jobs_io.validate(_job(created_at="2026-09-01T00:00:00Z"), root)
+    assert v["created_at"] == "2026-09-01T00:00:00Z"
+    assert "created_at" not in jobs_io.validate(_job(created_at="not-a-date"), root)
+
+def test_new_fields_round_trip_through_upsert_load(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(
+        measured={"bytes": 100, "count": 5, "at": "2026-09-15T05:00:01Z", "capped": False},
+        acknowledged=[{"code": "x", "class": "DEEP_ARCHIVE", "at": "2026-09-12T00:00:00Z"}],
+    ), source_root=root)
+    loaded = jobs_io.get(cfg, "movies")
+    assert loaded["measured"]["bytes"] == 100
+    assert loaded["acknowledged"][0]["code"] == "x"
+    assert loaded["assumptions"]["pack_member_gb"] == 0.05
+    assert "created_at" in loaded          # upsert stamped it
+
+def test_upsert_stamps_created_at_for_new_and_copies_on_edit(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(schedule="0 4 * * 0"), source_root=root)
+    created = jobs_io.get(cfg, "movies")["created_at"]
+    assert created and isinstance(created, str)
+    # editing the same name must not change created_at (the job's birthday is fixed)
+    jobs_io.upsert(cfg, _job(schedule="0 5 * * 0"), source_root=root)
+    assert jobs_io.get(cfg, "movies")["created_at"] == created
+
+def test_validate_rejects_all_zero_tiered_via_upsert(tmp_path):
+    # the all-zero tiered keep must be rejected at the write path too (never persisted)
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    bad = _job(name="cfg", type="versioned", source="appdata",
+               retention={"type": "tiered", "keep": {"last": 0, "daily": 0, "weekly": 0, "monthly": 0}})
+    bad.pop("mirror", None)
+    with pytest.raises(ValueError):
+        jobs_io.upsert(cfg, bad, source_root=root)
+
+def test_set_enabled_toggles(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(enabled=True), source_root=root)
+    out = jobs_io.set_enabled(cfg, "movies", False)
+    assert out["enabled"] is False
+    assert jobs_io.get(cfg, "movies")["enabled"] is False
+    jobs_io.set_enabled(cfg, "movies", True)
+    assert jobs_io.get(cfg, "movies")["enabled"] is True
+
+def test_set_enabled_raises_on_corrupt_file(tmp_path):
+    cfg = _cfg(tmp_path)
+    raw = "{ not json"
+    Path(cfg, "jobs.json").write_text(raw)
+    with pytest.raises(jobs_io.JobsFileError):
+        jobs_io.set_enabled(cfg, "movies", False)
+    assert Path(cfg, "jobs.json").read_text() == raw   # untouched
+
+def test_render_crontab_dry_run_returns_lines_without_writing(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="movies", schedule="0 4 * * 0", enabled=True), source_root=root)
+    cache = str(tmp_path / "cache")
+    text = jobs_io.render_crontab(cfg, cache, "/app/scripts", dry_run=True, source_root=root)
+    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n"
+    assert not Path(cache, "crontab").exists()   # dry run never writes
+
+def test_render_crontab_writes_and_skips_disabled_and_invalid(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="movies", schedule="0 4 * * 0", enabled=True), source_root=root)
+    jobs_io.upsert(cfg, _job(name="paused", schedule="0 3 * * *", enabled=False), source_root=root)
+    # a hand-edited invalid job (bad source) must not reach the crontab
+    _write_raw(cfg, [
+        {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 4 * * 0",
+         "enabled": True, "storage_class": "STANDARD"},
+        {"name": "evil", "type": "archive", "source": "../../etc", "schedule": "0 2 * * *",
+         "enabled": True, "storage_class": "STANDARD"},
+    ])
+    cache = str(tmp_path / "cache")
+    text = jobs_io.render_crontab(cfg, cache, "/app/scripts", source_root=root)
+    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n"
+    assert Path(cache, "crontab").read_text() == text     # written for real
+    assert "evil" not in text and "paused" not in text
+
+def test_delete_removes_cache_files(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="movies"), source_root=root)
+    cache = tmp_path / "cache"
+    state = cache / "state"; state.mkdir(parents=True)
+    (state / "movies.runs.jsonl").write_text("{}\n")
+    (state / "movies.json").write_text("{}")
+    (state / "movies.points.json").write_text("{}")
+    (state / "movies.thaw.json").write_text("{}")
+    logdir = cache / "logs" / "runs" / "movies"; logdir.mkdir(parents=True)
+    (logdir / "x.log").write_text("hi")
+    # an unrelated job's caches must survive
+    (state / "other.runs.jsonl").write_text("{}\n")
+    jobs_io.delete(cfg, "movies", str(cache))
+    assert jobs_io.load(cfg) == []
+    assert not (state / "movies.runs.jsonl").exists()
+    assert not (state / "movies.json").exists()
+    assert not (state / "movies.points.json").exists()
+    assert not logdir.exists()
+    assert (state / "other.runs.jsonl").exists()   # untouched

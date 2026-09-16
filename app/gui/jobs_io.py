@@ -2,7 +2,8 @@
 # defs (name charset + source confined to SOURCE_ROOT) and emits shell-safe vars
 # for the bash runner. Never runs a backup itself.
 from __future__ import annotations
-import json, os, re, sys, shlex
+import json, os, re, sys, shlex, signal
+from datetime import datetime, timezone
 from pathlib import Path
 from . import fsbrowse
 
@@ -142,6 +143,69 @@ def _load_strict(config_dir) -> list[dict]:
 def get(config_dir, name) -> dict | None:
     return next((j for j in load(config_dir) if j.get("name") == name), None)
 
+def _now_iso(now=None) -> str:
+    return (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def _parse_iso(s) -> datetime | None:
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+def _normalize_assumptions(job: dict) -> dict:
+    """7.8: `{change_rate_pct: float, bundled: bool, pack_member_gb: float, set_at: iso}`.
+    Backfilled with defaults on every read so an edit never resets them; a member of
+    the wrong type falls back to its default rather than 500."""
+    a = job.get("assumptions")
+    a = a if isinstance(a, dict) else {}
+    def _f(key, default):
+        try:
+            return float(a[key])
+        except (KeyError, TypeError, ValueError):
+            return default
+    out = {"change_rate_pct": _f("change_rate_pct", 0.0),
+           "bundled": bool(a.get("bundled", False)),
+           "pack_member_gb": _f("pack_member_gb", 0.05)}
+    if isinstance(a.get("set_at"), str):
+        out["set_at"] = a["set_at"]
+    return out
+
+def _normalize_measured(job: dict) -> dict | None:
+    """7.8: `{bytes: int, count: int, at: iso, capped: bool}` or absent. Present only
+    when `bytes` is a usable int (size_gb is rounded, so the exact byte count is the
+    thing worth keeping); an unusable value drops the whole key, never a 500."""
+    m = job.get("measured")
+    if not isinstance(m, dict) or isinstance(m.get("bytes"), bool):
+        return None
+    try:
+        b = int(m["bytes"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    try:
+        c = int(m.get("count", 0))
+    except (TypeError, ValueError):
+        c = 0
+    out = {"bytes": b, "count": c, "capped": bool(m.get("capped", False))}
+    if isinstance(m.get("at"), str):
+        out["at"] = m["at"]
+    return out
+
+def _normalize_acknowledged(job: dict) -> list | None:
+    """7.8: `[{code, class, at}]` or absent. Keep only well-formed entries."""
+    ack = job.get("acknowledged")
+    if not isinstance(ack, list):
+        return None
+    out = []
+    for e in ack:
+        if isinstance(e, dict) and isinstance(e.get("code"), str) and isinstance(e.get("class"), str):
+            entry = {"code": e["code"], "class": e["class"]}
+            if isinstance(e.get("at"), str):
+                entry["at"] = e["at"]
+            out.append(entry)
+    return out or None
+
 def validate(job: dict, source_root, *, require_exists: bool = True) -> dict:
     # require_exists=True (the GUI WRITE path, upsert) rejects a typo'd/non-existent
     # source at creation time. require_exists=False (the CLI READ path — run,
@@ -191,17 +255,110 @@ def validate(job: dict, source_root, *, require_exists: bool = True) -> dict:
         # Mirror days value if present, else 0
         ret = out["retention"]
         out["retention_days"] = ret["days"] if ret["type"] == "days" else 0
+    # --- Task 4 new fields (7.8): added, never removed; emit_shell ignores them. ---
+    ca = _parse_iso(job.get("created_at"))
+    if ca is not None:
+        out["created_at"] = job["created_at"]
+    out["assumptions"] = _normalize_assumptions(job)
+    measured = _normalize_measured(job)
+    if measured is not None:
+        out["measured"] = measured
+    ack = _normalize_acknowledged(job)
+    if ack is not None:
+        out["acknowledged"] = ack
     return out
 
-def upsert(config_dir, job: dict, *, source_root) -> None:
+def upsert(config_dir, job: dict, *, source_root, now=None) -> None:
+    existing = _load_strict(config_dir)
+    name = str(job.get("name", "")).strip()
+    # created_at is the job's fixed birthday: keep the prior value on an edit,
+    # stamp `now` for a new name. Do it before validate() so it passes through.
+    prior = next((j for j in existing if j.get("name") == name), None)
+    job = dict(job)
+    if prior is not None and _parse_iso(prior.get("created_at")) is not None:
+        job["created_at"] = prior["created_at"]
+    elif _parse_iso(job.get("created_at")) is None:
+        job["created_at"] = _now_iso(now)
     job = validate(job, source_root)
-    jobs = [j for j in _load_strict(config_dir) if j.get("name") != job["name"]]
+    jobs = [j for j in existing if j.get("name") != job["name"]]
     jobs.append(job)
     _path(config_dir).write_text(json.dumps({"jobs": jobs}, indent=2) + "\n")
 
-def delete(config_dir, name) -> None:
+# The full set of per-job caches removed when a job is deleted (7.1.9). Everything
+# but the log dir lives under state/; the log dir is logs/runs/<job>/.
+_CACHE_STATE_SUFFIXES = (".runs.jsonl", ".json", "-last.jsonl", "-rclone.log", "-prune.log",
+                         "-vfiles.log", ".points.json", ".thaw.json", ".tested.json",
+                         ".test-thaw.json")
+
+def _remove_job_caches(cache_dir, name) -> None:
+    import shutil
+    state = Path(cache_dir, "state")
+    for suf in _CACHE_STATE_SUFFIXES:
+        try:
+            (state / f"{name}{suf}").unlink()
+        except (FileNotFoundError, OSError):
+            pass
+    shutil.rmtree(Path(cache_dir, "logs", "runs", name), ignore_errors=True)
+
+def delete(config_dir, name, cache_dir=None) -> None:
     jobs = [j for j in _load_strict(config_dir) if j.get("name") != name]
     _path(config_dir).write_text(json.dumps({"jobs": jobs}, indent=2) + "\n")
+    # Only after the config write commits (which raises on a corrupt file, leaving
+    # the caches intact) do we drop the job's caches (7.1.9).
+    if cache_dir is not None and valid_name(name):
+        _remove_job_caches(cache_dir, name)
+
+def set_enabled(config_dir, name, enabled: bool) -> dict | None:
+    """Flip one job's `enabled` flag (Pause/Resume). Strict load so a corrupt
+    jobs.json raises JobsFileError like delete() rather than clobbering it."""
+    jobs = _load_strict(config_dir)
+    out = None
+    for j in jobs:
+        if j.get("name") == name:
+            j["enabled"] = bool(enabled)
+            out = j
+    if out is not None:
+        _path(config_dir).write_text(json.dumps({"jobs": jobs}, indent=2) + "\n")
+    return out
+
+def _crontab_path(cache_dir) -> Path:
+    return Path(cache_dir, "crontab")
+
+def _signal_supercronic(cache_dir) -> None:
+    # After every crontab write, SIGUSR2 the scheduler so it reloads even where
+    # inotify does not fire (Unraid FUSE). A missing/unparseable pid or a dead
+    # process (running without the scheduler is legal) is ignored silently (7.3).
+    try:
+        pid = int(Path(cache_dir, "supercronic.pid").read_text().strip())
+        os.kill(pid, signal.SIGUSR2)
+    except (FileNotFoundError, ProcessLookupError, ValueError, OSError):
+        pass
+
+def render_crontab(config_dir, cache_dir, scripts_dir, *, dry_run=False, source_root=None) -> str:
+    """Render the crontab in exactly entrypoint.sh:emit_crontab's format —
+    `<schedule> <scripts_dir>/backup-job.sh <name>` for each enabled, valid job.
+    Invalid jobs (confinement/name/schedule) are dropped just as `--list` drops
+    them, so on-disk == this render whenever nothing was hand-edited (crontab_stale).
+    dry_run=True returns the text without writing or signalling (7.3, 7.8)."""
+    source_root = source_root if source_root is not None else os.environ.get("SOURCE_ROOT", "/backup/media")
+    lines = []
+    for job in load(config_dir):
+        try:
+            v = validate(job, source_root, require_exists=False)
+        except ValueError:
+            continue
+        if not v.get("enabled"):
+            continue
+        lines.append(f"{v['schedule']} {scripts_dir}/backup-job.sh {v['name']}")
+    text = "".join(line + "\n" for line in lines)
+    if not dry_run:
+        p = _crontab_path(cache_dir)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(text)
+        os.replace(tmp, p)
+        _signal_supercronic(cache_dir)
+    return text
 
 def emit_shell(job: dict) -> str:
     q = shlex.quote
