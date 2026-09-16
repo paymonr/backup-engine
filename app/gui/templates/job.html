@@ -1,0 +1,372 @@
+{% extends "base.html" %}
+{#- Job page — `/jobs/<name>` (spec 5.2, 8.2). One page per job: identity/health
+    header, the status strip, the `Last 30 runs` ledger, the Get-data-back band
+    (the live restore FORM is Task 11 — stubbed here as the band shell + needs-line),
+    the cache-only `What this job costs` band (Ruling R-I; the real four figures are
+    estimate_io.job_cost_band in Task 12), `How it is set up` with the Edit link and
+    the §5.9 locked fields, the Tool detail expander (where tool vocabulary lives),
+    and the Recovery-readiness rail (emitted twice per ruling R7). -#}
+{% set MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+
+{%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro smoney(v) -%}{% if v is not none %}{{ '+' if v >= 0 else '−' }}${{ '{:,.2f}'.format(v|abs) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro humanbytes(b) -%}
+{%- if b is none -%}—
+{%- elif b >= 1099511627776 -%}{{ '%.2f'|format(b / 1099511627776) }} TB
+{%- elif b >= 1073741824 -%}{{ '%.2f'|format(b / 1073741824) }} GB
+{%- elif b >= 1048576 -%}{{ '%.1f'|format(b / 1048576) }} MB
+{%- else -%}{{ b|int }} B
+{%- endif -%}
+{%- endmacro -%}
+{%- macro dur(s) -%}
+{%- if s is none -%}—
+{%- elif s < 60 -%}{{ s|int }} s
+{%- elif s < 3600 -%}{{ (s // 60)|int }} m {{ '%02d'|format((s % 60)|int) }} s
+{%- elif s < 86400 -%}{{ (s // 3600)|int }} h {{ '%02d'|format(((s % 3600) // 60)|int) }} m
+{%- else -%}{{ (s // 86400)|int }} d {{ '%02d'|format(((s % 86400) // 3600)|int) }} h
+{%- endif -%}
+{%- endmacro -%}
+{%- macro hhmm(iso) -%}{% if iso %}{{ iso[11:16] }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro datelabel(iso) -%}{% if iso %}{{ iso[8:10]|int }} {{ MON[iso[5:7]|int - 1] }}{% endif %}{%- endmacro -%}
+{%- macro dateyear(iso) -%}{% if iso %}{{ iso[8:10]|int }} {{ MON[iso[5:7]|int - 1] }} {{ iso[0:4] }}{% endif %}{%- endmacro -%}
+{%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
+
+{% set tokstate = 'notrun' if s.state == 'NOT_RUN_YET' else s.state|lower %}
+{% set cls = job.storage_class or 'STANDARD' %}
+{% set is_versioned = job.type == 'versioned' %}
+{% set is_archive = job.type == 'archive' %}
+{% set is_cold = rjob and rjob.cold %}
+
+{% block title %}{{ s.name }} · backup-engine{% endblock %}
+
+{# ---- the recovery rail, emitted twice (ruling R7) -------------------------- #}
+{% macro rail() %}
+<h3>Recovery readiness</h3>
+<p class="hint" style="margin-bottom:var(--sp-3)">Could you actually get this back right now?</p>
+{% if is_versioned %}
+{% set pp = rec.passphrase %}
+<div class="rrow"><span class="dot {{ 'dot-ok' if pp.state == 'set' else 'dot-danger' }}"></span><div>
+  <div class="k">Recovery passphrase</div>
+  <div class="v"{% if pp.state != 'set' %} style="color:var(--danger)"{% endif %}>{{ 'Set · not the example' if pp.state == 'set' else 'Not set — still the shipped example' }}</div>
+  <div class="t">{% if pp.checked_at %}checked {{ datelabel(pp.checked_at) }} {{ hhmm(pp.checked_at) }}{% else %}not checked yet{% endif %}</div>
+</div></div>
+{% endif %}
+{% set d = rec.destination %}
+<div class="rrow"><span class="dot {{ 'dot-ok' if d.state == 'ok' else ('dot-warn' if d.state in ['never', none] else 'dot-danger') }}"></span><div>
+  <div class="k">Destination reachable</div>
+  <div class="v"{% if d.state not in ['ok','never',none] %} style="color:var(--danger)"{% endif %}>{{ 'Write, read, delete — all OK' if d.state == 'ok' else ('Not probed yet' if d.state in ['never', none] else 'Could not write to the bucket') }}</div>
+  <div class="t">{% if d.probed_at %}probed {{ datelabel(d.probed_at) }} {{ hhmm(d.probed_at) }}{% else %}nothing has probed it yet{% endif %}</div>
+</div></div>
+{% set vg = rec.versioning %}
+<div class="rrow"><span class="dot {{ 'dot-ok' if vg.state in ['on','confirmed_by_hand'] else ('dot-danger' if vg.state == 'off' else 'dot-warn') }}"></span><div>
+  <div class="k">Old versions protected</div>
+  <div class="v"{% if vg.state == 'off' %} style="color:var(--danger)"{% endif %}>{{ 'Bucket versioning on' if vg.state == 'on' else ('Confirmed by hand' if vg.state == 'confirmed_by_hand' else ('Versioning off — old versions unprotected' if vg.state == 'off' else 'Not checkable with this key')) }}</div>
+  <div class="t">{% if vg.checked_at %}checked {{ datelabel(vg.checked_at) }} {{ hhmm(vg.checked_at) }}{% else %}—{% endif %}</div>
+</div></div>
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">{{ 'What is there' if is_archive else 'Dates you can go back to' }}</div>
+  {% if is_archive %}
+  <div class="v">1 copy{% if rjob and rjob.newest_point %} · as of {{ datelabel(rjob.newest_point.at) }}{% endif %}</div>
+  <div class="t">no version history</div>
+  {% else %}
+  <div class="v">{{ rjob.points_count if rjob else 0 }}{% if rjob and rjob.oldest_point %} · back to {{ datelabel(rjob.oldest_point) }}{% endif %}</div>
+  <div class="t">{% if rjob and rjob.cover_days %}{{ rjob.cover_days }} days of cover{% else %}no cover yet{% endif %}</div>
+  {% endif %}
+</div></div>
+{% set tested = rjob.tested if rjob else none %}
+{% set pending = rjob.test_pending if rjob else none %}
+<div class="rrow"><span class="dot {{ 'dot-ok' if tested else 'dot-warn' }}"></span><div>
+  <div class="k">Restore ever tested</div>
+  <div class="v"{% if not tested %} style="color:var(--warn)"{% endif %}>{% if tested %}Tested{% elif pending %}Warming up{% else %}Never{% endif %}</div>
+  <div class="t">{% if tested %}proved it reads back{% elif pending %}warm-up in progress{% else %}nothing has proved it reads back{% endif %}</div>
+</div></div>
+{% set rq = rjob.cost_full_restore if rjob else none %}
+{% if is_cold %}
+<form method="post" action="/jobs/{{ s.name }}/test-restore"><input type="hidden" name="csrf" value="{{ csrf }}">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — warm up one file, ~$0.02, up to 48 h</button></form>
+<p class="hint" style="margin-top:var(--sp-2)">Asks Amazon to warm up the most recently copied file at Bulk speed, then downloads it to check it reads back.</p>
+{% else %}
+<form method="post" action="/jobs/{{ s.name }}/test-restore"><input type="hidden" name="csrf" value="{{ csrf }}">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — one file, ~$0.01</button></form>
+<p class="hint" style="margin-top:var(--sp-2)">Pulls a single file into a scratch folder, checks it, deletes it, and writes today's date into this row.</p>
+{% endif %}
+{% endmacro %}
+
+{% block body %}
+<section class="screen read" aria-label="Job {{ s.name }}">
+
+  {# ---- header ---------------------------------------------------------- #}
+  <div class="jobhead" style="margin-bottom:var(--sp-6)">
+    <div class="who">
+      <div class="titleline">
+        <span class="tok tok-{{ tokstate }}" id="job-token">{{ s.label }}</span>
+        <h1>{{ s.name }}</h1>
+      </div>
+      <p class="typeline">{{ vocab.TYPE_LINES.get(job.type, s.type_label) }}</p>
+      <p class="pathline">{{ ident.source_display or job.source }} &nbsp;→&nbsp; {{ ident.s3 }}{% if ident.tag %} · tag {{ ident.tag }}{% endif %}</p>
+    </div>
+    <div class="actions">
+      <form method="post" action="/jobs/{{ s.name }}/run" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="btn" id="run-now"{% if s.state == 'RUNNING' %} disabled{% endif %}>{{ 'Running…' if s.state == 'RUNNING' else 'Run now' }}</button>
+      </form>
+      <a class="btn btn-primary" href="#restore-band" data-scroll="restore-band">Get data back</a>
+      <details class="menu" style="display:inline-block;position:relative">
+        <summary class="btn btn-ghost" aria-label="More actions" style="list-style:none">···</summary>
+        <div class="menu-pop" style="position:absolute;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.4rem;min-width:160px;display:grid;gap:.2rem">
+          {% if s.enabled %}
+          <form method="post" action="/jobs/{{ s.name }}/pause"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Pause</button></form>
+          {% else %}
+          <form method="post" action="/jobs/{{ s.name }}/resume"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Resume</button></form>
+          {% endif %}
+          <a class="btn btn-sm btn-ghost" href="/jobs/{{ s.name }}/edit" style="text-align:left">Edit →</a>
+          {# The typed-name confirm-to-act dialog is client-side (spec 5.15); the POST
+             itself carries only the CSRF token — no `confirm` field in the markup. #}
+          <form method="post" action="/jobs/{{ s.name }}/delete"
+                data-confirm-name="{{ s.name }}"
+                data-confirm="Type {{ s.name }} to delete this job. Its run history and restore-point cache on this machine go with it; nothing in the bucket is deleted.">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left;color:var(--danger)">Delete…</button>
+          </form>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  {# ---- transient Done (hidden by default; the poll reveals it) ---------- #}
+  <div class="sig sig-success" id="run-done" hidden style="margin-bottom:var(--sp-4)">
+    <span class="glyph" aria-hidden="true"></span>
+    <div class="body"><span class="label">Done</span><p></p></div>
+  </div>
+
+  <div class="jobgrid">
+    <div>
+
+      {# ---- status strip ------------------------------------------------- #}
+      <div class="statusstrip">
+        <div class="sfig"><span class="k">Last run</span>
+          <span class="v">{{ hhmm(s.last.started_at) if s.last else '—' }}</span>
+          <span class="s">{% if s.last %}{{ datelabel(s.last.finished_at or s.last.started_at) }}{% else %}never{% endif %}</span></div>
+        <div class="sfig"><span class="k">Took</span>
+          <span class="v">{{ dur(s.last.duration_s) if s.last and s.last.duration_s is not none else '—' }}</span>
+          <span class="s">{% if s.median_s %}~{{ dur(s.median_s) }} typical{% else %}no typical yet{% endif %}</span></div>
+        <div class="sfig"><span class="k">Next run</span>
+          <span class="v">{{ hhmm(s.next_run) if s.next_run else '—' }}</span>
+          <span class="s">{% if s.next_run %}{{ datelabel(s.next_run) }}{% else %}{{ s.next_run_note or 'paused' }}{% endif %}</span></div>
+        <div class="sfig"><span class="k">Streak</span>
+          <span class="v">{{ s.streak }} run{{ '' if s.streak == 1 else 's' }}</span>
+          <span class="s">{% if ledger.failed == 0 %}no failures on record{% else %}broken{% if s.last and s.last.outcome in ['failed','aborted'] %} {{ datelabel(s.last.finished_at or s.last.started_at) }}{% endif %}{% endif %}</span></div>
+        {% if is_archive %}
+        <div class="sfig"><span class="k">Copies</span>
+          <span class="v">{{ rjob.points_count if rjob else 0 }}</span>
+          <span class="s">what is there now</span></div>
+        {% else %}
+        <div class="sfig"><span class="k">Restore points</span>
+          <span class="v">{{ pv.count }}</span>
+          <span class="s">{% if pv.oldest %}back to {{ dateyear(pv.oldest) }}{% else %}none yet{% endif %}</span></div>
+        {% endif %}
+      </div>
+
+      {# ---- failure record (only when the last run failed) --------------- #}
+      {% if s.state == 'FAILED' and s.last %}
+      {% set ec = s.error_class %}
+      <div class="sig sig-failure" style="margin-top:var(--sp-5)">
+        <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill="currentColor"/></svg></span>
+        <div class="body">
+          <span class="label">Failed</span>
+          <p>{{ datelabel(s.last.started_at) }} {{ hhmm(s.last.started_at) }} · {% if s.last.outcome == 'aborted' %}stopped without reporting{% else %}stopped after {{ dur(s.last.duration_s) }} · exit code {{ s.last.exit_code if s.last.exit_code is not none else '—' }}{% endif %}</p>
+          {% if s.last.error %}<code class="errline">{{ s.last.error }}</code>{% endif %}
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:var(--sp-4)">
+        {% if ec %}
+        <div>
+          <p class="slabel">Why this happens</p>
+          <p>{% if s.last.phase == 'prune' %}The files themselves were copied; the clean-up of old versions was refused, so the keep rule is not being applied. {% endif %}{{ ec.cause }}</p>
+        </div>
+        <div>
+          <p class="slabel">What to do</p>
+          <p>{{ ec.fix }}</p>
+          {% if ec.fix_label %}<p style="margin-top:var(--sp-3)"><a class="btn btn-primary" href="{{ ec.fix_route.replace('<name>', s.name) if ec.fix_route else ('/jobs/' + s.name + '/runs/' + s.last.id) }}">{{ ec.fix_label }}</a> &nbsp; <a class="linklike" href="/jobs/{{ s.name }}/runs/{{ s.last.id }}">open the run record →</a></p>{% endif %}
+        </div>
+        {% else %}
+        <div style="grid-column:1/-1"><p>The tool reported an error this app does not recognise. Read the log in the run record; the last lines usually name the reason. <a class="linklike" href="/jobs/{{ s.name }}/runs/{{ s.last.id }}">open the run record →</a></p></div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {# ---- the rail, inline copy for ≤1000px (ruling R7) ---------------- #}
+      <aside class="rail-inline" style="margin-top:var(--sp-5)">{{ rail() }}</aside>
+
+      {# ---- ledger — Last 30 runs --------------------------------------- #}
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">Last 30 runs</p>
+          <p class="slabel"><span class="mono">{{ ledger.ok }} OK · {{ ledger.failed }} failed</span></p>
+        </div>
+        <div class="ledger-wrap">
+          <div class="ledger" style="min-width:358px">
+            <div class="strip" role="img" aria-label="{{ ledger.aria }}">
+              {% for cell in ledger.cells -%}
+              {%- set color = 'fail' if cell.outcome in ['failed','aborted'] else ('running' if cell.outcome == 'running' else ('slow' if cell.slow else ('ok' if cell.outcome == 'ok' else ''))) -%}
+              {%- set dimc = ' dim' if (color and loop.index0 < (ledger.cells|length - 7)) else '' -%}
+              {%- if cell.run_id -%}<a class="cellx{{ (' ' + color) if color }}{{ dimc }}" href="/jobs/{{ s.name }}/runs/{{ cell.run_id }}" title="{{ cell.title }}"></a>
+              {%- else -%}<span class="cellx" title="{{ cell.title }}"></span>{%- endif -%}
+              {% endfor %}
+            </div>
+            <div class="bars" aria-hidden="true">
+              {% for cell in ledger.cells %}<span class="bar{{ ' tall' if cell.tall }}" style="height:{{ cell.bar_px }}px"></span>{% endfor %}
+            </div>
+            <div class="ledger-axis"><span>{{ datelabel(ledger.oldest) }}</span><span>last 7 runs →</span><span>latest</span></div>
+          </div>
+        </div>
+        <p class="hint" style="margin-top:var(--sp-3)">
+          {%- if ledger.shown == 0 -%}No runs on record yet.
+          {%- elif ledger.failed == 0 -%}{{ ledger.shown }} runs, none failed. The bars under the strip are how long each run took. Hover any run for its date, outcome and restore point.
+          {%- else -%}{{ ledger.shown }} runs, {{ ledger.failed }} failed. The bars under the strip are how long each run took. Hover any run for its date, outcome and restore point.
+          {%- endif -%}
+        </p>
+      </div>
+
+      {# ---- Get data back (band shell + needs-line; the live restore form
+             is Task 11 — stubbed here) ---------------------------------- #}
+      <div class="band" id="restore-band">
+        <p class="slabel">Get data back</p>
+        <p class="lead" style="margin-bottom:var(--sp-4)">Pick the date you want back. Files are written into a new folder — the live <span class="mono">{{ ident.source_display or job.source }}</span> is never touched or overwritten.</p>
+
+        {% if is_archive %}
+        {# Plain copy — no restore points (ruling R8): what is there now. #}
+        <p class="slabel">What is there now</p>
+        <dl class="defgrid">
+          <dt>Copy as of</dt><dd>{% if rjob and rjob.newest_point %}{{ datelabel(rjob.newest_point.at) }} {{ hhmm(rjob.newest_point.at) }} · last completed run{% else %}no completed run yet{% endif %}</dd>
+          <dt>Files</dt><dd>{% if pv.file_count is not none %}{{ '{:,}'.format(pv.file_count) }}{% else %}not measured yet{% endif %}</dd>
+          <dt>Size</dt><dd>{{ prov(humanbytes(pv.size_bytes), pv.size_provenance) if pv.size_bytes is not none else 'not measured yet' }}</dd>
+          <dt>Storage tier</dt><dd>{{ vocab.CLASS_NAMES.get(cls, cls).split(' · ')[0] }} <code>{{ cls }}</code></dd>
+          <dt>History</dt><dd>{{ pv.note }}</dd>
+        </dl>
+        {% endif %}
+
+        {# The restore chooser (restore-point list / target / guard / submit) is
+           built in Task 11. This band ships as a GET form to the confirmation
+           page (5.4) that carries NO `confirm` field — the confirmation page owns
+           the typed-name confirm and the one POST that starts work. #}
+        <form method="get" action="/jobs/{{ s.name }}/restore" id="restore-form">
+          <div class="needsline" style="margin-top:var(--sp-4)">
+            {% if is_versioned %}
+            {% set pp = rec.passphrase %}
+            <div>{% if pp.state == 'set' %}<span class="ok" aria-hidden="true">✓</span><span><strong>Recovery passphrase:</strong> set, and not the shipped example. Without it nothing here can be read — not by you, not by Amazon.</span>{% else %}<span class="warn" aria-hidden="true">!</span><span style="color:var(--danger)"><strong>Recovery passphrase:</strong> not set — still the shipped example. Nothing here can be read back until it is.</span> <a class="linklike" href="/setup/keys#RESTIC_PASSWORD">Fix →</a>{% endif %}</div>
+            {% endif %}
+            <div>{% if is_cold %}<span class="warn" aria-hidden="true">!</span><span><strong>Not ready yet:</strong> this job is on the thaw-first tier <code>{{ cls }}</code>. Amazon has to warm it up before a single file can be read — up to {{ (rjob.warmup.hours_hi if rjob and rjob.warmup else 12) }} hours at Standard speed, up to {{ (rjob.warmup.alt_hours_hi if rjob and rjob.warmup else 48) }} at Bulk — and the warm-up is charged separately.</span>{% else %}<span class="ok" aria-hidden="true">✓</span><span><strong>Ready now:</strong> this job is on the instant tier <code>{{ cls }}</code>, so there is no waiting — the first file starts copying immediately.</span>{% endif %}</div>
+            {% set rq = rjob.cost_full_restore if rjob else none %}
+            {% set rsize = rjob.size_bytes if rjob else none %}
+            <div><span class="{{ 'warn' if is_cold else 'ok' }}" aria-hidden="true">{{ '!' if is_cold else '✓' }}</span><span><strong>{{ 'Warm-up + data out:' if is_cold else 'Data out of Amazon:' }}</strong> {{ humanbytes(rsize) }} ≈ {% if rq and rq.amount is not none %}<span class="mono">{{ money(rq.amount) }}</span>{% else %}<span class="hint">not priced yet</span>{% endif %} <span class="hint">one time, for a full restore</span></span></div>
+          </div>
+
+          <div class="sig sig-note" style="margin-top:var(--sp-4)">
+            <div class="body">The restore chooser — the dates you can pick, the folder the files go to, and the confirm — is added next. It will submit as a plain GET to <span class="mono">/jobs/{{ s.name }}/restore</span>, which states the cost and takes the typed-name confirm. Nothing here starts a restore.</div>
+          </div>
+        </form>
+      </div>
+
+      {# ---- What this job costs (cache-only stub, Ruling R-I) ----------- #}
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">What this job costs</p>
+          <p class="band-head more"><a class="linklike" href="/cost">Open the full cost view →</a></p>
+        </div>
+        <div class="grid4" style="margin-bottom:var(--sp-4)">
+          <div class="sfig"><span class="k">First bill</span>
+            <span class="v">{% if cost.first_bill is not none %}{{ money(cost.first_bill) }}{% else %}—{% endif %}</span>
+            <span class="s">{% if cost.first_bill is none %}not priced yet · full model in the cost view{% else %}month 1 · projected{% endif %}</span></div>
+          <div class="sfig"><span class="k">By month 6</span>
+            <span class="v">{% if cost.by_month_6 is not none %}{{ money(cost.by_month_6) }}{% else %}—{% endif %}</span>
+            <span class="s">{% if cost.by_month_6 is none %}not priced yet{% else %}old versions have built up{% endif %}</span></div>
+          <div class="sfig"><span class="k">Every month after</span>
+            <span class="v">{% if cost.settled is not none %}{{ money(cost.settled) }}{% elif cost.monthly is not none %}{{ prov(money(cost.monthly), cost.monthly_provenance) }}{% else %}—{% endif %}</span>
+            <span class="s">{% if cost.settled is none and cost.monthly is not none %}cache estimate · full model in the cost view{% elif cost.settled is none %}not priced yet{% else %}settles from month 6 — it stops rising{% endif %}</span></div>
+          <div class="sfig"><span class="k">In the bucket now</span>
+            <span class="v">{% if cost.in_bucket_bytes is not none %}{{ prov(humanbytes(cost.in_bucket_bytes), 'measured') }}{% else %}—{% endif %}</span>
+            <span class="s">{% if cost.in_bucket_bytes is not none %}measured {{ cost.in_bucket_at or '—' }}{% if cost.shared_store %} · whole snapshot store · shared by {{ cost.shared_by }} jobs{% endif %}{% else %}not measured yet{% endif %}</span></div>
+        </div>
+
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Where the money goes</th><th>How much of it</th><th>Where that number came from</th></tr></thead>
+            <tbody>
+              <tr><td>Storing your files</td>
+                <td class="mono">{{ prov(humanbytes(cost.in_bucket_bytes), cost.size_provenance) if cost.in_bucket_bytes is not none else '—' }}{% if cost.file_count %} · {{ '{:,}'.format(cost.file_count) }} files{% endif %}</td>
+                <td class="hint">{% if cost.in_bucket_at %}Walked the folder on {{ cost.in_bucket_at }}.{% else %}Not measured yet.{% endif %}</td></tr>
+              <tr><td>Getting data out of Amazon</td>
+                <td class="mono">$0.00</td>
+                <td class="hint">Only charged when you restore.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        {% if cost.delta %}
+        <p class="delta" style="margin-top:var(--sp-4)">Projection against the real bill, whole account: model <b>{{ money(cost.model_monthly) }}</b> · invoice <b>{{ money(cost.invoice.amount) }}</b> · <b>{{ cost.delta.short.split(' · ')[0] }}</b></p>
+        {% endif %}
+        <div class="sig sig-note">
+          <div class="body">Per-job is not available: Amazon's cost report returns one account-wide figure, so this job's own share of the bill cannot be shown honestly yet.</div>
+        </div>
+        {% if cost.price %}
+        <div class="legend"><span class="price-stamp" id="price-stamp">prices: {{ cost.price.kind }} table {{ cost.price.date }}</span></div>
+        {% endif %}
+      </div>
+
+      {# ---- How it is set up (defgrid + Edit link + §5.9 locked fields) - #}
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">How it is set up</p>
+          <p class="band-head more"><a class="linklike" href="/jobs/{{ s.name }}/edit">Edit →</a></p>
+        </div>
+        <dl class="defgrid">
+          <dt>Name</dt><dd>{{ s.name }} <span class="hint">Set at creation — to rename, create a new job and delete this one.</span></dd>
+          <dt>What it protects</dt><dd class="mono">{{ ident.source_display or job.source }}</dd>
+          <dt>What happens to it</dt><dd>{{ vocab.TYPE_NAMES.get(job.type, s.type_label) }} — {{ 'a point in time, restore any date' if is_versioned else ('a straight copy, no history' if is_archive else 'every version of every file') }} <span class="hint">Set at creation.</span></dd>
+          <dt>Storage tier</dt><dd>{{ vocab.CLASS_NAMES.get(cls, cls) }}{% if not is_cold %} — readable the second you ask{% else %} — up to {{ (rjob.warmup.hours_hi if rjob and rjob.warmup else 12) }} hours before a file can be read{% endif %}</dd>
+          <dt>Keep rule</dt><dd>{{ keep_label }}</dd>
+          <dt>When it runs</dt><dd>{{ schedule_desc }}{% if not s.enabled %} — paused{% endif %}</dd>
+          <dt>Where it goes</dt><dd class="mono">{{ ident.s3 }} <span class="hint">Set at creation.</span></dd>
+          <dt>State</dt><dd>{{ 'Scheduled' if s.enabled else 'Paused' }}</dd>
+          <dt>Created</dt><dd>{% if job.created_at %}{{ dateyear(job.created_at) }}{% else %}before run history existed{% endif %}</dd>
+        </dl>
+      </div>
+
+      {# ---- Tool detail — the ONLY place tool vocabulary appears -------- #}
+      <div class="band">
+        <details class="tooldetail">
+          <summary>Tool detail — what actually runs</summary>
+          {% if is_versioned %}
+          <p class="hint" style="margin:var(--sp-3) 0">Snapshot backups are made by <strong>restic</strong>. All snapshot jobs share one encrypted store, which is why two of them must never start in the same minute — the second would find the store locked.</p>
+          <div class="cmd">
+            <pre>restic -r s3:s3.amazonaws.com/{{ ident.bucket }}/appdata \
+  backup {{ ident.source_display or job.source }} --tag {{ s.name }}</pre>
+            <button type="button" class="btn btn-sm copy" data-copy="restic -r s3:s3.amazonaws.com/{{ ident.bucket }}/appdata backup {{ ident.source_display or job.source }} --tag {{ s.name }}">Copy</button>
+          </div>
+          <p class="hint">Repository password comes from the recovery passphrase. <a class="linklike" href="/setup/about">What these tools are →</a></p>
+          {% elif is_archive %}
+          <p class="hint" style="margin:var(--sp-3) 0">Plain copies are made by <strong>rclone</strong>. Each Plain copy job has its own folder in the bucket; nothing is shared.</p>
+          <div class="cmd">
+            <pre>rclone {{ 'sync' if job.mirror else 'copy' }} {{ ident.source_display or job.source }} \
+  s3:{{ ident.bucket }}/media/{{ s.name }} --s3-storage-class {{ cls }}</pre>
+            <button type="button" class="btn btn-sm copy" data-copy="rclone {{ 'sync' if job.mirror else 'copy' }} {{ ident.source_display or job.source }} s3:{{ ident.bucket }}/media/{{ s.name }} --s3-storage-class {{ cls }}">Copy</button>
+          </div>
+          {% else %}
+          <p class="hint" style="margin:var(--sp-3) 0">File history is kept by this app's own catalog (one small database per job) and copied by <strong>rclone</strong>, one file at a time.</p>
+          <div class="cmd">
+            <pre>python3 -m app.engine.vfiles backup {{ s.name }}</pre>
+            <button type="button" class="btn btn-sm copy" data-copy="python3 -m app.engine.vfiles backup {{ s.name }}">Copy</button>
+          </div>
+          {% endif %}
+          <p class="hint">Schedule <span class="mono">{{ job.schedule }}</span>.</p>
+        </details>
+      </div>
+
+    </div>
+
+    {# ---- the sticky rail for >1000px (ruling R7) ---------------------- #}
+    <aside class="rail">{{ rail() }}</aside>
+  </div>
+</section>
+{% endblock %}

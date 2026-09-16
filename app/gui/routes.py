@@ -5,11 +5,12 @@ from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
-               dirsize, attributions, status, vocab)
+               dirsize, attributions, status, vocab, points, readiness)
 from .storage_advice import storage_class_info
 from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
 from ..estimator import usage
+from ..engine import cron, runs
 
 bp = Blueprint("gui", __name__)
 
@@ -127,6 +128,200 @@ def _cost_delta(model, invoice) -> dict | None:
     else:
         verdict = "far apart — check the assumptions and whether the invoice covers more than these backups"
     return {"amount": round(amount, 2), "pct": round(pct, 1), "verdict": verdict, "short": short}
+
+
+# --- job page (spec 5.2) ---------------------------------------------------
+
+def _tiered_label(k) -> str:
+    parts = []
+    if k.get("last"):
+        parts.append(f"Last {int(k['last'])}")
+    if k.get("daily"):
+        parts.append(f"one a day for {int(k['daily'])} days")
+    if k.get("weekly"):
+        parts.append(f"one a week for {int(k['weekly'])} weeks")
+    if k.get("monthly"):
+        parts.append(f"one a month for {int(k['monthly'])} months")
+    return " · ".join(parts) if parts else "Keep everything"
+
+
+def _keep_rule_label(job) -> str:
+    """A plain-language keep-rule label (spec 4.3) for `How it is set up` and the
+    restore-point hint. §4.3's shared keep_rule_* formatter is a later task; this
+    is the job-page-local minimal form and uses no forbidden vocabulary."""
+    r = job.get("retention")
+    if isinstance(r, dict):
+        t = r.get("type")
+        if t == "keep_all":
+            return "Keep everything"
+        if t == "days":
+            return f"Kept for {int(r.get('days', 0))} days"
+        if t == "count":
+            return f"Keep the last {int(r.get('count', 0))}"
+        if t == "tiered":
+            return _tiered_label(r.get("keep") or {})
+    if job.get("type") == "versioned" and isinstance(job.get("keep"), dict):
+        return _tiered_label(job["keep"])
+    if job.get("retention_days"):
+        return f"Kept for {int(job['retention_days'])} days"
+    return "Keep everything"
+
+
+def _job_identity(cfg, job) -> dict:
+    """The `.pathline` / `Where it goes` identity (spec 5.2 header + How it is set
+    up). Versioned jobs share the fixed `appdata/` prefix and are told apart by a
+    tag; others write their own `media/<name>/` prefix (estimate_io._size_for)."""
+    env = config_io.read_backup_env(cfg["CONFIG_DIR"])
+    bucket = (env.get("S3_BUCKET") or "").strip() or "your-bucket"
+    name = job.get("name")
+    if job.get("type") == "versioned":
+        prefix, tag = "appdata", name
+    else:
+        prefix, tag = f"media/{name}", None
+    source_host = (cfg.get("SOURCE_ROOT_HOST") or "").rstrip("/")
+    src = job.get("source", "")
+    source_display = f"{source_host}/{src}" if source_host else src
+    return {"bucket": bucket, "prefix": prefix, "tag": tag,
+            "s3": f"s3://{bucket}/{prefix}/", "source_display": source_display}
+
+
+def _ledger(cfg, name, tz, cells=30) -> dict:
+    """The `Last 30 runs` ledger strip (spec 5.2): the newest `cells` backup runs,
+    oldest-first, padded with dim placeholders, each cell carrying a squared-scale
+    bar height. Built here (not from status.job's 14-cell board strip) because the
+    job-page ledger is 30 wide; it reuses status._cell/_dim_cell so the cell shape
+    matches the Board's exactly (kind == 'backup' only, spec 5.2/6.5)."""
+    records = runs.read_runs(cfg["CACHE_DIR"], name).records
+    backups = [r for r in records if r.kind in runs.BACKUP_KINDS]
+    median_s = runs.median_duration_s(backups)
+    window = list(reversed(backups[:cells]))                 # oldest-first
+    row = [status._cell(r, median_s, tz) for r in window]
+    padded = [status._dim_cell() for _ in range(cells - len(row))] + row
+    durs = [c["duration_s"] for c in row if c.get("duration_s")]
+    maxd = max(durs) if durs else 0
+    for c in padded:
+        d = c.get("duration_s")
+        if d and maxd:
+            c["bar_px"] = max(2, round(20 * (d / maxd) ** 2))
+            c["tall"] = (d == maxd)
+        else:
+            c["bar_px"], c["tall"] = 2, False
+    ok = sum(1 for c in row if c.get("outcome") == "ok")
+    failed = sum(1 for c in row if c.get("outcome") in ("failed", "aborted"))
+    fail_label = None
+    for c in reversed(row):                                   # newest failed cell
+        if c.get("outcome") in ("failed", "aborted"):
+            fail_label = status._iso_short(status._parse_iso(c["started_at"]), tz)[:10]
+            break
+    if not row:
+        aria = f"No runs on record for {name}."
+    elif failed == 0:
+        aria = f"Last {len(row)} runs for {name}: every run succeeded."
+    else:
+        aria = (f"Last {len(row)} runs for {name}: {ok} OK, {failed} failed"
+                + (f" ({fail_label})." if fail_label else "."))
+    return {"cells": padded, "shown": len(row), "ok": ok, "failed": failed,
+            "oldest": row[0]["started_at"] if row else None,
+            "aria": aria, "median_s": median_s, "maxd": maxd}
+
+
+def _job_cost_band(cfg, job) -> dict:
+    """`What this job costs` (spec 5.2), CACHE-ONLY per Ruling R-I.
+
+    `estimate_io.job_cost_band` (the real four figures: First bill / By month 6 /
+    Every month after) is added in Task 12; until then the time-based figures are
+    None → rendered `not priced yet`. Here we reuse the Board's cache-only cost
+    (`_board_cost`, Ruling R-A) for this job's measured size and its projected
+    monthly, plus the whole-account invoice/delta — NEVER Cost Explorer, never the
+    live model. Task 12 wires `job_cost_band` and updates the test."""
+    name = job.get("name")
+    bc = _board_cost(cfg)
+    per = next((p for p in bc.get("per_job") or [] if p["name"] == name), None)
+    cached = usage.load_cached(cfg["CACHE_DIR"]) or {}
+    key = "appdata" if job.get("type") == "versioned" else f"media/{name}"
+    file_count = ((cached.get("data") or {}).get(key) or {}).get("count")
+    shared_by = sum(1 for j in jobs_io.load(cfg["CONFIG_DIR"]) if j.get("type") == "versioned")
+    return {
+        "in_bucket_bytes": per["size_bytes"] if per else None,
+        "in_bucket_at": bc.get("in_bucket_at"),
+        "size_provenance": per["size_provenance"] if per else "measured",
+        "file_count": file_count,
+        "monthly": per["monthly"] if per else None,
+        "monthly_provenance": per["monthly_provenance"] if per else "projected",
+        "tier_label": (per["tier_label"] if per else None),
+        "storage_class": per["storage_class"] if per else job.get("storage_class"),
+        "model_monthly": bc.get("model_monthly"),
+        "invoice": bc.get("invoice"), "delta": bc.get("delta"), "price": bc.get("price"),
+        # whole snapshot store shared by N versioned jobs (spec 5.2 note)
+        "shared_store": job.get("type") == "versioned" and shared_by > 1,
+        "shared_by": shared_by,
+        # Task 12 (estimate_io.job_cost_band) fills these; None → "not priced yet".
+        "first_bill": None, "by_month_6": None, "settled": None,
+    }
+
+
+@bp.get("/jobs/<name>")
+def job_page(name):
+    cfg = current_app.config
+    job_def = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job_def is None:
+        # Unknown job → the themed 404 (spec 5.14 / Task 7b).
+        abort(404, description=f"There is no job called {name}")
+    tz = cron.local_tz()
+    keep_label = _keep_rule_label(job_def)
+    st = status.job(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"], name,
+                    source_root=cfg["SOURCE_ROOT"], job_def=job_def)
+    pv = points.view(cfg["CACHE_DIR"], job_def, tz=tz,
+                     keep_rule_label=keep_label, keep_rule_prose=keep_label)
+    # Recovery rail + Get-data-back needs-line (readiness.recovery_summary, 7.7):
+    # cache-only. Prices are guarded like the Board; the restore COST is None until
+    # estimate_io.restore_quote exists (Task 12) — the template prints "not priced
+    # yet". A pricing failure must degrade the rail, never 500 the page.
+    region = estimate_io._region(cfg["CONFIG_DIR"])
+    try:
+        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    except Exception:
+        prices = None
+    rec = readiness.recovery_summary(cfg, prices, crontab_stale=st.get("crontab_stale"))
+    rjob = next((j for j in rec.get("jobs", []) if j["name"] == name), None)
+    try:
+        schedule_desc = cron.describe(job_def.get("schedule", ""))
+    except Exception:
+        schedule_desc = job_def.get("schedule", "")
+    return render_template(
+        "job.html", s=st, job=job_def, pv=pv, rec=rec, rjob=rjob,
+        cost=_job_cost_band(cfg, job_def), ident=_job_identity(cfg, job_def),
+        ledger=_ledger(cfg, name, tz), keep_label=keep_label,
+        schedule_desc=schedule_desc, csrf=security.issue_csrf())
+
+
+@bp.post("/jobs/<name>/pause")
+def job_pause(name):
+    return _set_paused(name, True)
+
+
+@bp.post("/jobs/<name>/resume")
+def job_resume(name):
+    return _set_paused(name, False)
+
+
+def _set_paused(name, paused):
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    cfg = current_app.config
+    try:
+        job = jobs_io.set_enabled(cfg["CONFIG_DIR"], name, not paused)
+    except jobs_io.JobsFileError as e:
+        flash(str(e))
+        return redirect(url_for("gui.job_page", name=name))
+    if job is None:
+        abort(404, description=f"There is no job called {name}")
+    # Re-render the crontab so status.crontab_stale does not read true right after
+    # the toggle (Task-4 carry-forward): the on-disk file now matches the jobs.
+    jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
+                           source_root=cfg["SOURCE_ROOT"])
+    flash(f"{'Paused' if paused else 'Resumed'} {name}.")
+    return redirect(url_for("gui.job_page", name=name))
 
 @bp.get("/config")
 def config_page():
@@ -395,8 +590,11 @@ def job_run(name):
 def job_delete(name):
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
+    cfg = current_app.config
     try:
-        jobs_io.delete(current_app.config["CONFIG_DIR"], name)
+        # Pass cache_dir so the job's caches go with it (Task-4 carry-forward):
+        # state/<job>.json, runs.jsonl and points.json are all removed (7.1.9).
+        jobs_io.delete(cfg["CONFIG_DIR"], name, cache_dir=cfg["CACHE_DIR"])
     except jobs_io.JobsFileError as e:
         # Corrupt jobs.json: surface a flash rather than a 500, and leave the
         # file untouched (delete builds on _load_strict, which raised).
