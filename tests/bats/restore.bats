@@ -205,6 +205,7 @@ STUB
   grep -q -- 'GlacierJobParameters={Tier=Standard}' "$AWS_LOG"
   [ -f "$CACHE_DIR/state/movies.thaw.json" ]
   grep -q '"objects_requested":2' "$CACHE_DIR/state/movies.thaw.json"
+  grep -q '"scope":"2020/"' "$CACHE_DIR/state/movies.thaw.json"   # folder scope persisted (not always ".")
   python3 -c 'import json,sys
 recs=[json.loads(l) for l in sys.stdin if l.strip()]
 st=[r for r in recs if r["event"]=="start"][0]; e=[r for r in recs if r["event"]=="end"][0]
@@ -213,11 +214,57 @@ assert e["outcome"]=="ok", e["outcome"]
 assert e["objects_requested"]==2, e.get("objects_requested")' <"$CACHE_DIR/state/movies.runs.jsonl"
 }
 
-@test "archive thaw on a warm tier -> exit 2, not on a thaw-first tier" {
+@test "archive thaw whole-scope (.) -> thaw.json scope is '.'" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  export AWS_LOG="$BATS_TEST_TMPDIR/aws.log"; : >"$AWS_LOG"
+  cat >"$b/rclone" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RCLONE_LOG"
+case "$*" in *lsf*) printf '%s\n' "a.mp4" ;; esac
+exit 0
+STUB
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$AWS_LOG"\nexit 0\n' >"$b/aws"
+  chmod +x "$b/rclone" "$b/aws"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE\n' >"$JOBS_IO_STUB"
+  run_restore movies thaw . --tier Standard
+  [ "$status" -eq 0 ]
+  grep -q '"scope":"."' "$CACHE_DIR/state/movies.thaw.json"
+}
+
+@test "archive thaw on a warm tier -> exit 2 with a FAILED end record (no dangling run)" {
   printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_STORAGE_CLASS=STANDARD\n' >"$JOBS_IO_STUB"
   run_restore movies thaw 2020/ --tier Bulk
   [ "$status" -eq 2 ]
   [[ "$output" == *"thaw-first tier"* ]]
+  # the start line must be closed by a failed end (Task 4 must not show it "running" forever)
+  python3 -c 'import json,sys
+recs=[json.loads(l) for l in sys.stdin if l.strip()]
+st=[r for r in recs if r["event"]=="start"]; en=[r for r in recs if r["event"]=="end"]
+assert len(st)==1 and len(en)==1, (len(st),len(en))
+e=en[0]
+assert e["outcome"]=="failed", e["outcome"]
+assert e["exit_code"]==2, e.get("exit_code")
+assert "thaw-first tier" in (e["error"] or ""), e.get("error")' <"$CACHE_DIR/state/movies.runs.jsonl"
+}
+
+@test "versioned thaw on a warm tier -> exit 2 with a FAILED end record (no dangling run)" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_STORAGE_CLASS=STANDARD\n' >"$JOBS_IO_STUB"
+  run_restore cfg thaw .
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"thaw-first tier"* ]]
+  python3 -c 'import json,sys
+recs=[json.loads(l) for l in sys.stdin if l.strip()]
+st=[r for r in recs if r["event"]=="start"]; en=[r for r in recs if r["event"]=="end"]
+assert len(st)==1 and len(en)==1, (len(st),len(en))
+assert en[0]["outcome"]=="failed" and en[0]["exit_code"]==2, en[0]' <"$CACHE_DIR/state/cfg.runs.jsonl"
+}
+
+@test "versioned thaw-status is unsupported -> usage/exit 2 (spec limits it to archive/versioned-files)" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE\n' >"$JOBS_IO_STUB"
+  run_restore cfg thaw-status .
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage:"* ]]
+  [ ! -e "$CACHE_DIR/state/cfg.runs.jsonl" ]   # read-only path: no record either
 }
 
 @test "versioned-files . restore -> in-process record (kind restore), dispatches vfiles restore ." {

@@ -236,7 +236,8 @@ _restore_versioned() {
         || log_warn "could not record run"
       ;;
     thaw)        _thaw_versioned "$job" "$@" ;;
-    thaw-status) shift; _thaw_status "$job" "appdata/" ;;
+    # No versioned thaw-status: the spec limits thaw-status to archive/versioned-files
+    # (§7.5.5/§7.5.6). Falls through to usage/exit 2 below.
     test)        _test_versioned "$job" ;;
     *) usage; exit 2 ;;
   esac
@@ -252,7 +253,9 @@ _thaw_versioned() {
   [ $# -gt 0 ] && shift
   while [ $# -gt 0 ]; do case "$1" in --tier) tier="${2:-Bulk}"; shift 2;; --dry-run) dry=1; shift;; *) shift;; esac; done
   if ! _is_cold "${JOB_STORAGE_CLASS:-STANDARD}"; then
-    _BE_LAST_ERR="job is not on a thaw-first tier"; log_error "$_BE_LAST_ERR"; _BE_FAIL_HANDLED=1; exit 2
+    # Let runs_exit_trap write the failed END (do NOT set _BE_FAIL_HANDLED, or the
+    # start line is left dangling and Task 4's reader shows it perpetually running).
+    _BE_LAST_ERR="job is not on a thaw-first tier"; log_error "$_BE_LAST_ERR"; exit 2
   fi
   log_info "Warming up the whole snapshot store (every snapshot job shares it). This issues one request per object and can take a long time for a large store."
   _thaw_issue "appdata/" "$tier" "$dry"
@@ -298,11 +301,15 @@ _restore_archive() {
       while [ $# -gt 0 ]; do case "$1" in --tier) tier="${2:-Bulk}"; shift 2;; --dry-run) dry=1; shift;; *) shift;; esac; done
       [ "$prefix" = "." ] && prefix=""
       if ! _is_cold "${JOB_STORAGE_CLASS:-STANDARD}"; then
-        _BE_LAST_ERR="job is not on a thaw-first tier"; log_error "$_BE_LAST_ERR"; _BE_FAIL_HANDLED=1; exit 2
+        # Let runs_exit_trap write the failed END (do NOT set _BE_FAIL_HANDLED, or the
+        # start line is left dangling and Task 4's reader shows it perpetually running).
+        _BE_LAST_ERR="job is not on a thaw-first tier"; log_error "$_BE_LAST_ERR"; exit 2
       fi
       log_info "issuing $tier Glacier restore for media/$job/$prefix objects (one request per object)"
       _thaw_issue "media/$job/$prefix" "$tier" "$dry"
-      _thaw_json_write "$job" "$tier" "${2:-.}" "$THAW_N"
+      # $2 and the positionals are gone (shift 2 + the flag loop); use `prefix` for the
+      # persisted scope: "" for whole-scope -> ".", the folder ("2020/") otherwise.
+      _thaw_json_write "$job" "$tier" "${prefix:-.}" "$THAW_N"
       runs_end ok 0 "" "\"objects_requested\":$(_runs_num "$THAW_N"),\"tier\":$(_runs_str "$tier")" || log_warn "could not record run"
       ;;
     thaw-status)
