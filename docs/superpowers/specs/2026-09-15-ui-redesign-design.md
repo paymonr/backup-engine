@@ -548,11 +548,11 @@ scheduled run then succeeds.
 `background:var(--bg); border:1px solid var(--danger-border); padding:.4rem .5rem; display:block;
 overflow-x:auto; white-space:pre; margin:.45rem 0`. Generic blocker row: `<strong><job> cannot finish a
 run.</strong> <board>` · errline · hint `<fix>` · hint `<time> · open the run record →` · button
-`<fix label>`, where `<board>` is the error class's `board` template filled with the job's schedule
-words — `{dow}` = the day the schedule fires (`Sunday`, `day`, `Monday and Thursday`, from
-`cron.describe`) and `{since}` = the date of the last OK run (`6 September`) or `the first run` when
-there has never been one. When the class has no `board` template, `needs_you()` falls back to its
-`cause` (7.4), which always reads as a standalone sentence.
+`<fix label>`, where `<board>` is the error class's `board` template with `{dow}`/`{since}` filled by
+`status.needs_you()`. That substitution and its fallback to `cause` are defined once, in 7.4 — this row
+just renders the result. In practice only `iam-version-perms` carries a templated `board`; every other
+class has `board = None` (the `—` column in 7.4's table) and the row prints `cause`, which always reads
+as a standalone sentence.
 
 Warning row (restore never tested):
 ```
@@ -836,6 +836,13 @@ Submitting it is a plain navigation to the confirmation page (5.4), which owns t
 and the one POST that starts work. This is the single restore flow: the job page collects the choice,
 `/jobs/<name>/restore` states the consequence and takes the confirmation, the run record is the live
 operation. There is no typed-name field on the job page.
+
+The small POST controls that sit visually inside this band — `List them now`
+(`/jobs/<name>/restore-points/refresh`), `Refresh usage`, and `Check now` (`/jobs/<name>/thaw/check`) —
+are **not** nested `<form>` elements (HTML forbids a form inside a form). Each is its own
+`<form method="post">` rendered as a sibling of the GET form and associated to its button by the HTML5
+`form="<id>"` attribute, so it posts only its own hidden fields and none of the restore selection.
+They start no restore and cost nothing; they only refresh a cache or poll a warm-up.
 
 Guard (`.guard`: `border:1px solid var(--danger-border); background:var(--danger-bg); padding:1rem;
 radius 4px`) — text only here, no input: `<strong>This writes 52.71 GB to your array and starts a charged
@@ -1204,6 +1211,14 @@ parameters `/cost.json` accepts, and it ends with
 (`estimate.html:215`, 2.3). Without JS the form submits, `/cost` re-renders server-side with the same
 figures, and nothing on the page is a dead control. The JS path just intercepts the submit and calls
 `cost.json` instead.
+
+The panel's POST buttons — `[Apply to appdata]` (`/jobs/<name>/assumptions`), the scenario group's
+`[Apply]` (`/costs/scenario`), and `[Reset]` — are **not** nested forms. `[Apply to appdata]` is a
+submit button carrying `formmethod="post" formaction="/jobs/<name>/assumptions"`, so it posts this same
+GET form's lever fields (which are a superset of the assumptions) to that route; the scenario `[Apply]`
+is its own sibling `<form method="post" action="/costs/scenario">` associated by `form="<id>"` so it
+posts only the three scenario fields; `[Reset]` is a link back to `/cost`. No `<form>` is ever nested
+inside another.
 
 The scenario-wide levers (`restore_fraction`, `restores_per_year`, `retrieval_tier`) persist, because
 they are not per-job: `[Apply]` on that group posts **`POST /costs/scenario`** (`csrf`,
@@ -1657,8 +1672,11 @@ needs-you lane. Rows (`readiness.setup_checks()`):
 | `At least one job scheduled` | `2 jobs scheduled` | `No job is scheduled yet` (all paused → `2 jobs, all paused`) | — | `/jobs/new` |
 | `Restore ever tested` | `Tested 15 Sep 07:52 · appdata` | `Never` | — | the newest job page's rail |
 
-A sixth informational row when true: `Scheduler up to date` / `The scheduler is running an older
-schedule — restart the container` (`crontab_stale`). Below the table, three quiet links: `Set up the
+A sixth informational row when `crontab_stale` (7.3) is true — worded exactly as everywhere else the
+flag surfaces (Board band 2 line, 7.3): `Scheduler up to date` / `The schedule file on disk does not
+match your jobs; restart the container.` It is informational, not a blocker: `crontab_stale` can only
+mean the on-disk crontab differs from `render_crontab(dry_run=True)` (7.3), never that a job failed.
+Below the table, three quiet links: `Set up the
 destination →`, `Keys & secrets →`, `About this app →`; and the expanded chip sentence in a
 `sig-note`: `This GUI has no login. It is meant to be reached only from your LAN; do not expose port
 8099 to the internet.` Completing the last item removes the setup block from the Board.
@@ -2247,12 +2265,19 @@ that same lock file on every Board and job-page poll (7.2) by taking `LOCK_EX|LO
 with `-n`, a scheduled fire that lands inside one of those microseconds loses the race, dies before
 `runs_start`, and the backup is skipped with nothing but a WARN in the global log — no record, no Board
 signal, exactly the "board that cries wolf" (in reverse) the direction warns about. Five seconds is far
-longer than any probe and far shorter than any real run, so a genuine holder still loses the race and
-still reports `another <job> run is in progress`. The change is one flag and one bats case
-(`acquire_lock` against a lock held for 1 s succeeds; against one held for 10 s fails). A lock collision
-dies before `runs_start`, so `BE_RUN_STARTED` is 0: `runs_end` is a no-op and `_write_state` is skipped,
-leaving `state/<job>.json` as the last real run wrote it even though the GUI had already pre-assigned
-`BE_RUN_ID` in the environment; the collision is a WARN in the global log only. `docker stop` → the TERM trap →
+longer than any probe and far shorter than any real run, so only a genuine concurrent holder (a second
+backup of the same job, or a run fired while a restore holds the lock) still loses the race. The change
+is one flag and one bats case (`acquire_lock` against a lock held for 1 s succeeds; against one held
+for 10 s fails). When it does lose, `acquire_lock` calls `die` with `another <job> run is in progress`;
+that dies before `runs_start`, so `BE_RUN_STARTED` is 0. `_record_failure`'s `_write_state` guard is
+therefore false, `runs_end` is a no-op, and `state/<job>.json` is left exactly as the last real run
+wrote it even though the GUI had already pre-assigned `BE_RUN_ID` in the environment. That `die`
+message is the WARN — it is the whole of what the collision reports: one line in the global shared log,
+no per-job run record, no Board signal, and **no failure notification or healthcheck** (those fire only
+from the success path, or from `_record_failure` once a start line exists). There is nothing to record
+because the holder owns the run, and the scheduler simply retries at the next tick. (This is a
+different lock from restic's own repository lock; a `repository is already locked` error surfaces
+*during* a run, after `runs_start`, and is the `repo-locked` failure record in 7.4.) `docker stop` → the TERM trap →
 a `failed` record with `exit_code` 143; SIGKILL → a dangling start → `aborted` by reconcile (7.2).
 
 #### 7.1.6 Prune failures are failures
@@ -3429,8 +3454,9 @@ On the box, in this order:
 4. Open `/` — Board: verdict, needs-you (expect the IAM blocker if the key predates the policy), both
    jobs with a one-cell strip, the cost strip from caches; the clock says `refreshed N s ago` and ticks.
 5. Open `/jobs/appdata` — OK token, status strip, one-cell ledger, restore points (press `List them
-   now` if empty; expect 14), needs-line green, guard disabled until the name is typed; `···` → Pause →
-   token Paused, `Next run —`; Resume.
+   now` if empty; expect 14), needs-line green; the Get-data-back guard is a text warning only (no
+   typed-name field here — that lives on the confirmation page, step 9) and `Start restore →` enables
+   once a point and a valid target are chosen; `···` → Pause → token Paused, `Next run —`; Resume.
 6. Press `Run now` — redirect to the run record, which shows `Starting…` for a moment (never a 404) and
    then the live record; the log tails live; `Running…` on the job page; when
    done, the Done signal and a second strip cell. `cat /cache/logs/runs/appdata/<id>.log` fills.
