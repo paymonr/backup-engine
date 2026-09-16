@@ -69,6 +69,44 @@ def secrets_mode(config_dir: str) -> str | None:
     p = Path(config_dir, "secrets.env")
     return oct(p.stat().st_mode & 0o777)[2:] if p.exists() else None
 
+# The two placeholders the shipped secrets.env.example carries; a stored value
+# equal to either means "still the shipped example" (5.12, 7.7.1).
+SHIPPED_EXAMPLES: tuple[str, ...] = ("CHANGEME", "CHANGEME-long-random-passphrase")
+# Every write-only field the Keys screen renders a status token beside (5.12).
+_STATUS_SECRET_KEYS: tuple[str, ...] = SECRET_KEYS + COST_EXPLORER_KEYS
+
+def secrets_status_3(config_dir: str) -> dict[str, str]:
+    """Three-state status per secret (5.12, 7.8): 'set' / 'not_set' /
+    'shipped_example'. Read-only and never returns the value itself. The
+    shipped-example comparison is verbatim against SHIPPED_EXAMPLES (empty ->
+    not_set, equal to a placeholder -> shipped_example, else set)."""
+    vals = _read_secrets_raw(Path(config_dir, "secrets.env"))
+    out: dict[str, str] = {}
+    for k in _STATUS_SECRET_KEYS:
+        v = vals.get(k, "")
+        if isinstance(v, str):
+            v = v.strip()
+        if not v:
+            out[k] = "not_set"
+        elif v in SHIPPED_EXAMPLES:
+            out[k] = "shipped_example"
+        else:
+            out[k] = "set"
+    return out
+
+# Keys & secrets screen grouping (5.12). Keys present in the template but in no
+# group fall into "This machine" (the last group), enforced by the route/template.
+KEY_GROUPS: dict[str, tuple[str, ...]] = {
+    "Destination": ("S3_BUCKET", "AWS_REGION", "S3_ENDPOINT", "AWS_ACCESS_KEY_ID",
+                    "AWS_SECRET_ACCESS_KEY", "RCLONE_TRANSFERS", "RCLONE_BWLIMIT"),
+    "Recovery": ("RESTIC_PASSWORD", "RESTIC_REPOSITORY"),
+    "Billing": ("COST_EXPLORER_ACCESS_KEY_ID", "COST_EXPLORER_SECRET_ACCESS_KEY",
+                "COST_EXPLORER_SESSION_TOKEN", "COST_EXPLORER_TAG"),
+    "This machine": ("TZ", "LOG_LEVEL", "SOURCE_ROOT", "APPRISE_URLS", "NOTIFY_ON_SUCCESS",
+                     "HEALTHCHECK_URL", "GUI_PORT", "GUI_ENABLED",
+                     "RESTORE_ROOT", "RESTORE_ROOT_HOST", "SOURCE_ROOT_HOST"),
+}
+
 def is_provisioned(config_dir: str) -> bool:
     """First-run signal: the app has a saved runtime AWS key AND a REAL destination
     bucket -- exactly what every provisioning flow writes on success. A fresh

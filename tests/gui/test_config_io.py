@@ -156,3 +156,41 @@ def test_is_provisioned_ignores_changeme_placeholder_bucket(dirs):
     cio.write_secrets(cfg, {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
     Path(cfg, "backup.env").write_text("S3_BUCKET=changeme-backup-engine\nAWS_REGION=us-east-1\n")
     assert cio.is_provisioned(cfg) is False
+
+
+# --- three-state secret status + key groups (5.12, 7.8) --------------------
+
+def test_secrets_status_3_set_not_set_and_shipped_example(dirs):
+    cfg = dirs["config"]
+    # absent file -> everything not_set
+    st = cio.secrets_status_3(cfg)
+    assert st["RESTIC_PASSWORD"] == "not_set"
+    assert st["AWS_ACCESS_KEY_ID"] == "not_set"
+    # the shipped examples compare verbatim
+    Path(cfg, "secrets.env").write_text(
+        "AWS_ACCESS_KEY_ID=CHANGEME\n"
+        "AWS_SECRET_ACCESS_KEY=a-real-secret\n"
+        "RESTIC_PASSWORD=CHANGEME-long-random-passphrase\n")
+    st = cio.secrets_status_3(cfg)
+    assert st["AWS_ACCESS_KEY_ID"] == "shipped_example"
+    assert st["RESTIC_PASSWORD"] == "shipped_example"
+    assert st["AWS_SECRET_ACCESS_KEY"] == "set"
+
+
+def test_secrets_status_3_covers_cost_explorer_secrets(dirs):
+    cfg = dirs["config"]
+    cio.write_secrets(cfg, {"COST_EXPLORER_ACCESS_KEY_ID": "CEKEY",
+                            "COST_EXPLORER_SECRET_ACCESS_KEY": "CESECRET"})
+    st = cio.secrets_status_3(cfg)
+    assert st["COST_EXPLORER_ACCESS_KEY_ID"] == "set"
+    assert st["COST_EXPLORER_SESSION_TOKEN"] == "not_set"
+
+
+def test_key_groups_membership_and_order(dirs):
+    groups = cio.KEY_GROUPS
+    assert list(groups.keys()) == ["Destination", "Recovery", "Billing", "This machine"]
+    assert "AWS_ACCESS_KEY_ID" in groups["Destination"]
+    assert "RESTIC_PASSWORD" in groups["Recovery"]
+    assert set(cio.COST_EXPLORER_KEYS) <= set(groups["Billing"])
+    assert "RESTORE_ROOT" in groups["This machine"]
+    assert "RESTORE_ROOT_HOST" in groups["This machine"]

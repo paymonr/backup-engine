@@ -493,3 +493,31 @@ def billing_view(config_dir) -> dict:
     except billing.BillingError as e:
         return {"connected": True, "error": str(e)}
     return {"connected": True, "months": months, "forecast": fc, "tag": tag}
+
+
+def read_billing_cache(cache_dir) -> dict:
+    """Cache-only billing view (7.7.3): reads $CACHE_DIR/billing.json — written by
+    the `billing-check` sysop — and NEVER calls Cost Explorer during a render. A
+    cache older than 7 days is still shown, stamped `stale`. Returns
+    `{"connected": False}` when the cache is absent/unreadable; otherwise the
+    parsed months/forecast/tag with the cache's own `error` member surfaced."""
+    import json
+    import time
+    from pathlib import Path
+    p = Path(cache_dir, "billing.json")
+    if not p.is_file():
+        return {"connected": False}
+    try:
+        raw = json.loads(p.read_text())
+    except (ValueError, OSError):
+        return {"connected": False}
+    if not isinstance(raw, dict):
+        return {"connected": False}
+    fetched = raw.get("fetched_at")
+    age_days = stale = None
+    if isinstance(fetched, (int, float)):
+        age_days = (time.time() - fetched) / 86400.0
+        stale = age_days > 7
+    return {"connected": True, "months": raw.get("months"), "forecast": raw.get("forecast"),
+            "tag": raw.get("tag"), "error": raw.get("error"),
+            "fetched_at": fetched, "age_days": age_days, "stale": bool(stale)}
