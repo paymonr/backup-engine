@@ -32,5 +32,6 @@ def test_about_renders_every_attribution(client):
 
 
 def test_footer_links_to_about_on_every_page(client):
-    # base.html footer is shared, so any page carries the About link
-    assert b"/about" in client.get("/jobs").data
+    # base.html footer is shared, so any page carries the About link. (`/jobs` now
+    # 301s to the Board home, ruling R-H, so probe a normal rendering page instead.)
+    assert b"/about" in client.get("/jobs/new").data

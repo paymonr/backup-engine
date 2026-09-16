@@ -1,0 +1,322 @@
+{% extends "base.html" %}
+{#- Board — the split status/cost home (spec 5.1, 8.1). Server-rendered from
+    status.board() + the cache-only cost object; the client polls /status.json
+    every 30 s (spec 5.1) to refresh figures, flash changed tokens and tick the
+    clock/countdown. Times are ISO UTC in data-* attributes; the client renders
+    the relative forms with the zone (4.7). -#}
+{% set MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'] %}
+{% set MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+
+{%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro smoney(v) -%}{% if v is not none %}{{ '+' if v >= 0 else '−' }}${{ '{:,.2f}'.format(v|abs) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro humanbytes(b) -%}
+{%- if b is none -%}—
+{%- elif b >= 1099511627776 -%}{{ '%.2f'|format(b / 1099511627776) }} TB
+{%- elif b >= 1073741824 -%}{{ '%.2f'|format(b / 1073741824) }} GB
+{%- elif b >= 1048576 -%}{{ '%.1f'|format(b / 1048576) }} MB
+{%- else -%}{{ b|int }} B
+{%- endif -%}
+{%- endmacro -%}
+{%- macro dur(s) -%}
+{%- if s is none -%}—
+{%- elif s < 60 -%}{{ s|int }} s
+{%- elif s < 3600 -%}{{ (s // 60)|int }} m {{ '%02d'|format((s % 60)|int) }} s
+{%- elif s < 86400 -%}{{ (s // 3600)|int }} h {{ '%02d'|format(((s % 3600) // 60)|int) }} m
+{%- else -%}{{ (s // 86400)|int }} d {{ '%02d'|format(((s % 86400) // 3600)|int) }} h
+{%- endif -%}
+{%- endmacro -%}
+{%- macro hhmm(iso) -%}{% if iso %}{{ iso[11:16] }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro datelabel(iso) -%}{% if iso %}{{ iso[8:10]|int }} {{ MON[iso[5:7]|int - 1] }}{% endif %}{%- endmacro -%}
+{%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
+
+{% set v = status.verdict %}
+{% set VC = {'failed':'--danger','blocker':'--danger','overdue':'--warn','running':'--accent','ok':'--ok','paused':'--faint','notrun':'--faint','none':'--faint'} %}
+
+{% block title %}Board · backup-engine{% endblock %}
+
+{%- block clock_attrs %} data-generated="{{ status.generated_at }}"{% if status.next_scheduled %} data-next="{{ status.next_scheduled.at }}" data-next-job="{{ status.next_scheduled.job }}"{% endif %}{% endblock -%}
+{%- block clock %}{{ status.generated_at[8:10]|int }} {{ MON[status.generated_at[5:7]|int - 1] }} {{ status.generated_at[0:4] }} · {{ hhmm(status.generated_at) }} {{ status.tz }} · refreshed 0 s ago{% endblock -%}
+
+{% block body %}
+<section class="screen dense" aria-label="Board">
+
+  {# ---- Band 1 — Verdict ------------------------------------------------ #}
+  <div class="band">
+    <div class="verdict" style="border-left-color:var({{ VC.get(v.state, '--faint') }})">
+      <div>
+        <h2>{{ v.h2 }}</h2>
+        {% if v.sub %}<p class="sub">{{ v.sub }}</p>
+        {% elif status.next_scheduled %}<p class="sub" data-countdown="{{ status.next_scheduled.at }}">next run {{ status.next_scheduled.job }} <span class="cd">{{ hhmm(status.next_scheduled.at) }}</span></p>{% endif %}
+      </div>
+      {% if v.button %}<a class="btn btn-primary" href="{{ v.button.href }}">{{ v.button.label }}</a>{% endif %}
+    </div>
+  </div>
+
+  {# ---- Band 2 — Needs you ---------------------------------------------- #}
+  <div class="band">
+    <p class="slabel">Needs you{% if status.needs_you %} <span class="cnt">· {{ status.needs_you|length }}</span>{% endif %}</p>
+    {% if status.needs_you %}
+    <div class="needs">
+      {% for row in status.needs_you %}
+      {% set lvl = row.level %}
+      <div class="needs-row is-{{ lvl }}">
+        <div class="sig sig-{{ lvl }}">
+          <span class="glyph" aria-hidden="true">
+            {%- if lvl == 'blocker' -%}<svg width="12" height="12" viewBox="0 0 12 12"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill="currentColor"/></svg>
+            {%- elif lvl == 'warning' -%}<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M6 1.4 11.1 10.6H0.9Z"/><path d="M6 4.6v2.6"/><path d="M6 8.9v.2"/></svg>
+            {%- elif lvl == 'advice' -%}<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6" cy="6" r="5"/><circle cx="6" cy="6" r="1.5" fill="currentColor" stroke="none"/></svg>
+            {%- endif -%}
+          </span>
+          <div class="body">
+            <span class="label">{{ {'blocker':'Blocker','warning':'Warning','advice':'Advice'}.get(lvl, lvl|capitalize) }}</span>
+            <p>{% if row.strong %}<strong>{{ row.strong }}</strong> {% endif %}{{ row.text }}</p>
+            {% if row.errline %}<code class="errline">{{ row.errline }}</code>{% endif %}
+            {% if row.hint %}<p class="hint">{{ row.hint }}</p>{% endif %}
+            {% if row.when and row.record %}<p class="hint"><span data-when="{{ row.when }}">{{ datelabel(row.when) }} {{ hhmm(row.when) }}</span> · <a href="{{ row.record }}">open the run record →</a></p>{% endif %}
+          </div>
+        </div>
+        <div class="act">
+          {% if row.fix %}<a class="btn btn-primary btn-sm" href="{{ row.fix.href }}">{{ row.fix.label }}</a>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="hint">Nothing needs you.</p>
+    {% endif %}
+  </div>
+
+  {# ---- Band 3 — Jobs --------------------------------------------------- #}
+  <div class="band">
+    <div class="band-head">
+      <p class="slabel">Jobs · worst first</p>
+      <p class="slabel"><span class="mono">{{ status.jobs|length }} job{{ '' if status.jobs|length == 1 else 's' }}</span> &nbsp; <a class="btn btn-sm" href="/jobs/new">+ New job</a></p>
+    </div>
+    {% if status.jobs %}
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>State</th><th>Job</th><th>Last run</th>
+            <th class="col-took">Took</th><th>Next run</th>
+            <th class="col-strip">Last 14 runs</th>
+            <th class="num">Size</th><th class="num">Per month</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for j in status.jobs %}
+          {% set pj = (status.cost.per_job | selectattr('name', 'equalto', j.name) | list | first) if status.cost else none %}
+          <tr class="jobrow" title="{{ vocab.TYPE_LINES.get(j.type, j.type_label) }}">
+            <td><span class="tok tok-{{ 'notrun' if j.state == 'NOT_RUN_YET' else j.state|lower }}" id="board-tok-{{ j.name }}">{{ j.label }}</span></td>
+            <td>
+              <a class="jobname" href="/jobs/{{ j.name }}">{{ j.name }}</a>
+              {% if j.source %}<div class="jobpath">{{ j.source }}</div>{% endif %}
+              <div class="compact-only hint mono">
+                {%- if j.runs_total == 0 -%}never run
+                {%- else -%}took {{ dur(j.last.duration_s) if j.last else '—' }} ·
+                  {%- if j.failed_14 == 0 %} {{ j.ok_14 }} runs, no failures
+                  {%- else %} {{ j.failed_14 }} failed, {{ j.ok_14 }} OK in {{ j.ok_14 + j.failed_14 }} runs{% endif -%}
+                {%- endif -%}
+              </div>
+            </td>
+            <td>
+              {% if j.last %}<div class="cell2"><span class="v">{{ hhmm(j.last.started_at) }}</span><span class="s" data-when="{{ j.last.finished_at }}">{{ datelabel(j.last.finished_at) }}</span></div>
+              {% else %}<div class="cell2"><span class="v">—</span><span class="s">never</span></div>{% endif %}
+            </td>
+            <td class="col-took">
+              {% if j.last and j.last.duration_s is not none %}
+                {%- set took_col = '--danger' if j.last.outcome in ['failed','aborted'] else ('--warn' if j.slow_last else none) -%}
+                <div class="cell2"><span class="v"{% if took_col %} style="color:var({{ took_col }})"{% endif %}>{{ dur(j.last.duration_s) }}</span>
+                <span class="s">{% if j.last.outcome in ['failed','aborted'] %}stopped early{% if j.median_s %} · ~{{ dur(j.median_s) }}{% endif %}{% elif j.median_s %}~{{ dur(j.median_s) }} typical{% else %}no typical yet{% endif %}</span></div>
+              {% else %}<div class="cell2"><span class="v">—</span><span class="s">no typical yet</span></div>{% endif %}
+            </td>
+            <td>
+              {% if j.next_run %}<div class="cell2"><span class="v">{{ hhmm(j.next_run) }}</span><span class="s" data-when="{{ j.next_run }}">{{ datelabel(j.next_run) }}</span></div>
+              {% else %}<div class="cell2"><span class="v">—</span><span class="s">{{ j.next_run_note or 'paused' }}</span></div>{% endif %}
+            </td>
+            <td class="col-strip">
+              <div class="strip" role="img" aria-label="Last {{ j.strip|length }} runs for {{ j.name }}.">
+                {% for cell in j.strip -%}
+                {%- set color = 'fail' if cell.outcome in ['failed','aborted'] else ('running' if cell.outcome == 'running' else ('slow' if cell.slow else ('ok' if cell.outcome == 'ok' else ''))) -%}
+                {%- set dimc = ' dim' if (color and loop.index0 < (j.strip|length - 7)) else '' -%}
+                {%- if cell.run_id -%}<a class="cellx{{ (' ' + color) if color }}{{ dimc }}" href="/jobs/{{ j.name }}/runs/{{ cell.run_id }}" title="{{ cell.title }}"></a>
+                {%- else -%}<span class="cellx" title="{{ cell.title }}"></span>{%- endif -%}
+                {% endfor %}
+              </div>
+            </td>
+            <td class="num">
+              {% if pj %}<div class="cell2"><span class="v">{{ prov(humanbytes(pj.size_bytes), pj.size_provenance) }}</span>{% if pj.file_count %}<span class="s">{{ '{:,}'.format(pj.file_count) }} files</span>{% endif %}</div>
+              {% else %}<div class="cell2"><span class="v">—</span><span class="s">not measured yet</span></div>{% endif %}
+            </td>
+            <td class="num">
+              {% if pj and pj.monthly is not none %}<div class="cell2"><span class="v">{{ prov(money(pj.monthly), pj.monthly_provenance) }}</span><span class="s">{{ pj.monthly_provenance }}</span></div>
+              {% else %}<div class="cell2"><span class="v">—</span><span class="s">no price yet</span></div>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <span><span class="key-cell" style="background:var(--ok)"></span><i>OK</i></span>
+      <span><span class="key-cell" style="background:var(--danger)"></span><i>failed</i></span>
+      <span><span class="key-cell" style="background:var(--warn)"></span><i>slow — 3× its own typical run</i></span>
+      <span><span class="key-cell" style="background:var(--grid)"></span><i>no run on record yet</i></span>
+      <span><span class="key-cell" style="background:var(--ok-dim)"></span><i>older than the last 7 runs</i></span>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ---- Band 4 — What it costs ------------------------------------------ #}
+  {% set c = status.cost %}
+  <div class="band">
+    <div class="band-head">
+      <p class="slabel">What it costs</p>
+      <p class="band-head more"><a class="linklike" href="/cost">Open the full cost view →</a></p>
+    </div>
+    {% if status.jobs %}
+    <div class="grid4" style="margin-bottom:1.5rem">
+      <div class="sfig">
+        <span class="k">In the bucket now</span>
+        <span class="v">{% if c.in_bucket_bytes is not none %}{{ prov(humanbytes(c.in_bucket_bytes), 'measured') }}{% else %}—{% endif %}</span>
+        <span class="s">{% if c.in_bucket_bytes is not none %}measured {{ c.in_bucket_at or '—' }} · {{ c.prefix_count }} folder{{ '' if c.prefix_count == 1 else 's' }}{% else %}not measured yet · Refresh usage on the cost view{% endif %}</span>
+      </div>
+      <div class="sfig">
+        <span class="k">Last invoice</span>
+        <span class="v">{% if c.invoice %}{{ prov(money(c.invoice.amount), 'invoiced') }}{% else %}—{% endif %}</span>
+        <span class="s">{% if c.invoice and c.invoice.month %}{{ MONTHS[c.invoice.month[5:7]|int - 1] }} {{ c.invoice.month[0:4] }} · the real bill{% else %}billing not connected{% endif %}</span>
+      </div>
+      <div class="sfig">
+        <span class="k">The model says</span>
+        <span class="v">{% if c.model_monthly is not none %}{{ prov(money(c.model_monthly), c.model_monthly_provenance) }}<span class="s"> /mo</span>{% else %}—{% endif %}</span>
+        <span class="s">{% if c.model_monthly is not none %}{{ 'both jobs' if status.jobs|length == 2 else 'all jobs' }}, once settled{% else %}no price yet{% endif %}</span>
+      </div>
+      <div class="sfig">
+        <span class="k">Difference</span>
+        <span class="v"{% if c.delta %} style="color:var({{ '--ok' if c.delta.pct|abs <= 10 else '--warn' }})"{% endif %}>{% if c.delta %}{{ smoney(c.delta.amount) }}{% else %}—{% endif %}</span>
+        <span class="s">{% if c.delta %}{{ c.delta.short }}{% elif not c.invoice %}connect billing on the cost view{% else %}—{% endif %}</span>
+      </div>
+    </div>
+
+    {% if c.delta %}<p class="delta" style="margin-bottom:.75rem">model <b>{{ money(c.model_monthly) }}</b> · invoice <b>{{ money(c.invoice.amount) }}</b> · <b>{{ c.delta.short.split(' · ')[0] }}</b> — {{ c.delta.verdict }}.</p>{% endif %}
+    {% if c.why_high_note %}<div class="sig sig-note" style="margin-bottom:1rem"><div class="body">{{ c.why_high_note }}</div></div>{% endif %}
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Job</th><th>What it keeps for you</th><th>Storage tier</th><th class="num">Projected</th><th class="num">Share of the bill</th></tr>
+        </thead>
+        <tbody>
+          {% for p in c.per_job %}
+          <tr class="jobrow">
+            <td><a class="jobname" href="/jobs/{{ p.name }}">{{ p.name }}</a></td>
+            <td>{{ prov(humanbytes(p.size_bytes), p.size_provenance) }}{% if p.old_versions_gb %} <span class="hint">+ {{ prov(humanbytes(p.old_versions_gb * 1073741824), 'assumed') }} of old versions</span>{% endif %}</td>
+            <td>{{ p.tier_label.split(' · ')[0] }} <code>{{ p.storage_class }}</code></td>
+            <td class="num">{{ prov(money(p.monthly), p.monthly_provenance) }} <span class="hint">/mo</span></td>
+            <td class="num hint">not split</td>
+          </tr>
+          {% endfor %}
+          {% if c.model_monthly is not none %}
+          <tr>
+            <td colspan="3" class="hint">{{ 'Both jobs' if status.jobs|length == 2 else 'All ' ~ status.jobs|length ~ ' jobs' }}, every month once settled</td>
+            <td class="num"><strong class="mono">{{ prov(money(c.model_monthly), c.model_monthly_provenance) }}</strong></td>
+            <td class="num">{% if c.invoice %}{{ prov(money(c.invoice.amount), 'invoiced') }}{% else %}<span class="hint">—</span>{% endif %}</td>
+          </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="sig sig-note">
+      <div class="body">The bill is not split per job: Amazon's cost report comes back as one number for the whole account (or for the whole bucket when it is tagged), so “share of the bill” cannot be split between jobs that share a bucket.</div>
+    </div>
+
+    <div class="legend">
+      <span><i style="border-bottom:1px solid var(--prov-measured)">&nbsp;&nbsp;&nbsp;&nbsp;</i> measured</span>
+      <span><i style="border-bottom:1px dotted var(--prov-assumed)">&nbsp;&nbsp;&nbsp;&nbsp;</i> assumed</span>
+      <span><i style="border-bottom:3px double var(--prov-invoiced)">&nbsp;&nbsp;&nbsp;&nbsp;</i> invoiced</span>
+      <span><i>no line</i> = projected</span>
+      {% if c.price %}<span class="price-stamp">prices: {{ c.price.kind }} table {{ c.price.date }}</span>{% endif %}
+    </div>
+    {% else %}
+    <p class="hint">No cost to show until a job exists.</p>
+    {% endif %}
+  </div>
+
+</section>
+
+<script>
+// Board live behaviour (spec 5.1): tick the clock's "refreshed N s ago" segment
+// and the verdict countdown every second; poll /status.json every 30 s and flash
+// any state token whose text changed. Everything is guarded and non-load-bearing:
+// the page is already complete server-side.
+(function () {
+  "use strict";
+  var WD = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var clock = document.getElementById("be-clock");
+
+  function parseISO(s) { try { return s ? new Date(s.replace("Z", "+00:00")) : null; } catch (e) { return null; } }
+
+  function ago(sec) {
+    if (sec < 60) return sec + " s ago";
+    var m = Math.floor(sec / 60);
+    if (m < 60) return m + " m ago";
+    var h = Math.floor(m / 60);
+    return h + " h ago";
+  }
+  function until(sec) {
+    if (sec < 60) return "in " + sec + " s";
+    var m = Math.floor(sec / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+    if (h < 1) return "in " + m + " m";
+    if (d < 1) return "in " + h + " h " + (m % 60) + " m";
+    return "in " + d + " d " + (h % 24) + " h";
+  }
+
+  function renderClock() {
+    if (!clock) return;
+    var gen = parseISO(clock.getAttribute("data-generated"));
+    if (!gen) return;
+    var tz = " UTC";
+    try {
+      var day = gen.getUTCDate(), mon = MON[gen.getUTCMonth()], yr = gen.getUTCFullYear();
+      var hh = ("0" + gen.getUTCHours()).slice(-2), mm = ("0" + gen.getUTCMinutes()).slice(-2);
+      var wd = WD[gen.getUTCDay()];
+      var age = Math.max(0, Math.round((Date.now() - gen.getTime()) / 1000));
+      clock.textContent = wd + " " + day + " " + mon + " " + yr + " · " + hh + ":" + mm + tz + " · refreshed " + ago(age);
+    } catch (e) {}
+  }
+
+  function renderCountdown() {
+    var el = document.querySelector("[data-countdown]");
+    if (!el) return;
+    var when = parseISO(el.getAttribute("data-countdown"));
+    if (!when) return;
+    var cd = el.querySelector(".cd");
+    if (cd) cd.textContent = until(Math.max(0, Math.round((when.getTime() - Date.now()) / 1000)));
+  }
+
+  function poll() {
+    try {
+      fetch("/status.json", {headers: {"Accept": "application/json"}}).then(function (r) {
+        return r.ok ? r.json() : null;
+      }).then(function (js) {
+        if (!js) return;
+        if (clock) clock.setAttribute("data-generated", js.generated_at);
+        (js.jobs || []).forEach(function (j) {
+          var tok = document.getElementById("board-tok-" + j.name);
+          if (tok && tok.textContent.trim() !== (j.label || "").trim()) {
+            tok.textContent = j.label;
+            tok.classList.remove("flash"); void tok.offsetWidth; tok.classList.add("flash");
+          }
+        });
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
+  renderClock(); renderCountdown();
+  setInterval(function () { renderClock(); renderCountdown(); }, 1000);
+  setInterval(poll, 30000);
+})();
+</script>
+{% endblock %}

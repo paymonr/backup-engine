@@ -27,7 +27,7 @@
     <div class="topbar-right">
       <a class="chip" href="/setup"
          title="This GUI has no authentication — put it behind a reverse proxy or SSO. Never expose it directly to the internet.">LAN only &middot; no auth</a>
-      <time class="clock mono" id="be-clock"></time>
+      <time class="clock mono" id="be-clock"{% block clock_attrs %}{% endblock %}>{% block clock %}{% endblock %}</time>
     </div>
   </div>
 </header>
@@ -100,7 +100,9 @@
   "use strict";
   try {
     var c = document.getElementById("be-clock");
-    if (c) {
+    // Polling pages (the Board) server-render the clock with a "refreshed N s ago"
+    // segment and drive it themselves; leave that alone. Otherwise fill it here.
+    if (c && !c.textContent.trim()) {
       var tick = function () {
         var d = new Date();
         var day = d.toLocaleDateString("en-GB", {weekday: "short", day: "2-digit", month: "short", year: "numeric"});

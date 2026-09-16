@@ -1,6 +1,6 @@
 import json, pathlib, re
 import pytest
-from app.gui import create_app
+from app.gui import config_io, create_app
 
 @pytest.fixture
 def source_root(tmp_path):
@@ -12,6 +12,11 @@ def source_root(tmp_path):
 @pytest.fixture
 def app(tmp_path, source_root, template_path):
     cfg = tmp_path / "config"; cfg.mkdir()
+    # Provisioned, so `/` renders the Board (5.1, ruling R-H): the job table folded
+    # into the Board and `/jobs` now 301s home. The create/edit form and the
+    # save/run/delete routes are unchanged and are still exercised via `/jobs/*`.
+    config_io.write_secrets(str(cfg), {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    (cfg / "backup.env").write_text("S3_BUCKET=bw-backups\nAWS_REGION=us-east-1\n")
     return create_app({"CONFIG_DIR": str(cfg), "CACHE_DIR": str(tmp_path / "cache"),
                        "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
                        "SOURCE_ROOT": str(source_root), "SECRET_KEY": "test", "TESTING": True,
@@ -35,22 +40,24 @@ def tmp_jobs(app):
                                         "storage_class": "DEEP_ARCHIVE", "retention_days": 90}]}))
     return p
 
-def test_jobs_list_empty(client):
-    # Empty state now renders the onboarding card (see
-    # test_jobs_empty_state_shows_onboarding_steps) rather than a bare "No jobs yet" message.
-    r = client.get("/jobs"); assert r.status_code == 200 and b"Getting started" in r.data
+def test_jobs_redirects_to_board(client):
+    # 5.1 / ruling R-H: `/jobs` is now a permanent redirect to the Board home.
+    r = client.get("/jobs")
+    assert r.status_code == 301 and r.headers["Location"].endswith("/")
 
-def test_jobs_empty_state_shows_onboarding_steps(client):
-    # with no jobs configured, the page guides first-run setup
-    body = client.get("/jobs").get_data(as_text=True)
-    assert "Getting started" in body
-    assert "/config" in body or "Provision" in body  # points at setup
+def test_board_empty_verdict_when_no_jobs(client):
+    # `Getting started` -> the Board empty verdict (10.2). With no jobs, `/` renders
+    # the verdict that nothing is being backed up, and offers the first-job button.
+    body = client.get("/").get_data(as_text=True)
+    assert "Nothing is being backed up yet." in body
+    assert "/jobs/new" in body  # "Create the first job →"
 
 def test_versioned_files_job_labeled_correctly(client, tmp_jobs):
-    # tmp_jobs writes a versioned-files job into jobs.json
-    body = client.get("/jobs").get_data(as_text=True)
-    assert "Versioned files" in body
-    assert "Archive" not in body  # the old label bug mislabeled it Archive
+    # tmp_jobs writes a versioned-files job into jobs.json; the Board names it with
+    # the Night Shift type line (10.2: "Versioned files" -> "File history").
+    body = client.get("/").get_data(as_text=True)
+    assert "File history" in body
+    assert "Plain copy" not in body  # no archive job here (the old bug mislabeled it)
 
 def test_new_form_renders_source_tree(client):
     # job_form.html renders the picker as #source-tree (renamed from the old
@@ -70,7 +77,7 @@ def test_create_job_then_lists(client, app):
     assert r.status_code in (302, 303)
     jobs = json.loads(pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").read_text())["jobs"]
     assert jobs[0]["name"] == "movies" and jobs[0]["type"] == "archive"
-    assert b"movies" in client.get("/jobs").data
+    assert b"movies" in client.get("/").data  # the Board's jobs table lists it
 
 def test_create_versioned_files_job_persists_type_and_retention(client, app):
     t = _csrf(client, "/jobs/new")
@@ -170,11 +177,11 @@ def test_edit_form_tiered_fieldset_falls_back_when_derived_keep_is_all_zero(clie
 
 
 def test_jobs_page_nameless_entry_no_500(client, app):
-    # Regression (FIX 2): a hand-edited nameless jobs.json entry must not 500 /jobs
-    # (jobs_page does j["name"]) — jobs_io.load drops it on the fail-safe read path.
+    # Regression (FIX 2): a hand-edited nameless jobs.json entry must not 500 the
+    # Board — status.board() drops nameless entries on the fail-safe read path.
     pathlib.Path(app.config["CONFIG_DIR"], "jobs.json").write_text(
         json.dumps({"jobs": [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}]}))
-    assert client.get("/jobs").status_code == 200
+    assert client.get("/").status_code == 200
 
 def test_create_rejects_bad_source(client):
     t = _csrf(client, "/jobs/new")
@@ -211,7 +218,8 @@ def test_run_and_delete(client, app, monkeypatch):
     assert jobs == []
 
 def test_nav_has_jobs(client):
-    assert b"/jobs" in client.get("/jobs").data
+    # The Board always offers job creation, so `/jobs/new` is reachable from home.
+    assert b"/jobs/new" in client.get("/").data
 
 # --- final-fix R-final-1: a corrupt jobs.json must not 500 the read/schedule path,
 # and the write path must not clobber the user's bytes (surface a flash, not a 500). ---
@@ -222,7 +230,7 @@ def _corrupt(app):
 
 def test_jobs_page_200_on_corrupt_file(client, app):
     _corrupt(app)
-    assert client.get("/jobs").status_code == 200   # not 500
+    assert client.get("/").status_code == 200   # the Board is not 500 on corrupt jobs.json
 
 def test_job_save_on_corrupt_file_flashes_not_500(client, app):
     p = _corrupt(app)

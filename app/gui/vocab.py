@@ -31,6 +31,14 @@ CLASS_NAMES: dict[str, str] = {
     "DEEP_ARCHIVE": "Thaw first, hours · DEEP_ARCHIVE",
 }
 
+# --- Type lines (4.3 / 5.1 -- the job page `.typeline` and the Board row hover).
+# The vocabulary table's own sentences; verbatim, global (ruling R1).
+TYPE_LINES: dict[str, str] = {
+    "versioned": "Snapshot backup — a point in time, so you can restore any date.",
+    "archive": "Plain copy — a straight copy of big, static files. No history.",
+    "versioned-files": "File history — keeps every version of every file.",
+}
+
 # --- Job states (4.7 state-token text; keys are the internal constants). ----
 STATE_NAMES: dict[str, str] = {
     "RUNNING": "Running",

@@ -4,7 +4,8 @@ from dataclasses import asdict
 from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
-from . import config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io, dirsize, attributions
+from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
+               dirsize, attributions, status, vocab)
 from .storage_advice import storage_class_info
 from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
@@ -20,10 +21,112 @@ def about_page():
 @bp.get("/")
 def index():
     # First run (no runtime key + bucket yet) lands on the provisioning wizard;
-    # once set up, the Jobs page is home.
+    # once set up, the Board is home (spec 5.1, ruling R-H).
     if not config_io.is_provisioned(current_app.config["CONFIG_DIR"]):
         return redirect(url_for("gui.provision_home"))
-    return redirect(url_for("gui.jobs_page"))
+    return render_template("board.html", status=_board_payload(current_app.config),
+                           csrf=security.issue_csrf())
+
+
+@bp.get("/status.json")
+def status_json():
+    # The Board's 30 s poll (spec 8.1). Same payload the page server-rendered from.
+    return jsonify(_board_payload(current_app.config))
+
+
+def _board_payload(cfg) -> dict:
+    """`status.board()` (Task 4) with the cost object merged in (spec 8.1). The
+    board dict was deliberately shaped so the route attaches cost here."""
+    board = status.board(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
+                         source_root=cfg["SOURCE_ROOT"])
+    board["cost"] = _board_cost(cfg)
+    return board
+
+
+def _board_cost(cfg) -> dict:
+    """The Board cost strip (spec 5.1 band 4 / 8.1 `cost`), from CACHES ONLY.
+
+    Ruling R-A: `estimate_io.board_cost` does not exist yet (Task 12 adds it). Here
+    the strip reads `current_costs` (the priced usage cache) for the measured "in
+    the bucket now" size and a PLACEHOLDER projected `model_monthly`, and the
+    cache-only `read_billing_cache` for the invoice — never Cost Explorer, never the
+    live model (the test asserts no CE call during render). Task 12 replaces this
+    with the real `board_cost` and updates the Board test."""
+    config_dir, cache_dir = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+    region = estimate_io._region(config_dir)
+    try:
+        prices = load_prices(region, cache_dir=cache_dir, live=cfg["PRICES_LIVE"])
+    except Exception:
+        prices = None
+    current = (estimate_io.current_costs(config_dir, cache_dir, prices)
+               if prices is not None else {"available": False})
+    billing = estimate_io.read_billing_cache(cache_dir)   # cache-only; no Cost Explorer
+
+    price = ({"kind": prices.source, "region": region, "date": prices.date}
+             if prices is not None else None)
+
+    if not current.get("prefixes"):
+        return {"in_bucket_bytes": None, "in_bucket_at": None, "prefix_count": 0,
+                "invoice": _invoice_from_cache(billing), "model_monthly": None,
+                "model_monthly_provenance": "projected", "model_floor": None,
+                "delta": None, "why_high_note": None, "per_job": [], "price": price}
+
+    prefixes = current["prefixes"]
+    in_bucket_bytes = sum(p["bytes"] for p in prefixes)
+    # PLACEHOLDER projected figure (R-A): the usage cache priced at today's storage
+    # rate. Computed from measured sizes only, so it is `projected` (no mark, 4.6);
+    # Task 12's real model adds old-versions and may make it `assumed`.
+    model_monthly = current.get("total_monthly")
+    invoice = _invoice_from_cache(billing)
+    delta = _cost_delta(model_monthly, invoice)
+    per_job = [{
+        "name": p["prefix"].split("/")[-1], "size_bytes": p["bytes"], "size_provenance": "measured",
+        "file_count": None, "ext": None, "old_versions_gb": None,
+        "tier_label": vocab.CLASS_NAMES.get(p["class"], p["class"]),
+        "storage_class": p["class"], "monthly": p["monthly"],
+        "monthly_provenance": "projected", "settles": None,
+    } for p in prefixes]
+    return {
+        "in_bucket_bytes": in_bucket_bytes, "in_bucket_at": current.get("fetched_at"),
+        "prefix_count": len(prefixes), "invoice": invoice,
+        "model_monthly": model_monthly, "model_monthly_provenance": "projected",
+        "model_floor": None, "delta": delta, "why_high_note": None,
+        "per_job": per_job, "price": price,
+    }
+
+
+def _invoice_from_cache(billing) -> dict | None:
+    """The most recent month in the cached billing view, or None (8.1 `invoice`)."""
+    months = billing.get("months") if billing.get("connected") else None
+    if not months:
+        return None
+    last = months[-1]
+    return {"month": last.get("month"), "amount": last.get("amount"),
+            "tag_scoped": bool(billing.get("tag"))}
+
+
+def _cost_delta(model, invoice) -> dict | None:
+    """model − invoice, with the short form and the 15/30 verdict bands (spec 4.6).
+    None unless both figures exist."""
+    if model is None or not invoice or invoice.get("amount") in (None, 0):
+        return None
+    amount = model - invoice["amount"]
+    pct = amount / invoice["amount"] * 100.0
+    ap = abs(pct)
+    if ap < 0.05:
+        direction, short = "matches", "±0.0% · matches"
+    else:
+        direction = "model runs high" if amount > 0 else "model runs low"
+        short = f"{pct:+.1f}%".replace("-", "−") + f" · {direction}"
+    if ap <= 15:
+        verdict = ("close enough to trust, and it errs on the expensive side" if amount >= 0
+                   else "close enough to trust, and it errs on the cheap side")
+    elif ap <= 30:
+        verdict = ("model runs high — worth a look at the assumptions" if amount >= 0
+                   else "model runs low — worth a look at the assumptions")
+    else:
+        verdict = "far apart — check the assumptions and whether the invoice covers more than these backups"
+    return {"amount": round(amount, 2), "pct": round(pct, 1), "verdict": verdict, "short": short}
 
 @bp.get("/config")
 def config_page():
@@ -158,10 +261,10 @@ def provision_automated_run():
 
 @bp.get("/jobs")
 def jobs_page():
-    cfg = current_app.config
-    jobs = jobs_io.load(cfg["CONFIG_DIR"])
-    rows = [{**j, "state": runner.read_state(cfg["CACHE_DIR"], j["name"])} for j in jobs]
-    return render_template("jobs.html", jobs=rows, csrf=security.issue_csrf())
+    # The job table folded into the Board (spec 5.1, ruling R-H): `/jobs` is now a
+    # permanent redirect home. Save/run/delete still redirect here by name, which
+    # lands the user on the Board.
+    return redirect(url_for("gui.index"), code=301)
 
 def _class_panel_context(cfg):
     """Pricing-derived storage-class panel data for the job form. Guarded: a
