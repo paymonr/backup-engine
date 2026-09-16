@@ -283,7 +283,7 @@ def board(config_dir, cache_dir, scripts_dir, *, now=None, tz=None, source_root=
     return {
         "generated_at": _iso(now), "tz": _tzname(tz),
         "next_scheduled": _next_scheduled(ctxs),
-        "verdict": verdict(ctxs, now, tz),
+        "verdict": verdict(ctxs, now, tz, stale),
         "needs_you": needs_you(ctxs, stale, tz),
         "jobs": statuses, "crontab_stale": stale,
     }
@@ -303,7 +303,7 @@ def _open_button(name):
     return {"label": f"Open {name} →", "href": f"/jobs/{name}"}
 
 
-def verdict(ctxs, now, tz) -> dict:
+def verdict(ctxs, now, tz, stale=False) -> dict:
     if not ctxs:
         return {"state": "none", "job": None, "h2": "Nothing is being backed up yet.",
                 "sub": None, "button": {"label": "Create the first job →", "href": "/jobs/new"}}
@@ -327,8 +327,12 @@ def verdict(ctxs, now, tz) -> dict:
     if overdue_c:
         c = overdue_c[0]
         hhmm = _hhmm(c["expected_at"], tz)
-        h2 = (f"{c['name']} should have run at {hhmm} and did not. "
-              "The schedule is on, but nothing was recorded.")
+        # §5.1: when the on-disk crontab no longer matches the jobs, the overdue
+        # verdict's second sentence becomes the canonical crontab-stale wording
+        # (verbatim as on the needs-you row and §7.3) instead of the default.
+        second = ("The schedule file on disk does not match your jobs; restart the container."
+                  if stale else "The schedule is on, but nothing was recorded.")
+        h2 = f"{c['name']} should have run at {hhmm} and did not. {second}"
         return {"state": "overdue", "job": c["name"], "h2": h2, "sub": None,
                 "button": _open_button(c["name"])}
 

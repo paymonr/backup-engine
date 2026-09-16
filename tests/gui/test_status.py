@@ -393,15 +393,36 @@ def test_verdict_all_paused(tmp_path):
     assert b["verdict"]["h2"] == "Every job is paused."
 
 
-def test_verdict_overdue(tmp_path):
+def test_verdict_overdue_not_stale(tmp_path):
     cfg, root, cache = _cfg(tmp_path), _root(tmp_path), _cache(tmp_path)
     _mk_job(cfg, root, name="appdata", schedule="0 5 * * *")
     _end(cache, "appdata", _rid(12), outcome="ok",
          started="2026-09-12T05:00:01Z", finished="2026-09-12T05:04:00Z")
+    jobs_io.render_crontab(cfg, cache, "/s", source_root=root)   # on-disk == render -> not stale
     now = datetime(2026, 9, 15, 6, 0, tzinfo=UTC)
     b = status.board(cfg, cache, "/s", now=now, tz=UTC, source_root=root)
     assert b["verdict"]["state"] == "overdue" and b["verdict"]["job"] == "appdata"
-    assert "should have run at 05:00 and did not" in b["verdict"]["h2"]
+    assert b["crontab_stale"] is False
+    # second sentence stays the default when the schedule file matches (5.1)
+    assert b["verdict"]["h2"] == ("appdata should have run at 05:00 and did not. "
+                                  "The schedule is on, but nothing was recorded.")
+
+
+def test_verdict_overdue_swaps_second_sentence_when_crontab_stale(tmp_path):
+    # 5.1: an overdue verdict with a stale crontab replaces its SECOND sentence with
+    # the canonical crontab-stale wording (verbatim, same as the needs-you row / 7.3).
+    cfg, root, cache = _cfg(tmp_path), _root(tmp_path), _cache(tmp_path)
+    _mk_job(cfg, root, name="appdata", schedule="0 5 * * *")
+    _end(cache, "appdata", _rid(12), outcome="ok",
+         started="2026-09-12T05:00:01Z", finished="2026-09-12T05:04:00Z")
+    Path(cache, "crontab").write_text("0 5 * * * /s/backup-job.sh STALE\n")   # on-disk != render
+    now = datetime(2026, 9, 15, 6, 0, tzinfo=UTC)
+    b = status.board(cfg, cache, "/s", now=now, tz=UTC, source_root=root)
+    assert b["verdict"]["state"] == "overdue" and b["crontab_stale"] is True
+    # first sentence unchanged, second sentence is the stale variant
+    assert b["verdict"]["h2"] == ("appdata should have run at 05:00 and did not. "
+                                  "The schedule file on disk does not match your jobs; "
+                                  "restart the container.")
 
 
 def test_verdict_no_jobs(tmp_path):
