@@ -37,6 +37,7 @@ htmlcov/
 
 # Claude Code local state (settings, worktrees, session scratch) — never distributable
 .claude/
+.superpowers/
 
 # Internal working docs (specs/plans) — not part of the distributable tool
 docs/
