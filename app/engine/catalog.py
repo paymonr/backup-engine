@@ -82,6 +82,25 @@ def current(conn: sqlite3.Connection) -> dict:
     return {row["path"]: row for row in rows}
 
 
+def paths(conn: sqlite3.Connection) -> list[str]:
+    """Every DISTINCT path the catalog has ever held (including fully-deleted ones),
+    sorted. restore_all()/thaw() walk this and select the version current at a point in
+    time per path, so a tombstoned path is still considered (and then skipped) rather
+    than silently invisible."""
+    rows = conn.execute("SELECT DISTINCT path FROM versions ORDER BY path").fetchall()
+    return [r["path"] for r in rows]
+
+
+def current_totals(conn: sqlite3.Connection) -> tuple[int, int]:
+    """(file_count, total_bytes) across every path's current (is_current=1) version --
+    the live footprint of the job, for a backup run's files_total/bytes_total and the
+    File-history restore-points size."""
+    row = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM versions WHERE is_current = 1"
+    ).fetchone()
+    return int(row[0]), int(row[1])
+
+
 def diff(conn: sqlite3.Connection, entries: list[dict]) -> dict:
     """Compare scanned `entries` against the catalog's current versions by
     path + size + mtime (mtime rounded to int seconds).

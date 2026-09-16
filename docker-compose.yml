@@ -3,9 +3,20 @@ services:
     image: ghcr.io/paymonr/backup-engine:latest
     container_name: backup-engine
     restart: unless-stopped
+    environment:
+      # Host path of the restore mount below, shown in the GUI ("Writes to
+      # /mnt/user/restore/…") and used to validate a typed restore target. Change
+      # this only if you change the left-hand side of the /restore bind.
+      RESTORE_ROOT_HOST: /mnt/user/restore
     volumes:
       - /mnt/user:/backup/media:ro   # SOURCE_ROOT; parent of everything you might back up — create jobs in the GUI
       - ./config:/config
       - ./cache:/cache
+      # Restore/thaw/download/test WRITE here (read-write, on purpose). It is a
+      # SEPARATE mount from the read-only source above so a restore can never
+      # overwrite what it protects — restored files land OUTSIDE the backed-up
+      # tree (the GUI also refuses a target under the live source). /mnt/user/restore
+      # is a normal share you create on the array; nothing else in this stack writes to it.
+      - /mnt/user/restore:/restore   # RESTORE_ROOT
     ports:
       - "8099:8099"   # GUI (Phase 2)

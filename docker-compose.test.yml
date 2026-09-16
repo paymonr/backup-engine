@@ -12,9 +12,15 @@ services:
     environment:
       RUN_ONCE: appdata
       CONFIG_DIR: /config
+      RESTORE_ROOT_HOST: /mnt/user/restore   # host label only; the real write target is the rw mount below
     volumes:
       - ./tests/fixtures/config:/config
       - ./tests/fixtures/appdata:/backup/media/appdata:ro
       - backup-engine-cache:/cache
+      # Restore target (read-write, on purpose) — a separate mount from the ro source
+      # above, so a restore can never overwrite what it protects. A named volume here
+      # since the test rig has no host restore share.
+      - backup-engine-restore:/restore   # RESTORE_ROOT
 volumes:
   backup-engine-cache:
+  backup-engine-restore:

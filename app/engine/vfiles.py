@@ -86,7 +86,11 @@ def _open_or_fetch_catalog(job_name, cache_dir, *, bucket, rclone_config, runner
 def backup(job, *, source_root, cache_dir, bucket, rclone_config,
            now=None, runner=subprocess.run) -> dict:
     """Run one incremental backup of `job` and return
-    {"uploaded", "deleted", "pruned"} counts.
+    {"uploaded", "deleted", "pruned", "bytes", "files_total", "bytes_total"}.
+
+    The first three are this run's counts; `bytes` is the bytes uploaded this run;
+    `files_total`/`bytes_total` are the live footprint after the run (the catalog's
+    current versions). The contract only grows -- the old three keys are unchanged.
 
     `job` is a dict {name, source, storage_class, policy}, where `policy` is a
     retention policy dict: {"type": "days", "days": N} | {"type": "count",
@@ -108,6 +112,7 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
         d = catalog.diff(conn, entries)
 
         uploaded = 0
+        bytes_uploaded = 0
         for entry in d["new"] + d["changed"]:
             rel = entry["path"]
             # media/<job>/<relpath>@<int(now)>-<uuid4 hex[:8]>; the suffix
@@ -119,6 +124,7 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
             catalog.record_version(conn, rel, key, entry["size"], entry["mtime"],
                                    storage_class, now)
             uploaded += 1
+            bytes_uploaded += int(entry["size"])
 
         deleted = 0
         for path in d["deleted"]:
@@ -163,6 +169,10 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
                     s3.delete(key, bucket=bucket, rclone_config=rclone_config, runner=runner)
             catalog.delete_version(conn, row["id"])
             pruned += 1
+
+        # Live footprint AFTER this run (current versions only), for the record's
+        # files_total/bytes_total -- read before the catalog is closed.
+        files_total, bytes_total = catalog.current_totals(conn)
     finally:
         conn.close()
 
@@ -171,7 +181,8 @@ def backup(job, *, source_root, cache_dir, bucket, rclone_config,
     s3.upload_catalog(name, str(cat_path),
                       bucket=bucket, rclone_config=rclone_config, runner=runner)
 
-    return {"uploaded": uploaded, "deleted": deleted, "pruned": pruned}
+    return {"uploaded": uploaded, "deleted": deleted, "pruned": pruned,
+            "bytes": bytes_uploaded, "files_total": files_total, "bytes_total": bytes_total}
 
 
 def _list_paths(conn) -> list[dict]:
@@ -262,12 +273,126 @@ def restore(job, *, target, path=None, asof=None, cache_dir, bucket, rclone_conf
         conn.close()
 
 
+def _current_at(conn, path, asof):
+    """The version of `path` that was CURRENT at `asof` (or now, when asof is None),
+    tombstone-aware: the newest version with uploaded_at <= asof; None when that
+    newest version is a tombstone (the path was deleted as of then) or none exists.
+
+    This differs from `_select_version` deliberately. Single-file restore() uses
+    `_select_version` so you can recover a file that was later deleted; whole-scope
+    restore_all()/thaw() use `_current_at` so a point-in-time restore reproduces the
+    tree as it WAS -- a path deleted before `asof` is simply absent."""
+    versions = catalog.versions(conn, path)  # newest-first, tombstones included
+    if asof is not None:
+        versions = [v for v in versions if v["uploaded_at"] <= asof]
+    if not versions:
+        return None
+    top = versions[0]
+    return None if top["deleted"] else top
+
+
+def _select_scope(conn, asof, scope):
+    """[(path, row)] for every path whose version current at `asof` is live, plus the
+    count of paths skipped (deleted/absent as of then). `scope` filters to a folder
+    prefix; "." (the only File-history scope, 5.2) or "" means the whole tree. Shared
+    by restore_all() and thaw() so a warm-up and the restore it precedes pick the exact
+    same versions."""
+    pairs, skipped = [], 0
+    base = "" if scope in (None, ".", "") else scope.rstrip("/") + "/"
+    for path in catalog.paths(conn):
+        if base and not (path == scope or path.startswith(base)):
+            continue
+        row = _current_at(conn, path, asof)
+        if row is None:
+            skipped += 1
+        else:
+            pairs.append((path, row))
+    return pairs, skipped
+
+
+def restore_all(job, *, target, asof=None, cache_dir, bucket, rclone_config,
+                thaw="Bulk", runner=subprocess.run) -> dict:
+    """Restore EVERY file that was live at `asof` (or now) into `target/<path>` --
+    File history's "restore everything as of this point". Cold versions are warmed
+    via s3.thaw() instead of downloaded (the copy takes hours); the run still exits 0
+    so the GUI can report how many were warmed vs written and offer "Download again
+    later" (5.4). Returns {"restored", "thaw_requested", "skipped", "bytes"}."""
+    name = job["name"]
+    conn = _open_or_fetch_catalog(name, cache_dir,
+                                   bucket=bucket, rclone_config=rclone_config, runner=runner)
+    try:
+        pairs, skipped = _select_scope(conn, asof, ".")
+        restored = thaw_requested = total_bytes = 0
+        for path, row in pairs:
+            key = row["key"]
+            if row["storage_class"] in _COLD_CLASSES:
+                s3.thaw(key, bucket=bucket, tier=thaw, runner=runner)
+                print(f"thaw requested: {path}")
+                thaw_requested += 1
+            else:
+                dest = Path(target) / path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                s3.get(key, str(dest), bucket=bucket, rclone_config=rclone_config, runner=runner)
+                print(f"restored: {path}")
+                restored += 1
+                total_bytes += int(row["size"] or 0)
+    finally:
+        conn.close()
+    print(f"restored={restored} thaw_requested={thaw_requested} skipped={skipped} bytes={total_bytes}")
+    return {"restored": restored, "thaw_requested": thaw_requested,
+            "skipped": skipped, "bytes": total_bytes}
+
+
+def thaw(job, *, scope=".", asof=None, cache_dir, bucket, rclone_config,
+         tier="Bulk", runner=subprocess.run) -> dict:
+    """Warm up (restore-object) exactly the versions a following restore_all() would
+    read: the version current at `asof` for every path under `scope`, and only those
+    whose storage_class is cold. A warm version issues nothing and is counted in
+    `skipped`; a path with two cold versions issues ONE request (the current one), not
+    two -- an rclone-prefix sweep over media/<job>/ would warm the entire history and
+    bill for it. Returns {"thaw_requested", "skipped"} and always exits 0."""
+    name = job["name"]
+    conn = _open_or_fetch_catalog(name, cache_dir,
+                                   bucket=bucket, rclone_config=rclone_config, runner=runner)
+    try:
+        pairs, skipped = _select_scope(conn, asof, scope)
+        thaw_requested = 0
+        for path, row in pairs:
+            if row["storage_class"] in _COLD_CLASSES:
+                s3.thaw(row["key"], bucket=bucket, tier=tier, runner=runner)
+                print(f"thaw requested: {path}")
+                thaw_requested += 1
+            else:
+                skipped += 1  # already warm -> nothing to do
+    finally:
+        conn.close()
+    print(f"thaw_requested={thaw_requested} skipped={skipped}")
+    return {"thaw_requested": thaw_requested, "skipped": skipped}
+
+
+def _list_json(conn, name) -> dict:
+    """The `list --json` shape (refresh restore points, 7.5.6): the current file set
+    with per-file storage class, plus the live totals. File history has no folders
+    (its scope is "." or one path), so there is no `folders` member (8.5)."""
+    rows = []
+    for path, row in sorted(catalog.current(conn).items()):
+        rows.append({"path": path, "uploaded_at": row["uploaded_at"],
+                     "storage_class": row["storage_class"]})
+    count, total = catalog.current_totals(conn)
+    return {"job": name, "kind": "file-history", "file_count": count,
+            "size_bytes": total, "paths": rows}
+
+
 def _main(argv: list[str]) -> int:
     """CLI entrypoint for ``python3 -m app.engine.vfiles``:
 
         python3 -m app.engine.vfiles backup <job>
-        python3 -m app.engine.vfiles restore <job> list
+        python3 -m app.engine.vfiles restore <job> list [--json]
+        python3 -m app.engine.vfiles restore <job> . <target> \
+            [--asof TS] [--tier Bulk|Standard|Expedited]   (-> restore_all)
         python3 -m app.engine.vfiles restore <job> <path> <target> \
+            [--asof TS] [--tier Bulk|Standard|Expedited]
+        python3 -m app.engine.vfiles thaw <job> <scope|.> \
             [--asof TS] [--tier Bulk|Standard|Expedited]
 
     Dispatched from scripts/backup-job.sh (the `versioned-files)` case) and
@@ -291,15 +416,24 @@ def _main(argv: list[str]) -> int:
     backup_p = sub.add_parser("backup", help="run one incremental backup")
     backup_p.add_argument("job", help="job name (the $JOB backup-job.sh resolved)")
 
-    restore_p = sub.add_parser("restore", help="list versions, or recover one file")
+    restore_p = sub.add_parser("restore", help="list versions, or recover one file / everything")
     restore_p.add_argument("job", help="job name")
-    restore_p.add_argument("path", help='"list", or the relpath of a file to restore')
+    restore_p.add_argument("path", help='"list", ".", or the relpath of a file to restore')
     restore_p.add_argument("target", nargs="?", default=None,
                             help="target dir (required unless path is 'list')")
     restore_p.add_argument("--asof", type=float, default=None,
                             help="unix timestamp: restore the version current as of then")
     restore_p.add_argument("--tier", default="Bulk", choices=["Bulk", "Standard", "Expedited"],
                             help="Glacier/Deep Archive thaw tier (cold storage classes only)")
+    restore_p.add_argument("--json", action="store_true", help="'list' only: emit the restore-points JSON")
+
+    thaw_p = sub.add_parser("thaw", help="warm up (restore-object) the current versions under a scope")
+    thaw_p.add_argument("job", help="job name")
+    thaw_p.add_argument("scope", nargs="?", default=".", help='"." (whole tree) or a folder prefix')
+    thaw_p.add_argument("--asof", type=float, default=None,
+                         help="unix timestamp: warm the versions current as of then")
+    thaw_p.add_argument("--tier", default="Bulk", choices=["Bulk", "Standard", "Expedited"],
+                         help="Glacier/Deep Archive thaw tier")
 
     args = parser.parse_args(argv)
 
@@ -355,19 +489,44 @@ def _main(argv: list[str]) -> int:
         source_root = str(Path(_require_env("SOURCE_ROOT")) / job["source"])
         stats = backup(job, source_root=source_root, cache_dir=cache_dir,
                         bucket=bucket, rclone_config=rclone_config)
-        print(f'uploaded={stats["uploaded"]} deleted={stats["deleted"]} pruned={stats["pruned"]}')
+        # Old three keys first (spec 7.5.5); backup-job.sh's _vfiles_stat parses the rest.
+        print(f'uploaded={stats["uploaded"]} deleted={stats["deleted"]} pruned={stats["pruned"]}'
+              f' bytes={stats.get("bytes", 0)} files_total={stats.get("files_total", 0)}'
+              f' bytes_total={stats.get("bytes_total", 0)}')
+        return 0
+
+    if args.cmd == "thaw":
+        thaw(job, scope=args.scope, asof=args.asof, cache_dir=cache_dir, bucket=bucket,
+             rclone_config=rclone_config, tier=args.tier)
         return 0
 
     # restore
     if args.path == "list":
         if args.target is not None:
             parser.error("'list' takes no target/--asof/--tier")
+        if args.json:
+            conn = _open_or_fetch_catalog(job["name"], cache_dir,
+                                          bucket=bucket, rclone_config=rclone_config,
+                                          runner=subprocess.run)
+            try:
+                import json as _json
+                print(_json.dumps(_list_json(conn, job["name"])))
+            finally:
+                conn.close()
+            return 0
         restore(job, path=None, target="", cache_dir=cache_dir, bucket=bucket,
                 rclone_config=rclone_config)
         return 0
 
     if args.target is None:
-        parser.error("restore <job> <path> <target> [--asof TS] [--tier Bulk|Standard|Expedited]")
+        parser.error("restore <job> <path|.> <target> [--asof TS] [--tier Bulk|Standard|Expedited]")
+
+    # "." = restore everything as of the point (dispatches to restore_all, spec 7.5.3 §3)
+    if args.path == ".":
+        restore_all(job, target=args.target, asof=args.asof, cache_dir=cache_dir,
+                    bucket=bucket, rclone_config=rclone_config, thaw=args.tier)
+        return 0
+
     try:
         result = restore(job, path=args.path, target=args.target, asof=args.asof,
                           cache_dir=cache_dir, bucket=bucket, rclone_config=rclone_config,

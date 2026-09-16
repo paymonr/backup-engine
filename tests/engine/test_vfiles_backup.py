@@ -101,7 +101,10 @@ def test_backup_new_changed_removed_and_catalog_upload(tmp_path):
     now1 = 1_000_000
     s1 = vfiles.backup(job, source_root=str(src), cache_dir=str(cache),
                        bucket="bkt", rclone_config="/cfg", now=now1, runner=r1)
-    assert s1 == {"uploaded": 1, "deleted": 0, "pruned": 0}
+    # backup()'s return grew (spec 7.5.5): the old three keys plus bytes/totals.
+    # a.txt is b"hello" (5 bytes), the only current version afterwards.
+    assert s1 == {"uploaded": 1, "deleted": 0, "pruned": 0,
+                  "bytes": 5, "files_total": 1, "bytes_total": 5}
     key1_prefix = f"media/j/a.txt@{now1}-"  # <ts>-<uuid8>, exact suffix is random
     puts = [c for c in r1.calls
             if "copyto" in c and any(a.startswith(f"s3:bkt/{key1_prefix}") for a in c)]
