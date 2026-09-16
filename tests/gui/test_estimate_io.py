@@ -288,3 +288,215 @@ def test_tiered_retention_policy_is_modelled_natively(tmp_path):
     assert a.retention_type == "tiered"
     assert (a.keep_last, a.keep_daily, a.keep_weekly, a.keep_monthly) == (3, 7, 4, 6)
     assert a.retention_count == 0 and a.versioning_retention_days is None
+
+
+# ===========================================================================
+# Task 12: the Cost workbench adapters (all CALL the frozen model; the Task-1
+# guard in tests/estimator/test_untouched.py stays green).
+# ===========================================================================
+from app.estimator import model as _model
+from app.estimator import usage as _usage
+
+
+def _cache(tmp_path, data=None, billing=None):
+    cache = tmp_path / "cache"
+    (cache / "state").mkdir(parents=True, exist_ok=True)
+    if data is not None:
+        _usage.save_cached(str(cache), data)
+    if billing is not None:
+        pathlib.Path(cache, "billing.json").write_text(json.dumps(billing))
+    return str(cache)
+
+
+# --- delta_verdict (4.6): the 15/30 bands ----------------------------------
+
+def test_delta_verdict_close_enough_expensive_side():
+    # +14.1% (the Board example) is within 15% -> "close enough to trust".
+    v = estimate_io.delta_verdict(114.1, 100.0)
+    assert v == "close enough to trust, and it errs on the expensive side"
+
+
+def test_delta_verdict_close_enough_cheap_side():
+    v = estimate_io.delta_verdict(85.9, 100.0)
+    assert v == "close enough to trust, and it errs on the cheap side"
+
+
+def test_delta_verdict_model_runs_high_band():
+    assert estimate_io.delta_verdict(120.0, 100.0) == "model runs high — worth a look at the assumptions"
+
+
+def test_delta_verdict_model_runs_low_band():
+    assert estimate_io.delta_verdict(80.0, 100.0) == "model runs low — worth a look at the assumptions"
+
+
+def test_delta_verdict_far_apart_band():
+    v = estimate_io.delta_verdict(140.0, 100.0)
+    assert v == "far apart — check the assumptions and whether the invoice covers more than these backups"
+
+
+# --- provenance_of (4.6/7.9): only "assumed" or "projected" ----------------
+
+def test_provenance_of_all_measured_is_projected():
+    assert estimate_io.provenance_of(["measured", "measured"]) == "projected"
+
+
+def test_provenance_of_any_assumed_is_assumed():
+    assert estimate_io.provenance_of(["measured", "assumed"]) == "assumed"
+
+
+def test_provenance_of_empty_is_projected():
+    assert estimate_io.provenance_of([]) == "projected"
+
+
+def test_provenance_of_never_returns_measured_or_invoiced():
+    # It answers for a COMPUTED figure; observed marks are set directly (4.6).
+    assert estimate_io.provenance_of(["measured"]) == "projected"
+
+
+# --- restore_quote (7.6): no new math; == model.restore_cost ---------------
+
+def test_restore_quote_amount_equals_model_restore_cost(tmp_path):
+    cfg = _cfg(tmp_path, [AJOB])
+    data = {"media/movies": {"bytes": 1000 * 1024 ** 3, "count": 7}}
+    cache = _cache(tmp_path, data=data)
+    prices = _prices()
+    q = estimate_io.restore_quote(cfg, cache, prices, "movies", tier="Standard")
+    # Rebuild the same scenario/job the adapter uses and price it with the frozen model.
+    scn = estimate_io.scenario_from_jobs(cfg, SRC, usage=data)
+    from dataclasses import replace
+    scn = replace(scn, retrieval_tier="Standard")
+    j = _by_name(scn)["movies"]
+    assert q["amount"] == pytest.approx(_model.restore_cost(j, scn, prices, 1.0))
+    assert q["tier"] == "Standard" and q["storage_class"] == "DEEP_ARCHIVE"
+    assert q["provenance"] == "measured"                    # size came from the usage cache
+
+
+def test_restore_quote_warmup_hours_for_cold_class(tmp_path):
+    cfg = _cfg(tmp_path, [AJOB])
+    cache = _cache(tmp_path, data={"media/movies": {"bytes": 5 * 1024 ** 3, "count": 2}})
+    q = estimate_io.restore_quote(cfg, cache, _prices(), "movies", tier="Standard")
+    assert q["warmup_hours"] == (None, 12)                  # DEEP_ARCHIVE Standard: up to 12 h
+
+
+def test_restore_quote_override_size_is_measured(tmp_path):
+    cfg = _cfg(tmp_path, [AJOB])
+    cache = _cache(tmp_path)                                # no usage cache
+    q = estimate_io.restore_quote(cfg, cache, _prices(), "movies",
+                                  tier="Bulk", size_gb=200.0, file_count=5)
+    assert q["size_gb"] == 200.0 and q["provenance"] == "measured"
+
+
+# --- board_cost (8.1): the Board's cost object, caches only ----------------
+
+def test_board_cost_with_caches(tmp_path):
+    cfg = _cfg(tmp_path, [VJOB, AJOB])
+    data = {"appdata": {"bytes": 56594862080, "count": 533},
+            "media/movies": {"bytes": 1957000000000, "count": 232021}}
+    cache = _cache(tmp_path, data=data,
+                   billing={"fetched_at": 1757833200.0,
+                            "months": [{"month": "2026-08", "amount": 3.98}],
+                            "forecast": None, "tag": None})
+    bc = estimate_io.board_cost(cfg, cache, _prices())
+    assert bc["in_bucket_bytes"] == 56594862080 + 1957000000000
+    assert bc["invoice"]["month"] == "2026-08" and bc["invoice"]["amount"] == 3.98
+    assert bc["model_monthly"] is not None and bc["model_monthly"] > 0
+    assert bc["model_monthly_provenance"] in ("assumed", "projected")
+    assert {p["name"] for p in bc["per_job"]} == {"appdata", "movies"}
+    mv = next(p for p in bc["per_job"] if p["name"] == "movies")
+    # tier_label is the PLAIN phrase; the CONSTANT lives in storage_class (8.1 minor).
+    assert mv["tier_label"] == "Thaw first, hours"
+    assert mv["storage_class"] == "DEEP_ARCHIVE"
+    assert "·" not in mv["tier_label"]
+
+
+def test_board_cost_without_caches(tmp_path):
+    cfg = _cfg(tmp_path, [VJOB, AJOB])
+    cache = _cache(tmp_path)                                # empty: no usage, no billing
+    bc = estimate_io.board_cost(cfg, cache, _prices())
+    assert bc["in_bucket_bytes"] is None
+    assert bc["invoice"] is None
+    assert bc["delta"] is None
+
+
+def test_board_cost_no_jobs(tmp_path):
+    cfg = _cfg(tmp_path, [])
+    bc = estimate_io.board_cost(cfg, _cache(tmp_path), _prices())
+    assert bc["per_job"] == [] and bc["model_monthly"] is None
+
+
+# --- job_cost_band (8.7) ----------------------------------------------------
+
+def test_job_cost_band_figures_and_change_rate(tmp_path):
+    cfg = _cfg(tmp_path, [VJOB])
+    data = {"appdata": {"bytes": 56594862080, "count": 533}}
+    cache = _cache(tmp_path, data=data)
+    job = {**VJOB}
+    band = estimate_io.job_cost_band(job, cfg, cache, _prices())
+    assert band["first_bill"] is not None
+    assert band["in_bucket_bytes"] == 56594862080
+    assert band["size_provenance"] == "measured"
+    assert band["file_count"] == 533
+    assert "change_rate_pct" in band            # surfaces the §7.8 assumption (5.2 row)
+    assert band["steady_month"] >= 1
+
+
+def test_job_cost_band_shared_store_flag(tmp_path):
+    v2 = {**VJOB, "name": "appdata2"}
+    cfg = _cfg(tmp_path, [VJOB, v2])
+    band = estimate_io.job_cost_band(VJOB, cfg, _cache(tmp_path), _prices())
+    assert band["shared_store"] is True and band["shared_by"] == 2
+
+
+# --- cost_page (8.7) --------------------------------------------------------
+
+def test_cost_page_shape(tmp_path):
+    cfg = _cfg(tmp_path, [VJOB, AJOB])
+    data = {"appdata": {"bytes": 30 * 1024 ** 3, "count": 42},
+            "media/movies": {"bytes": 1000 * 1024 ** 3, "count": 7}}
+    cache = _cache(tmp_path, data=data)
+    page = estimate_io.cost_page({}, cfg, cache, _prices(), SRC)
+    for k in ("jobs", "monthly_total", "projection", "current", "billing",
+              "per_job", "restore", "assumptions", "price"):
+        assert k in page, k
+    assert {p["name"] for p in page["per_job"]} == {"appdata", "movies"}
+    assert {r["name"] for r in page["restore"]} == {"appdata", "movies"}
+    assert set(page["assumptions"]) == {"jobs", "scenario"}
+
+
+def test_cost_page_scrubber_matches_projection_months(tmp_path):
+    cfg = _cfg(tmp_path, [VJOB])
+    page = estimate_io.cost_page({}, cfg, _cache(tmp_path), _prices(), SRC)
+    months = page["projection"]["primary"]["months"]
+    assert len(months) == 24
+    # the scrubber readout is exactly projection.primary.months[m-1] (5.6)
+    assert months[5]["total"] == page["projection"]["primary"]["months"][5]["total"]
+
+
+# --- keep_all at 0% change is bounded, and the ADAPTER says so (7.9) --------
+
+def test_cost_page_keep_all_at_zero_change_is_bounded(tmp_path):
+    job = {**AJOB, "retention": {"type": "keep_all"}}
+    cfg = _cfg(tmp_path, [job])
+    # default change rate is 0% -> keep_all cannot grow -> the adapter overrides
+    # the model's unbounded=True to False.
+    page = estimate_io.cost_page({}, cfg, _cache(tmp_path), _prices(), SRC)
+    assert page["projection"]["primary"]["unbounded"] is False
+
+
+def test_cost_page_keep_all_with_change_stays_unbounded(tmp_path):
+    job = {**AJOB, "retention": {"type": "keep_all"}}
+    cfg = _cfg(tmp_path, [job])
+    page = estimate_io.cost_page({"movies_change_rate_pct": "10"}, cfg,
+                                 _cache(tmp_path), _prices(), SRC)
+    assert page["projection"]["primary"]["unbounded"] is True
+
+
+def test_cost_page_applies_saved_scenario_defaults(tmp_path):
+    cfg = _cfg(tmp_path, [VJOB])
+    # a saved cost.json scenario supplies the retrieval tier when no param overrides it
+    pathlib.Path(cfg, "cost.json").write_text(json.dumps(
+        {"restore_fraction": 0.5, "restores_per_year": 3, "retrieval_tier": "Standard",
+         "set_at": "2026-09-12T00:00:00Z"}))
+    page = estimate_io.cost_page({}, cfg, _cache(tmp_path), _prices(), SRC)
+    assert page["assumptions"]["scenario"]["retrieval_tier"] == "Standard"
+    assert page["assumptions"]["scenario"]["restore_fraction"] == 0.5

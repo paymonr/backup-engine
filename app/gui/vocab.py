@@ -31,6 +31,13 @@ CLASS_NAMES: dict[str, str] = {
     "DEEP_ARCHIVE": "Thaw first, hours · DEEP_ARCHIVE",
 }
 
+
+def tier_label(storage_class: str) -> str:
+    """The PLAIN tier phrase with the CONSTANT stripped off (spec 8.1): e.g.
+    ``Thaw first, hours`` for DEEP_ARCHIVE. The CONSTANT belongs in the separate
+    ``storage_class`` field / a <code> chip, never folded into the label."""
+    return CLASS_NAMES.get(storage_class, storage_class).split(" · ")[0]
+
 # --- Type lines (4.3 / 5.1 -- the job page `.typeline` and the Board row hover).
 # The vocabulary table's own sentences; verbatim, global (ruling R1).
 TYPE_LINES: dict[str, str] = {

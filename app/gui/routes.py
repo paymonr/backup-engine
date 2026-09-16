@@ -1,6 +1,7 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
 import json
+import math
 import os
 import re
 from dataclasses import asdict
@@ -11,7 +12,6 @@ from flask import (Blueprint, redirect, url_for, render_template, request, flash
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
                dirsize, attributions, status, vocab, points, readiness, ops)
 from .storage_advice import storage_class_info
-from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
 from ..estimator import usage
 from ..engine import cron, runs, errors
@@ -48,90 +48,24 @@ def _board_payload(cfg) -> dict:
     return board
 
 
-def _board_cost(cfg) -> dict:
-    """The Board cost strip (spec 5.1 band 4 / 8.1 `cost`), from CACHES ONLY.
-
-    Ruling R-A: `estimate_io.board_cost` does not exist yet (Task 12 adds it). Here
-    the strip reads `current_costs` (the priced usage cache) for the measured "in
-    the bucket now" size and a PLACEHOLDER projected `model_monthly`, and the
-    cache-only `read_billing_cache` for the invoice — never Cost Explorer, never the
-    live model (the test asserts no CE call during render). Task 12 replaces this
-    with the real `board_cost` and updates the Board test."""
-    config_dir, cache_dir = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
-    region = estimate_io._region(config_dir)
+def _prices_for(cfg, kind=None):
+    """Load the bundled/live price table, guarded: a pricing failure degrades a cost
+    surface to `None` rather than 500 the page. `?prices=bundled|live` overrides
+    PRICES_LIVE for that request (spec 7.9)."""
+    live = cfg["PRICES_LIVE"] if kind not in ("bundled", "live") else (kind == "live")
     try:
-        prices = load_prices(region, cache_dir=cache_dir, live=cfg["PRICES_LIVE"])
+        return load_prices(estimate_io._region(cfg["CONFIG_DIR"]),
+                           cache_dir=cfg["CACHE_DIR"], live=live)
     except Exception:
-        prices = None
-    current = (estimate_io.current_costs(config_dir, cache_dir, prices)
-               if prices is not None else {"available": False})
-    billing = estimate_io.read_billing_cache(cache_dir)   # cache-only; no Cost Explorer
-
-    price = ({"kind": prices.source, "region": region, "date": prices.date}
-             if prices is not None else None)
-
-    if not current.get("prefixes"):
-        return {"in_bucket_bytes": None, "in_bucket_at": None, "prefix_count": 0,
-                "invoice": _invoice_from_cache(billing), "model_monthly": None,
-                "model_monthly_provenance": "projected", "model_floor": None,
-                "delta": None, "why_high_note": None, "per_job": [], "price": price}
-
-    prefixes = current["prefixes"]
-    in_bucket_bytes = sum(p["bytes"] for p in prefixes)
-    # PLACEHOLDER projected figure (R-A): the usage cache priced at today's storage
-    # rate. Computed from measured sizes only, so it is `projected` (no mark, 4.6);
-    # Task 12's real model adds old-versions and may make it `assumed`.
-    model_monthly = current.get("total_monthly")
-    invoice = _invoice_from_cache(billing)
-    delta = _cost_delta(model_monthly, invoice)
-    per_job = [{
-        "name": p["prefix"].split("/")[-1], "size_bytes": p["bytes"], "size_provenance": "measured",
-        "file_count": None, "ext": None, "old_versions_gb": None,
-        "tier_label": vocab.CLASS_NAMES.get(p["class"], p["class"]),
-        "storage_class": p["class"], "monthly": p["monthly"],
-        "monthly_provenance": "projected", "settles": None,
-    } for p in prefixes]
-    return {
-        "in_bucket_bytes": in_bucket_bytes, "in_bucket_at": current.get("fetched_at"),
-        "prefix_count": len(prefixes), "invoice": invoice,
-        "model_monthly": model_monthly, "model_monthly_provenance": "projected",
-        "model_floor": None, "delta": delta, "why_high_note": None,
-        "per_job": per_job, "price": price,
-    }
-
-
-def _invoice_from_cache(billing) -> dict | None:
-    """The most recent month in the cached billing view, or None (8.1 `invoice`)."""
-    months = billing.get("months") if billing.get("connected") else None
-    if not months:
         return None
-    last = months[-1]
-    return {"month": last.get("month"), "amount": last.get("amount"),
-            "tag_scoped": bool(billing.get("tag"))}
 
 
-def _cost_delta(model, invoice) -> dict | None:
-    """model − invoice, with the short form and the 15/30 verdict bands (spec 4.6).
-    None unless both figures exist."""
-    if model is None or not invoice or invoice.get("amount") in (None, 0):
-        return None
-    amount = model - invoice["amount"]
-    pct = amount / invoice["amount"] * 100.0
-    ap = abs(pct)
-    if ap < 0.05:
-        direction, short = "matches", "±0.0% · matches"
-    else:
-        direction = "model runs high" if amount > 0 else "model runs low"
-        short = f"{pct:+.1f}%".replace("-", "−") + f" · {direction}"
-    if ap <= 15:
-        verdict = ("close enough to trust, and it errs on the expensive side" if amount >= 0
-                   else "close enough to trust, and it errs on the cheap side")
-    elif ap <= 30:
-        verdict = ("model runs high — worth a look at the assumptions" if amount >= 0
-                   else "model runs low — worth a look at the assumptions")
-    else:
-        verdict = "far apart — check the assumptions and whether the invoice covers more than these backups"
-    return {"amount": round(amount, 2), "pct": round(pct, 1), "verdict": verdict, "short": short}
+def _board_cost(cfg) -> dict:
+    """The Board cost strip (spec 5.1 band 4 / 8.1 `cost`): the real
+    `estimate_io.board_cost`, from CACHES ONLY (priced usage cache + cache-only
+    billing + the frozen model). Never Cost Explorer, never a live pricing call at
+    render (Ruling R-A retired in Task 12)."""
+    return estimate_io.board_cost(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], _prices_for(cfg))
 
 
 # --- job page (spec 5.2) ---------------------------------------------------
@@ -229,39 +163,12 @@ def _ledger(cfg, name, tz, cells=30) -> dict:
             "aria": aria, "median_s": median_s, "maxd": maxd}
 
 
-def _job_cost_band(cfg, job) -> dict:
-    """`What this job costs` (spec 5.2), CACHE-ONLY per Ruling R-I.
-
-    `estimate_io.job_cost_band` (the real four figures: First bill / By month 6 /
-    Every month after) is added in Task 12; until then the time-based figures are
-    None → rendered `not priced yet`. Here we reuse the Board's cache-only cost
-    (`_board_cost`, Ruling R-A) for this job's measured size and its projected
-    monthly, plus the whole-account invoice/delta — NEVER Cost Explorer, never the
-    live model. Task 12 wires `job_cost_band` and updates the test."""
-    name = job.get("name")
-    bc = _board_cost(cfg)
-    per = next((p for p in bc.get("per_job") or [] if p["name"] == name), None)
-    cached = usage.load_cached(cfg["CACHE_DIR"]) or {}
-    key = "appdata" if job.get("type") == "versioned" else f"media/{name}"
-    file_count = ((cached.get("data") or {}).get(key) or {}).get("count")
-    shared_by = sum(1 for j in jobs_io.load(cfg["CONFIG_DIR"]) if j.get("type") == "versioned")
-    return {
-        "in_bucket_bytes": per["size_bytes"] if per else None,
-        "in_bucket_at": bc.get("in_bucket_at"),
-        "size_provenance": per["size_provenance"] if per else "measured",
-        "file_count": file_count,
-        "monthly": per["monthly"] if per else None,
-        "monthly_provenance": per["monthly_provenance"] if per else "projected",
-        "tier_label": (per["tier_label"] if per else None),
-        "storage_class": per["storage_class"] if per else job.get("storage_class"),
-        "model_monthly": bc.get("model_monthly"),
-        "invoice": bc.get("invoice"), "delta": bc.get("delta"), "price": bc.get("price"),
-        # whole snapshot store shared by N versioned jobs (spec 5.2 note)
-        "shared_store": job.get("type") == "versioned" and shared_by > 1,
-        "shared_by": shared_by,
-        # Task 12 (estimate_io.job_cost_band) fills these; None → "not priced yet".
-        "first_bill": None, "by_month_6": None, "settled": None,
-    }
+def _job_cost_band(cfg, job, prices) -> dict:
+    """`What this job costs` (spec 5.2 / 8.7): the real `estimate_io.job_cost_band`
+    (First bill / By month 6 / Every month after + the change-rate assumption row),
+    from CACHES ONLY — never Cost Explorer, never a live pricing call (Ruling R-I
+    retired in Task 12)."""
+    return estimate_io.job_cost_band(job, cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices)
 
 
 @bp.get("/jobs/<name>")
@@ -278,14 +185,10 @@ def job_page(name):
     pv = points.view(cfg["CACHE_DIR"], job_def, tz=tz,
                      keep_rule_label=keep_label, keep_rule_prose=keep_label)
     # Recovery rail + Get-data-back needs-line (readiness.recovery_summary, 7.7):
-    # cache-only. Prices are guarded like the Board; the restore COST is None until
-    # estimate_io.restore_quote exists (Task 12) — the template prints "not priced
-    # yet". A pricing failure must degrade the rail, never 500 the page.
-    region = estimate_io._region(cfg["CONFIG_DIR"])
-    try:
-        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
-    except Exception:
-        prices = None
+    # cache-only. Prices are guarded; the restore COST comes from the real
+    # estimate_io.restore_quote (Task 12), so the rail and the cost band price live.
+    # A pricing failure must degrade the rail, never 500 the page.
+    prices = _prices_for(cfg)
     rec = readiness.recovery_summary(cfg, prices, crontab_stale=st.get("crontab_stale"))
     rjob = next((j for j in rec.get("jobs", []) if j["name"] == name), None)
     try:
@@ -294,8 +197,9 @@ def job_page(name):
         schedule_desc = job_def.get("schedule", "")
     return render_template(
         "job.html", s=st, job=job_def, pv=pv, rec=rec, rjob=rjob,
-        cost=_job_cost_band(cfg, job_def), ident=_job_identity(cfg, job_def),
+        cost=_job_cost_band(cfg, job_def, prices), ident=_job_identity(cfg, job_def),
         ledger=_ledger(cfg, name, tz), keep_label=keep_label,
+        test_restore_price=_test_restore_price(cfg, job_def, prices),
         restore=_restore_band_ctx(cfg, job_def, rec),
         sibling_cold=_sibling_cold(cfg, job_def),
         schedule_desc=schedule_desc, csrf=security.issue_csrf())
@@ -401,17 +305,17 @@ def _read_state_json(cfg, name, which):
 
 
 def _restore_quote(cfg, prices, job, size_gb, file_count, tier):
-    """Both-speeds restore price (Ruling R-B stub). Prefers the real
-    `estimate_io.restore_quote` the moment Task 12 adds it, else a cache-derived
-    placeholder so the guard is honest about magnitude. None when the size is
-    unknown."""
+    """Both-speeds restore price for the confirm page (spec 7.6): the real
+    `estimate_io.restore_quote` (Ruling R-B retired in Task 12), degrading to a
+    cache-derived placeholder only if the real quote raises so a bad input never
+    breaks the confirm render. None when the size is unknown."""
     fn = getattr(estimate_io, "restore_quote", None)
-    if fn is not None:
+    if fn is not None and prices is not None:
         try:
             return fn(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices, job["name"],
                       tier=tier, size_gb=size_gb, file_count=file_count)
-        except Exception:      # a quote must never break the confirm render
-            pass
+        except (ValueError, KeyError, AttributeError, TypeError):
+            pass                   # a quote must never break the confirm render
     if size_gb is None:
         return None
     cold = job.get("storage_class") in points.COLD_CLASSES
@@ -419,6 +323,59 @@ def _restore_quote(cfg, prices, job, size_gb, file_count, tier):
     return {"amount": round(size_gb * _STUB_EGRESS_PER_GB + warm, 2), "tier": tier,
             "size_gb": size_gb, "file_count": file_count,
             "storage_class": job.get("storage_class"), "provenance": "assumed", "stub": True}
+
+
+def _test_restore_price(cfg, job, prices) -> str | None:
+    """Cold test-restore button price (spec 5.2 rail): `restore_quote` for ONE object
+    at Bulk, rounded UP to the cent, minimum $0.01. None on a warm tier — its fixed
+    ~$0.01 penny is a single GET, nothing to price."""
+    if job.get("storage_class") not in points.COLD_CLASSES or prices is None:
+        return None
+    cached = (usage.load_cached(cfg["CACHE_DIR"]) or {}).get("data") or {}
+    key = "appdata" if job.get("type") == "versioned" else f"media/{job['name']}"
+    u = cached.get(key)
+    size_gb = (u["bytes"] / (1024 ** 3)) if u else None
+    file_count = (u.get("count") if u else None) or 1
+    try:
+        q = estimate_io.restore_quote(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices, job["name"],
+                                      fraction=1.0 / max(1, file_count), tier="Bulk",
+                                      size_gb=size_gb, file_count=file_count)
+    except (ValueError, KeyError, AttributeError, TypeError):
+        return None
+    cents = max(1, math.ceil((q.get("amount") or 0.0) * 100))
+    return f"${cents / 100:.2f}"
+
+
+def _median_throughput(cfg, name) -> float | None:
+    """Median bytes/s across this job's OK backup runs (spec 5.4 `Takes`); None when
+    no OK run has both a byte count and a positive duration."""
+    recs = runs.read_runs(cfg["CACHE_DIR"], name).records
+    rates = sorted(r.bytes_total / r.duration_s for r in recs
+                   if r.kind in runs.BACKUP_KINDS and r.outcome == "ok"
+                   and r.bytes_total and r.duration_s and r.duration_s > 0)
+    if not rates:
+        return None
+    n = len(rates)
+    return rates[n // 2] if n % 2 else (rates[n // 2 - 1] + rates[n // 2]) / 2
+
+
+def _human_rate(bps) -> str:
+    for unit, div in (("GB/s", 1024 ** 3), ("MB/s", 1024 ** 2), ("KB/s", 1024)):
+        if bps >= div:
+            return f"{bps / div:.1f} {unit}"
+    return f"{bps:.0f} B/s"
+
+
+def _takes_line(cold, hi, size_bytes, median_bps) -> str:
+    """The `Takes` sentence (spec 5.4): the median-throughput variant `about <N> min
+    at <speed>` when the median bytes/s is known, else the honest fallback; cold →
+    warm-up first."""
+    if cold:
+        return f"up to {hi or 12} h warm-up, then the copy"
+    if median_bps and size_bytes:
+        minutes = max(1, round(size_bytes / median_bps / 60))
+        return f"about {minutes} min at {_human_rate(median_bps)}"
+    return "starts immediately; the copy runs as fast as your line allows"
 
 
 def _restore_band_ctx(cfg, job, rec) -> dict:
@@ -561,6 +518,11 @@ def _render_confirm(cfg, job, form, *, errors=None, blocker=None, status_code=20
         if alt:
             alt_quote = _restore_quote(cfg, prices, job, size_gb, file_count, alt)
 
+    # `Takes` (5.4): the median-throughput variant when the median bytes/s of this
+    # job's OK runs is known, else the honest "as fast as your line allows" fallback.
+    hi = (rjob.get("warmup") or {}).get("hours_hi") if rjob else None
+    takes = _takes_line(cold, hi, size_bytes, _median_throughput(cfg, name))
+
     point_label = None
     for p in pv.get("points", []):
         if p.get("id") == choice["point"]:
@@ -576,7 +538,7 @@ def _render_confirm(cfg, job, form, *, errors=None, blocker=None, status_code=20
         is_vfiles=(typ == "versioned-files"),
         size_bytes=size_bytes, size_provenance=size_provenance, file_count=file_count,
         tiers=tiers, quote=quote, alt_quote=alt_quote, point_label=point_label,
-        blocker=blocker, errors=errors or {},
+        takes=takes, blocker=blocker, errors=errors or {},
         restore_root_host=cfg.get("RESTORE_ROOT_HOST", "/mnt/user/restore"),
         csrf=security.issue_csrf()), status_code
 
@@ -1486,54 +1448,91 @@ def job_delete(name):
     flash(f"Deleted {name}.")
     return redirect(url_for("gui.jobs_page"))
 
-def _compute(cfg, params):
-    cached = usage.load_cached(cfg["CACHE_DIR"])
-    scenario = estimate_io.scenario_from_params(params, cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"],
-                                                usage=(cached or {}).get("data"))
-    prices = load_prices(scenario.region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
-    return scenario, estimate(scenario, prices), prices
+# --- Cost workbench (spec 5.6) ---------------------------------------------
 
 @bp.get("/estimate")
 def estimate_page():
+    # The old cost estimate is now the Cost workbench (spec 5.6 / ruling R-H): the
+    # bookmark 301s so it keeps working.
+    return redirect(url_for("gui.cost_page_view"), code=301)
+
+
+@bp.get("/cost")
+def cost_page_view():
     cfg = current_app.config
-    d = estimate_io.form_defaults(cfg["CONFIG_DIR"], cfg["SOURCE_ROOT"])
-    est = None
-    bundle = None
-    error = None
-    try:
-        _scn, est, prices_wf = _compute(cfg, request.args)
-        bundle = estimate_io.projection_bundle(_scn, prices_wf)
-    except ValueError as e:
-        error = str(e)
-    # Current spend is independent of the (possibly invalid) live what-if params —
-    # it prices the last refreshed real usage, so compute it off the saved region.
-    # Guard the pricing load: with FIX 1 load_prices no longer raises for an
-    # un-bundled region, but a total pricing failure must degrade current-spend to
-    # "unavailable" rather than 500 the whole page.
-    region = estimate_io._region(cfg["CONFIG_DIR"])
-    try:
-        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
-    except Exception:
-        prices = None
-    class_info = storage_class_info(prices) if prices is not None else []
-    current = (estimate_io.current_costs(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices)
-               if prices is not None else {"available": False})
-    billing = estimate_io.billing_view(cfg["CONFIG_DIR"])
-    return render_template("estimate.html", d=d, est=est, error=error, bundle=bundle,
-                           storage_classes=STORAGE_CLASSES,
+    prices = _prices_for(cfg, request.args.get("prices"))
+    cost, error, scrub_month = None, None, 1
+    if prices is not None:
+        try:
+            cost = estimate_io.cost_page(request.args, cfg["CONFIG_DIR"], cfg["CACHE_DIR"],
+                                         prices, cfg["SOURCE_ROOT"])
+        except ValueError as e:
+            # A bad lever value: render the page from the saved scenario so nothing is
+            # a dead control, and show the message (the <noscript> path re-renders live).
+            error = str(e)
+            cost = estimate_io.cost_page({}, cfg["CONFIG_DIR"], cfg["CACHE_DIR"],
+                                         prices, cfg["SOURCE_ROOT"])
+    if cost is not None:
+        months = cost["projection"]["primary"]["months"]
+        try:
+            scrub_month = max(1, min(len(months), int(request.args.get("month", 1))))
+        except (TypeError, ValueError):
+            scrub_month = 1
+    return render_template("cost.html", cost=cost, error=error, scrub_month=scrub_month,
                            retrieval_tiers=estimate_io.RETRIEVAL_TIERS,
-                           current=current, billing=billing, class_info=class_info,
                            csrf=security.issue_csrf())
 
-@bp.get("/estimate.json")
-def estimate_json():
+
+@bp.get("/cost.json")
+@bp.get("/estimate.json")          # alias: /estimate.json and /cost.json are the same JSON
+def cost_json():
     cfg = current_app.config
+    prices = _prices_for(cfg, request.args.get("prices"))
+    if prices is None:
+        return jsonify({"error": "Prices are unavailable right now."}), 503
     try:
-        scn, est, prices = _compute(cfg, request.args)
+        return jsonify(estimate_io.cost_page(request.args, cfg["CONFIG_DIR"],
+                                             cfg["CACHE_DIR"], prices, cfg["SOURCE_ROOT"]))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    bundle = estimate_io.projection_bundle(scn, prices)
-    return jsonify({**asdict(est), "projection": bundle})
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_cost_scenario(config_dir, obj) -> None:
+    """Atomically write $CONFIG_DIR/cost.json (temp + os.replace) — the persisted
+    scenario-wide levers (spec 5.6 band 3)."""
+    p = Path(config_dir, "cost.json")
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(obj), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+@bp.post("/costs/scenario")
+def costs_scenario():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    cfg = current_app.config
+    f = request.form
+    try:
+        rf = float(f.get("restore_fraction"))
+        if rf not in (1.0, 0.5, 0.1):
+            raise ValueError("Choose how much you'd get back: all of it, half, or a tenth.")
+        ry = int(f.get("restores_per_year"))
+        if ry < 0:
+            raise ValueError("Restores a year must be zero or a positive whole number.")
+        tier = f.get("retrieval_tier")
+        if tier not in estimate_io.RETRIEVAL_TIERS:
+            raise ValueError("Pick a retrieval speed.")
+    except (TypeError, ValueError) as e:
+        abort(400, description=str(e))          # nothing written on a bad parse (8.10)
+    _write_cost_scenario(cfg["CONFIG_DIR"], {"restore_fraction": rf, "restores_per_year": ry,
+                                             "retrieval_tier": tier, "set_at": _now_iso()})
+    flash("Saved.", "success")
+    return redirect(url_for("gui.cost_page_view"))
+
 
 @bp.post("/costs/refresh")
 def costs_refresh():
@@ -1542,36 +1541,27 @@ def costs_refresh():
     cfg = current_app.config
     bucket = config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_BUCKET", "").strip()
     if not bucket:
-        flash("Set an S3 bucket in Config before refreshing usage.")
-        return redirect(url_for("gui.estimate_page"))
-    jobs = jobs_io.load(cfg["CONFIG_DIR"])
-    # Both "archive" and "versioned-files" jobs write to their own media/<name> S3
-    # prefix (see estimate_io._size_for) -- both must be scanned for current spend.
-    media_jobs = [j["name"] for j in jobs if j.get("type") in ("archive", "versioned-files")]
-    has_versioned = any(j.get("type") == "versioned" for j in jobs)
-    # The container's rendered rclone.conf already carries the runtime key +
-    # endpoint (scripts/lib/rclone-conf.sh) — no creds needed here, and none new.
-    rclone_config = str(Path(cfg["CACHE_DIR"], "rclone.conf"))
-    data = usage.collect_usage(bucket, media_jobs, has_versioned, rclone_config=rclone_config)
-    usage.save_cached(cfg["CACHE_DIR"], data)
-    flash("Usage refreshed.")
-    return redirect(url_for("gui.estimate_page"))
+        flash("Set an S3 bucket in Setup before refreshing usage.", "blocker")
+        return redirect(url_for("gui.cost_page_view"))
+    # Detached sysop op (spec 5.6 / 7.7.3): the refresh runs as an operation record,
+    # NOT synchronously in the request — no live network at render.
+    ops.launch_py(cfg, "app.engine.sysop", ["usage-refresh"], kind="usage-refresh")
+    flash("Refreshing usage — watch it in Activity →", "note")
+    return redirect(url_for("gui.cost_page_view"))
 
-@bp.post("/costs/billing")
-def costs_billing():
+
+@bp.post("/costs/billing/refresh")
+def costs_billing_refresh():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
     cfg = current_app.config
-    if request.form.get("disconnect"):
-        config_io.clear_cost_explorer_creds(cfg["CONFIG_DIR"])
-        flash("Disconnected AWS billing.")
-        return redirect(url_for("gui.estimate_page"))
-    config_io.write_secrets(cfg["CONFIG_DIR"],
-                            {k: request.form.get(k, "") for k in config_io.COST_EXPLORER_KEYS})
-    tag = request.form.get("COST_EXPLORER_TAG", "").strip()
-    if tag:
-        config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
-                                   {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
-                                    "COST_EXPLORER_TAG": tag})
-    flash("Connected AWS billing.")
-    return redirect(url_for("gui.estimate_page"))
+    ops.launch_py(cfg, "app.engine.sysop", ["billing-check"], kind="billing-check")
+    flash("Checking the bill — watch it in Activity →", "note")
+    return redirect(url_for("gui.cost_page_view"))
+
+
+@bp.route("/costs/billing", methods=["GET", "POST"])
+def costs_billing():
+    # The Cost Explorer credential is edited only at Keys & secrets now (spec 5.6
+    # band 5 / 5.12): the old write-only form here is deleted and the route 301s.
+    return redirect("/setup/keys#billing", code=301)

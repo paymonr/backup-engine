@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from dataclasses import asdict, replace
 from typing import Mapping
-from . import config_io, jobs_io, storage_advice
+from . import config_io, jobs_io, storage_advice, vocab
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, estimate,
     restore_cost, project, job_retention_days, cold_lockin_onetime, upfront_onetime,
@@ -521,3 +521,381 @@ def read_billing_cache(cache_dir) -> dict:
     return {"connected": True, "months": raw.get("months"), "forecast": raw.get("forecast"),
             "tag": raw.get("tag"), "error": raw.get("error"),
             "fetched_at": fetched, "age_days": age_days, "stale": bool(stale)}
+
+
+# ===========================================================================
+# Task 12 — the Cost workbench adapters (spec 5.6 / 8.7). Every one of these is
+# an ADAPTER: it shapes the frozen model's output for the GUI and NEVER does cost
+# math itself (the arithmetic lives in app.estimator.model, hash-guarded by
+# tests/estimator/test_untouched.py). No live network at render — cache-only
+# reads (usage.load_cached, read_billing_cache); live refresh is a sysop launch.
+# ===========================================================================
+
+_SCENARIO_KEYS = ("restore_fraction", "restores_per_year", "retrieval_tier")
+
+# The user-facing "how much changes between runs" phrase for a change rate (5.2).
+_CHANGE_PHRASES = {0: "Nothing — files only get added", 1: "A little — about 1% a night",
+                   10: "Some — about 10% a night", 30: "A lot — about 30% a night"}
+
+
+def delta_verdict(model_value: float, invoice_value: float) -> str:
+    """The verdict WORDS for a model-vs-invoice gap (spec 4.6): bands at 15/30%.
+    difference = model − invoice; pct = difference / invoice."""
+    difference = model_value - invoice_value
+    pct = (difference / invoice_value * 100.0) if invoice_value else 0.0
+    ap, high = abs(pct), difference >= 0
+    if ap <= 15:
+        return ("close enough to trust, and it errs on the expensive side" if high
+                else "close enough to trust, and it errs on the cheap side")
+    if ap <= 30:
+        return ("model runs high — worth a look at the assumptions" if high
+                else "model runs low — worth a look at the assumptions")
+    return "far apart — check the assumptions and whether the invoice covers more than these backups"
+
+
+def provenance_of(inputs) -> str:
+    """The provenance of a COMPUTED figure (spec 4.6/7.9): weakest input on the
+    order assumed < measured < invoiced, collapsed to exactly two answers — it
+    returns ``assumed`` when any input is assumed, else ``projected``. ``measured``
+    and ``invoiced`` are set directly on OBSERVED figures and never come out here."""
+    return "assumed" if any(p == "assumed" for p in (inputs or [])) else "projected"
+
+
+def _money_provenance(size_prov, versioning, rotation, change_rate, bundled=False) -> str:
+    """The provenance mark for a per-job money figure: the size input, plus the
+    change-rate guess when it actually moves the figure (old-versions cost > 0), and
+    the bundling guess when bundled (4.6)."""
+    marks = [size_prov]
+    if change_rate > 0 and (versioning + rotation) > 0:
+        marks.append("assumed")
+    if bundled:
+        marks.append("assumed")
+    return provenance_of(marks)
+
+
+def _invoice_from_cache(billing) -> dict | None:
+    """The most recent month in the cached billing view, or None (8.1 `invoice`)."""
+    months = billing.get("months") if billing.get("connected") else None
+    if not months:
+        return None
+    last = months[-1]
+    return {"month": last.get("month"), "amount": last.get("amount"),
+            "tag_scoped": bool(billing.get("tag"))}
+
+
+def _cost_delta(model_value, invoice) -> dict | None:
+    """model − invoice with the short form and the 15/30 verdict (4.6). None unless
+    both a model figure and a non-zero invoice amount exist."""
+    amount_inv = invoice.get("amount") if isinstance(invoice, dict) else invoice
+    if model_value is None or amount_inv in (None, 0):
+        return None
+    amount = model_value - amount_inv
+    pct = amount / amount_inv * 100.0
+    if abs(pct) < 0.05:
+        short = "±0.0% · matches"
+    else:
+        direction = "model runs high" if amount > 0 else "model runs low"
+        short = f"{pct:+.1f}%".replace("-", "−") + f" · {direction}"
+    return {"amount": round(amount, 2), "pct": round(pct, 1),
+            "verdict": delta_verdict(model_value, amount_inv), "short": short}
+
+
+def _change_phrase(pct) -> str:
+    key = int(round(pct))
+    if key in _CHANGE_PHRASES:
+        return _CHANGE_PHRASES[key]
+    return f"About {pct:g}% a night" if pct > 0 else _CHANGE_PHRASES[0]
+
+
+def _usage_data(cache_dir) -> tuple[dict, str | None]:
+    """The cached usage `data` dict and a formatted `fetched_at` (cache-only)."""
+    cached = usage.load_cached(cache_dir) or {}
+    fetched = cached.get("fetched_at")
+    fetched_str = (datetime.fromtimestamp(fetched, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                   if fetched else None)
+    return (cached.get("data") or {}), fetched_str
+
+
+def _prefix_for(engine, name) -> str:
+    return "appdata" if engine == "versioned" else f"media/{name}"
+
+
+def restore_quote(config_dir, cache_dir, prices, job_name, *, fraction=1.0,
+                  tier="Standard", size_gb=None, file_count=None) -> dict:
+    """A full-restore price for one job (spec 7.6): builds the job's JobInputs like
+    scenario_from_jobs, overrides size/count with measured values when given, sets
+    the retrieval tier, and returns model.restore_cost — no new math here (the
+    7-day staging copy is already inside restore_cost)."""
+    data, _ = _usage_data(cache_dir)
+    base = scenario_from_jobs(config_dir, "", usage=data)
+    ji = next((j for j in base.jobs if j.name == job_name), None)
+    if ji is None:
+        raise ValueError(f"no job called {job_name}")
+    if tier not in RETRIEVAL_TIERS:
+        raise ValueError(f"unknown retrieval tier '{tier}'")
+    measured = (size_gb is not None) or (data.get(_prefix_for(ji.engine, job_name)) is not None)
+    if size_gb is not None:
+        ji = replace(ji, size_gb=float(size_gb))
+    if file_count is not None:
+        ji = replace(ji, file_count=int(file_count))
+    scn = replace(base, retrieval_tier=tier,
+                  jobs=tuple(ji if j.name == job_name else j for j in base.jobs))
+    from . import readiness  # local import: readiness imports estimate_io (avoid cycle)
+    w = readiness.WARMUP.get(ji.storage_class, {}).get(tier)
+    warmup_hours = ((w.get("hours_lo"), w.get("hours_hi"))
+                    if w and ("hours_hi" in w or "hours_lo" in w) else None)
+    return {"amount": restore_cost(ji, scn, prices, fraction),
+            "size_gb": ji.size_gb, "file_count": ji.file_count, "tier": tier,
+            "storage_class": ji.storage_class,
+            "provenance": "measured" if measured else "assumed",
+            "warmup_hours": warmup_hours,
+            "price_source": prices.source, "price_date": prices.date}
+
+
+def board_cost(config_dir, cache_dir, prices) -> dict:
+    """The Board's cost object (spec 8.1 `cost`), from CACHES ONLY — the priced
+    usage cache for the measured "in the bucket now" size, the REAL model for the
+    projected monthly, and cache-only billing for the invoice. Never Cost Explorer,
+    never a live pricing call at render."""
+    region = _region(config_dir)
+    price = ({"kind": prices.source, "region": region, "date": prices.date}
+             if prices is not None else None)
+    billing = read_billing_cache(cache_dir)
+    invoice = _invoice_from_cache(billing)
+    cur = (current_costs(config_dir, cache_dir, prices)
+           if prices is not None else {"available": False})
+    prefixes = cur.get("prefixes") or []
+    in_bucket = sum(p["bytes"] for p in prefixes) or None
+    data, _ = _usage_data(cache_dir)
+
+    scenario = scenario_from_jobs(config_dir, "", usage=data)
+    empty = {"in_bucket_bytes": in_bucket, "in_bucket_at": cur.get("fetched_at"),
+             "prefix_count": len(prefixes), "invoice": invoice, "model_monthly": None,
+             "model_monthly_provenance": "projected", "model_floor": None,
+             "delta": None, "why_high_note": None, "per_job": [], "price": price}
+    if not scenario.jobs or prices is None:
+        return empty
+
+    est = estimate(scenario, prices)
+    per_job = []
+    for j in scenario.jobs:
+        li = est.jobs[j.name]
+        u = data.get(_prefix_for(j.engine, j.name))
+        size_prov = "measured" if u else "assumed"
+        monthly = li.storage + li.versioning + li.ingest_monthly + li.rotation_monthly
+        per_job.append({
+            "name": j.name, "size_bytes": (u["bytes"] if u else None),
+            "size_provenance": size_prov, "file_count": (u.get("count") if u else None),
+            "ext": None, "old_versions_gb": None,
+            "tier_label": vocab.tier_label(j.storage_class), "storage_class": j.storage_class,
+            "monthly": monthly, "settles": None,
+            "monthly_provenance": _money_provenance(size_prov, li.versioning,
+                                                    li.rotation_monthly, j.change_rate_pct, j.packing),
+        })
+    model_monthly = est.monthly_total
+    return {
+        "in_bucket_bytes": in_bucket, "in_bucket_at": cur.get("fetched_at"),
+        "prefix_count": len(prefixes), "invoice": invoice,
+        "model_monthly": model_monthly,
+        "model_monthly_provenance": provenance_of([p["monthly_provenance"] for p in per_job]),
+        "model_floor": None, "delta": _cost_delta(model_monthly, invoice),
+        "why_high_note": None, "per_job": per_job, "price": price,
+    }
+
+
+def _cost_rows(ji, u, fetched_str) -> list[dict]:
+    """The `Where the money goes` rows for the job page cost band (8.7 `rows`)."""
+    if u:
+        amount_text = f"{u['bytes'] / (1024 ** 3):,.2f} GB · {u['count']:,} files"
+        prov, source = "measured", (f"Walked the folder on {fetched_str}."
+                                    if fetched_str else "Measured from the bucket.")
+    else:
+        amount_text, prov, source = f"{ji.size_gb:,.2f} GB", "assumed", "Not measured yet."
+    return [{"label": "Storing your files", "amount_text": amount_text,
+             "amount_provenance": prov, "source": source}]
+
+
+def job_cost_band(job, config_dir, cache_dir, prices) -> dict:
+    """The job page's `What this job costs` band (spec 5.2 / 8.7): the four headline
+    figures (First bill / By month 6 / Every month after / In the bucket now), the
+    change-rate assumption row's value, and the whole-account delta. Cache-only."""
+    name = job.get("name")
+    engine = job.get("type", "versioned")
+    data, fetched_str = _usage_data(cache_dir)
+    u = data.get(_prefix_for(engine, name))
+    size_prov = "measured" if u else "assumed"
+    shared_by = sum(1 for j in jobs_io.load(config_dir) if j.get("type") == "versioned")
+    shared_store = engine == "versioned" and shared_by > 1
+    price = ({"kind": prices.source, "region": _region(config_dir), "date": prices.date}
+             if prices is not None else None)
+    invoice = _invoice_from_cache(read_billing_cache(cache_dir))
+
+    base = scenario_from_jobs(config_dir, "", usage=data)
+    ji = next((j for j in base.jobs if j.name == name), None)
+    common = {
+        "in_bucket_bytes": (u["bytes"] if u else None), "in_bucket_at": fetched_str,
+        "size_provenance": size_prov, "file_count": (u.get("count") if u else None),
+        "tier_label": vocab.tier_label(job.get("storage_class", "STANDARD")),
+        "storage_class": job.get("storage_class", "STANDARD"),
+        "invoice": invoice, "price": price,
+        "shared_store": shared_store, "shared_by": shared_by,
+    }
+    if ji is None or prices is None:
+        return {**common, "first_bill": None, "first_bill_provenance": "projected",
+                "at_6": None, "by_month_6": None, "at_6_provenance": "projected",
+                "steady": None, "settled": None, "steady_provenance": "projected",
+                "steady_month": 1, "unbounded": False, "monthly": None,
+                "monthly_provenance": "projected", "model_monthly": None, "delta": None,
+                "change_rate_pct": None, "change_phrase": None, "rows": _cost_rows_none(u, fetched_str)}
+
+    this_scn = replace(base, jobs=(ji,))
+    proj = project(this_scn, prices, 24)
+    est_this = estimate(this_scn, prices)
+    li = est_this.jobs[ji.name]
+    ms = proj.months
+    change = ji.change_rate_pct
+    unbounded = proj.unbounded and change > 0            # keep_all-at-0% override (7.9)
+    steady = None if unbounded else proj.steady_state_monthly
+    prov = _money_provenance(size_prov, li.versioning, li.rotation_monthly, change, ji.packing)
+    all_model = estimate(base, prices).monthly_total
+    return {
+        **common,
+        "first_bill": ms[0].total, "first_bill_provenance": prov,
+        "at_6": ms[5].total, "by_month_6": ms[5].total, "at_6_provenance": prov,
+        "steady": steady, "settled": steady, "steady_provenance": prov,
+        "steady_month": proj.steady_state_month, "unbounded": unbounded,
+        "monthly": li.storage + li.versioning + li.ingest_monthly + li.rotation_monthly,
+        "monthly_provenance": prov,
+        "model_monthly": all_model, "delta": _cost_delta(all_model, invoice),
+        "change_rate_pct": change, "change_phrase": _change_phrase(change),
+        "rows": _cost_rows(ji, u, fetched_str),
+    }
+
+
+def _cost_rows_none(u, fetched_str) -> list[dict]:
+    if u:
+        return [{"label": "Storing your files",
+                 "amount_text": f"{u['bytes'] / (1024 ** 3):,.2f} GB · {u['count']:,} files",
+                 "amount_provenance": "measured",
+                 "source": (f"Walked the folder on {fetched_str}." if fetched_str else "Measured.")}]
+    return [{"label": "Storing your files", "amount_text": "—",
+             "amount_provenance": "assumed", "source": "Not measured yet."}]
+
+
+def read_cost_scenario(config_dir) -> dict:
+    """$CONFIG_DIR/cost.json (5.6 band 3): the persisted scenario-wide levers. A
+    missing or unparseable file means the model's own defaults — never an error."""
+    import json
+    from pathlib import Path
+    p = Path(config_dir, "cost.json")
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text())
+    except (ValueError, OSError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _apply_keep_all_override(projection, scenario) -> None:
+    """keep_all at 0% change is BOUNDED and the adapter says so (spec 7.9): the model
+    sets unbounded = any(keep_all) regardless of churn, correct in general and wrong
+    at 0% (nothing is ever replaced, so the curve is flat). Override, don't touch the
+    model. Applied to the primary projection."""
+    unbounded = any(j.retention_type == "keep_all" and j.change_rate_pct > 0
+                    for j in scenario.jobs)
+    projection["primary"]["unbounded"] = unbounded
+
+
+def _tier_options_for(storage_class) -> list[str]:
+    from . import readiness
+    return list(readiness.WARMUP.get(storage_class, {}).keys())
+
+
+def _restore_row(config_dir, cache_dir, prices, ji, size_bytes, file_count, scenario) -> dict:
+    """One `restore` row for the cost page (8.7): the primary quote at the scenario
+    tier, plus the alternate speed for a cold class."""
+    size_gb = size_bytes / (1024 ** 3) if size_bytes else None
+    q = restore_quote(config_dir, cache_dir, prices, ji.name, fraction=1.0,
+                      tier=scenario.retrieval_tier, size_gb=size_gb, file_count=file_count)
+    row = {"name": ji.name, "size_bytes": size_bytes, "warmup": None,
+           "tier": q["tier"], "amount": q["amount"], "alt_tier": None,
+           "alt_amount": None, "provenance": q["provenance"]}
+    if ji.storage_class in ("GLACIER", "DEEP_ARCHIVE"):
+        row["warmup"] = {"tier": q["tier"], "hours": q["warmup_hours"]}
+        alt = next((t for t in _tier_options_for(ji.storage_class) if t != q["tier"]), None)
+        if alt:
+            aq = restore_quote(config_dir, cache_dir, prices, ji.name, fraction=1.0,
+                               tier=alt, size_gb=size_gb, file_count=file_count)
+            row["alt_tier"], row["alt_amount"] = aq["tier"], aq["amount"]
+    return row
+
+
+def cost_page(params: Mapping, config_dir, cache_dir, prices, source_root) -> dict:
+    """The whole Cost workbench payload (spec 5.6 / 8.7): composes scenario_from_params
+    (levers over the saved jobs + the persisted cost.json scenario), estimate,
+    projection_bundle (with the keep_all-at-0% override), current_costs, cached
+    billing, a restore_quote per job and the delta. Pure over its inputs (prices are
+    passed in). Raises ValueError on bad lever input, like scenario_from_params."""
+    data, _ = _usage_data(cache_dir)
+    saved = read_cost_scenario(config_dir)
+    merged = dict(params)
+    for k in _SCENARIO_KEYS:
+        if k not in merged and saved.get(k) is not None:
+            merged[k] = saved[k]
+    scenario = scenario_from_params(merged, config_dir, source_root, usage=data)
+    est = estimate(scenario, prices)
+    projection = projection_bundle(scenario, prices, 24)
+    _apply_keep_all_override(projection, scenario)
+
+    cur = current_costs(config_dir, cache_dir, prices)
+    by_prefix = {p["prefix"]: p for p in cur.get("prefixes") or []}
+    billing = read_billing_cache(cache_dir)
+    invoice = _invoice_from_cache(billing)
+
+    versioned_count = sum(1 for j in scenario.jobs if j.engine == "versioned")
+    jobs_raw = {jj["name"]: jj for jj in jobs_io.load(config_dir)}
+    per_job, restore_rows = [], []
+    for j in scenario.jobs:
+        li = est.jobs[j.name]
+        key = _prefix_for(j.engine, j.name)
+        u = data.get(key)
+        size_bytes = u["bytes"] if u else None
+        size_prov = "measured" if u else "assumed"
+        monthly = li.storage + li.versioning + li.ingest_monthly + li.rotation_monthly
+        in_bucket_monthly = (by_prefix.get(key) or {}).get("monthly")
+        shared = j.engine == "versioned" and versioned_count > 1
+        pj_delta = None
+        if not shared and in_bucket_monthly is not None:
+            pj_delta = round(in_bucket_monthly - monthly, 2)
+        rate = prices.storage_gb_month.get(j.storage_class, 0.0)
+        per_job.append({
+            "name": j.name, "size_bytes": size_bytes, "size_provenance": size_prov,
+            "old_versions_gb": (li.versioning / rate if (li.versioning and rate) else None),
+            "storage_class": j.storage_class, "tier_label": vocab.tier_label(j.storage_class),
+            "monthly": monthly,
+            "monthly_provenance": _money_provenance(size_prov, li.versioning,
+                                                    li.rotation_monthly, j.change_rate_pct, j.packing),
+            "in_bucket_bytes": size_bytes, "in_bucket_monthly": in_bucket_monthly,
+            "delta": pj_delta, "shared_store": shared,
+        })
+        restore_rows.append(_restore_row(config_dir, cache_dir, prices, j, size_bytes,
+                                         (u.get("count") if u else None), scenario))
+
+    assumptions = {
+        "jobs": {j.name: {"change_rate_pct": j.change_rate_pct, "bundled": j.packing,
+                          "pack_member_gb": j.pack_member_gb,
+                          "set_at": (jobs_raw.get(j.name, {}).get("assumptions") or {}).get("set_at")}
+                 for j in scenario.jobs},
+        "scenario": {"restore_fraction": scenario.restore_fraction,
+                     "restores_per_year": scenario.restores_per_year,
+                     "retrieval_tier": scenario.retrieval_tier,
+                     "set_at": saved.get("set_at")},
+    }
+    return {
+        **asdict(est), "projection": projection, "current": cur, "billing": billing,
+        "invoice": invoice, "delta": _cost_delta(est.monthly_total, invoice),
+        "model_monthly_provenance": provenance_of([p["monthly_provenance"] for p in per_job]),
+        "per_job": per_job, "restore": restore_rows, "assumptions": assumptions,
+        "price": {"kind": prices.source, "region": scenario.region, "date": prices.date},
+    }

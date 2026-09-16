@@ -1,7 +1,8 @@
-# tests/gui/test_costs_routes.py — current-spend cost page: /costs/refresh (real
-# bucket usage via usage.collect_usage, stubbed here — no real rclone) and
-# /costs/billing (write-only, opt-in Cost Explorer credential, separate from the
-# runtime key). Also covers estimate_io.current_costs / billing_view directly.
+# tests/gui/test_costs_routes.py — the Cost workbench's mutating routes (spec 5.6):
+# /costs/refresh + /costs/billing/refresh now launch a DETACHED sysop op (they no
+# longer call usage.collect_usage / Cost Explorer synchronously — those assertions
+# live in tests/engine/test_sysop.py); /costs/scenario persists $CONFIG_DIR/cost.json;
+# /costs/billing 301s to Keys & secrets. Also covers current_costs / billing_view.
 import json
 import pathlib
 import pytest
@@ -34,153 +35,116 @@ def client(app):
 
 
 def _csrf(client):
-    client.get("/estimate")  # issues the CSRF token into the session
+    client.get("/cost")  # issues the CSRF token into the session
     with client.session_transaction() as s:
         return s["_csrf"]
 
 
-# --- routes: CSRF-first ------------------------------------------------------
+@pytest.fixture
+def launched(monkeypatch):
+    """Capture ops.launch_py without spawning a detached process."""
+    from app.gui import routes
+    calls = []
+    monkeypatch.setattr(routes.ops, "launch_py",
+                        lambda cfg, module, args, **kw: calls.append((module, list(args), kw)) or "rid")
+    return calls
 
-def test_billing_connect_requires_csrf(client):
-    r = client.post("/costs/billing", data={"COST_EXPLORER_ACCESS_KEY_ID": "A"})
-    assert r.status_code == 400
 
+# --- CSRF-first --------------------------------------------------------------
 
 def test_refresh_requires_csrf(client):
     assert client.post("/costs/refresh", data={}).status_code == 400
 
 
-# --- /costs/billing: connect / disconnect ------------------------------------
-
-def test_billing_connect_writes_ce_keys_and_preserves_core_secrets(client, dirs):
-    config_io.write_secrets(dirs["config"], {"AWS_ACCESS_KEY_ID": "AKIA",
-                                             "AWS_SECRET_ACCESS_KEY": "shh",
-                                             "RESTIC_PASSWORD": "pw"})
-    t = _csrf(client)
-    r = client.post("/costs/billing", data={"csrf": t,
-        "COST_EXPLORER_ACCESS_KEY_ID": "CEKEY", "COST_EXPLORER_SECRET_ACCESS_KEY": "CESECRET"})
-    assert r.status_code in (302, 303)
-    raw = config_io._read_secrets_raw(pathlib.Path(dirs["config"], "secrets.env"))
-    assert raw["AWS_ACCESS_KEY_ID"] == "AKIA"              # core untouched
-    assert raw["RESTIC_PASSWORD"] == "pw"
-    assert raw["COST_EXPLORER_ACCESS_KEY_ID"] == "CEKEY"    # CE written
-    assert raw["COST_EXPLORER_SECRET_ACCESS_KEY"] == "CESECRET"
-    assert config_io.secrets_mode(dirs["config"]) == "600"
-    # never echoed back to the page
-    page = client.get("/estimate").data
-    assert b"CEKEY" not in page and b"CESECRET" not in page
+def test_billing_refresh_requires_csrf(client):
+    assert client.post("/costs/billing/refresh", data={}).status_code == 400
 
 
-def test_billing_disconnect_removes_ce_keys_keeps_core_secrets(client, dirs):
-    config_io.write_secrets(dirs["config"], {"AWS_ACCESS_KEY_ID": "AKIA",
-                                             "AWS_SECRET_ACCESS_KEY": "shh",
-                                             "RESTIC_PASSWORD": "pw"})
-    t = _csrf(client)
-    client.post("/costs/billing", data={"csrf": t,
-        "COST_EXPLORER_ACCESS_KEY_ID": "CEKEY", "COST_EXPLORER_SECRET_ACCESS_KEY": "CESECRET"})
-    r = client.post("/costs/billing", data={"csrf": t, "disconnect": "1"})
-    assert r.status_code in (302, 303)
-    raw = config_io._read_secrets_raw(pathlib.Path(dirs["config"], "secrets.env"))
-    assert "COST_EXPLORER_ACCESS_KEY_ID" not in raw
-    assert "COST_EXPLORER_SECRET_ACCESS_KEY" not in raw
-    assert raw["AWS_ACCESS_KEY_ID"] == "AKIA"               # core survives disconnect
-    assert config_io.read_cost_explorer_creds(dirs["config"]) is None
+def test_scenario_requires_csrf(client):
+    assert client.post("/costs/scenario", data={"restore_fraction": "1"}).status_code == 400
 
 
-def test_billing_connect_writes_optional_tag_to_backup_env(client, dirs, template_path):
-    t = _csrf(client)
-    client.post("/costs/billing", data={"csrf": t,
-        "COST_EXPLORER_ACCESS_KEY_ID": "CEKEY", "COST_EXPLORER_SECRET_ACCESS_KEY": "CESECRET",
-        "COST_EXPLORER_TAG": "project=backup"})
-    assert config_io.read_backup_env(dirs["config"]).get("COST_EXPLORER_TAG") == "project=backup"
+# --- /costs/refresh: detached sysop launch, NOT synchronous collect_usage ----
 
-
-# --- /costs/refresh: repopulates the usage cache (stub collect_usage) --------
-
-def test_refresh_calls_collect_usage_and_saves_cache(client, dirs, monkeypatch):
+def test_refresh_launches_usage_refresh_sysop(client, dirs, launched, monkeypatch):
     from app.gui import routes
     pathlib.Path(dirs["config"], "backup.env").write_text("S3_BUCKET=mybucket\nAWS_REGION=us-east-1\n")
-    pathlib.Path(dirs["config"], "jobs.json").write_text(json.dumps({"jobs": [AJOB, VJOB]}))
-    called = {}
-
-    def fake_collect(bucket, archive_jobs, has_versioned, **kw):
-        called["bucket"] = bucket
-        called["archive_jobs"] = list(archive_jobs)
-        called["has_versioned"] = has_versioned
-        called["rclone_config"] = kw.get("rclone_config")
-        return {"media/movies": {"bytes": 5, "count": 1}, "appdata": {"bytes": 9, "count": 2}}
-
-    monkeypatch.setattr(routes.usage, "collect_usage", fake_collect)
-    t = _csrf(client)
-    r = client.post("/costs/refresh", data={"csrf": t})
-    assert r.status_code in (302, 303)
-    assert called["bucket"] == "mybucket"
-    assert called["archive_jobs"] == ["movies"]
-    assert called["has_versioned"] is True
-    assert called["rclone_config"]  # rclone.conf path passed, no env creds needed
-    cached = usage.load_cached(dirs["cache"])
-    assert cached["data"]["media/movies"] == {"bytes": 5, "count": 1}
-    assert cached["data"]["appdata"] == {"bytes": 9, "count": 2}
-
-
-def test_refresh_includes_versioned_files_job_prefix(client, dirs, monkeypatch):
-    # W-4: versioned-files jobs store under media/<job>/ just like archive jobs, so
-    # their names MUST be passed through to usage.collect_usage's media-prefix list
-    # (the same positional arg archive job names go through) -- otherwise their
-    # current-spend prefix never gets scanned.
-    from app.gui import routes
-    pathlib.Path(dirs["config"], "backup.env").write_text("S3_BUCKET=mybucket\nAWS_REGION=us-east-1\n")
-    pathlib.Path(dirs["config"], "jobs.json").write_text(json.dumps({"jobs": [AJOB, VFJOB]}))
-    called = {}
-
-    def fake_collect(bucket, media_jobs, has_versioned, **kw):
-        called["media_jobs"] = list(media_jobs)
-        return {}
-
-    monkeypatch.setattr(routes.usage, "collect_usage", fake_collect)
-    t = _csrf(client)
-    r = client.post("/costs/refresh", data={"csrf": t})
-    assert r.status_code in (302, 303)
-    assert set(called["media_jobs"]) == {"movies", "docs"}
-
-
-def test_refresh_with_malformed_jobs_json_is_not_500(client, dirs, monkeypatch):
-    # A hand-broken config/jobs.json must not 500 the refresh: jobs_io.load is the
-    # fail-safe read path (returns [] on a whole-file parse error), so costs_refresh
-    # degrades to "no jobs" and still redirects. Regression guard for Task 7's
-    # parked corrupt-jobs.json concern.
-    from app.gui import routes
-    pathlib.Path(dirs["config"], "backup.env").write_text("S3_BUCKET=mybucket\nAWS_REGION=us-east-1\n")
-    pathlib.Path(dirs["config"], "jobs.json").write_text("{ not valid json ")
-    monkeypatch.setattr(routes.usage, "collect_usage", lambda *a, **k: {})
-    t = _csrf(client)
-    r = client.post("/costs/refresh", data={"csrf": t})
-    assert r.status_code != 500
-    assert r.status_code in (302, 303)
-
-
-def test_refresh_with_nameless_jobs_entry_is_not_500(client, dirs, monkeypatch):
-    # Regression (FIX 2): costs_refresh iterates jobs (j["name"], j.get("type")). A
-    # hand-edited nameless entry must not 500 — jobs_io.load drops it (fail-safe).
-    from app.gui import routes
-    pathlib.Path(dirs["config"], "backup.env").write_text("S3_BUCKET=mybucket\nAWS_REGION=us-east-1\n")
-    pathlib.Path(dirs["config"], "jobs.json").write_text(
-        json.dumps({"jobs": [{"type": "archive", "source": "x", "schedule": "0 4 * * 0"}, AJOB]}))
-    monkeypatch.setattr(routes.usage, "collect_usage", lambda *a, **k: {})
-    t = _csrf(client)
-    r = client.post("/costs/refresh", data={"csrf": t})
-    assert r.status_code in (302, 303)
-
-
-def test_refresh_without_bucket_flashes_and_does_not_call_collect_usage(client, dirs, monkeypatch):
-    from app.gui import routes
     called = {"n": 0}
     monkeypatch.setattr(routes.usage, "collect_usage",
                         lambda *a, **k: called.__setitem__("n", called["n"] + 1))
     t = _csrf(client)
     r = client.post("/costs/refresh", data={"csrf": t})
-    assert r.status_code in (302, 303)   # no crash
-    assert called["n"] == 0
+    assert r.status_code in (302, 303)
+    assert launched and launched[0][0] == "app.engine.sysop"
+    assert launched[0][1] == ["usage-refresh"]
+    assert called["n"] == 0                    # collect_usage NOT called in the request
+
+
+def test_refresh_without_bucket_flashes_and_launches_nothing(client, launched):
+    t = _csrf(client)
+    r = client.post("/costs/refresh", data={"csrf": t})
+    assert r.status_code in (302, 303)         # no crash
+    assert launched == []                       # launched nothing
+
+
+def test_billing_refresh_launches_billing_check_sysop(client, launched):
+    t = _csrf(client)
+    r = client.post("/costs/billing/refresh", data={"csrf": t})
+    assert r.status_code in (302, 303)
+    assert launched and launched[0][1] == ["billing-check"]
+
+
+# --- /costs/scenario: persists $CONFIG_DIR/cost.json (spec 5.6 band 3) --------
+
+def test_scenario_writes_cost_json_and_redirects_saved(client, dirs):
+    t = _csrf(client)
+    r = client.post("/costs/scenario", data={"csrf": t, "restore_fraction": "0.5",
+                                             "restores_per_year": "3", "retrieval_tier": "Standard"})
+    assert r.status_code in (302, 303)
+    saved = json.loads(pathlib.Path(dirs["config"], "cost.json").read_text())
+    assert saved["restore_fraction"] == 0.5
+    assert saved["restores_per_year"] == 3
+    assert saved["retrieval_tier"] == "Standard"
+    assert "set_at" in saved
+    # the success flash carries "Saved."
+    with client.session_transaction() as s:
+        flashes = dict(s["_flashes"]) if "_flashes" in s else {}
+    assert "Saved." in flashes.values()
+
+
+def test_scenario_bad_restore_fraction_is_400_and_no_file(client, dirs):
+    t = _csrf(client)
+    r = client.post("/costs/scenario", data={"csrf": t, "restore_fraction": "0.7",
+                                             "restores_per_year": "1", "retrieval_tier": "Bulk"})
+    assert r.status_code == 400
+    assert not pathlib.Path(dirs["config"], "cost.json").exists()
+
+
+def test_scenario_missing_file_is_read_as_defaults(dirs, template_path, tmp_path):
+    # A missing cost.json means the model's own defaults and is never an error (5.6).
+    app = create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
+                      "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
+                      "SOURCE_ROOT": str(tmp_path / "src"), "PRICES_LIVE": False,
+                      "SECRET_KEY": "test", "TESTING": True})
+    assert estimate_io.read_cost_scenario(dirs["config"]) == {}
+
+
+# --- /costs/billing is gone: 301 to Keys & secrets (spec 5.6 band 5) ---------
+
+def test_costs_billing_301s_to_setup_keys(client):
+    r = client.post("/costs/billing", data={})
+    assert r.status_code == 301
+    assert r.headers["Location"].endswith("/setup/keys#billing")
+
+
+# --- /cost page: bands from caches, no Cost Explorer form --------------------
+
+def test_cost_page_renders_in_the_bucket_now_no_ce_form(client):
+    r = client.get("/cost")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "In the bucket now" in body
+    assert "COST_EXPLORER_" not in body        # the credential is edited at Keys & secrets
 
 
 # --- estimate_io.current_costs -----------------------------------------------
@@ -198,7 +162,7 @@ def test_current_costs_prices_cached_usage_archive_at_class_appdata_at_standard(
     by_prefix = {p["prefix"]: p for p in result["prefixes"]}
     assert by_prefix["appdata"]["class"] == "STANDARD"
     assert by_prefix["appdata"]["label"] == "all versioned jobs (shared repo)"
-    assert by_prefix["media/movies"]["class"] == "DEEP_ARCHIVE"   # the archive job's own class
+    assert by_prefix["media/movies"]["class"] == "DEEP_ARCHIVE"
     assert by_prefix["appdata"]["monthly"] == pytest.approx(10 * prices.storage_gb_month["STANDARD"])
     assert by_prefix["media/movies"]["monthly"] == pytest.approx(100 * prices.storage_gb_month["DEEP_ARCHIVE"])
     assert result["total_monthly"] == pytest.approx(
@@ -221,7 +185,26 @@ def test_current_costs_skips_failed_prefix_but_keeps_the_rest(tmp_path):
     assert [p["prefix"] for p in result["prefixes"]] == ["media/movies"]
 
 
-# --- estimate_io.billing_view -------------------------------------------------
+# --- estimate_io.read_billing_cache (cache-only; no Cost Explorer at render) --
+
+def test_read_billing_cache_not_connected_without_file(tmp_path):
+    cache = tmp_path / "cache"; cache.mkdir()
+    assert estimate_io.read_billing_cache(str(cache)) == {"connected": False}
+
+
+def test_read_billing_cache_parses_the_cache(tmp_path):
+    cache = tmp_path / "cache"; cache.mkdir()
+    import time
+    pathlib.Path(cache, "billing.json").write_text(json.dumps({
+        "fetched_at": time.time(), "months": [{"month": "2026-07", "amount": 1.0}],
+        "forecast": {"month": "2026-08", "amount": 2.0}, "tag": None, "error": None}))
+    v = estimate_io.read_billing_cache(str(cache))
+    assert v["connected"] is True
+    assert v["months"] == [{"month": "2026-07", "amount": 1.0}]
+    assert v["stale"] is False
+
+
+# --- estimate_io.billing_view (unchanged live view; kept for the sysop path) --
 
 def test_billing_view_not_connected_without_creds(tmp_path):
     cfg = tmp_path / "config"; cfg.mkdir()
@@ -241,26 +224,3 @@ def test_billing_view_parses_stubbed_data_when_connected(tmp_path, monkeypatch):
                       "months": [{"month": "2026-07", "amount": 1.0}],
                       "forecast": {"month": "2026-08", "amount": 2.0},
                       "tag": None}
-
-
-def test_billing_view_captures_billingerror(tmp_path, monkeypatch):
-    cfg = tmp_path / "config"; cfg.mkdir()
-    config_io.write_secrets(str(cfg), {"COST_EXPLORER_ACCESS_KEY_ID": "A",
-                                       "COST_EXPLORER_SECRET_ACCESS_KEY": "B"})
-
-    def boom(creds, **kw):
-        raise billing.BillingError("access denied")
-
-    monkeypatch.setattr(billing, "monthly_costs", boom)
-    result = estimate_io.billing_view(str(cfg))
-    assert result == {"connected": True, "error": "access denied"}
-
-
-# --- /estimate page renders the new sections without crashing ----------------
-
-def test_estimate_page_renders_current_spend_and_billing_sections(client):
-    r = client.get("/estimate")
-    assert r.status_code == 200
-    low = r.data.lower()
-    assert b"current spend" in low
-    assert b"connect aws billing" in low

@@ -190,8 +190,9 @@ def test_ok_job_renders_needs_line(client, example):
     assert "Get data back" in body
     assert "Recovery passphrase:" in body              # versioned needs-line row 1
     assert "Ready now:" in body                        # instant STANDARD tier row 2
-    # restore COST is not priced until estimate_io.restore_quote (Task 12)
-    assert "not priced yet" in body
+    # restore COST is now priced by the real estimate_io.restore_quote (Task 12)
+    assert "Data out of Amazon:" in body
+    assert "not priced yet" not in body
 
 
 def test_ok_job_restore_band_is_a_get_form_without_confirm(client, example):
@@ -215,6 +216,8 @@ def test_ok_job_has_edit_link_with_locked_fields(client, example):
     assert "How it is set up" in body
     assert '/jobs/appdata/edit' in body                # the edit link (Task 14)
     assert "Set at creation" in body                   # locked-field indication (5.9)
+    # the §7.8 change-rate assumption surfaces here now that Cost owns it (Task 12)
+    assert "How much changes between runs" in body
 
 
 def test_ok_job_tool_detail_is_where_tool_terms_live(client, example):

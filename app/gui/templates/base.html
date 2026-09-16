@@ -11,7 +11,7 @@
 {% set ep = request.endpoint or '' %}
 {%- set nav_active =
      'setup' if (ep.startswith('gui.provision') or ep in ['gui.config_page', 'gui.config_save', 'gui.about_page'])
-     else 'cost' if (ep in ['gui.estimate_page', 'gui.estimate_json', 'gui.jobs_estimate_json'] or ep.startswith('gui.costs'))
+     else 'cost' if (ep in ['gui.cost_page_view', 'gui.cost_json', 'gui.estimate_page', 'gui.jobs_estimate_json'] or ep.startswith('gui.costs'))
      else 'activity' if (ep.startswith('gui.activity') or ep == 'gui.logs')
      else 'board' -%}
 
@@ -20,7 +20,7 @@
     <a class="brand" href="{{ url_for('gui.index') }}" aria-label="backup-engine home">backup<b>-</b>engine</a>
     <nav class="switcher" aria-label="Screens">
       <a href="{{ url_for('gui.index') }}" {{ 'aria-current="page"' if nav_active == 'board' }}>Board</a>
-      <a href="{{ url_for('gui.estimate_page') }}" {{ 'aria-current="page"' if nav_active == 'cost' }}>Cost</a>
+      <a href="{{ url_for('gui.cost_page_view') }}" {{ 'aria-current="page"' if nav_active == 'cost' }}>Cost</a>
       <a href="/activity" {{ 'aria-current="page"' if nav_active == 'activity' }}>Activity</a>
       <a href="/setup" {{ 'aria-current="page"' if nav_active == 'setup' }}>Setup</a>
     </nav>

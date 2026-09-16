@@ -254,9 +254,25 @@ def test_get_confirm_default_target_is_under_restore_root(client, example):
 
 
 def test_get_confirm_cold_shows_both_speeds(client, example):
+    import re
     body = client.get("/jobs/manga/restore?intent=thaw").get_data(as_text=True)
-    assert "Standard" in body and "Bulk" in body   # both retrieval speeds priced
     assert 'name="tier"' in body
+    # both retrieval speeds are PRICED now (real estimate_io.restore_quote, Task 12)
+    assert "at Standard speed" in body and "at Bulk" in body
+    assert "(warm-up + data out)" in body            # the priced path, not "not priced yet"
+    costs = body.split("Costs")[1].split("Takes")[0]
+    amounts = re.findall(r"\$[\d,]+\.\d{2}", costs)
+    assert len(amounts) >= 2 and amounts[0] != amounts[1]   # two distinct priced quotes
+
+
+def test_takes_line_median_variant_when_throughput_known():
+    from app.gui import routes
+    # 60 GB (60 * 1024 MB) at 100 MB/s -> about 10 min at 100.0 MB/s (5.4 median variant)
+    line = routes._takes_line(False, None, 100 * 1024 * 1024 * 600, 100 * 1024 * 1024)
+    assert "min at" in line and "MB/s" in line
+    # cold -> warm-up first; warm with no measured throughput -> the honest fallback
+    assert "warm-up" in routes._takes_line(True, 12, 999, 100)
+    assert "as fast as your line allows" in routes._takes_line(False, None, 999, None)
 
 
 # --- impossible intents render a BLOCKER, no primary button (5.4) ------------

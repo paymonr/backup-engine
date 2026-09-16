@@ -259,7 +259,12 @@ def test_status_json_matches_contract(client, example, no_cost_explorer):
     assert cost["in_bucket_bytes"] == 56594862080 + 1957000000000
     assert cost["invoice"]["month"] == "2026-08" and cost["invoice"]["amount"] == 3.98
     assert cost["model_monthly_provenance"] in ("assumed", "projected")
+    assert cost["model_monthly"] is not None and cost["model_monthly"] > 0   # real model (Task 12)
     assert {p["name"] for p in cost["per_job"]} == {"appdata", "manga"}
+    # Task-8 minor (8.1): tier_label is the PLAIN phrase, the CONSTANT lives in storage_class
+    manga = next(p for p in cost["per_job"] if p["name"] == "manga")
+    assert manga["tier_label"] == "Thaw first, hours"
+    assert manga["storage_class"] == "DEEP_ARCHIVE"
     assert no_cost_explorer["ce"] is False
 
 

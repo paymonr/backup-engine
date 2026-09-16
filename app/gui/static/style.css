@@ -500,6 +500,23 @@ pre#runlog{ max-height:60vh; overflow:auto; }
 #cost-timeline .grid{ stroke:var(--border); stroke-width:1; }
 #cost-timeline .axis{ fill:var(--muted); font-size:11px; }
 
+/* the lever panel (5.6 band 3): each lever is a bounded fieldset; a lever whose
+   value differs from what is saved on the job gets a 2px accent left rule and a
+   `was:` readout (Task 7a left .levers/.scrub's changed state unstyled). */
+.levers-head{ margin-bottom:var(--sp-3); }
+.lever{ display:grid; gap:.35rem; border:0; border-left:2px solid transparent;
+  padding:.35rem 0 .6rem .75rem; margin:0 0 var(--sp-3); }
+.lever > legend{ font-size:.68rem; text-transform:uppercase; letter-spacing:.08em;
+  color:var(--faint); padding:0; }
+.lever.is-changed{ border-left-color:var(--accent); }
+.lever.is-changed > legend{ color:var(--accent); }
+.lever .was{ font-family:var(--font-mono); font-size:.72rem; color:var(--muted); }
+.lever .radio, .lever .check{ display:flex; align-items:center; gap:.4rem; font-size:.86rem; }
+.lever-acts{ display:flex; gap:var(--sp-3); align-items:center; margin-top:.35rem; }
+/* a figure whose lever just changed gets the same 400 ms flash as a polled figure */
+.scrub.is-changed, .levers .is-changed{ animation:flash .4s ease-out; }
+.band-head-actions{ display:flex; gap:var(--sp-2); }
+
 /* ============================================================
    6.4 motion — change flash
    ============================================================ */

@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+{#- Cost workbench — /cost (spec 5.6, 8.7). Five bands over estimate_io.cost_page().
+    Every figure is cache-only at render (no Cost Explorer call); the lever panel is
+    one real GET form whose <noscript> Recalculate re-renders server-side, so nothing
+    is a dead control with JS off. The JS path intercepts the submit and calls
+    /cost.json instead. -#}
+{% set MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+{%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro smoney(v) -%}{% if v is not none %}{{ '+' if v >= 0 else '−' }}${{ '{:,.2f}'.format(v|abs) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro humanbytes(b) -%}
+{%- if b is none -%}—
+{%- elif b >= 1099511627776 -%}{{ '%.2f'|format(b / 1099511627776) }} TB
+{%- elif b >= 1073741824 -%}{{ '%.2f'|format(b / 1073741824) }} GB
+{%- elif b >= 1048576 -%}{{ '%.1f'|format(b / 1048576) }} MB
+{%- else -%}{{ b|int }} B
+{%- endif -%}
+{%- endmacro -%}
+{%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
+{#- a lever is a scratch what-if: highlight it while its value is set in the query
+    string (differs from what is saved on the job), spec 5.6. -#}
+{%- macro changed(field) -%}{% if request.args.get(field) is not none %} is-changed{% endif %}{%- endmacro -%}
+
+{% block body %}
+<div class="screen dense">
+<p class="slabel">Cost</p>
+<h1 class="h">What will this cost, and is the model telling the truth?</h1>
+
+{% if error %}<div class="sig sig-failure" data-flash="failure"><div class="body"><span class="label">Failed</span>{{ error }}</div></div>{% endif %}
+
+{% if not cost %}
+<p class="lead muted">Prices are unavailable right now — reload in a moment.</p>
+{% else %}
+
+{%- set inv = cost.invoice -%}
+{%- set ib = (cost.current.prefixes | sum(attribute='bytes')) if cost.current.prefixes else none -%}
+
+{# ================= Band 1 — Proof ================= #}
+<section class="band" id="band-proof">
+  <div class="band-head">
+    <p class="slabel">Proof</p>
+    <div class="band-head-actions">
+      <form method="post" action="{{ url_for('gui.costs_refresh') }}" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="btn btn-sm">Refresh usage</button></form>
+      <form method="post" action="{{ url_for('gui.costs_billing_refresh') }}" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="btn btn-sm">Check the bill</button></form>
+    </div>
+  </div>
+  <div class="grid4">
+    <div class="sfig"><span class="k">In the bucket now</span>
+      <span class="v">{{ prov(humanbytes(ib), 'measured') if ib is not none else '—' }}</span>
+      <span class="s">{% if cost.current.fetched_at %}measured {{ cost.current.fetched_at }}{% else %}not measured yet{% endif %}</span></div>
+    <div class="sfig"><span class="k">Last invoice</span>
+      <span class="v">{% if inv %}{{ prov(money(inv.amount), 'invoiced') }}{% else %}—{% endif %}</span>
+      <span class="s">{% if inv %}{{ inv.month }} · the real bill{% if not inv.tag_scoped %} · whole account, not just these backups{% endif %}{% else %}billing not connected{% endif %}</span></div>
+    <div class="sfig"><span class="k">The model says</span>
+      <span class="v">{{ prov(money(cost.monthly_total), cost.model_monthly_provenance) }}<span class="s"> /mo</span></span>
+      <span class="s">all jobs, once settled</span></div>
+    <div class="sfig"><span class="k">Difference</span>
+      <span class="v">{% if cost.delta %}<span{% if cost.delta.pct|abs > 10 %} style="color:var(--warn)"{% else %} style="color:var(--ok)"{% endif %}>{{ smoney(cost.delta.amount) }}</span>{% else %}—{% endif %}</span>
+      <span class="s">{% if cost.delta %}{{ cost.delta.short }}{% else %}no invoice to compare{% endif %}</span></div>
+  </div>
+  {% if cost.delta %}<p class="delta">model <b>{{ money(cost.monthly_total) }}</b> · invoice <b>{{ money(inv.amount) }}</b> · <b>{{ cost.delta.short.split(' · ')[0] }}</b> — {{ cost.delta.verdict }}.</p>{% endif %}
+  {% if inv and not inv.tag_scoped and cost.billing.connected %}
+  <p class="sig-note">This invoice is the whole AWS account, not just these backups. Until a cost-allocation tag scopes it (Keys &amp; secrets → Billing), the difference above compares a projection for your folders against everything you pay Amazon.</p>
+  {% elif not cost.billing.connected %}
+  <p class="sig-note">Last invoice is empty — <a class="linklike" href="/setup/keys#billing">Connect AWS billing →</a></p>
+  {% endif %}
+  <div class="legend"><span class="price-stamp" id="price-stamp">prices: {{ cost.price.kind }} table {{ cost.price.date }}</span></div>
+</section>
+
+{# ================= Band 2 — Per job ================= #}
+<section class="band" id="band-perjob">
+  <p class="slabel">Per job</p>
+  <div class="scroll">
+    <table class="perjob">
+      <thead><tr><th>Job</th><th>What it keeps for you</th><th>Storage tier</th><th class="num">Projected</th><th>In the bucket</th><th class="num">Δ</th></tr></thead>
+      <tbody>
+        {% for p in cost.per_job %}
+        <tr>
+          <td>{{ p.name }}</td>
+          <td>{{ prov(humanbytes(p.size_bytes), p.size_provenance) if p.size_bytes is not none else 'not measured yet' }}{% if p.old_versions_gb %} + ~{{ '%.1f'|format(p.old_versions_gb) }} GB of old versions{% endif %}</td>
+          <td>{{ p.tier_label }} <code>{{ p.storage_class }}</code></td>
+          <td class="num">{{ prov(money(p.monthly), p.monthly_provenance) }} <span class="s">/mo</span></td>
+          <td>{% if p.in_bucket_monthly is not none %}{{ prov(humanbytes(p.in_bucket_bytes), 'measured') }} · {{ money(p.in_bucket_monthly) }} <span class="s">priced now</span>{% else %}—{% endif %}</td>
+          <td class="num">{% if p.shared_store %}— <span class="hint">not comparable — one shared store</span>{% elif p.delta is not none %}{{ smoney(p.delta) }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+        <tr class="totals-row"><td>All jobs</td><td></td><td></td>
+          <td class="num">{{ prov(money(cost.monthly_total), cost.model_monthly_provenance) }}</td><td></td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{# ================= Band 3 — Projection ================= #}
+<section class="band" id="band-projection">
+  <p class="slabel">Projection</p>
+  <div class="projgrid">
+    <div>
+      <svg id="cost-timeline" viewBox="0 0 720 260" role="img" aria-label="Projected monthly cost over 24 months" style="width:100%;max-width:720px;height:auto"></svg>
+      <script type="application/json" id="proj-data">{{ cost.projection|tojson }}</script>
+      {%- set m = cost.projection.primary.months[scrub_month - 1] -%}
+      <label class="fld" for="month">Month</label>
+      <input type="range" id="month" name="month" min="1" max="{{ cost.projection.primary.months|length }}" value="{{ scrub_month }}" form="lever-form">
+      <p class="scrub mono" id="scrub-readout">Month {{ scrub_month }} · storing your files {{ money(m.storage) }} · old versions {{ money(m.versioning) }} · uploading {{ money(m.ingest) }} · replacing old versions {{ money(m.rotation) }} · total {{ money(m.total) }}</p>
+      {% if cost.projection.primary.unbounded %}<p class="hint">Still climbing at month {{ cost.projection.primary.months|length }} — Keep everything never plateaus.</p>{% else %}<p class="hint">Settles month {{ cost.projection.steady_state_month }}.</p>{% endif %}
+    </div>
+
+    {# ---- the lever panel: one GET form; JS intercepts, no-JS submits ---- #}
+    <form class="levers card" id="lever-form" method="get" action="{{ url_for('gui.cost_page_view') }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="levers-head"><span class="chip">scratch — not saved</span></div>
+      {% for p in cost.per_job %}
+      {%- set a = cost.assumptions.jobs[p.name] -%}
+      <fieldset class="lever{{ changed(p.name + '_change_rate_pct') }}">
+        <legend>{{ p.name }} · Change rate</legend>
+        {% for opt, label in [(0,'Nothing (0%)'),(1,'A little (~1%)'),(10,'Some (~10%)'),(30,'A lot (~30%)')] %}
+        <label class="radio"><input type="radio" name="{{ p.name }}_change_rate_pct" value="{{ opt }}"{% if a.change_rate_pct|round|int == opt %} checked{% endif %}> {{ label }}</label>
+        {% endfor %}
+        <label class="check"><input type="checkbox" name="{{ p.name }}_packing" value="1"{% if a.bundled %} checked{% endif %}> Already bundled</label>
+        <label class="fld">Bundle size (GB) <input type="number" step="any" min="0" name="{{ p.name }}_pack_member_gb" value="{{ a.pack_member_gb }}" style="width:6ch"></label>
+      </fieldset>
+      {% endfor %}
+
+      {%- set sc = cost.assumptions.scenario -%}
+      <fieldset class="lever">
+        <legend>Restore</legend>
+        <label class="fld">How much you'd get back
+          <select name="restore_fraction">
+            {% for val, lbl in [(1,'all of it'),(0.5,'half'),(0.1,'a tenth')] %}
+            <option value="{{ val }}"{% if sc.restore_fraction == val %} selected{% endif %}>{{ lbl }}</option>{% endfor %}
+          </select></label>
+        <label class="fld">Restores a year <input type="number" step="1" min="0" name="restores_per_year" value="{{ sc.restores_per_year }}" style="width:6ch"></label>
+        <label class="fld">Retrieval speed
+          <select name="retrieval_tier">
+            {% for t in retrieval_tiers %}<option value="{{ t }}"{% if sc.retrieval_tier == t %} selected{% endif %}>{{ t }}</option>{% endfor %}
+          </select></label>
+        <div class="lever-acts">
+          <button type="submit" class="btn btn-sm" formmethod="post" formaction="{{ url_for('gui.costs_scenario') }}">Apply</button>
+          <a class="linklike" href="{{ url_for('gui.cost_page_view') }}">Reset</a>
+        </div>
+      </fieldset>
+
+      <noscript><button class="btn" type="submit">Recalculate</button></noscript>
+    </form>
+  </div>
+</section>
+
+{# ================= Band 4 — What a restore costs ================= #}
+<section class="band" id="band-restore">
+  <p class="slabel">What a restore costs</p>
+  <div class="scroll">
+    <table class="restore-costs">
+      <thead><tr><th>Job</th><th>Data out</th><th>Warm-up</th><th>Speed</th><th class="num">Total, once</th><th></th></tr></thead>
+      <tbody>
+        {% for r in cost.restore %}
+        <tr>
+          <td>{{ r.name }}</td>
+          <td>{{ humanbytes(r.size_bytes) if r.size_bytes is not none else '—' }}</td>
+          <td>{% if r.warmup %}up to {{ r.warmup.hours[1] or '—' }} h{% else %}none — instant tier{% endif %}</td>
+          <td>{% if r.warmup %}{{ r.tier }}{% else %}—{% endif %}</td>
+          <td class="num">{{ money(r.amount) }}{% if r.alt_amount is not none %}<span class="s"> · {{ r.alt_tier }} {{ money(r.alt_amount) }}</span>{% endif %}</td>
+          <td><a class="btn btn-sm" href="/jobs/{{ r.name }}/restore">Get data back →</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="sm faint measure">Getting it back is warm-up plus download out of Amazon. It does not get cheaper when the storage does.</p>
+</section>
+
+{# ================= Band 5 — Assumptions and billing ================= #}
+<section class="band" id="band-assumptions">
+  <p class="slabel">Assumptions and billing</p>
+  <dl class="defgrid">
+    {% for name, a in cost.assumptions.jobs.items() %}
+    <dt>{{ name }} — how much changes</dt>
+    <dd>{{ prov('%g%%'|format(a.change_rate_pct), 'assumed') }}{% if a.set_at %} <span class="hint">set {{ a.set_at[8:10]|int }} {{ MON[a.set_at[5:7]|int - 1] }}</span>{% endif %}</dd>
+    {% endfor %}
+    <dt>How much you'd get back</dt><dd>{{ prov(cost.assumptions.scenario.restore_fraction, 'assumed') }}</dd>
+    <dt>Retrieval speed</dt><dd>{{ cost.assumptions.scenario.retrieval_tier }}</dd>
+  </dl>
+
+  <p class="lead">Optional and read-only: a separate Cost Explorer credential, never the runtime backup key.</p>
+  {% if cost.billing.connected %}
+  <p>Billing: connected · read-only Cost Explorer credential · {% if cost.billing.tag %}tag {{ cost.billing.tag }}{% else %}tag not scoped{% endif %} · <a class="linklike" href="/setup/keys#billing">Change under Keys &amp; secrets →</a></p>
+  {% else %}
+  <p>Billing: not connected — the invoice column stays empty. <a class="linklike" href="/setup/keys#billing">Connect AWS billing →</a></p>
+  {% endif %}
+
+  <details>
+    <summary>How this is calculated</summary>
+    <ul>
+      <li>Amazon bills every object as at least 128 KB on the cold tiers.</li>
+      <li>Data out is priced at the first-tier rate.</li>
+      <li>Replacing a file on a tier with a minimum stay is charged for the whole minimum.</li>
+      <li>Snapshot backups keep old versions according to the keep rule; Plain copies keep replaced files for the days you chose.</li>
+      <li>One bundled price table (us-east-1) stamped with its capture date, or the live AWS list when you switch it on.</li>
+    </ul>
+  </details>
+</section>
+
+{% endif %}
+</div>
+
+<script>
+// Cost workbench progressive enhancement (spec 5.6). Everything here is optional:
+// the page is fully server-rendered and the <noscript> Recalculate submits the GET
+// form, so with JS off nothing is a dead control. Every read is guarded.
+(function () {
+  "use strict";
+  var form = document.getElementById("lever-form");
+  var dataTag = document.getElementById("proj-data");
+  var proj = null;
+  try { proj = dataTag ? JSON.parse(dataTag.textContent) : null; } catch (e) { proj = null; }
+
+  // The month scrubber updates its readout live from the embedded projection.
+  var slider = document.getElementById("month");
+  var readout = document.getElementById("scrub-readout");
+  function money(v) { return v == null ? "—" : "$" + Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+  function paintScrub() {
+    if (!slider || !readout || !proj || !proj.primary) return;
+    var m = proj.primary.months[Math.max(0, Math.min(proj.primary.months.length - 1, slider.value - 1))];
+    if (!m) return;
+    readout.textContent = "Month " + slider.value + " · storing your files " + money(m.storage)
+      + " · old versions " + money(m.versioning) + " · uploading " + money(m.ingest)
+      + " · replacing old versions " + money(m.rotation) + " · total " + money(m.total);
+  }
+  if (slider) { slider.addEventListener("input", paintScrub); }
+
+  // A lever change re-renders the page server-side with the new what-if values (the
+  // JS path submits the same GET form the <noscript> button does). The month slider
+  // is excluded — it only moves the readout, it must not reload the page.
+  if (form) {
+    var timer;
+    form.addEventListener("change", function (ev) {
+      if (ev.target && ev.target.id === "month") return;
+      clearTimeout(timer);
+      timer = setTimeout(function () { try { form.submit(); } catch (e) {} }, 300);
+    });
+  }
+
+  // Draw the three projection curves into #cost-timeline (no external library).
+  var svg = document.getElementById("cost-timeline");
+  function svgEl(name, attrs) {
+    var e = document.createElementNS("http://www.w3.org/2000/svg", name);
+    for (var k in attrs) { if (attrs.hasOwnProperty(k)) e.setAttribute(k, attrs[k]); }
+    return e;
+  }
+  function series(p) { return (p && p.months) ? p.months.map(function (m) { return m.total; }) : []; }
+  if (svg && proj && proj.primary) {
+    var W = 720, H = 260, pad = 36;
+    var curves = [[series(proj.primary), "var(--accent)"],
+                  [series((proj.comparison || {}).no_versioning), "var(--muted)"],
+                  [series((proj.comparison || {}).rolling_30), "var(--ok)"]];
+    var all = curves.reduce(function (a, c) { return a.concat(c[0]); }, []);
+    var max = Math.max.apply(null, all.concat([0.01])), n = series(proj.primary).length || 1;
+    function x(i) { return pad + (W - 2 * pad) * (n <= 1 ? 0 : i / (n - 1)); }
+    function y(v) { return H - pad - (H - 2 * pad) * (v / max); }
+    curves.forEach(function (c) {
+      if (!c[0].length) return;
+      var d = c[0].map(function (v, i) { return (i ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1); }).join(" ");
+      svg.appendChild(svgEl("path", {d: d, fill: "none", stroke: c[1], "stroke-width": "2"}));
+    });
+  }
+})();
+</script>
+{% endblock %}

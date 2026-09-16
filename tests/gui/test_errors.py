@@ -84,7 +84,8 @@ def test_500_renders_themed_page(dirs, template_path, monkeypatch):
 
 @pytest.mark.parametrize("path", [
     "/config", "/provision/manual/render", "/provision/validate",
-    "/provision/automated", "/jobs", "/costs/refresh", "/costs/billing",
+    "/provision/automated", "/jobs", "/costs/refresh", "/costs/billing/refresh",
+    "/costs/scenario",
 ])
 def test_csrf_failure_renders_expired_form_page(client, path):
     r = client.post(path, data={})             # no csrf token
