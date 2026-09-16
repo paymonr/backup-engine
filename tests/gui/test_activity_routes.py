@@ -189,7 +189,7 @@ def test_empty_activity(client, app, source_root):
 
 # --- provisioning writes a `provision` record (5.5) -------------------------
 
-def _csrf(client, path="/provision"):
+def _csrf(client, path="/setup/destination"):
     client.get(path)
     with client.session_transaction() as s:
         return s["_csrf"]
@@ -199,7 +199,7 @@ def test_provision_validate_success_writes_provision_record(client, app, monkeyp
     cache = app.config["CACHE_DIR"]
     monkeypatch.setattr(routes.provision, "validate_runtime_key", lambda *a, **k: None)
     t = _csrf(client)
-    r = client.post("/provision/validate", data={
+    r = client.post("/setup/destination/validate", data={
         "csrf": t, "bucket": "bw-backups", "region": "us-east-1",
         "AWS_ACCESS_KEY_ID": "AKIAXX", "AWS_SECRET_ACCESS_KEY": "secretzz"})
     assert r.status_code in (302, 303)

@@ -18,17 +18,25 @@ from ..engine import cron, runs, errors
 
 bp = Blueprint("gui", __name__)
 
-@bp.get("/about")
+@bp.get("/setup/about")
 def about_page():
+    # About = the glossary (spec 5.13): the tools this app drives, in plain language,
+    # plus the version/build stamp and the third-party licences.
     return render_template("about.html", third_party=attributions.THIRD_PARTY,
-                           version=current_app.config.get("VERSION", "0.1.0-dev"))
+                           version=current_app.config.get("VERSION", "0.1.0-dev"),
+                           build_date=current_app.config.get("BUILD_DATE", "unknown"))
+
+@bp.get("/about")
+def about_redirect():
+    # Old bookmark → the glossary's new home (spec 4.1 / 5.13).
+    return redirect("/setup/about", code=301)
 
 @bp.get("/")
 def index():
-    # First run (no runtime key + bucket yet) lands on the provisioning wizard;
-    # once set up, the Board is home (spec 5.1, ruling R-H).
+    # First run (no runtime key + bucket yet) lands on Setup readiness; once set up,
+    # the Board is home (spec 5.1 "302 → /setup", ruling R-H).
     if not config_io.is_provisioned(current_app.config["CONFIG_DIR"]):
-        return redirect(url_for("gui.provision_home"))
+        return redirect(url_for("gui.setup_page"))
     return render_template("board.html", status=_board_payload(current_app.config),
                            csrf=security.issue_csrf())
 
@@ -1163,37 +1171,173 @@ def activity_record_log(run_id):
     return _log_response(cfg, rec, pending=False)
 
 
-@bp.get("/config")
+# --- Setup readiness (spec 5.10) -------------------------------------------
+
+# code -> the "Check" column name (spec 5.10 table). The scheduler row is the
+# informational sixth row, present only when crontab_stale (7.3).
+_SETUP_CHECK_NAMES = {
+    "destination": "Destination reachable",
+    "passphrase": "Recovery passphrase",
+    "versioning": "Old versions protected",
+    "jobs_scheduled": "At least one job scheduled",
+    "restore_tested": "Restore ever tested",
+    "scheduler": "Scheduler up to date",
+}
+
+
+@bp.get("/setup")
+def setup_page():
+    # "Is this install able to back up — and able to restore?" (spec 5.10): the five
+    # readiness checks + the informational crontab_stale row. Works unprovisioned
+    # (never redirects — it is where an unprovisioned `/` lands).
+    cfg = current_app.config
+    stale = status.crontab_stale(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
+                                 source_root=cfg.get("SOURCE_ROOT"))
+    checks = readiness.setup_checks(cfg, crontab_stale=stale)
+    for c in checks:                       # a human "Verified" stamp per row (5.10)
+        c["verified_human"] = _fmt_verified(c.get("verified_at"))
+    return render_template("setup.html", checks=checks, check_names=_SETUP_CHECK_NAMES,
+                           csrf=security.issue_csrf())
+
+
+def _fmt_verified(iso) -> str | None:
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%d %b %H:%M")
+    except (ValueError, AttributeError):
+        return None
+
+
+@bp.post("/setup/probe")
+def setup_probe():
+    # "Probe now" (spec 5.10): a detached destination probe recorded as an operation
+    # (sysop writes state/_probe.json). It starts and costs nothing at render.
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    cfg = current_app.config
+    ops.launch_py(cfg, "app.engine.sysop", ["probe"], kind="probe")
+    flash("Probing the destination — watch it in Activity →", "note")
+    return redirect(url_for("gui.setup_page"))
+
+
+@bp.post("/setup/versioning-confirmed")
+def setup_versioning_confirmed():
+    # "Mark as confirmed" (spec 5.10): when an object-only key can't read bucket
+    # versioning, the owner confirms it by hand. Merge into state/_probe.json so the
+    # destination probe result is preserved.
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    cfg = current_app.config
+    state_dir = Path(cfg["CACHE_DIR"], "state")
+    state_dir.mkdir(parents=True, exist_ok=True)
+    p = state_dir / "_probe.json"
+    try:
+        probe = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+    except (ValueError, OSError):
+        probe = {}
+    if not isinstance(probe, dict):
+        probe = {}
+    probe["versioning"] = {"state": "confirmed_by_hand", "checked_at": _now_iso()}
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(probe), encoding="utf-8")
+    os.replace(tmp, p)
+    flash("Marked bucket versioning as confirmed.", "success")
+    return redirect(url_for("gui.setup_page"))
+
+
+# --- Keys & secrets (spec 5.12) --------------------------------------------
+
+# Every write-only field the Keys screen edits (runtime key + the read-only CE
+# billing credential). This is the ONLY surface that writes COST_EXPLORER_* now
+# (spec 5.6 band 5 / 5.12): POST /costs/billing was deleted in Task 12.
+_KEY_SECRET_FIELDS = tuple(config_io.SECRET_KEYS) + tuple(config_io.COST_EXPLORER_KEYS)
+
+
+def _keys_groups(cfg):
+    """The four grouped rows for /setup/keys (spec 5.12). Group membership is
+    `config_io.KEY_GROUPS`; template keys in no group fall into This machine.
+    Secret rows carry a three-state token; their value is never returned."""
+    template = config_io.template_keys(cfg["TEMPLATE_PATH"])
+    values = config_io.read_backup_env(cfg["CONFIG_DIR"])
+    status3 = config_io.secrets_status_3(cfg["CONFIG_DIR"])
+    secret_all = set(_KEY_SECRET_FIELDS)
+
+    def row(k):
+        return {"key": k, "secret": k in secret_all,
+                "value": values.get(k, ""),
+                "status": status3.get(k) if k in secret_all else None}
+
+    groups, seen = [], set()
+    for gname, keys in config_io.KEY_GROUPS.items():
+        rows = []
+        for k in keys:
+            seen.add(k)
+            rows.append(row(k))
+        groups.append({"name": gname, "id": gname.lower().replace(" ", "-"), "rows": rows})
+    extra = [k for k in template if k not in seen and k not in secret_all]
+    if extra:
+        tm = next(g for g in groups if g["name"] == "This machine")
+        tm["rows"].extend(row(k) for k in extra)
+
+    region = (values.get("AWS_REGION") or "us-east-1").strip()
+    bucket = (values.get("S3_BUCKET") or "your-bucket").strip()
+    restic_repo = f"s3:s3.{region}.amazonaws.com/{bucket}/appdata"
+    return groups, restic_repo
+
+
+@bp.get("/setup/keys")
 def config_page():
     cfg = current_app.config
-    keys = config_io.template_keys(cfg["TEMPLATE_PATH"])
-    values = config_io.read_backup_env(cfg["CONFIG_DIR"])
-    fields = [{"key": k, "value": values.get(k, "")} for k in keys if k not in config_io.SECRET_KEYS]
-    return render_template("config.html",
-                           fields=fields,
-                           secret_keys=config_io.SECRET_KEYS,
-                           secret_status=config_io.secrets_status(cfg["CONFIG_DIR"]),
+    groups, restic_repo = _keys_groups(cfg)
+    return render_template("config.html", groups=groups, restic_repo=restic_repo,
                            secret_mode=config_io.secrets_mode(cfg["CONFIG_DIR"]),
                            csrf=security.issue_csrf())
 
-@bp.post("/config")
+
+@bp.post("/setup/keys")
 def config_save():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
     cfg = current_app.config
-    keys = [k for k in config_io.template_keys(cfg["TEMPLATE_PATH"]) if k not in config_io.SECRET_KEYS]
+    f = request.form
+    env_keys = [k for k in config_io.template_keys(cfg["TEMPLATE_PATH"])
+                if k not in _KEY_SECRET_FIELDS]
+    before = config_io.read_backup_env(cfg["CONFIG_DIR"])
+    before_ce = config_io.read_cost_explorer_creds(cfg["CONFIG_DIR"])
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
-                               {k: request.form.get(k, "") for k in keys})
-    config_io.write_secrets(cfg["CONFIG_DIR"], {k: request.form.get(k, "") for k in config_io.SECRET_KEYS})
-    flash("Configuration saved.")
+                               {k: f.get(k, "") for k in env_keys})
+    # Write the runtime key AND the Cost Explorer billing credential in one pass —
+    # write_secrets rebuilds secrets.env from the managed UNION, so writing one group
+    # never drops the other, and a blank field keeps what is there (write-only, 5.12).
+    config_io.write_secrets(cfg["CONFIG_DIR"], {k: f.get(k, "") for k in _KEY_SECRET_FIELDS})
+    after_ce = config_io.read_cost_explorer_creds(cfg["CONFIG_DIR"])
+    flash("Saved.", "success")
+    if f.get("TZ", "").strip() and f.get("TZ", "").strip() != (before.get("TZ", "") or "").strip():
+        flash("TZ changes take effect after a restart.", "note")
+    if before_ce is None and after_ce is not None:
+        flash("Connected AWS billing.", "success")
+    elif before_ce is not None and after_ce is None:
+        flash("Disconnected AWS billing.", "success")
     return redirect(url_for("gui.config_page"))
+
+
+@bp.get("/config")
+def config_redirect():
+    # Old bookmark → Keys & secrets (spec 4.1 / 5.12).
+    return redirect("/setup/keys", code=301)
 
 @bp.get("/logs")
 def logs():
     n = request.args.get("tail", default=200, type=int)
     return Response(runner.tail_log(current_app.config["CACHE_DIR"], n), mimetype="text/plain")
 
-@bp.get("/provision")
+# --- Destination (spec 5.11): the preserved three-path picker, restyled onto
+# /setup/destination. The provisioning SAFETY MODEL in provision.py is unchanged;
+# only the routes' URLs, the success flash and the landing page are restyled. Old
+# /provision* paths 301 to the new ones (spec 4.1).
+
+@bp.get("/setup/destination")
 def provision_home():
     cfg = current_app.config
     env = config_io.read_backup_env(cfg["CONFIG_DIR"])
@@ -1201,12 +1345,20 @@ def provision_home():
                            provisioned=config_io.is_provisioned(cfg["CONFIG_DIR"]),
                            bucket=env.get("S3_BUCKET", ""), region=env.get("AWS_REGION", ""))
 
-@bp.get("/provision/manual")
+@bp.get("/provision")
+def provision_redirect():
+    return redirect("/setup/destination", code=301)
+
+@bp.get("/setup/destination/manual")
 def provision_manual():
     return render_template("provision_manual.html", csrf=security.issue_csrf(),
                            bucket="", region="us-east-1", policy=None, console=None, error=None)
 
-@bp.post("/provision/manual/render")
+@bp.get("/provision/manual")
+def provision_manual_redirect():
+    return redirect("/setup/destination/manual", code=301)
+
+@bp.post("/setup/destination/manual/render")
 def provision_manual_render():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
@@ -1222,11 +1374,15 @@ def provision_manual_render():
                            console=provision.render_console_steps(bucket, region),
                            error=None)
 
-@bp.get("/provision/scripted")
+@bp.get("/setup/destination/scripted")
 def provision_scripted():
     return render_template("provision_scripted.html", csrf=security.issue_csrf())
 
-@bp.post("/provision/validate")
+@bp.get("/provision/scripted")
+def provision_scripted_redirect():
+    return redirect("/setup/destination/scripted", code=301)
+
+@bp.post("/setup/destination/validate")
 def provision_validate():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
@@ -1249,16 +1405,21 @@ def provision_validate():
                                 "AWS_REGION": region, "S3_BUCKET": bucket})
     # Record the successful destination setup so Activity shows it (spec 5.5).
     provision.record_setup(cfg["CACHE_DIR"], bucket=bucket, region=region, mode="validate")
-    flash("Runtime key validated and saved. Reminder: confirm bucket versioning is ON. Next: create your first backup job.")
-    return redirect(url_for("gui.jobs_page"))
+    flash(f"Destination set: {bucket} in {region}. Next: the recovery passphrase, "
+          f"then the first job.", "success")
+    return redirect(url_for("gui.setup_page"))
 
-@bp.get("/provision/automated")
+@bp.get("/setup/destination/automated")
 def provision_automated():
     return render_template("provision_automated.html", csrf=security.issue_csrf(),
                            bucket="", region="us-east-1", error=None)
 
+@bp.get("/provision/automated")
+def provision_automated_redirect():
+    return redirect("/setup/destination/automated", code=301)
 
-@bp.post("/provision/automated")
+
+@bp.post("/setup/destination/automated")
 def provision_automated_run():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
@@ -1296,8 +1457,9 @@ def provision_automated_run():
     # Record the successful automated provisioning so Activity shows it (spec 5.5).
     provision.record_setup(cfg["CACHE_DIR"], bucket=result["bucket"], region=result["region"],
                            mode="automated")
-    flash(f"Provisioned {result['bucket']} in {result['region']} and saved the runtime key. Next: create your first backup job.")
-    return redirect(url_for("gui.jobs_page"))
+    flash(f"Destination set: {result['bucket']} in {result['region']}. Next: the recovery "
+          f"passphrase, then the first job.", "success")
+    return redirect(url_for("gui.setup_page"))
 
 @bp.get("/jobs")
 def jobs_page():

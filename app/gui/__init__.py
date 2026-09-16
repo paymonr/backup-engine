@@ -88,6 +88,7 @@ def create_app(config: dict | None = None) -> Flask:
         RESTORE_ROOT_HOST=os.environ.get("RESTORE_ROOT_HOST", "/mnt/user/restore"),
         SOURCE_ROOT_HOST=os.environ.get("SOURCE_ROOT_HOST", "/mnt/user"),
         VERSION=os.environ.get("VERSION", "0.1.0-dev"),
+        BUILD_DATE=os.environ.get("BUILD_DATE", "unknown"),   # About glossary stamp (5.13)
         # Live pricing is OPT-IN: production reads live rates, but tests override
         # this to False so the estimate routes never hit the network.
         PRICES_LIVE=os.environ.get("PRICES_LIVE", "true") != "false",

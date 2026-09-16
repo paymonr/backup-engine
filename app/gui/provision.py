@@ -171,8 +171,9 @@ def render_console_steps(bucket: str, region: str) -> dict:
         "Leave Block Public Access fully on (keep all four boxes checked).",
         "Set Bucket Versioning to Enabled.",
         "Set Default encryption to SSE-S3 (Amazon S3 managed keys, AES-256).",
-        "Click Create bucket. Then open it → Management → Create lifecycle rule: "
-        "expire noncurrent versions after 30 days and abort incomplete multipart uploads after 7 days.",
+        "Click Create bucket. Then open it → Management → Create lifecycle rule. "
+        "Turn on versioning, and expire old versions after 180 days; "
+        "abort incomplete multipart uploads after 7 days.",
         "In IAM, save the policy above as iam-policy.json and create a customer-managed policy from it.",
         "Create an IAM user, attach that policy, and create an access key — that pair is your runtime key/secret.",
         "Paste the runtime key/secret below and click Test & Validate.",

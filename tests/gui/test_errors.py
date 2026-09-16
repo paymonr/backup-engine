@@ -32,7 +32,7 @@ def client(app):
 
 def _csrf(client):
     # Issue a CSRF token into the session the same way the real forms do.
-    client.get("/config")  # issues a token into the session
+    client.get("/setup/keys")  # issues a token into the session
     with client.session_transaction() as s:
         return s["_csrf"]
 
@@ -58,7 +58,7 @@ def test_unknown_json_route_returns_json_404(client):
 
 
 def test_method_not_allowed_is_themed(client):
-    r = client.post("/about")                  # /about is GET-only
+    r = client.post("/setup/about")            # /setup/about is GET-only
     assert r.status_code == 405
     assert "That page does not take this request" in r.get_data(as_text=True)
 
@@ -73,7 +73,7 @@ def test_500_renders_themed_page(dirs, template_path, monkeypatch):
         raise RuntimeError("kaboom")
 
     monkeypatch.setattr(routes.config_io, "read_backup_env", boom)
-    r = app.test_client().get("/config")
+    r = app.test_client().get("/setup/keys")
     assert r.status_code == 500
     body = r.get_data(as_text=True)
     assert "Something broke inside backup-engine" in body
@@ -83,9 +83,9 @@ def test_500_renders_themed_page(dirs, template_path, monkeypatch):
 # --- CSRF abort(400) sites (routes.py 44,74,94,124,247,283,294,357,379) ----
 
 @pytest.mark.parametrize("path", [
-    "/config", "/provision/manual/render", "/provision/validate",
-    "/provision/automated", "/jobs", "/costs/refresh", "/costs/billing/refresh",
-    "/costs/scenario",
+    "/setup/keys", "/setup/destination/manual/render", "/setup/destination/validate",
+    "/setup/destination/automated", "/setup/probe", "/setup/versioning-confirmed",
+    "/jobs", "/costs/refresh", "/costs/billing/refresh", "/costs/scenario",
 ])
 def test_csrf_failure_renders_expired_form_page(client, path):
     r = client.post(path, data={})             # no csrf token

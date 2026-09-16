@@ -169,5 +169,5 @@ def test_cost_json_has_per_job_restore_and_assumptions(client):
 
 def test_nav_has_cost_link(client):
     # R-H carry-forward: the nav's Cost link points at /cost (was /estimate).
-    r = client.get("/config")
+    r = client.get("/setup/keys")
     assert b"/cost" in r.data

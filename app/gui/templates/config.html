@@ -1,37 +1,71 @@
-{% extends "base.html" %}{% block body %}
-<p class="eyebrow">Configuration</p>
-<h1>Configuration</h1>
-<p class="lead">Edit <code>backup.env</code> and write-only secrets. Choose what to back up under <a href="{{ url_for('gui.jobs_page') }}">Jobs</a>.</p>
+{% extends "base.html" %}{% block title %}Keys &amp; secrets — backup-engine{% endblock %}
+{% block body %}
+{# Keys & secrets (spec 5.12): grouped by what each value is for; secrets are
+   write-only (blank keeps what is there) with a three-state status token. This is
+   the ONLY place the Cost Explorer billing credential is edited (the #billing
+   anchor /cost links to). Every env key name renders inside <code class="hint">
+   so the vocabulary test drops it by construction (10.3). #}
+{%- set LABELS = {
+  'S3_BUCKET': 'Bucket', 'AWS_REGION': 'Region', 'S3_ENDPOINT': 'Custom endpoint',
+  'AWS_ACCESS_KEY_ID': 'Access key', 'AWS_SECRET_ACCESS_KEY': 'Secret key',
+  'RCLONE_TRANSFERS': 'Parallel transfers', 'RCLONE_BWLIMIT': 'Bandwidth limit',
+  'RESTIC_PASSWORD': 'Recovery passphrase', 'RESTIC_REPOSITORY': 'Where snapshots live',
+  'COST_EXPLORER_ACCESS_KEY_ID': 'Billing access key',
+  'COST_EXPLORER_SECRET_ACCESS_KEY': 'Billing secret key',
+  'COST_EXPLORER_SESSION_TOKEN': 'Billing session token',
+  'COST_EXPLORER_TAG': 'Billing tag',
+} -%}
+<section class="screen read" aria-label="Keys and secrets">
+  <p class="eyebrow">Setup · keys &amp; secrets</p>
+  <h1>What this machine holds</h1>
+  <p class="lead">Grouped by what each value is for. Secrets are write-only: leave a
+     field blank to keep what is there.</p>
 
-<form method="post" action="{{ url_for('gui.config_save') }}">
-  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <form method="post" action="{{ url_for('gui.config_save') }}" class="form" style="margin-top:var(--sp-5)">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
 
-  <div class="card">
-    <h2>backup.env</h2>
-    <div class="field-row">
-    {% for f in fields %}
-      <div><label for="{{ f.key }}">{{ f.key }}</label>
-        <input id="{{ f.key }}" name="{{ f.key }}" value="{{ f.value }}"></div>
-    {% endfor %}
+    {% for g in groups %}
+    <h2 class="slabel" id="{{ g.id }}" style="margin-top:var(--sp-6)">{{ g.name }}</h2>
+    {% if g.name == 'Billing' %}
+    <p class="hint">The read-only billing credential, never the runtime backup key.</p>
+    {% endif %}
+
+    {% for row in g.rows %}
+    <div class="field" style="margin:var(--sp-3) 0">
+      <label for="{{ row.key }}">
+        {{ LABELS.get(row.key, row.key) }} <code class="hint">{{ row.key }}</code>
+        {% if row.secret %}
+          {% if row.status == 'set' %}<span class="tok tok-ok">set</span>
+          {% elif row.status == 'shipped_example' %}<span class="tok tok-overdue">shipped example</span>
+          {% else %}<span class="tok tok-failed">not set</span>{% endif %}
+        {% endif %}
+      </label>
+
+      {% if row.key == 'RESTIC_REPOSITORY' %}
+        <div class="errline">derived: {{ restic_repo }}</div>
+      {% elif row.secret %}
+        <input id="{{ row.key }}" name="{{ row.key }}" type="password" autocomplete="new-password"
+               placeholder="{{ '••••• (unchanged)' if row.status == 'set' else 'not set' }}">
+      {% else %}
+        <input id="{{ row.key }}" name="{{ row.key }}" value="{{ row.value }}">
+      {% endif %}
+
+      {% if row.key == 'RESTIC_PASSWORD' %}
+      <p class="hint">Without it, no snapshot backup can be read: not by you, not by Amazon,
+         not by anyone. Write it down somewhere that survives this machine.</p>
+      {% endif %}
     </div>
-  </div>
-
-  <div class="card">
-    <h2>Secrets <small>— write-only, leave blank to keep current</small></h2>
-    <p class="hint">File mode: {{ secret_mode or "not present" }}{% if secret_mode and secret_mode != "600" %} <strong class="text-warn">(should be 600)</strong>{% endif %}</p>
-    {% for k in secret_keys %}
-      <label for="{{ k }}">{{ k }} <small>— {{ "set" if secret_status[k] else "not set" }}</small></label>
-      <input id="{{ k }}" name="{{ k }}" type="password" autocomplete="new-password"
-             placeholder="{{ '••••• (unchanged)' if secret_status[k] else 'not set' }}">
     {% endfor %}
-    <details>
-      <summary>Prefer to create secrets by hand?</summary>
-      <pre>cp config/secrets.env.example /config/secrets.env
-chmod 600 /config/secrets.env
-$EDITOR /config/secrets.env   # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, RESTIC_PASSWORD</pre>
-    </details>
-  </div>
+    {% endfor %}
 
-  <div class="actions"><button type="submit" class="btn btn-primary">Save configuration</button></div>
-</form>
+    <p class="hint" style="margin-top:var(--sp-5)">
+      File mode: {{ secret_mode or 'not present' }}{% if secret_mode and secret_mode != '600' %}
+      — not 600 — fix with <code>chmod 600 /config/secrets.env</code>{% endif %}
+    </p>
+
+    <div class="formfoot" style="margin-top:var(--sp-4)">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</section>
 {% endblock %}

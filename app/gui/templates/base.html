@@ -10,7 +10,7 @@
 </head><body>
 {% set ep = request.endpoint or '' %}
 {%- set nav_active =
-     'setup' if (ep.startswith('gui.provision') or ep in ['gui.config_page', 'gui.config_save', 'gui.about_page'])
+     'setup' if (ep.startswith('gui.provision') or ep.startswith('gui.setup') or ep in ['gui.config_page', 'gui.config_save', 'gui.about_page'])
      else 'cost' if (ep in ['gui.cost_page_view', 'gui.cost_json', 'gui.estimate_page', 'gui.jobs_estimate_json'] or ep.startswith('gui.costs'))
      else 'activity' if (ep.startswith('gui.activity') or ep == 'gui.logs')
      else 'board' -%}

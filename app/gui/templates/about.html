@@ -1,24 +1,63 @@
-{% extends "base.html" %}{% block body %}
-<p class="eyebrow">About</p>
-<h1>backup·engine</h1>
-<p class="lead">Off-site, encrypted AWS S3 backups for Unraid — the off-site leg of a 3-2-1 strategy. Version <code>{{ version }}</code>.</p>
+{% extends "base.html" %}{% block title %}About — backup-engine{% endblock %}
+{% block body %}
+{# About = the glossary (spec 5.13). This is the one screen where the tool names
+   are explained in plain language, so it is exempt from the forbidden-term list
+   (vocab.TERM_EXEMPTIONS["/setup/about"]). #}
+<section class="screen read" aria-label="About backup-engine">
+  <p class="eyebrow">Setup · about</p>
+  <h1>backup-engine</h1>
+  <p><span class="fig big">{{ version }}</span> <span class="stamp">built {{ build_date }}</span></p>
 
-<div class="card">
-  <h2>Third-party software</h2>
-  <p class="hint">backup-engine bundles and invokes these open-source tools — thanks to their authors and maintainers. Each is redistributed under its own license; the full license texts ship alongside the tools in the container image.</p>
-  <ul class="attributions">
+  <p class="slabel" style="margin-top:var(--sp-6)">The tools this app drives</p>
+  <dl class="defgrid" style="margin-top:var(--sp-3)">
+    <dt id="restic">restic</dt>
+    <dd>restic — makes the snapshot backups and keeps their history in one encrypted store.</dd>
+
+    <dt id="rclone">rclone</dt>
+    <dd>rclone — makes the plain copies, file for file.</dd>
+
+    <dt id="vfiles">the file-history catalog</dt>
+    <dd>the file-history catalog — this app's own index of every version of every file,
+        one small database per job.</dd>
+
+    <dt id="tofu">OpenTofu</dt>
+    <dd>OpenTofu — creates the bucket and the key, only if you chose the automated setup.</dd>
+
+    <dt id="supercronic">supercronic</dt>
+    <dd>supercronic — runs the schedule inside the container.</dd>
+  </dl>
+
+  <p class="slabel" id="tiers" style="margin-top:var(--sp-6)">Storage tiers</p>
+  <table class="classes" style="margin-top:var(--sp-3)">
+    <thead>
+      <tr>
+        <th style="text-align:left">Plain phrase</th>
+        <th style="text-align:left">Constant</th>
+        <th style="text-align:left">Getting it back</th>
+        <th style="text-align:left">Minimum stay</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Instant</td><td><code>STANDARD</code></td><td>Read the second you ask</td><td>None</td></tr>
+      <tr><td>Instant, cheaper</td><td><code>STANDARD_IA</code></td><td>Read the second you ask</td><td>30 days</td></tr>
+      <tr><td>Instant, archive-priced</td><td><code>GLACIER_IR</code></td><td>Read the second you ask</td><td>90 days</td></tr>
+      <tr><td>Thaw first, minutes–hours</td><td><code>GLACIER</code></td><td>Warm up (1 min – 12 h), then read</td><td>90 days</td></tr>
+      <tr><td>Thaw first, hours</td><td><code>DEEP_ARCHIVE</code></td><td>Warm up (up to 48 h), then read</td><td>180 days</td></tr>
+    </tbody>
+  </table>
+
+  <p class="slabel" style="margin-top:var(--sp-6)">Licences</p>
+  <p class="hint">Each tool is bundled and invoked under its own licence; the full texts ship
+     alongside the tools in the container image.</p>
+  <dl class="defgrid" style="margin-top:var(--sp-3)">
     {% for c in third_party %}
-    <li>
-      <a href="{{ c.url }}" target="_blank" rel="noopener noreferrer">{{ c.name }}</a>
-      <span class="hint"> — {{ c.role }}</span>
-      <code>{{ c.license }}</code>
-    </li>
+    <dt><a href="{{ c.url }}" target="_blank" rel="noopener noreferrer">{{ c.name }}</a></dt>
+    <dd>{{ c.role }} <code>{{ c.license }}</code></dd>
     {% endfor %}
-  </ul>
-</div>
+  </dl>
 
-<div class="card">
-  <h2>Project</h2>
-  <p><a href="https://github.com/paymonr/backup-engine" target="_blank" rel="noopener noreferrer">github.com/paymonr/backup-engine</a></p>
-</div>
+  <p style="margin-top:var(--sp-5)">
+    <a href="https://github.com/paymonr/backup-engine" target="_blank" rel="noopener noreferrer">github.com/paymonr/backup-engine</a>
+  </p>
+</section>
 {% endblock %}

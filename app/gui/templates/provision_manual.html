@@ -1,68 +1,73 @@
-{% extends "base.html" %}
+{% extends "base.html" %}{% block title %}Guided-manual — backup-engine{% endblock %}
 {% block body %}
-<p class="eyebrow">Provisioning · Guided-manual</p>
-<h1>Guided-manual setup</h1>
-<p class="lead">No admin credentials leave your browser. Enter your bucket and region, then follow the walkthrough to create everything in the AWS console.</p>
+<section class="screen read" aria-label="Guided-manual destination setup">
+  <p class="eyebrow">Setup · destination · guided-manual</p>
+  <h1>Guided-manual setup</h1>
+  <p class="lead">No admin credentials leave your browser. Enter your bucket and region,
+     then follow the walkthrough to create everything in the AWS console. Nothing is
+     saved until validation passes.</p>
 
-<div class="card">
-  <h2>Before you begin</h2>
-  <p>Sign in to the <a href="https://console.aws.amazon.com/s3/" target="_blank" rel="noopener">AWS console</a> in another tab with an account that can create S3 buckets and IAM users. You'll do three things below: (1) copy a policy, (2) create the bucket + an IAM user in the console, (3) paste that user's key here to validate it. Nothing is saved until validation passes.</p>
-</div>
+  {% if error %}
+  <div class="sig sig-failure" data-flash="failure" style="margin-top:var(--sp-4)">
+    <span class="glyph" aria-hidden="true"></span><div class="body">{{ error }}</div>
+  </div>
+  {% endif %}
+  {% if error_detail %}
+  <details class="error-detail" open style="margin-top:var(--sp-3)">
+    <summary>What AWS reported</summary>
+    <div class="errline" style="margin-top:var(--sp-2)">{{ error_detail }}</div>
+  </details>
+  {% endif %}
 
-{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
-{% if error_detail %}<details class="error-detail" open><summary>What AWS reported</summary><pre>{{ error_detail }}</pre></details>{% endif %}
-
-<div class="card">
-  <form method="post" action="{{ url_for('gui.provision_manual_render') }}">
+  <form method="post" action="{{ url_for('gui.provision_manual_render') }}" class="form" style="margin-top:var(--sp-5)">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="field-row">
-      <div><label for="bucket">Bucket name</label>
-        <input id="bucket" name="bucket" value="{{ bucket }}" placeholder="unraid-backup-123456789012" required></div>
-      <div><label for="region">Region</label>
-        <input id="region" name="region" value="{{ region }}" required></div>
-    </div>
+    <div class="field"><label for="bucket">Bucket name</label>
+      <input id="bucket" name="bucket" value="{{ bucket }}" placeholder="unraid-backup-123456789012" required></div>
+    <div class="field"><label for="region">Region</label>
+      <input id="region" name="region" value="{{ region }}" required></div>
     <p class="hint">Tip: name it <code>unraid-backup-&lt;your-account-id&gt;</code> to match the automated mode.</p>
-    <div class="actions"><button type="submit" class="btn btn-primary">Render policy &amp; steps</button></div>
+    <div class="formfoot"><button type="submit" class="btn btn-primary">Render policy &amp; steps</button></div>
   </form>
-</div>
 
-{% if policy %}
-<div class="card">
-  <h2>1 · Copy the least-privilege IAM policy</h2>
-  <p class="hint">Grants object read/write only under <code>appdata/*</code> and <code>media/*</code> — never bucket configuration. Copy it now; you'll paste it in step 2 (IAM → Policies → Create policy → JSON tab).</p>
-  <pre>{{ policy }}</pre>
-</div>
+  {% if policy %}
+  <p class="slabel" style="margin-top:var(--sp-6)">1 · Copy the least-privilege IAM policy</p>
+  <p class="hint">Object read/write only under <code>appdata/*</code> and <code>media/*</code> —
+     plus reading bucket versioning — never bucket configuration. Paste it in step 2
+     (IAM → Policies → Create policy → JSON tab).</p>
+  <div class="cmd" style="margin-top:var(--sp-2)">
+    <pre>{{ policy }}</pre>
+    <button type="button" class="btn btn-sm copy" data-copy="{{ policy }}">Copy</button>
+  </div>
 
-<div class="card">
-  <h2>2 · Create the bucket &amp; IAM user</h2>
+  <p class="slabel" style="margin-top:var(--sp-6)">2 · Create the bucket &amp; IAM user</p>
   <p class="hint">Do these in the AWS console, signed in as an admin. Follow them in order:</p>
   <ol>{% for s in console.steps %}<li>{{ s }}</li>{% endfor %}</ol>
-  <details>
+  <details style="margin-top:var(--sp-3)">
     <summary>Prefer the CLI? (needs admin creds in your shell)</summary>
-    <pre>{% for c in console.cli %}{{ c }}
+    <div class="cmd" style="margin-top:var(--sp-2)">
+      <pre>{% for c in console.cli %}{{ c }}
 {% endfor %}</pre>
+      <button type="button" class="btn btn-sm copy" data-copy="{{ console.cli | join('\n') }}">Copy</button>
+    </div>
   </details>
-</div>
 
-<div class="card">
-  <h2>3 · Test &amp; Validate the runtime key</h2>
-  <p class="hint">Paste the access key you created in step 2. We do a real list → put → get → delete under <code>appdata/</code> to prove the key works before saving anything.</p>
-  <form method="post" action="{{ url_for('gui.provision_validate') }}">
+  <p class="slabel" style="margin-top:var(--sp-6)">3 · Test &amp; Validate the runtime key</p>
+  <p class="hint">Paste the access key you created in step 2. We do a real list → put → get →
+     delete under <code>appdata/</code> to prove the key works before saving anything.</p>
+  <form method="post" action="{{ url_for('gui.provision_validate') }}" class="form" style="margin-top:var(--sp-3)">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="bucket" value="{{ bucket }}">
     <input type="hidden" name="region" value="{{ region }}">
-    <label for="ak">AWS_ACCESS_KEY_ID</label>
-    <input id="ak" name="AWS_ACCESS_KEY_ID" autocomplete="off" required>
-    <label for="sk">AWS_SECRET_ACCESS_KEY</label>
-    <input id="sk" name="AWS_SECRET_ACCESS_KEY" type="password" autocomplete="off" required>
-    <div class="actions"><button type="submit" class="btn btn-primary">Test &amp; Validate</button></div>
+    <div class="field"><label for="ak">Access key <code class="hint">AWS_ACCESS_KEY_ID</code></label>
+      <input id="ak" name="AWS_ACCESS_KEY_ID" autocomplete="off" required></div>
+    <div class="field"><label for="sk">Secret key <code class="hint">AWS_SECRET_ACCESS_KEY</code></label>
+      <input id="sk" name="AWS_SECRET_ACCESS_KEY" type="password" autocomplete="off" required></div>
+    <div class="formfoot" data-progress="Validating…">
+      <button type="submit" class="btn btn-primary">Test &amp; Validate</button>
+    </div>
   </form>
-  <p class="hint">On success the key is saved write-only and the region/bucket are set. Then confirm bucket versioning is <strong>on</strong> — object-only keys can't verify bucket-level settings.</p>
-</div>
-
-<div class="card">
-  <h2>What's next</h2>
-  <p>Once the key validates: set your <code>RESTIC_PASSWORD</code> in <a href="{{ url_for('gui.config_page') }}">Config</a>, then create your first backup job from <a href="{{ url_for('gui.jobs_page') }}">Jobs</a>.</p>
-</div>
-{% endif %}
+  <p class="hint" style="margin-top:var(--sp-3)">On success the key is saved write-only, the
+     region/bucket are set, and you land back on Setup.</p>
+  {% endif %}
+</section>
 {% endblock %}
