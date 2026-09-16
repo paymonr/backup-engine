@@ -12,13 +12,18 @@ source "$HERE/lib/rclone-conf.sh"
 prepare() {
   load_config "${CONFIG_DIR:-/config}"
   validate_common
-  mkdir -p "$CACHE_DIR" "$CACHE_DIR/logs" "$CACHE_DIR/state" "$CACHE_DIR/locks"
+  mkdir -p "$CACHE_DIR" "$CACHE_DIR/logs" "$CACHE_DIR/logs/runs" "$CACHE_DIR/state" "$CACHE_DIR/locks"
   # restic password file (so creds aren't passed on argv)
   printf '%s' "${RESTIC_PASSWORD:-}" >"$CACHE_DIR/restic-password"
   chmod 600 "$CACHE_DIR/restic-password"
   export RESTIC_PASSWORD_FILE="$CACHE_DIR/restic-password"
   render_rclone_conf "$CACHE_DIR/rclone.conf"
   version_banner
+  # Reconcile run records left dangling by a crash/restart (a start with no end ->
+  # aborted) and seed backfills from legacy per-job state, before the scheduler or
+  # GUI can observe them (spec §7.1.7/§7.2). Never fatal; exits 0 always.
+  CONFIG_DIR="${CONFIG_DIR:-/config}" python3 -m app.engine.runs boot \
+    || log_warn "run reconcile at boot failed (non-fatal)"
 }
 
 emit_crontab() {
@@ -45,11 +50,16 @@ main() {
   fi
   if [ "${GUI_ENABLED:-true}" != "false" ]; then
     log_info "starting scheduler (background) + GUI on port ${GUI_PORT:-8099}"
-    supercronic "$CACHE_DIR/crontab" &
+    # -inotify: reload on crontab changes; the GUI ALSO SIGUSR2s this pid after
+    # every write, since inotify may not fire on Unraid's FUSE share (§7.3).
+    supercronic -inotify "$CACHE_DIR/crontab" &
+    echo $! >"$CACHE_DIR/supercronic.pid"
     exec python3 -m app.gui.server
   fi
   log_info "GUI disabled; scheduler only"
-  exec supercronic "$CACHE_DIR/crontab"
+  # exec keeps this shell's PID, so $$ is supercronic's pid once it takes over.
+  echo $$ >"$CACHE_DIR/supercronic.pid"
+  exec supercronic -inotify "$CACHE_DIR/crontab"
 }
 
 main "$@"

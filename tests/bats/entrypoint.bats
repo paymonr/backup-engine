@@ -93,3 +93,25 @@ EOF
   [ "$status" -eq 0 ]
   grep -q "backup-job.sh movies" "$CACHE_DIR/crontab"
 }
+
+# Task 3: prepare() creates the run-log and lock directories the reader/runner need.
+@test "entrypoint prepare creates the logs/runs and locks directories" {
+  write_jobs_json
+  run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
+  [ "$status" -eq 0 ]
+  [ -d "$CACHE_DIR/logs/runs" ]
+  [ -d "$CACHE_DIR/locks" ]
+}
+
+# Task 3: `runs boot` in prepare() reconciles a run left dangling by a crash — a
+# start line with no end, whose lock is free — into an `aborted` end line (§7.2).
+@test "entrypoint boot reconciles a dangling run to aborted" {
+  mkdir -p "$CACHE_DIR/state"
+  printf '%s\n' '{"v":1,"id":"20260915T050001Z-3f9a","job":"appdata","kind":"backup","event":"start","trigger":"scheduled","started_at":"2026-09-15T05:00:01Z","pid":42,"log":"logs/runs/appdata/20260915T050001Z-3f9a.log"}' \
+    >"$CACHE_DIR/state/appdata.runs.jsonl"
+  run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
+  [ "$status" -eq 0 ]
+  # a second line now exists, an aborted end for the same id
+  grep -q '"event":"end"' "$CACHE_DIR/state/appdata.runs.jsonl"
+  grep -q '"outcome":"aborted"' "$CACHE_DIR/state/appdata.runs.jsonl"
+}
