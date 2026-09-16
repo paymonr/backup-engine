@@ -77,11 +77,16 @@
 {% set pending = rjob.test_pending if rjob else none %}
 <div class="rrow"><span class="dot {{ 'dot-ok' if tested else 'dot-warn' }}"></span><div>
   <div class="k">Restore ever tested</div>
-  <div class="v"{% if not tested %} style="color:var(--warn)"{% endif %}>{% if tested %}Tested{% elif pending %}Warming up{% else %}Never{% endif %}</div>
-  <div class="t">{% if tested %}proved it reads back{% elif pending %}warm-up in progress{% else %}nothing has proved it reads back{% endif %}</div>
+  <div class="v"{% if not tested %} style="color:var(--warn)"{% endif %}>{% if tested %}Tested {{ datelabel(tested.at) }}{% elif pending %}Warming up{% else %}Never{% endif %}</div>
+  <div class="t">{% if tested %}{% if tested.path %}<span class="mono">{{ tested.path.split('/')[-1] }}</span>, kept under {{ restore.restore_root_host if restore else '/mnt/user/restore' }}/{{ s.name }}/test/{% else %}proved it reads back{% endif %}{% elif pending %}ready by ~{% if pending.expected_ready_by %}{{ datelabel(pending.expected_ready_by) }} {{ hhmm(pending.expected_ready_by) }}{% endif %}{% else %}nothing has proved it reads back{% endif %}</div>
 </div></div>
 {% set rq = rjob.cost_full_restore if rjob else none %}
-{% if is_cold %}
+{% if pending %}
+{# A cold test is warming up: `Check now` re-POSTs test-restore (R11 / dec. 54). #}
+<form method="post" action="/jobs/{{ s.name }}/test-restore"><input type="hidden" name="csrf" value="{{ csrf }}">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Check now</button></form>
+<p class="hint" style="margin-top:var(--sp-2)">Checking costs nothing. When Amazon reports the file ready, it is downloaded and this row flips to Tested.</p>
+{% elif is_cold %}
 <form method="post" action="/jobs/{{ s.name }}/test-restore"><input type="hidden" name="csrf" value="{{ csrf }}">
   <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — warm up one file, ~$0.02, up to 48 h</button></form>
 <p class="hint" style="margin-top:var(--sp-2)">Asks Amazon to warm up the most recently copied file at Bulk speed, then downloads it to check it reads back.</p>
@@ -246,26 +251,110 @@
         </dl>
         {% endif %}
 
-        {# The restore chooser (restore-point list / target / guard / submit) is
-           built in Task 11. This band ships as a GET form to the confirmation
-           page (5.4) that carries NO `confirm` field — the confirmation page owns
-           the typed-name confirm and the one POST that starts work. #}
+        {% set hours_hi = (rjob.warmup.hours_hi if rjob and rjob.warmup else 12) %}
+        {% set alt_hours = (rjob.warmup.alt_hours_hi if rjob and rjob.warmup else 48) %}
+        {% set pending_thaw = pv.thaw if pv.thaw is defined else none %}
+        {% set thaw_lc = pending_thaw.last_check if (pending_thaw and pending_thaw.last_check is defined) else none %}
+        {% set thaw_ready = thaw_lc and thaw_lc.sampled and thaw_lc.ready == thaw_lc.sampled %}
+        {# Cold: warm up first; once ready the same band offers Download now (5.2). #}
+        {% set band_intent = ('download' if (is_cold and thaw_ready) else ('thaw' if is_cold else ('download' if is_archive else 'restore'))) %}
+
+        {% if not restore.mount_ok %}
+        {# Restore mount missing → the whole form is a BLOCKER (5.2 / 7.5.1). #}
+        <div class="guard" style="margin-top:var(--sp-4)">
+          <strong>Nowhere to put restored files yet.</strong> Add a path mapping to this container — host <span class="mono">/mnt/user/restore</span> → container <span class="mono">/restore</span>, read/write — then restart it. Until then, restores run from the command line into <span class="mono">/cache/restore/{{ s.name }}</span> (see the README).
+        </div>
+        {% else %}
+
+        {# The band NEVER starts anything: one GET form that navigates to the
+           confirmation page (5.4). Its POST siblings (List them now, Check now)
+           live outside it and are associated by the HTML5 `form=` attribute, so no
+           <form> is ever nested inside another. #}
         <form method="get" action="/jobs/{{ s.name }}/restore" id="restore-form">
+          <input type="hidden" name="intent" value="{{ band_intent }}">
+
+          {% if is_versioned or job.type == 'versioned-files' %}
+          {% if pv.count == 0 %}
+          <p class="hint" style="margin-top:var(--sp-3)">Restore points have not been listed yet. <button type="submit" form="rp-refresh" class="btn btn-sm">List them now</button></p>
+          {% else %}
+          <div class="rphead"><span></span><span>Date &amp; time</span><span>Restore point</span><span>What it gives you back</span></div>
+          {% for p in pv.visible %}
+          <label class="rp"><input type="radio" name="point" value="{{ p.id }}"{% if loop.first %} checked{% endif %}>
+            <span class="d mono">{{ p.label }}</span>
+            <span class="id mono">{{ p.id }}</span>
+            <span class="m mono">{% if p.size_bytes is not none %}{{ humanbytes(p.size_bytes) }}{% if p.files_changed is not none %} · {{ p.files_changed }} files changed{% endif %}{% else %}size not recorded{% endif %}</span></label>
+          {% endfor %}
+          {% if pv.has_details %}
+          <details style="margin-top:var(--sp-2)"><summary class="linklike">Show the other {{ pv.hidden_count }} restore points</summary>
+            <table style="margin-top:var(--sp-2)"><tbody>
+            {% for p in pv.hidden %}<tr><td class="mono">{{ p.label }}</td><td class="mono hint">{{ p.id }}</td><td class="hint">{% if p.size_bytes is not none %}{{ humanbytes(p.size_bytes) }}{% else %}size not recorded{% endif %}</td></tr>{% endfor %}
+            </tbody></table>
+          </details>
+          {% endif %}
+          {% if pv.stale %}<p class="hint" style="margin-top:var(--sp-2)">listed earlier · <button type="submit" form="rp-refresh" class="btn btn-sm btn-ghost">Refresh</button></p>{% endif %}
+          {% endif %}
+          {% endif %}
+
+          {% if is_archive %}
+          <label class="fld" for="scope" style="margin-top:var(--sp-4)">Restore</label>
+          <select id="scope" name="scope" style="max-width:22rem">
+            <option value=".">Everything</option>
+            {% for f in pv.folders or [] %}<option value="{{ f }}">{{ f }}</option>{% endfor %}
+          </select>
+          {% endif %}
+
+          {% if band_intent == 'thaw' and restore.tiers %}
+          <label class="fld" for="tier" style="margin-top:var(--sp-4)">Retrieval speed</label>
+          <select id="tier" name="tier" style="max-width:22rem">
+            {% for t in restore.tiers %}<option value="{{ t }}"{% if t == restore.default_tier %} selected{% endif %}>{{ t }}{% if t == 'Standard' %} — up to {{ hours_hi }} h{% elif t == 'Bulk' %} — up to {{ alt_hours }} h{% endif %}</option>{% endfor %}
+          </select>
+          {% endif %}
+
+          <label class="fld" for="restore-target" style="margin-top:var(--sp-4)">Write the files to</label>
+          <input type="text" id="restore-target" name="target" class="mono" style="width:100%;max-width:36rem"
+                 value="{{ restore.default_target }}" data-source="{{ restore.source_under }}"
+                 data-restore-root="{{ restore.restore_root_host }}">
+          <p class="hint" id="restore-target-hint">A new, dated folder. Typing the live source path here is refused — a restore can never overwrite what it is protecting.</p>
+
           <div class="needsline" style="margin-top:var(--sp-4)">
             {% if is_versioned %}
             {% set pp = rec.passphrase %}
             <div>{% if pp.state == 'set' %}<span class="ok" aria-hidden="true">✓</span><span><strong>Recovery passphrase:</strong> set, and not the shipped example. Without it nothing here can be read — not by you, not by Amazon.</span>{% else %}<span class="warn" aria-hidden="true">!</span><span style="color:var(--danger)"><strong>Recovery passphrase:</strong> not set — still the shipped example. Nothing here can be read back until it is.</span> <a class="linklike" href="/setup/keys#RESTIC_PASSWORD">Fix →</a>{% endif %}</div>
             {% endif %}
-            <div>{% if is_cold %}<span class="warn" aria-hidden="true">!</span><span><strong>Not ready yet:</strong> this job is on the thaw-first tier <code>{{ cls }}</code>. Amazon has to warm it up before a single file can be read — up to {{ (rjob.warmup.hours_hi if rjob and rjob.warmup else 12) }} hours at Standard speed, up to {{ (rjob.warmup.alt_hours_hi if rjob and rjob.warmup else 48) }} at Bulk — and the warm-up is charged separately.</span>{% else %}<span class="ok" aria-hidden="true">✓</span><span><strong>Ready now:</strong> this job is on the instant tier <code>{{ cls }}</code>, so there is no waiting — the first file starts copying immediately.</span>{% endif %}</div>
+            <div>{% if is_cold %}<span class="warn" aria-hidden="true">!</span><span><strong>Not ready yet:</strong> this job is on the thaw-first tier <code>{{ cls }}</code>. Amazon has to warm it up before a single file can be read — up to {{ hours_hi }} hours at Standard speed, up to {{ alt_hours }} at Bulk — and the warm-up is charged separately.</span>{% else %}<span class="ok" aria-hidden="true">✓</span><span><strong>Ready now:</strong> this job is on the instant tier <code>{{ cls }}</code>, so there is no waiting — the first file starts copying immediately.</span>{% endif %}</div>
             {% set rq = rjob.cost_full_restore if rjob else none %}
             {% set rsize = rjob.size_bytes if rjob else none %}
             <div><span class="{{ 'warn' if is_cold else 'ok' }}" aria-hidden="true">{{ '!' if is_cold else '✓' }}</span><span><strong>{{ 'Warm-up + data out:' if is_cold else 'Data out of Amazon:' }}</strong> {{ humanbytes(rsize) }} ≈ {% if rq and rq.amount is not none %}<span class="mono">{{ money(rq.amount) }}</span>{% else %}<span class="hint">not priced yet</span>{% endif %} <span class="hint">one time, for a full restore</span></span></div>
           </div>
 
-          <div class="sig sig-note" style="margin-top:var(--sp-4)">
-            <div class="body">The restore chooser — the dates you can pick, the folder the files go to, and the confirm — is added next. It will submit as a plain GET to <span class="mono">/jobs/{{ s.name }}/restore</span>, which states the cost and takes the typed-name confirm. Nothing here starts a restore.</div>
+          {% if sibling_cold %}
+          <div class="sig sig-warning" style="margin-top:var(--sp-4)"><div class="body">Your other job is not like this one. <strong>{{ sibling_cold }}</strong> sits on the thaw-first tier: before a single file of it can be read, Amazon has to warm it up, and that takes hours and is charged separately. Worth knowing before the night you need it. <a class="linklike" href="/jobs/{{ sibling_cold }}#restore-band">See what a {{ sibling_cold }} restore takes →</a></div></div>
+          {% endif %}
+
+          {# Guard — TEXT ONLY here (5.2). The typed-name confirm lives on the next page. #}
+          <div class="guard" style="margin-top:var(--sp-4)">
+            {% if band_intent == 'thaw' %}
+            <strong>This asks Amazon to warm up the files, one request each — the request itself takes hours to send — and starts a charged warm-up.</strong> The next screen shows both speeds priced and asks you to type the job name.
+            {% else %}
+            <strong>This writes {{ humanbytes(rjob.size_bytes if rjob else none) }} to your array and starts a charged download.</strong> The next screen shows the full cost and asks you to type the job name.
+            {% endif %}
+            <div class="confirm">
+              <button type="submit" class="btn btn-primary" id="go-restore">{% if band_intent == 'thaw' %}Warm up first — up to {{ hours_hi }} h →{% elif band_intent == 'download' %}Download now →{% else %}Start restore →{% endif %}</button>
+              <span class="hint" id="go-hint">Next: confirm what this will do.</span>
+            </div>
           </div>
         </form>
+
+        {# POST siblings — each its own form, rendered OUTSIDE the GET form (HTML
+           forbids a nested form). They refresh a cache or poll a warm-up; they
+           start no restore and cost nothing (5.2). #}
+        <form method="post" action="/jobs/{{ s.name }}/restore-points/refresh" id="rp-refresh" style="display:none"><input type="hidden" name="csrf" value="{{ csrf }}"></form>
+        {% if pending_thaw and not thaw_ready %}
+        <div class="sig sig-warning tok-warming" style="margin-top:var(--sp-4)"><div class="body">Amazon is warming up {{ pending_thaw.objects_requested if pending_thaw.objects_requested is defined else 'the' }} files at {{ pending_thaw.tier }} speed. Requested {{ pending_thaw.requested_at }} · ready by ~{{ pending_thaw.expected_ready_by }}.
+          <form method="post" action="/jobs/{{ s.name }}/thaw/check" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-sm">Check now</button></form>
+        </div></div>
+        {% endif %}
+        {% endif %}
       </div>
 
       {# ---- What this job costs (cache-only stub, Ruling R-I) ----------- #}

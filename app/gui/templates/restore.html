@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{#- Get data back — the confirmation page `/jobs/<name>/restore` (spec 5.4). The one
+    place a restore can be started: it states exactly what is about to happen, takes
+    the typed-name confirm, and POSTs. `GET` renders this; `POST` (to this path for
+    restore/download, or `/jobs/<name>/thaw` for a warm-up) starts the work and
+    redirects to the run record. This screen — and only this screen — carries
+    `#confirm-name` and `#start-restore` (Appendix B, decision 42). -#}
+
+{%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro humanbytes(b) -%}
+{%- if b is none -%}—
+{%- elif b >= 1099511627776 -%}{{ '%.2f'|format(b / 1099511627776) }} TB
+{%- elif b >= 1073741824 -%}{{ '%.2f'|format(b / 1073741824) }} GB
+{%- elif b >= 1048576 -%}{{ '%.1f'|format(b / 1048576) }} MB
+{%- else -%}{{ b|int }} B
+{%- endif -%}
+{%- endmacro -%}
+
+{% set verb = 'Warm up first' if intent == 'thaw' else ('Download now' if intent == 'download' else 'Start restore') %}
+{% set post_action = '/jobs/' + name + '/thaw' if intent == 'thaw' else '/jobs/' + name + '/restore' %}
+{% set hi = (rjob.warmup.hours_hi if rjob and rjob.warmup else 12) %}
+
+{% block title %}{{ name }} · get data back{% endblock %}
+
+{% block body %}
+<section class="screen read" aria-label="Get data back — {{ name }}">
+  <p class="slabel">{{ name }} · get data back</p>
+  <h1>
+    {%- if intent == 'thaw' -%}Warm up {{ name }}
+    {%- elif intent == 'download' -%}Download {{ name }}
+    {%- elif point_label -%}Restore {{ point_label }}
+    {%- else -%}Restore {{ name }}{%- endif -%}
+  </h1>
+  <p class="lead">Here is exactly what is about to happen, what it costs, and how long it takes. Nothing has started yet.</p>
+
+  {% if blocker %}
+  <div class="guard" style="margin-top:var(--sp-5)">
+    <strong>{{ blocker }}</strong>
+    <p style="margin-top:var(--sp-2)"><a class="linklike" href="/jobs/{{ name }}">← back to {{ name }}</a></p>
+  </div>
+  {% else %}
+
+  <div class="step" style="margin-top:var(--sp-5)">
+    <dl class="defgrid">
+      {% if intent != 'thaw' %}
+      <dt>Restore point</dt>
+      <dd>{% if is_archive %}Copy as of {{ (rjob.newest_point.at if rjob and rjob.newest_point else '') }} · last completed run{% else %}{{ point_label or 'latest' }}{% if choice.point %} · <span class="mono">{{ choice.point }}</span>{% endif %}{% endif %}</dd>
+      <dt>What</dt>
+      <dd>{% if choice.scope == 'file' and choice.path %}One file: <span class="mono">{{ choice.path }}</span>{% elif choice.scope and choice.scope != '.' %}Only <span class="mono">{{ choice.scope }}</span>{% else %}Everything in this point{% endif %}</dd>
+      <dt>Writes to</dt>
+      <dd><span class="mono">{{ choice.target }}</span>{% if is_versioned %} <span class="hint">Inside it the files keep their original path.</span>{% endif %}</dd>
+      {% endif %}
+      <dt>Size</dt>
+      <dd>{% if size_bytes is not none %}<span class="p-{{ size_provenance }}">{{ humanbytes(size_bytes) }}</span>{% if file_count %} · {{ '{:,}'.format(file_count) }} files{% endif %}{% else %}not measured yet{% endif %}</dd>
+      <dt>Needs</dt>
+      <dd>
+        {% if is_versioned %}<div>{% if rec.passphrase.state == 'set' %}Recovery passphrase: set, and not the shipped example.{% else %}<span style="color:var(--danger)">Recovery passphrase: not set — still the shipped example.</span>{% endif %}</div>{% endif %}
+        {% if cold %}<div>Not ready yet — this job is on the thaw-first tier <code>{{ cls }}</code>. Amazon warms it up first: up to {{ hi }} hours.</div>{% else %}<div>Ready now — instant tier <code>{{ cls }}</code>, no waiting.</div>{% endif %}
+      </dd>
+      <dt>Costs</dt>
+      <dd>
+        {% if cold %}
+          {% if quote and quote.amount is not none %}≈ {{ money(quote.amount) }} at {{ choice.tier }} speed{% if alt_quote and alt_quote.amount is not none %} · about {{ money(alt_quote.amount) }} at {{ alt_quote.tier }}{% endif %} <span class="hint">(warm-up + data out)</span>{% else %}<span class="hint">not priced yet</span>{% endif %}
+        {% else %}
+          {% if quote and quote.amount is not none %}≈ {{ money(quote.amount) }} <span class="hint">one time</span>{% else %}<span class="hint">not priced yet</span>{% endif %}
+        {% endif %}
+      </dd>
+      <dt>Takes</dt>
+      <dd>{% if cold %}up to {{ hi }} h warm-up, then the copy{% else %}starts immediately; the copy runs as fast as your line allows{% endif %}</dd>
+    </dl>
+
+    <form method="post" action="{{ post_action }}" id="confirm-form" style="margin-top:var(--sp-5)">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {% if intent != 'thaw' %}<input type="hidden" name="intent" value="{{ intent }}">{% endif %}
+      {% if is_versioned %}<input type="hidden" name="point" value="{{ choice.point }}">{% endif %}
+      <input type="hidden" name="scope" value="{{ choice.scope }}">
+      {% if choice.path %}<input type="hidden" name="path" value="{{ choice.path }}">{% endif %}
+      {% if intent != 'thaw' %}<input type="hidden" name="target" value="{{ choice.target }}">{% endif %}
+
+      {% if cold and tiers %}
+      <label class="fld" for="tier">Retrieval speed</label>
+      <select id="tier" name="tier" style="max-width:22rem">
+        {% for t in tiers %}<option value="{{ t }}"{% if t == choice.tier %} selected{% endif %}>{{ t }}{% if t == 'Standard' %} — up to {{ hi }} h{% elif t == 'Bulk' %} — up to {{ (rjob.warmup.alt_hours_hi if rjob and rjob.warmup else 48) }} h{% endif %}</option>{% endfor %}
+      </select>
+      {% else %}
+      {% if intent == 'thaw' %}<input type="hidden" name="tier" value="{{ choice.tier }}">{% endif %}
+      {% endif %}
+
+      {% if errors.target %}<p class="sig sig-failure" data-flash="failure" style="margin-top:var(--sp-3)">{{ errors.target }}</p>{% endif %}
+
+      <div class="guard" style="margin-top:var(--sp-4)">
+        {% if intent == 'thaw' %}
+        <strong>This asks Amazon to warm up the files, one request each — the request itself takes hours to send — and starts a charged warm-up.</strong> Type the job name to confirm.
+        {% else %}
+        <strong>This writes {{ humanbytes(size_bytes) }} to your array and starts a charged download.</strong> Type the job name to confirm.
+        {% endif %}
+        <div class="confirm">
+          <label class="fld" for="confirm-name">Type <span class="mono">{{ name }}</span></label>
+          <input type="text" id="confirm-name" name="confirm" autocomplete="off" spellcheck="false"
+                 placeholder="{{ name }}" data-name="{{ name }}" value="{{ choice_confirm_value if choice_confirm_value }}">
+          <button type="submit" class="btn btn-primary" id="start-restore">{{ verb }}{% if intent == 'thaw' %} — up to {{ hi }} h{% endif %}</button>
+        </div>
+        {% if errors.confirm %}
+        <p class="hint" id="confirm-hint" style="color:var(--danger)">{{ errors.confirm }}</p>
+        {% else %}
+        <p class="hint" id="confirm-hint">Disabled until the name matches.</p>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+
+  <p style="margin-top:var(--sp-4)"><a class="linklike" href="/jobs/{{ name }}">← back to {{ name }}</a></p>
+  {% endif %}
+</section>
+
+<script>
+// Progressive enhancement (5.4): enable the primary button only on the exact job
+// name. With no JS the button is enabled and the server rejects a wrong name.
+(function () {
+  var input = document.getElementById("confirm-name");
+  var btn = document.getElementById("start-restore");
+  var hint = document.getElementById("confirm-hint");
+  if (!input || !btn) return;
+  var name = input.getAttribute("data-name") || "";
+  function sync() {
+    var ok = input.value.trim() === name;
+    btn.disabled = !ok;
+    if (hint && ok) { hint.textContent = "Ready. This starts the operation."; hint.style.color = "var(--ok)"; }
+  }
+  btn.disabled = true;
+  input.addEventListener("input", sync);
+  sync();
+})();
+</script>
+{% endblock %}

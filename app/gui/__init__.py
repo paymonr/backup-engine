@@ -80,6 +80,13 @@ def create_app(config: dict | None = None) -> Flask:
         SCRIPTS_DIR=os.environ.get("SCRIPTS_DIR", "/app/scripts"),
         TEMPLATE_PATH=os.environ.get("BACKUP_ENV_TEMPLATE", "/app/config/backup.env.example"),
         SOURCE_ROOT=os.environ.get("SOURCE_ROOT", "/backup/media"),
+        # Restore destination (Task 6 / spec 7.5.1): restores are written into a new
+        # dated folder under RESTORE_ROOT (container) / RESTORE_ROOT_HOST (what the
+        # user sees). SOURCE_ROOT_HOST is the host prefix of the protected source, so
+        # ops.validate_target can refuse a target that is (under) the live source.
+        RESTORE_ROOT=os.environ.get("RESTORE_ROOT", "/restore"),
+        RESTORE_ROOT_HOST=os.environ.get("RESTORE_ROOT_HOST", "/mnt/user/restore"),
+        SOURCE_ROOT_HOST=os.environ.get("SOURCE_ROOT_HOST", "/mnt/user"),
         VERSION=os.environ.get("VERSION", "0.1.0-dev"),
         # Live pricing is OPT-IN: production reads live rates, but tests override
         # this to False so the estimate routes never hit the network.

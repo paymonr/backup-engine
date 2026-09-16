@@ -63,20 +63,22 @@ def source_root(tmp_path):
 def dirs(tmp_path):
     cfg = tmp_path / "config"; cfg.mkdir()
     cache = tmp_path / "cache"; (cache / "state").mkdir(parents=True); (cache / "logs").mkdir()
+    restore = tmp_path / "restore"; restore.mkdir()   # a present restore mount (Task 11)
     # Provisioned: runtime key + bucket, and a REAL recovery passphrase (not the
     # shipped example) so the passphrase needs-line / rail row read green.
     config_io.write_secrets(str(cfg), {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek",
                                        "RESTIC_PASSWORD": "a-real-long-random-passphrase"})
     (cfg / "backup.env").write_text("S3_BUCKET=bw-backups\nAWS_REGION=us-east-1\n")
-    return {"config": str(cfg), "cache": str(cache)}
+    return {"config": str(cfg), "cache": str(cache), "restore": str(restore)}
 
 
 @pytest.fixture
 def app(dirs, source_root, template_path):
     return create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
                        "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
-                       "SOURCE_ROOT": str(source_root), "SECRET_KEY": "test", "TESTING": True,
-                       "PRICES_LIVE": False})
+                       "SOURCE_ROOT": str(source_root), "SOURCE_ROOT_HOST": "/mnt/user",
+                       "RESTORE_ROOT": dirs["restore"], "RESTORE_ROOT_HOST": "/mnt/user/restore",
+                       "SECRET_KEY": "test", "TESTING": True, "PRICES_LIVE": False})
 
 
 @pytest.fixture

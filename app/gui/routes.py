@@ -1,5 +1,7 @@
 # app/gui/routes.py — view functions. Calls config_io/runner; never touches files/subprocess directly.
 from __future__ import annotations
+import json
+import os
 import re
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -7,7 +9,7 @@ from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
-               dirsize, attributions, status, vocab, points, readiness)
+               dirsize, attributions, status, vocab, points, readiness, ops)
 from .storage_advice import storage_class_info
 from ..estimator.model import estimate, STORAGE_CLASSES
 from ..estimator.prices import load_prices
@@ -294,6 +296,8 @@ def job_page(name):
         "job.html", s=st, job=job_def, pv=pv, rec=rec, rjob=rjob,
         cost=_job_cost_band(cfg, job_def), ident=_job_identity(cfg, job_def),
         ledger=_ledger(cfg, name, tz), keep_label=keep_label,
+        restore=_restore_band_ctx(cfg, job_def, rec),
+        sibling_cold=_sibling_cold(cfg, job_def),
         schedule_desc=schedule_desc, csrf=security.issue_csrf())
 
 
@@ -324,6 +328,416 @@ def _set_paused(name, paused):
                            source_root=cfg["SOURCE_ROOT"])
     flash(f"{'Paused' if paused else 'Resumed'} {name}.")
     return redirect(url_for("gui.job_page", name=name))
+
+
+# --- Get data back: confirm page + the mutating POSTs (spec 5.2/5.4/8.10) ---
+#
+# The safety spine: the job page's band is one GET form that only NAVIGATES here;
+# `GET /jobs/<name>/restore` states the consequence and takes the typed-name confirm;
+# and work starts ONLY on the single POST below, after `confirm == name` is verified
+# server-side and `ops.validate_target` confines the target to RESTORE_ROOT (never
+# the source). A prefetch or a bot GET can never start a restore.
+
+_INTENTS = ("restore", "thaw", "download")
+
+# Ruling R-B: `estimate_io.restore_quote` lands in Task 12; until then the confirm
+# page quotes both retrieval speeds from the measured size and a cached per-GB rate,
+# so the guard states an honest order of magnitude. Task 12 wires the real quote and
+# updates the test. Placeholder rates (dollars/GB), NOT billing truth:
+_STUB_EGRESS_PER_GB = 0.09
+_STUB_WARMUP_PER_GB = {"Bulk": 0.0000025, "Standard": 0.0025, "Expedited": 0.03}
+
+_MOUNT_BLOCKER = ("Nowhere to put restored files yet. Add a path mapping to this "
+                  "container — host /mnt/user/restore → container /restore, read/write — "
+                  "then restart it. Until then, restores run from the command line into "
+                  "/cache/restore/<job> (see the README).")
+
+
+def _restore_sh(cfg) -> str:
+    return f'{cfg["SCRIPTS_DIR"]}/restore.sh'
+
+
+def _mount_ok(cfg) -> bool:
+    root = cfg["RESTORE_ROOT"]
+    return os.path.isdir(root) and os.access(root, os.W_OK)
+
+
+def _tier_options(cls) -> list[str]:
+    """The retrieval speeds offered for a class (4.3), Standard first (GUI default,
+    decision 29). An instant tier has none."""
+    tiers = list(readiness.WARMUP.get(cls, {}).keys())
+    if "Standard" in tiers:
+        tiers = ["Standard"] + [t for t in tiers if t != "Standard"]
+    return tiers
+
+
+def _default_tier(cls) -> str:
+    tiers = _tier_options(cls)
+    return "Standard" if "Standard" in tiers else (tiers[0] if tiers else "Standard")
+
+
+def _safe_scope(s) -> str:
+    """A scope is `.` (everything), `file` (one file, File history) or a single
+    top-level folder token. Anything with a slash or `..` falls back to `.`."""
+    s = (s or "").strip()
+    if not s or ".." in s or "/" in s:
+        return "."
+    return s
+
+
+def _friendly_time(iso) -> str:
+    dt = points._parse_ts(iso)
+    return points._label(dt, cron.local_tz()) if dt else "later"
+
+
+def _read_state_json(cfg, name, which):
+    p = Path(cfg["CACHE_DIR"], "state", f"{name}.{which}.json")
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def _restore_quote(cfg, prices, job, size_gb, file_count, tier):
+    """Both-speeds restore price (Ruling R-B stub). Prefers the real
+    `estimate_io.restore_quote` the moment Task 12 adds it, else a cache-derived
+    placeholder so the guard is honest about magnitude. None when the size is
+    unknown."""
+    fn = getattr(estimate_io, "restore_quote", None)
+    if fn is not None:
+        try:
+            return fn(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], prices, job["name"],
+                      tier=tier, size_gb=size_gb, file_count=file_count)
+        except Exception:      # a quote must never break the confirm render
+            pass
+    if size_gb is None:
+        return None
+    cold = job.get("storage_class") in points.COLD_CLASSES
+    warm = _STUB_WARMUP_PER_GB.get(tier, 0.0) * size_gb if cold else 0.0
+    return {"amount": round(size_gb * _STUB_EGRESS_PER_GB + warm, 2), "tier": tier,
+            "size_gb": size_gb, "file_count": file_count,
+            "storage_class": job.get("storage_class"), "provenance": "assumed", "stub": True}
+
+
+def _restore_band_ctx(cfg, job, rec) -> dict:
+    """The Get-data-back band's live-chooser context (spec 5.2 / 8.9 `restore`):
+    the default dated target, the mount state, the retrieval speeds and the source
+    host so the client can refuse a target under the live source."""
+    cls = job.get("storage_class", "STANDARD")
+    mount_ok = (rec.get("restore_mount") or {}).get("state") == "ok"
+    try:
+        default_target = ops.default_target(cfg, job)
+    except Exception:
+        default_target = f'{cfg.get("RESTORE_ROOT_HOST", "/mnt/user/restore")}/{job["name"]}/'
+    source_host = (cfg.get("SOURCE_ROOT_HOST") or "").rstrip("/")
+    src = job.get("source", "")
+    return {"mount_ok": mount_ok, "default_target": default_target,
+            "restore_root_host": cfg.get("RESTORE_ROOT_HOST", "/mnt/user/restore"),
+            "source_under": f"{source_host}/{src}" if source_host else src,
+            "tiers": _tier_options(cls), "default_tier": _default_tier(cls)}
+
+
+def _sibling_cold(cfg, job):
+    """A sibling job on a cold tier while THIS one is not (5.2 sibling warning)."""
+    if job.get("storage_class") in points.COLD_CLASSES:
+        return None
+    for j in jobs_io.load(cfg["CONFIG_DIR"]):
+        if j.get("name") != job.get("name") and j.get("storage_class") in points.COLD_CLASSES:
+            return j.get("name")
+    return None
+
+
+def _vfiles_asof(cfg, job, point):
+    """The epoch of a File history restore point (its run id) for `--asof`."""
+    for p in points.view(cfg["CACHE_DIR"], job).get("points", []):
+        if p.get("id") == point:
+            return p.get("asof")
+    return None
+
+
+def _restore_argv(cfg, job, intent, container, point, scope, path, tier) -> list[str]:
+    """The exact restore.sh invocation for this action (spec 7.5.6)."""
+    sh = _restore_sh(cfg)
+    name = job["name"]
+    typ = job.get("type")
+    if intent == "thaw":
+        if typ == "versioned":
+            return [sh, name, "thaw", "."]                     # whole snapshot store
+        if typ == "versioned-files":
+            return [sh, name, "thaw", ".", "--tier", tier]     # catalog-selected current versions
+        return [sh, name, "thaw", scope or ".", "--tier", tier]  # archive
+    if intent == "download":                                    # archive (warm, or cold+ready)
+        return [sh, name, "download", scope or ".", container]
+    # intent == "restore"
+    if typ == "versioned":
+        argv = [sh, name, "restore", point or "latest", container]
+        if path:
+            argv += ["--include", path]
+        return argv
+    if typ == "versioned-files":
+        first = path if (scope == "file" and path) else "."
+        argv = [sh, name, first, container]
+        asof = _vfiles_asof(cfg, job, point)
+        if asof is not None:
+            argv += ["--asof", str(asof)]
+        if tier:
+            argv += ["--tier", tier]
+        return argv
+    return [sh, name, "download", scope or ".", container]      # safety net
+
+
+def _confirm_choice(cfg, job, form) -> dict:
+    """The already-defaulted choice (5.4 query contract). Ill-formed values fall
+    back to their default IN PLACE, so a hand-typed URL always renders 200."""
+    typ = job.get("type")
+    cls = job.get("storage_class", "STANDARD")
+    intent = form.get("intent") or "restore"
+    if intent not in _INTENTS:
+        intent = "restore"
+    if typ == "archive" and intent == "restore":
+        intent = "download"                                    # a Plain copy is downloaded (7.5.5)
+    tier = form.get("tier") if form.get("tier") in estimate_io.RETRIEVAL_TIERS else _default_tier(cls)
+    target = (form.get("target") or "").strip()
+    if not target:
+        try:
+            target = ops.default_target(cfg, job)
+        except Exception:
+            target = f'{cfg.get("RESTORE_ROOT_HOST", "/mnt/user/restore")}/{job["name"]}/'
+    return {"intent": intent, "point": (form.get("point") or "").strip(),
+            "scope": _safe_scope(form.get("scope")), "path": (form.get("path") or "").strip(),
+            "target": target, "tier": tier}
+
+
+def _render_confirm(cfg, job, form, *, errors=None, blocker=None, status_code=200):
+    """Server-render the confirmation page (5.4). Reused for the GET render and for
+    every 400/409 POST re-render (values intact, the field error shown)."""
+    name = job["name"]
+    typ = job.get("type")
+    cls = job.get("storage_class", "STANDARD")
+    cold = cls in points.COLD_CLASSES
+    tz = cron.local_tz()
+    choice = _confirm_choice(cfg, job, form)
+    intent = choice["intent"]
+
+    # Impossible intents render a BLOCKER and no primary button (5.4), unless the
+    # caller already supplied one (a POST-side mount/busy blocker wins).
+    if blocker is None:
+        if intent == "thaw" and not cold:
+            blocker = ("This job is on an instant tier — there is nothing to warm up. "
+                       "Files can be read the second you ask.")
+        elif typ == "archive" and choice["point"]:
+            blocker = ("This is a Plain copy — it keeps no dated restore points, only the "
+                       "current copy. There is nothing to pick by date.")
+
+    region = estimate_io._region(cfg["CONFIG_DIR"])
+    try:
+        prices = load_prices(region, cache_dir=cfg["CACHE_DIR"], live=cfg["PRICES_LIVE"])
+    except Exception:
+        prices = None
+    rec = readiness.recovery_summary(cfg, prices)
+    rjob = next((j for j in rec.get("jobs", []) if j["name"] == name), None)
+    pv = points.view(cfg["CACHE_DIR"], job, tz=tz)
+
+    size_bytes = rjob.get("size_bytes") if rjob else None
+    size_provenance = rjob.get("size_provenance", "assumed") if rjob else "assumed"
+    file_count = rjob.get("file_count") if rjob else None
+    size_gb = (size_bytes / 1_000_000_000) if isinstance(size_bytes, (int, float)) else None
+
+    tiers = _tier_options(cls)
+    quote = _restore_quote(cfg, prices, job, size_gb, file_count, choice["tier"])
+    alt_quote = None
+    if cold and len(tiers) > 1:
+        alt = next((t for t in tiers if t != choice["tier"]), None)
+        if alt:
+            alt_quote = _restore_quote(cfg, prices, job, size_gb, file_count, alt)
+
+    point_label = None
+    for p in pv.get("points", []):
+        if p.get("id") == choice["point"]:
+            point_label = p.get("label")
+            break
+    if point_label is None and pv.get("points"):
+        point_label = pv["points"][0].get("label")
+
+    return render_template(
+        "restore.html", job=job, name=name, intent=intent, choice=choice,
+        rec=rec, rjob=rjob, pv=pv, cold=cold, cls=cls,
+        is_versioned=(typ == "versioned"), is_archive=(typ == "archive"),
+        is_vfiles=(typ == "versioned-files"),
+        size_bytes=size_bytes, size_provenance=size_provenance, file_count=file_count,
+        tiers=tiers, quote=quote, alt_quote=alt_quote, point_label=point_label,
+        blocker=blocker, errors=errors or {},
+        restore_root_host=cfg.get("RESTORE_ROOT_HOST", "/mnt/user/restore"),
+        csrf=security.issue_csrf()), status_code
+
+
+@bp.get("/jobs/<name>/restore")
+def restore_confirm(name):
+    # The confirmation page (5.4): renders the consequence + the typed-name confirm.
+    # A GET mutates nothing and needs no CSRF; it 404s only for an unknown job.
+    cfg = current_app.config
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job is None:
+        abort(404, description=f"There is no job called {name}")
+    return _render_confirm(cfg, job, request.args)
+
+
+@bp.post("/jobs/<name>/restore")
+def restore_start(name):
+    return _mutate_restore(name, thaw_route=False)
+
+
+@bp.post("/jobs/<name>/thaw")
+def thaw_start(name):
+    return _mutate_restore(name, thaw_route=True)
+
+
+def _mutate_restore(name, *, thaw_route):
+    """The ONE place a restore/download/warm-up actually starts (5.4 / 8.10). Every
+    guard is server-side; a wrong or missing typed name never launches."""
+    cfg = current_app.config
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job is None:
+        abort(404, description=f"There is no job called {name}")
+    f = request.form
+    typ = job.get("type")
+    cls = job.get("storage_class", "STANDARD")
+    cold = cls in points.COLD_CLASSES
+    intent = "thaw" if thaw_route else (f.get("intent") or "restore")
+    if intent not in _INTENTS:
+        intent = "restore"
+    if typ == "archive" and intent == "restore":
+        intent = "download"
+
+    # An intent the tier cannot do → 400 re-render with the blocker, launch nothing.
+    if intent == "thaw" and not cold:
+        return _render_confirm(cfg, job, f, status_code=400,
+                               blocker=("This job is on an instant tier — there is nothing to "
+                                        "warm up. Files can be read the second you ask."))
+
+    writes = intent in ("restore", "download")
+    if writes and not _mount_ok(cfg):
+        return _render_confirm(cfg, job, f, blocker=_MOUNT_BLOCKER, status_code=400)
+
+    # The typed-name confirm is the real gate (5.4): no correct name → no work.
+    if (f.get("confirm") or "").strip() != name:
+        return _render_confirm(cfg, job, f, status_code=400,
+                               errors={"confirm": "Type the job name exactly as shown to start."})
+
+    container = None
+    if writes:
+        v = ops.validate_target(cfg, job, (f.get("target") or "").strip())
+        if not v.get("ok"):
+            return _render_confirm(cfg, job, f, status_code=400, errors={"target": v["message"]})
+        container = v["container_path"]
+
+    try:
+        ops.ensure_free(cfg, name)
+    except ops.OpsLocked:
+        return _render_confirm(cfg, job, f, status_code=409,
+                               blocker=(f"{name} is busy — a backup or restore is already "
+                                        "running. Wait for it to finish."))
+
+    kind = {"restore": "restore", "download": "download", "thaw": "thaw"}[intent]
+    argv = _restore_argv(cfg, job, intent, container, (f.get("point") or "").strip(),
+                         _safe_scope(f.get("scope")), (f.get("path") or "").strip(),
+                         f.get("tier") if f.get("tier") in estimate_io.RETRIEVAL_TIERS
+                         else _default_tier(cls))
+    run_id = ops.launch(cfg, argv, job=name, kind=kind, trigger="manual")
+    return redirect(url_for("gui.run_record", name=name, run_id=run_id))
+
+
+@bp.post("/jobs/<name>/thaw/check")
+def thaw_check(name):
+    # Poll a scoped warm-up for a REAL restore (thaw.json). Starts nothing, costs
+    # nothing. NOT the cold test's test-thaw.json — the two files are not
+    # interchangeable (decision 54).
+    cfg = current_app.config
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job is None:
+        abort(404, description=f"There is no job called {name}")
+    thaw = _read_state_json(cfg, name, "thaw")
+    if not thaw:
+        abort(400, description="No warm-up is in progress.")
+    scope = thaw.get("scope") or "."
+    try:
+        cp = ops.run_sync(cfg, [_restore_sh(cfg), name, "thaw-status", scope], timeout=90)
+    except ops.OpsTimeout:
+        flash("The warm-up check did not finish in time — try again.", "note")
+        return redirect(url_for("gui.job_page", name=name))
+    flash(_thaw_check_flash(cp), "note")
+    return redirect(url_for("gui.job_page", name=name))
+
+
+def _thaw_check_flash(cp) -> str:
+    try:
+        d = json.loads((cp.stdout or "").strip().splitlines()[-1])
+    except Exception:
+        return "Checked the warm-up."
+    sampled, ready, pending = d.get("sampled", 0), d.get("ready", 0), d.get("pending", 0)
+    if pending:
+        return f"Checked {sampled} files: {ready} ready, {pending} still warming."
+    return f"Checked {sampled} files: {ready} ready."
+
+
+@bp.post("/jobs/<name>/restore-points/refresh")
+def restore_points_refresh(name):
+    # Re-list the restore points into the cache (7.5.6). A cache refresh, not a
+    # restore: it starts and costs nothing.
+    cfg = current_app.config
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job is None:
+        abort(404, description=f"There is no job called {name}")
+    if points.refresh(cfg, name, job.get("type")):
+        flash("Restore points refreshed.", "success")
+    else:
+        flash("Could not list the restore points — check the destination and try again.", "failure")
+    return redirect(url_for("gui.job_page", name=name))
+
+
+@bp.post("/jobs/<name>/test-restore")
+def test_restore(name):
+    # One-file recovery drill. On a warm tier it launches and lands on the run
+    # record; on a cold tier the FIRST press warms one object and a later press
+    # ("Check now") re-POSTs this same route to resume it (R11 / decision 54).
+    cfg = current_app.config
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job is None:
+        abort(404, description=f"There is no job called {name}")
+    try:
+        ops.ensure_free(cfg, name)
+    except ops.OpsLocked:
+        abort(409, description=f"{name} is busy — a backup or restore is already running. "
+                              "Wait for it to finish.")
+    pending = _read_state_json(cfg, name, "test-thaw")
+    if pending:
+        # Check now: resume the pending cold test synchronously so the flash reflects
+        # the outcome. The script decides "still warming" vs "download it now".
+        try:
+            ops.run_sync(cfg, [_restore_sh(cfg), name, "test"], timeout=90)
+        except ops.OpsTimeout:
+            flash("The warm-up check did not finish in time — try again.", "note")
+            return redirect(url_for("gui.job_page", name=name))
+        still = _read_state_json(cfg, name, "test-thaw")
+        if still:
+            flash(f"Still warming up — ready by ~{_friendly_time(still.get('expected_ready_by'))}.",
+                  "note")
+        else:
+            flash("Test restore complete — the file read back and is kept for you.", "success")
+        return redirect(url_for("gui.job_page", name=name))
+    run_id = ops.launch(cfg, [_restore_sh(cfg), name, "test"], job=name,
+                        kind="test-restore", trigger="manual")
+    return redirect(url_for("gui.run_record", name=name, run_id=run_id))
 
 
 # --- run record + Activity (spec 5.3, 5.5, 8.3, 8.4) -----------------------
