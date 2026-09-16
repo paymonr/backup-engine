@@ -83,7 +83,8 @@ summary:hover{ color:var(--ink); }
 .eyebrow{ font-size:.7rem; font-weight:640; letter-spacing:.12em; text-transform:uppercase;
   color:var(--faint); margin:0 0 var(--sp-3); }           /* reading-page opener (§2.3 preserve) */
 .h{ font-size:20px; line-height:1.3; font-weight:620; letter-spacing:-.005em; margin:0; text-wrap:balance; }
-.subh{ font-size:15px; line-height:1.4; font-weight:620; color:var(--ink); margin:0; }
+.subh{ font-size:15px; line-height:1.4; font-weight:620; color:var(--ink); margin:0;
+  font-family:var(--font-sans); }
 .lbl{ font:11px/1.4 var(--font-mono); text-transform:uppercase; letter-spacing:.12em;
   color:var(--faint); font-variant-numeric:tabular-nums; margin:0; }
 .lead{ color:var(--muted); max-width:66ch; }
@@ -272,17 +273,20 @@ summary:hover{ color:var(--ink); }
 .btn-primary:hover{ background:var(--accent-hover); }
 .btn-ghost{ background:transparent; border-color:transparent; color:var(--muted); }
 .btn-ghost:hover{ color:var(--ink); background:var(--surface-2); }
-.btn-danger{ background:transparent; color:var(--danger); border-color:var(--border-strong); }
+.btn-danger{ background:transparent; color:var(--danger); border-color:var(--border); }
 .btn-danger:hover{ background:var(--danger-bg); }
 .btn-sm{ font-size:.78rem; padding:.3rem .55rem; }
 .btn-xs{ font-size:11px; font-family:var(--font-mono); text-transform:uppercase; letter-spacing:.12em;
   padding:.2rem .5rem; }
 .btn[disabled]{ opacity:.45; cursor:not-allowed; }
 .btn[disabled]:hover{ background:var(--surface); }
-.linklike, .linkish{ font:inherit; background:none; border:0; padding:0; color:var(--accent);
+/* ONE inline link-style class across every screen (skeleton + create/edit). The
+   Ledger mockup called its create-screen variant `.linkish`; the spec names it
+   `.linklike` everywhere, so that is the single class and weight (Night Shift
+   mockup 176). */
+.linklike{ font:inherit; background:none; border:0; padding:0; color:var(--accent);
   cursor:pointer; font-weight:560; }
-.linkish{ font-size:13px; }
-.linklike:hover, .linkish:hover{ text-decoration:underline; }
+.linklike:hover{ text-decoration:underline; }
 
 /* form-screen buttons follow the Ledger blend (6.3; ledger mockup 136–150):
    a visible border, radius 0, transparent ground, so ghost fixes read as buttons. */
@@ -320,6 +324,14 @@ tr.jobrow:hover td{ background:var(--surface); }
 .defgrid dt{ font-size:.84rem; color:var(--faint); padding:.45rem 0; border-top:1px solid var(--border); }
 .defgrid dd{ margin:0; padding:.45rem 0; border-top:1px solid var(--border); }
 .defgrid dt:first-of-type, .defgrid dd:first-of-type{ border-top:0; }
+
+/* compact definition list — the create/edit form's locked Kind / Job-name /
+   "Where it goes" rows (5.8 §5, Ledger mockup 195–198) */
+.def{ display:grid; grid-template-columns:11ch minmax(0,1fr); gap:var(--sp-1) var(--sp-4);
+  align-items:baseline; }
+.def > dt{ font-size:13px; color:var(--faint); }
+.def > dd{ margin:0; }
+.def .subline{ font-size:13px; color:var(--faint); margin-top:2px; }
 
 /* restore-point rows (5.2, 5.4) */
 .rphead{ display:grid; grid-template-columns:22px 130px 92px minmax(0,1fr); gap:var(--sp-3);
@@ -555,6 +567,7 @@ pre#runlog{ max-height:60vh; overflow:auto; }
   .formfoot{ height:auto; flex-wrap:wrap; padding-block:8px; }
   .formfoot .figs{ margin-left:0; flex-basis:100%; white-space:normal; }
   .whose{ grid-template-columns:minmax(0,1fr) 10ch; }
+  .def{ grid-template-columns:minmax(0,1fr); }            /* locked rows stack (Ledger 261) */
 }
 @media (max-width:620px){
   .needs-row{ grid-template-columns:minmax(0,1fr); }
@@ -575,8 +588,13 @@ pre#runlog{ max-height:60vh; overflow:auto; }
    6.4 §5 prefers-reduced-motion (§2.3 preserve)
    ============================================================ */
 @media (prefers-reduced-motion:reduce){
-  *{ animation-duration:.001ms !important; animation-iteration-count:1 !important;
-    transition-duration:.001ms !important; }
+  /* Every animation duration -> .001ms, delays zeroed, pulses off, curves snap
+     (§6.4 §5 / §2.3 preserve) -- pseudo-elements included so the running pulse
+     and the work-bar sweep are covered too. */
+  *, *::before, *::after{
+    animation-duration:.001ms !important; animation-iteration-count:1 !important;
+    animation-delay:0ms !important; transition-duration:.001ms !important;
+    transition-delay:0ms !important; scroll-behavior:auto !important; }
   .workbar::after, #workbar::after{ width:100%; animation:none;
     background:repeating-linear-gradient(90deg, var(--accent) 0 8px, var(--surface-2) 8px 16px); }
   .flash{ animation:none; box-shadow:inset 2px 0 0 var(--accent); }

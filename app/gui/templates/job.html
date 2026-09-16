@@ -29,7 +29,7 @@
 {%- macro hhmm(iso) -%}{% if iso %}{{ iso[11:16] }}{% else %}—{% endif %}{%- endmacro -%}
 {%- macro datelabel(iso) -%}{% if iso %}{{ iso[8:10]|int }} {{ MON[iso[5:7]|int - 1] }}{% endif %}{%- endmacro -%}
 {%- macro dateyear(iso) -%}{% if iso %}{{ iso[8:10]|int }} {{ MON[iso[5:7]|int - 1] }} {{ iso[0:4] }}{% endif %}{%- endmacro -%}
-{%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
+{%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="mono p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
 
 {% set tokstate = 'notrun' if s.state == 'NOT_RUN_YET' else s.state|lower %}
 {% set cls = job.storage_class or 'STANDARD' %}
@@ -160,7 +160,7 @@
           <span class="s">{% if s.next_run %}{{ datelabel(s.next_run) }}{% else %}{{ s.next_run_note or 'paused' }}{% endif %}</span></div>
         <div class="sfig"><span class="k">Streak</span>
           <span class="v">{{ s.streak }} run{{ '' if s.streak == 1 else 's' }}</span>
-          <span class="s">{% if ledger.failed == 0 %}no failures on record{% else %}broken{% if s.last and s.last.outcome in ['failed','aborted'] %} {{ datelabel(s.last.finished_at or s.last.started_at) }}{% endif %}{% endif %}</span></div>
+          <span class="s">{% if ledger.failed == 0 %}no failures on record{% else %}broken{% if s.last and s.last.outcome in ['failed','aborted'] %} {{ dowdate(s.last.finished_at or s.last.started_at) }}{% endif %}{% endif %}</span></div>
         {% if is_archive %}
         <div class="sfig"><span class="k">Copies</span>
           <span class="v">{{ rjob.points_count if rjob else 0 }}</span>
@@ -226,9 +226,14 @@
           </div>
         </div>
         <p class="hint" style="margin-top:var(--sp-3)">
-          {%- if ledger.shown == 0 -%}No runs on record yet.
-          {%- elif ledger.failed == 0 -%}{{ ledger.shown }} runs, none failed. The bars under the strip are how long each run took. Hover any run for its date, outcome and restore point.
-          {%- else -%}{{ ledger.shown }} runs, {{ ledger.failed }} failed. The bars under the strip are how long each run took. Hover any run for its date, outcome and restore point.
+          {%- if ledger.shown == 0 -%}
+          No runs on record yet.
+          {%- else -%}
+          {#- sentence 1: "Thirty" spelled at a full 30-run window, else "<N> runs on record" (5.2) -#}
+          {%- if ledger.shown == 30 %}Thirty runs, {% else %}{{ ledger.shown }} runs on record, {% endif -%}
+          {%- if ledger.failed == 0 %}none failed.{% else %}{{ ledger.failed }} failed.{% endif -%}
+          {#- sentence 2: name the tallest bar (5.2); sentence 3 is fixed -#}
+          {%- if ledger.tall %} The bars under the strip are how long each run took — the tall one is {{ ledger.tall.date }} at <span class="mono">{{ dur(ledger.tall.duration_s) }}</span>, {{ ledger.tall.phrase }}{% if ledger.tall.slow %} — slower than it should be{% else %} and still well inside normal{% endif %}.{% endif %} Hover any run for its date, outcome and restore point.
           {%- endif -%}
         </p>
       </div>
@@ -244,7 +249,7 @@
         <p class="slabel">What is there now</p>
         <dl class="defgrid">
           <dt>Copy as of</dt><dd>{% if rjob and rjob.newest_point %}{{ datelabel(rjob.newest_point.at) }} {{ hhmm(rjob.newest_point.at) }} · last completed run{% else %}no completed run yet{% endif %}</dd>
-          <dt>Files</dt><dd>{% if pv.file_count is not none %}{{ '{:,}'.format(pv.file_count) }}{% else %}not measured yet{% endif %}</dd>
+          <dt>Files</dt><dd>{% if pv.file_count is not none %}<span class="mono">{{ '{:,}'.format(pv.file_count) }}</span>{% else %}not measured yet{% endif %}</dd>
           <dt>Size</dt><dd>{{ prov(humanbytes(pv.size_bytes), pv.size_provenance) if pv.size_bytes is not none else 'not measured yet' }}</dd>
           <dt>Storage tier</dt><dd>{{ vocab.CLASS_NAMES.get(cls, cls).split(' · ')[0] }} <code>{{ cls }}</code></dd>
           <dt>History</dt><dd>{{ pv.note }}</dd>
@@ -435,7 +440,8 @@
   backup {{ ident.source_display or job.source }} --tag {{ s.name }}</pre>
             <button type="button" class="btn btn-sm copy" data-copy="restic -r s3:s3.amazonaws.com/{{ ident.bucket }}/appdata backup {{ ident.source_display or job.source }} --tag {{ s.name }}">Copy</button>
           </div>
-          <p class="hint">Repository password comes from the recovery passphrase. <a class="linklike" href="/setup/about">What these tools are →</a></p>
+          {%- set last_snap = (s.last.snapshot_id if s.last and s.last.snapshot_id else pv.default_point) -%}
+          <p class="hint">{% if last_snap %}Last snapshot id <span class="mono">{{ last_snap }}</span> · tag <span class="mono">{{ s.name }}</span> · {% endif %}repository password comes from the recovery passphrase. <a class="linklike" href="/setup/about">What these tools are →</a></p>
           {% elif is_archive %}
           <p class="hint" style="margin:var(--sp-3) 0">Plain copies are made by <strong>rclone</strong>. Each Plain copy job has its own folder in the bucket; nothing is shared.</p>
           <div class="cmd">
@@ -450,7 +456,7 @@
             <button type="button" class="btn btn-sm copy" data-copy="python3 -m app.engine.vfiles backup {{ s.name }}">Copy</button>
           </div>
           {% endif %}
-          <p class="hint">Schedule <span class="mono">{{ job.schedule }}</span>.</p>
+          <p class="hint">cron <span class="mono">{{ job.schedule }}</span>{% if ledger.unreadable %} · <span class="mono">{{ ledger.unreadable }}</span> unreadable line{{ '' if ledger.unreadable == 1 else 's' }} in the run history{% endif %}.</p>
         </details>
       </div>
 

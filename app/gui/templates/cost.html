@@ -15,7 +15,7 @@
 {%- else -%}{{ b|int }} B
 {%- endif -%}
 {%- endmacro -%}
-{%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
+{%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="mono p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
 {#- a lever is a scratch what-if: highlight it while its value is set in the query
     string (differs from what is saved on the job), spec 5.6. -#}
 {%- macro changed(field) -%}{% if request.args.get(field) is not none %} is-changed{% endif %}{%- endmacro -%}
@@ -63,7 +63,7 @@
   </div>
   {% if cost.delta %}<p class="delta">model <b>{{ money(cost.monthly_total) }}</b> · invoice <b>{{ money(inv.amount) }}</b> · <b>{{ cost.delta.short.split(' · ')[0] }}</b> — {{ cost.delta.verdict }}.</p>{% endif %}
   {% if inv and not inv.tag_scoped and cost.billing.connected %}
-  <p class="sig-note">This invoice is the whole AWS account, not just these backups. Until a cost-allocation tag scopes it (Keys &amp; secrets → Billing), the difference above compares a projection for your folders against everything you pay Amazon.</p>
+  <p class="sig-note">This invoice is the whole AWS account, not just these backups. Until a cost-allocation tag scopes it (Keys &amp; secrets → Billing), the difference above compares a projection for two folders against everything you pay Amazon.</p>
   {% elif not cost.billing.connected %}
   <p class="sig-note">Last invoice is empty — <a class="linklike" href="/setup/keys#billing">Connect AWS billing →</a></p>
   {% endif %}
@@ -161,7 +161,7 @@
         {% for r in cost.restore %}
         <tr>
           <td>{{ r.name }}</td>
-          <td>{{ humanbytes(r.size_bytes) if r.size_bytes is not none else '—' }}</td>
+          <td>{% if r.size_bytes is not none %}<span class="mono">{{ humanbytes(r.size_bytes) }}</span>{% else %}—{% endif %}</td>
           <td>{% if r.warmup %}up to {{ r.warmup.hours[1] or '—' }} h{% else %}none — instant tier{% endif %}</td>
           <td>{% if r.warmup %}{{ r.tier }}{% else %}—{% endif %}</td>
           <td class="num">{{ money(r.amount) }}{% if r.alt_amount is not none %}<span class="s"> · {{ r.alt_tier }} {{ money(r.alt_amount) }}</span>{% endif %}</td>

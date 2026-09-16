@@ -130,13 +130,21 @@ def _job_identity(cfg, job) -> dict:
             "s3": f"s3://{bucket}/{prefix}/", "source_display": source_display}
 
 
+def _dow_date(iso, tz) -> str:
+    """`Fri 28 Aug` — the weekday-and-date label (no time) for a job-page line
+    that names a specific run (streak `broken`, the ledger's tallest bar; 5.2)."""
+    d = status._parse_iso(iso)
+    return status._iso_short(d, tz).rsplit(" ", 1)[0] if d else ""
+
+
 def _ledger(cfg, name, tz, cells=30) -> dict:
     """The `Last 30 runs` ledger strip (spec 5.2): the newest `cells` backup runs,
     oldest-first, padded with dim placeholders, each cell carrying a squared-scale
     bar height. Built here (not from status.job's 14-cell board strip) because the
     job-page ledger is 30 wide; it reuses status._cell/_dim_cell so the cell shape
     matches the Board's exactly (kind == 'backup' only, spec 5.2/6.5)."""
-    records = runs.read_runs(cfg["CACHE_DIR"], name).records
+    res = runs.read_runs(cfg["CACHE_DIR"], name)
+    records = res.records
     backups = [r for r in records if r.kind in runs.BACKUP_KINDS]
     median_s = runs.median_duration_s(backups)
     window = list(reversed(backups[:cells]))                 # oldest-first
@@ -165,9 +173,32 @@ def _ledger(cfg, name, tz, cells=30) -> dict:
     else:
         aria = (f"Last {len(row)} runs for {name}: {ok} OK, {failed} failed"
                 + (f" ({fail_label})." if fail_label else "."))
+    # Ledger hint sentence 2 (spec 5.2): name the tallest bar — its weekday-date,
+    # duration, how it compares to the usual, and whether it is a `slow` cell.
+    tall = None
+    for c in row:
+        if c.get("duration_s") and c["duration_s"] == maxd:
+            tall = c
+            break
+    tall_info = None
+    if tall and median_s:
+        ratio = tall["duration_s"] / median_s
+        if ratio < 1.5:
+            phrase = "about the usual"
+        elif ratio <= 2.5:
+            phrase = "twice the usual"
+        else:
+            phrase = f"{round(ratio)}× the usual"
+        tall_info = {
+            "date": _dow_date(tall["started_at"], tz),
+            "duration_s": tall["duration_s"],
+            "phrase": phrase,
+            "slow": bool(tall.get("slow")),
+        }
     return {"cells": padded, "shown": len(row), "ok": ok, "failed": failed,
             "oldest": row[0]["started_at"] if row else None,
-            "aria": aria, "median_s": median_s, "maxd": maxd}
+            "aria": aria, "median_s": median_s, "maxd": maxd,
+            "unreadable": res.corrupt_lines, "tall": tall_info}
 
 
 def _job_cost_band(cfg, job, prices) -> dict:
@@ -209,6 +240,7 @@ def job_page(name):
         test_restore_price=_test_restore_price(cfg, job_def, prices),
         restore=_restore_band_ctx(cfg, job_def, rec),
         sibling_cold=_sibling_cold(cfg, job_def),
+        dowdate=lambda iso: _dow_date(iso, tz),
         schedule_desc=schedule_desc, csrf=security.issue_csrf())
 
 

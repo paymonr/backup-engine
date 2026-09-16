@@ -217,11 +217,41 @@ error — e.g. a missing source root — rather than silently skipping a backup.
 
 ## Restore runbook
 
-Every job restores via `scripts/restore.sh <job> ...`, run inside the container
+### The GUI is the primary way to get data back
+
+Every job page has a **Get data back** band: pick the restore point (the date) you want, choose the
+whole job or a single folder, and press restore. The GUI runs the same `scripts/restore.sh`
+underneath and shows the run live on its run-record page — an ordinary recovery never needs a shell.
+
+- **Where files land.** A restore is written into a *new* folder under the restore mount — the live
+  source is never touched or overwritten. Inside the container that mount is `/restore`
+  (`RESTORE_ROOT`); on the host it is `/mnt/user/restore` (`RESTORE_ROOT_HOST`), and the GUI prints
+  the host path so what you read matches what you browse. It is a separate, read-write mount,
+  deliberately distinct from the read-only `SOURCE_ROOT`.
+- **One job at a time.** A restore takes the same per-job lock as a backup, so a job's backup and its
+  restore can never run together: **Run now** is refused (HTTP 409) while a restore is in flight, and
+  a restore waits on a running backup.
+- **Everything, as of a date.** A whole-job restore uses the `.` scope — "give me everything this job
+  had as of this point in time" — instead of naming one file or folder.
+- **Warm up first, on a cold tier.** For a thaw-first tier (`GLACIER`/`DEEP_ARCHIVE`) the band warms
+  the data up (`thaw`) and only offers the download once Amazon reports it ready; the readout tells you
+  the expected ready-by time.
+- **Test restore.** The job page's *Recovery readiness* rail can prove a job actually reads back:
+  `restore.sh <job> test` pulls one file into a scratch folder, checks it is non-empty, and stamps the
+  date. On a cold tier it becomes a two-step warm-up-then-check the rail walks you through.
+- **What the GUI reads.** The restore-point list comes from `restore.sh <job> list --json` — a
+  machine-readable listing that takes no lock and is cached, refreshed on demand.
+
+### From a shell (headless)
+
+The same recovery is available on the command line — for a headless box, a scripted recovery, or a
+rebuild. Every job restores via `scripts/restore.sh <job> ...`, run inside the container
 (`docker exec -it backup-engine /app/scripts/restore.sh <job> ...`) or with the same image/config
 locally. The subcommand depends on the job's type (read from `config/jobs.json`); use the job's
 real name, not a pipeline name — e.g. `appdata` or `movies`, the two example jobs in
-[`config/jobs.json.example`](config/jobs.json.example).
+[`config/jobs.json.example`](config/jobs.json.example). `restore.sh <job> list [--json]` lists what
+is recoverable and `restore.sh <job> test` verifies a single file reads back; both are safe to run at
+any time.
 
 ### Versioned jobs (restic)
 

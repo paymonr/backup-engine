@@ -304,7 +304,7 @@
         if (line) line.innerHTML = '<span class="n">' + fmtBytes(d.bytes) + "</span> · <span class=\"mono\">" +
           Number(d.count || 0).toLocaleString() + " files</span> · measured just now" +
           (d.capped ? " (measurement may be incomplete)" : "") +
-          ' · <button type="button" class="linkish" id="remeasure-btn">Re-measure</button>';
+          ' · <button type="button" class="linklike" id="remeasure-btn">Re-measure</button>';
         schedule();
       })
       .catch(function () { if (sizing) sizing.hidden = true; });

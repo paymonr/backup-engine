@@ -62,7 +62,7 @@
     <p class="sm faint" id="measure-line" style="margin-top:4px">
       {% if measured %}<span class="n">{{ '%.2f'|format(est.breakdown.billed_gb) }} GB</span> · <span class="mono">{{ fv.file_count }} files</span> · measured
         {% if is_edit and fv.measured_at %}{{ fv.measured_at[8:10] }} {{ fv.measured_at[5:7] }}{% else %}just now{% endif %} ·
-        <button type="button" class="linkish" id="remeasure-btn">Re-measure</button>
+        <button type="button" class="linklike" id="remeasure-btn">Re-measure</button>
       {% elif fv.source %}<span class="n assumed">measuring…</span>
       {% else %}Pick a folder above to price everything for it.{% endif %}</p>
     <p class="sm faint" id="source-info" hidden></p>
@@ -160,7 +160,7 @@
       <div class="acts">
         <button type="button" class="btn btn-ghost btn-xs" data-fix-type="versioned-files">Use File history instead</button>
         <button type="button" class="btn btn-ghost btn-xs" data-fix-class="STANDARD_IA">Use Instant, cheaper</button>
-        <button type="button" class="linkish" id="save-anyway">Save it anyway ▸</button>
+        <button type="button" class="linklike" id="save-anyway">Save it anyway ▸</button>
         <span class="sm faint">records an acknowledgement on the job</span>
       </div>
     </div>
@@ -191,7 +191,7 @@
           <span class="mono">last {{ fv.keep_last }} · daily {{ fv.keep_daily }} · weekly {{ fv.keep_weekly }} · monthly {{ fv.keep_monthly }}</span> —
           <span class="mono" data-keep-points="tiered">{{ (ko.get('tiered') or {}).get('points', 0) }}</span> restore points over about
           <span class="mono" data-keep-reach="tiered">{{ (ko.get('tiered') or {}).get('reach_days', 0) }}</span> days ·
-          <button type="button" class="linkish" id="advanced-keep">Advanced ▸</button></span></label>
+          <button type="button" class="linklike" id="advanced-keep">Advanced ▸</button></span></label>
       <fieldset class="retention" id="tiered-advanced" data-when-type="versioned" data-when-retention="tiered" hidden style="border:0;padding:0;margin:8px 0 0 34px">
         <div style="display:flex;flex-wrap:wrap;gap:10px 16px">
           <label class="sm">last <input type="number" min="0" name="keep_last" value="{{ fv.keep_last }}" style="width:5ch" class="mono"></label>
@@ -261,7 +261,7 @@
       About <span class="n" id="s-typical">{{ this_typical }}</span> a month once history has built up.
       Your first bill is <span class="n" id="s-first">{{ money(est.projection.first_bill if est else none) }}</span>,
       <span id="first-reason">{{ est.first_bill_reason_text if est else '' }}</span>.
-      <button type="button" class="linkish" data-toggle="new-working">Show working ▸</button></p>
+      <button type="button" class="linklike" data-toggle="new-working">Show working ▸</button></p>
     <div id="new-working" hidden class="sev note" style="margin-top:10px">
       <p id="working-text">{% if est %}{{ '%.2f'|format(est.breakdown.billed_gb) }} GB measured ×
         <span class="mono">${{ '%.3f'|format(est.breakdown.rate_gb_month) }}</span>/GB·mo =
@@ -284,12 +284,12 @@
       </div>
       <p class="sm" style="margin-top:10px">Runs <span id="sched-human">every day at 05:00</span> —
         <span class="mono faint" id="sched-preview">0 5 * * *</span> ·
-        <button type="button" class="linkish" id="sched-advanced-toggle">Advanced ▸</button></p>
+        <button type="button" class="linklike" id="sched-advanced-toggle">Advanced ▸</button></p>
     </div>
     <div id="sched-raw">
       <label class="sm">Schedule (cron) <input name="schedule" id="sched-input" value="{{ fv.schedule }}" class="mono" required></label>
       <p class="sm faint">e.g. <code>0 3 * * *</code> = daily 3am, <code>0 4 * * 0</code> = weekly Sun 4am.
-        <button type="button" class="linkish" id="sched-simple-toggle" hidden>Use the builder</button></p>
+        <button type="button" class="linklike" id="sched-simple-toggle" hidden>Use the builder</button></p>
     </div>
     <label class="radio" for="enabled" style="margin-top:6px"><input type="checkbox" id="enabled" name="enabled" value="1" {{ 'checked' if fv.enabled == '1' }}>
       <span>Run on this schedule</span></label>
@@ -329,7 +329,7 @@
   <div class="formfoot">
     <button type="submit" class="btn btn-primary" id="create-btn" {{ 'disabled' if unacked }}>{{ 'Save changes' if is_edit else 'Create job' }}</button>
     <button type="submit" class="btn btn-ghost" id="create-run-btn" name="run_now" value="1" {{ 'disabled' if unacked }}>{{ 'Save and run it now' if is_edit else 'Create and run it now' }}</button>
-    <a class="linkish" href="{{ url_for('gui.job_page', name=fv.name) if is_edit else url_for('gui.index') }}">Cancel</a>
+    <a class="linklike" href="{{ url_for('gui.job_page', name=fv.name) if is_edit else url_for('gui.index') }}">Cancel</a>
     <span class="figs" id="foot-figs">a typical month — this job <span class="n" id="foot-job">{{ dash(fv.source, this_typical) }}</span><!--
       -->{% if is_edit %} <span id="foot-was" {{ '' if (diff or {}).get('footer_was') else 'hidden' }}>(was <span>{{ (diff or {}).get('footer_was') }}</span>)</span>{% endif %} ·
       all jobs <span class="n" id="foot-all">{{ dash(fv.source, all_typical) }}</span> &nbsp;<a href="{{ url_for('gui.cost_page_view') }}">over time →</a></span>
@@ -341,7 +341,7 @@
     Prices: {{ 'live AWS price list' if price_stamp.kind == 'live' else 'bundled table' }}, {{ price_stamp.region }},
     {{ 'fetched' if price_stamp.kind == 'live' else 'captured' }} {{ price_stamp.date or '—' }}.
     {% if price_stamp.live_failed %}— the live list could not be fetched.{% endif %}
-    <button type="button" class="linkish" id="live-toggle" data-kind="{{ price_stamp.kind }}" style="letter-spacing:0;text-transform:none">
+    <button type="button" class="linklike" id="live-toggle" data-kind="{{ price_stamp.kind }}" style="letter-spacing:0;text-transform:none">
       {{ 'Back to the bundled table ▸' if price_stamp.kind == 'live' else 'Use live AWS prices ▸' }}</button></p>
 
   <noscript><button type="submit" name="recalc" value="1" class="btn btn-ghost">Recalculate</button></noscript>

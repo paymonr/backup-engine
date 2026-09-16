@@ -32,24 +32,28 @@
         <td style="text-align:left" class="stamp">{{ c.verified_human or '—' }}</td>
         <td style="text-align:left">
           {% if c.code == 'destination' %}
+            {# Probe now stays as a re-probe affordance (§5.10 Fix column); the
+               "Set up the destination →" fix link only when the check is not ok. #}
             <form method="post" action="/setup/probe" style="display:inline">
               <input type="hidden" name="csrf" value="{{ csrf }}">
               <button type="submit" class="btn btn-sm">Probe now</button>
             </form>
-            <a class="linkish" href="/setup/destination">Set up the destination →</a>
+            {% if c.state != 'ok' %}
+            <a class="linklike" href="/setup/destination">Set up the destination →</a>
+            {% endif %}
           {% elif c.code == 'versioning' and c.state == 'unknown' %}
             <form method="post" action="/setup/versioning-confirmed" style="display:inline">
               <input type="hidden" name="csrf" value="{{ csrf }}">
               <button type="submit" class="btn btn-sm">Mark as confirmed</button>
             </form>
           {% elif c.code == 'versioning' and c.state == 'fail' %}
-            <a class="linkish" href="/setup/destination">Fix the destination →</a>
+            <a class="linklike" href="/setup/destination">Fix the destination →</a>
           {% elif c.code == 'passphrase' and c.state != 'ok' %}
-            <a class="linkish" href="/setup/keys#RESTIC_PASSWORD">Set the passphrase →</a>
+            <a class="linklike" href="/setup/keys#RESTIC_PASSWORD">Set the passphrase →</a>
           {% elif c.code == 'jobs_scheduled' and c.state != 'ok' %}
-            <a class="linkish" href="/jobs/new">Create a job →</a>
+            <a class="linklike" href="/jobs/new">Create a job →</a>
           {% elif c.code == 'restore_tested' and c.state != 'ok' and c.fix_url %}
-            <a class="linkish" href="{{ c.fix_url }}">Test a restore →</a>
+            <a class="linklike" href="{{ c.fix_url }}">Test a restore →</a>
           {% endif %}
         </td>
       </tr>
@@ -58,11 +62,11 @@
   </table>
 
   <p class="hint" style="margin-top:var(--sp-4)">
-    <a class="linkish" href="/setup/destination">Set up the destination →</a>
+    <a class="linklike" href="/setup/destination">Set up the destination →</a>
     &nbsp;·&nbsp;
-    <a class="linkish" href="/setup/keys">Keys &amp; secrets →</a>
+    <a class="linklike" href="/setup/keys">Keys &amp; secrets →</a>
     &nbsp;·&nbsp;
-    <a class="linkish" href="/setup/about">About this app →</a>
+    <a class="linklike" href="/setup/about">About this app →</a>
   </p>
 
   <div class="sig sig-note" style="margin-top:var(--sp-5)">

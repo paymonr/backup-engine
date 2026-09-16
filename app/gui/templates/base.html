@@ -27,7 +27,7 @@
     <div class="topbar-right">
       <a class="chip" href="/setup"
          title="This GUI has no authentication — put it behind a reverse proxy or SSO. Never expose it directly to the internet.">LAN only &middot; no auth</a>
-      <time class="clock mono" id="be-clock"{% block clock_attrs %}{% endblock %}>{% block clock %}{% endblock %}</time>
+      <time class="clock mono" id="be-clock" data-tz="{{ tz }}"{% block clock_attrs %}{% endblock %}>{% block clock %}{% endblock %}</time>
     </div>
   </div>
 </header>
@@ -101,14 +101,28 @@
   try {
     var c = document.getElementById("be-clock");
     // Polling pages (the Board) server-render the clock with a "refreshed N s ago"
-    // segment and drive it themselves; leave that alone. Otherwise fill it here.
+    // segment and drive it themselves; leave that alone. Otherwise fill it here in
+    // the CONTAINER's zone with its short label (spec 5.15: "Tue 15 Sep 2026 · 07:42
+    // UTC"), not browser-local time. `data-tz` carries the container TZ.
     if (c && !c.textContent.trim()) {
-      var tick = function () {
-        var d = new Date();
-        var day = d.toLocaleDateString("en-GB", {weekday: "short", day: "2-digit", month: "short", year: "numeric"});
-        var t = d.toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit"});
-        c.textContent = day + " · " + t;
+      var tz = c.getAttribute("data-tz") || "";
+      var fmt = function () {
+        var opts = {weekday: "short", day: "2-digit", month: "short", year: "numeric",
+                    hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short"};
+        if (tz) { opts.timeZone = tz; }
+        var parts = {};
+        try {
+          new Intl.DateTimeFormat("en-GB", opts).formatToParts(new Date())
+            .forEach(function (p) { parts[p.type] = p.value; });
+        } catch (e) {                                   // an unknown TZ -> browser-local
+          delete opts.timeZone;
+          new Intl.DateTimeFormat("en-GB", opts).formatToParts(new Date())
+            .forEach(function (p) { parts[p.type] = p.value; });
+        }
+        return parts.weekday + " " + parts.day + " " + parts.month + " " + parts.year +
+               " · " + parts.hour + ":" + parts.minute + " " + (parts.timeZoneName || "");
       };
+      var tick = function () { try { c.textContent = fmt(); } catch (e) {} };
       tick();
       setInterval(tick, 30000);
     }
