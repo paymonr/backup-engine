@@ -217,10 +217,11 @@ button on the Board's Jobs band head (ruling R4), not a nav item. The brand `bac
 | `GET /jobs` | — | — | 301 → `/` | |
 | `GET /jobs/<name>` | Job page | dense + 304px rail | Everything about this one job | NEW |
 | `GET /jobs/<name>/runs/<run_id>` | Run record | read 780px | What happened in this run, and why did it fail? | NEW |
-| `GET /jobs/<name>/restore` | Get data back (confirm + operation) | read 780px | What exactly is about to happen, what will it cost, how long will it take? | NEW |
+| `GET /jobs/<name>/restore` | Get data back (the confirmation; `POST` to the same path starts the work and redirects to the run record, which is the live operation) | read 780px | What exactly is about to happen, what will it cost, how long will it take? | NEW |
 | `GET /jobs/new`, `GET /jobs/<name>/edit`, `POST /jobs` | Job setup | form 960px | (create/edit — section 5.8/5.9) | existing (`routes.py:178-197,244-278`) |
 | `GET /cost` | Cost workbench | dense | Is this model telling me the truth, and what will this cost over time? | `/estimate` (`routes.py:312-342`); `GET /estimate` 301 → `/cost` |
 | `GET /activity` | Activity | dense | What has this machine actually done, across all jobs? | the orphaned `/logs` (kept as a raw view) |
+| `GET /activity/<run_id>` | System run record | read 780px | What happened in this system operation (usage refresh, billing check, probe, destination setup)? | NEW — the same template as `/jobs/<name>/runs/<id>`, for the records whose `job` is null |
 | `GET /setup` | Setup readiness | read | Is this install able to back up — and able to restore? | `/provision` picker's "what next" role |
 | `GET /setup/destination` (+ the three paths) | Destination | read | Where do backups go, and can this container write there? | `/provision`, `/provision/manual`, `/provision/manual/render`, `/provision/scripted`, `/provision/validate`, `/provision/automated` (all 301 to the new path; POST targets move) |
 | `GET/POST /setup/keys` | Keys & secrets | read | What credentials does this hold, and which are real? | `/config` (301) |
@@ -230,10 +231,14 @@ Mutating and JSON endpoints (all listed with their contracts in section 8): `POS
 `/pause`, `/resume`, `/delete`, `/restore`, `/thaw`, `/thaw/check`, `/test-restore`,
 `/restore-points/refresh`; `GET /status.json`, `/jobs/<name>/status.json`,
 `/jobs/<name>/runs/<run_id>.json`, `/jobs/<name>/runs/<run_id>/log`, `/jobs/<name>/restore-points.json`,
-`/activity.json`, `/cost.json`, `/jobs/estimate.json`, `/jobs/browse`, `/jobs/source-size`;
-`POST /costs/refresh`, `/costs/billing`, `/costs/billing/refresh`, `/setup/probe`,
+`/activity.json`, `/activity/<run_id>.json`, `/activity/<run_id>/log`, `/cost.json`,
+`/jobs/estimate.json`, `/jobs/browse`, `/jobs/source-size`;
+`POST /costs/refresh`, `/costs/scenario`, `/costs/billing/refresh`, `/setup/probe`,
 `/setup/versioning-confirmed`; `GET /logs` (raw tail, unchanged). `GET /estimate.json` stays as an
-alias of `/cost.json`.
+alias of `/cost.json`. `POST /costs/billing` is **removed**: the Cost Explorer credential is edited in
+exactly one place, Keys & secrets (5.12), and two write-only forms over one secret with two save routes
+is how a value ends up half-saved. `GET /costs/billing` 301s to `/setup/keys#billing` so any old link
+lands somewhere true.
 
 First-run gate: when `config_io.is_provisioned()` is false, `/`, `/cost`, `/activity`, `/jobs/new` and
 every job route redirect (302) to `/setup`. `/setup/*` never redirects. The deploy health gate hits `/`
@@ -243,7 +248,9 @@ Navigation graph (who links to whom):
 - Board → job page (row / job name), run record (strip cell, "open the run record →"), `/cost`, `/setup`
   (needs-you rows, the chip), a job page's restore band or rail ("Test a restore →"), `/setup/destination`
   ("Fix the permission →"), `/jobs/new`.
-- Job page → run record (ledger cells, failure record), `/jobs/<name>/restore` (Start restore),
+- Job page → run record (ledger cells, failure record), `/jobs/<name>/restore` (the Get data back band's
+  GET form: `Start restore →` / `Warm up first — up to 12 h →` / `Download now →`, and the cold-store
+  blocker's warm-up link),
   `/cost`, `/jobs/<name>/edit`, `/setup/about` ("What these tools are →"), a sibling job's restore band.
 - Run record → its job page, Activity, the fix destination named in its cause/fix block.
 - Activity → run record (each row), job page (job tag).
@@ -301,14 +308,34 @@ The two places the create/edit-job screen differs (blend vocabulary wins there, 
 Job type names do NOT differ: the create screen's radios read `Snapshot backup · versioned`,
 `File history · versioned-files`, `Plain copy · archive` (ruling R1 is global).
 
-Type line per type (job page header, Board hover, create radios' `.why`): Snapshot backup — "Roll the
-whole folder back to any night. Encrypted, de-duplicated, and it needs a tier it can read every run.";
-File history — "Keeps every version of each file. Restores one file at a time, and works on cold
-storage."; Plain copy — "Cheapest. The current state of the folder, no history."
+Type line on the job page header (`.typeline`) and in the Board row hover — the Night Shift sentences,
+which are the vocabulary table's own: Snapshot backup — `Snapshot backup — a point in time, so you can
+restore any date.`; Plain copy — `Plain copy — a straight copy of big, static files. No history.`;
+File history — `File history — keeps every version of every file.` The create/edit screen's radio
+`.why` sentences (5.8 §3.1) are the blend's and appear only there; they are never used on a skeleton
+screen.
 
-Keep-rule sentences by `retention.type`: `tiered` → `Last <l> · one a day for <d> days · one a week for
-<w> weeks · one a month for <m> months`; `days` → `Everything for <N> days`; `count` → `Just the last
-<N>`; `keep_all` → `Keep everything`.
+Where the internal term may still appear (the pages the vocabulary test exempts, 10.3): `/setup/about`
+(the glossary, exempt from every term); `/setup/destination` and its sub-paths (exempt from `OpenTofu`,
+which names the tool that creates the bucket); `/setup/keys` (exempt from `restic` and `repository`,
+which appear only inside the env key names `RESTIC_PASSWORD` and `RESTIC_REPOSITORY`). Everywhere else
+the internal term is confined to `<code>`, `.term`, `.cmd`, `.errline` and `details.tooldetail`.
+
+Keep-rule sentences by `retention.type`, in two named forms — one concept, two grammars, and every
+screen names which one it uses (`vocab.keep_rule_label(retention)` / `vocab.keep_rule_prose(retention)`):
+
+| `retention.type` | `keep_rule_label` — the `·` form, for `.defgrid` rows, table cells and Board hover | `keep_rule_prose` — the comma/"then" form, for inline sentences |
+|---|---|---|
+| `tiered` | `Last <l> · one a day for <d> days · one a week for <w> weeks · one a month for <m> months` | `last <l>, then one a day for <d> days, one a week for <w> weeks, one a month for <m> months` |
+| `days` | `Everything for <N> days` | `everything for <N> days` |
+| `count` | `Just the last <N>` | `just the last <N>` |
+| `keep_all` | `Keep everything` | `Keep everything` |
+
+`keep_rule_label` is used by 5.2 "How it is set up", the Board row hover and 5.9's `was:` readouts;
+`keep_rule_prose` by 5.2's restore-point hint and 8.5's `keep_rule_prose` member. One third form exists
+and only on the create/edit screen, where the blend's vocabulary wins: `keep_rule_compact` —
+`last 3 · daily 7 · weekly 4 · monthly 6` — inside the tiered option's `.why` line (5.8 §3.5). Those
+three are the whole set; nothing invents a fourth.
 
 ### 4.4 The mono law
 
@@ -323,7 +350,10 @@ topbar chip, clock, stamps, legends and section counts are mono. A number in a s
 
 Six levels on two axes. PROSPECTIVE levels describe a configuration: they render inline beside the
 control that causes them and never carry a timestamp. RETROSPECTIVE levels describe an event: they
-always carry a time and a link to the record, and never a fix button. Every signal encodes four
+always carry a time and a link to the record, and never a fix button **inside the signal box** — when
+the failure's error class is recognised, the `WHY THIS HAPPENS` / `WHAT TO DO` columns render directly
+beneath the signal (outside `.sig`'s body, in their own `.grid2`), and the fix button lives in the
+`WHAT TO DO` column. The signal itself stays a statement of what happened. Every signal encodes four
 channels at once — left rule, ground, label word, and a 12×12 stroked SVG glyph in `currentColor`
 (never an emoji) — so colour is never the only carrier.
 
@@ -334,7 +364,7 @@ channels at once — left rule, ground, label word, and a 12×12 stroked SVG gly
 | 3 | prospective | `sig-warning` | 2px `--warn` | `--warn-bg` | `Warning` in `--warn` | outline triangle `<path d="M6 1.4 11.1 10.6H0.9Z"/><path d="M6 4.6v2.6"/><path d="M6 8.9v.2"/>` stroke 1.3 | Will cost money or surprise you later. Nothing is stopped. |
 | 4 | prospective | `sig-blocker` | 3px `--danger` | `--danger-bg` | `Blocker` in `--danger` | filled octagon `<polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill=currentColor/>` | Disables the primary action, names the two ways out, jumps to the control. |
 | 5 | retrospective | `sig-success` | 2px `--ok` | `--ok-bg` | `Done` in `--ok` | circle-check `<circle cx=6 cy=6 r=5/><path d="M3.6 6.2 5.3 7.9 8.5 4.4"/>` stroke 1.4 round | Only ever a moment after you press something; auto-dismisses after 7 s. |
-| 6 | retrospective | `sig-failure` | 3px `--danger` | `--danger-bg` | `Failed` in `--danger` | stroked octagon with X `<polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill=none/><path d="M4.4 4.4 7.6 7.6M7.6 4.4 4.4 7.6"/>` stroke 1.3 | A run that ended badly: time, verbatim error in mono, exit code, cause and fix, link to the record. Never shares a shape with Done. |
+| 6 | retrospective | `sig-failure` | 3px `--danger` | `--danger-bg` | `Failed` in `--danger` | stroked octagon with X `<polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill=none/><path d="M4.4 4.4 7.6 7.6M7.6 4.4 4.4 7.6"/>` stroke 1.3 | A run that ended badly: time, verbatim error in mono, exit code, link to the record — inside the box. Cause and fix render under the box as two `.grid2` columns, and the fix button sits in `WHAT TO DO`. Never shares a shape with Done. |
 
 Base `.sig`: `display:grid; grid-template-columns:16px minmax(0,1fr); gap:.75rem; align-items:start;
 padding:.75rem 1rem; border-left:2px solid transparent`. `.glyph{margin-top:2px}`; `.label` mono .68rem/600
@@ -359,14 +389,29 @@ inherits, plus a text stamp where the detail matters.
 | PROJECTED | no class | no underline, `--ink` | Computed by the model from the inputs above. | — |
 
 The inheritance rule: a projected figure carries the weakest provenance of its inputs, on the order
-assumed < measured < invoiced; a projection with only measured inputs carries no mark. Concretely
-(`estimate_io.provenance_of(...)`, section 7.9): the size input is `measured` when a `measured` record
-exists on the job (or the usage cache holds the prefix), else `assumed`; the change-rate input is
-`assumed` whenever it is > 0 and the figure includes any old-versions cost (versioning + rotation > 0);
-bundling is `assumed` when `bundled` is true. So for the example: `First bill $1.39` is `assumed` (its
-month-1 version store rests on the 1% guess), `By month 6 $2.67` and `Every month after $2.69` are
-`assumed`, `Storing your files $1.21` is `measured`, manga's `$1.85/mo` at 0% change is `measured`.
-Measure the folder and set 0% change, and the same figure goes solid and bright.
+assumed < measured < invoiced. `estimate_io.provenance_of(...)` (section 7.9) therefore returns exactly
+two values for a COMPUTED figure — `assumed` when any input is assumed, `projected` otherwise.
+`measured` and `invoiced` are reserved for OBSERVED figures: a size something walked, a byte count read
+out of the bucket, a number Amazon billed. A projection built only from measured inputs loses its dotted
+line and returns to plain `--ink` with **no underline at all** — a solid measured line under a computed
+dollar figure would claim that the dollars were observed, which they were not.
+
+Concretely: the size input is `measured` when a `measured` record exists on the job (or the usage cache
+holds the prefix), else `assumed`; the change-rate input is `assumed` whenever it is > 0 and the figure
+includes any old-versions cost (versioning + rotation > 0); bundling is `assumed` when `bundled` is
+true. So for the example: `First bill $1.39`, `By month 6 $2.67` and `Every month after $2.69` are
+`assumed` (their version store rests on the 1% guess); `52.71 GB`, `1.78 TB` and `In the bucket now
+1.86 TB` are `measured`; `$3.98` is `invoiced`; manga's `$1.85/mo` at 0% change is `projected` and
+prints with no mark at all, exactly as the mockups draw it. Measure the folder and set 0% change and
+the money figure simply loses its dotted line — that, not a new line, is what "the assumption is gone"
+looks like.
+
+A total over several jobs is a computed figure like any other and takes the weakest mark among the jobs
+it sums: `$4.54` includes appdata's assumed `$2.69`, so on every skeleton screen it renders
+`<span class="p-assumed">$4.54</span>` — the Board's `The model says` figure, the Board's per-job totals
+row and the cost view's totals row. The mockups left totals unmarked; the rule is applied uniformly
+instead (Appendix B, decision 46). The create/edit screen is the one exception and marks by size alone
+(5.8 §3.6).
 
 `.price-stamp`: inline-flex, mono .72rem `--muted`, `1px solid var(--border)` with
 `border-bottom-style:dotted`, radius 2px, padding .15rem .4rem; text `prices: bundled table 2026-08-27`.
@@ -379,12 +424,19 @@ projected` (swatches are `<i>` elements carrying the real border styles). `.delt
 `model <b>$4.54</b> · invoice <b>$3.98</b> · <b>+14.1%</b> — <verdict>`.
 
 Delta verdict words (`estimate_io.delta_verdict(model, invoice)`): difference = model − invoice, pct =
-difference / invoice. |pct| ≤ 10% → `close enough to trust, and it errs on the expensive side` (model
-higher) / `close enough to trust, and it errs on the cheap side` (model lower); 10% < |pct| ≤ 25% →
+difference / invoice. |pct| ≤ 15% → `close enough to trust, and it errs on the expensive side` (model
+higher) / `close enough to trust, and it errs on the cheap side` (model lower); 15% < |pct| ≤ 30% →
 `model runs high — worth a look at the assumptions` / `model runs low — worth a look at the
-assumptions`; |pct| > 25% → `far apart — check the assumptions and whether the invoice covers more
-than these backups`. The short form in the `Difference` figure's sub-line: `+14.1% · model runs high` /
-`−3.2% · model runs low` / `±0.0% · matches`.
+assumptions`; |pct| > 30% → `far apart — check the assumptions and whether the invoice covers more
+than these backups`. The bands are 15/30, not 10/25, so that the example's +14.1% reads `close enough
+to trust` exactly as the mockup prints it (Appendix B, decision 41).
+
+The short form printed in the `Difference` figure's sub-line is independent of those bands: it is
+always `<signed pct> · <direction>` where direction is `model runs high` (model > invoice), `model runs
+low` (model < invoice) or `matches` (|pct| < 0.05%) — `+14.1% · model runs high`, `−3.2% · model runs
+low`, `±0.0% · matches` — exactly as the mockup shows it. The colour of the `Difference` value keeps its
+own, tighter threshold (`--ok` when |pct| ≤ 10%, `--warn` above it) because the mockup prints the
+example's `+$0.56` in `--warn` while the sentence beside it already reads `close enough to trust` (R6).
 
 ### 4.7 Job states — the state token
 
@@ -446,8 +498,8 @@ Copy per worst state (`status.verdict()` picks the worst job by the sort order i
 
 | Worst state | h2 | sub | button |
 |---|---|---|---|
-| Failed (example) | `manga has not backed up since Sunday. Amazon refused a delete — one permission is missing from the key this machine uses.` (the second sentence is the error class's one-line cause, section 7.4; unknown class → `The run stopped with an error; open the record to see it.`) | `Sun 13 Sep 04:00 · failed after 1 h 07 m · 1 of 2 jobs failing · next run tomorrow 05:00, in 21 h 18 m` | `Fix the permission →` (the error class's fix label; unknown class → `Open the run record →`) |
-| Overdue | `<job> should have run at <HH:MM> and did not. The schedule is on, but nothing was recorded.` — when `crontab_stale` is true the second sentence is `The scheduler is running an older schedule; restart the container.` | `expected <Dow D Mon HH:MM> · last run <relative> · <N of M> jobs overdue` | `Open <job> →` |
+| Failed (example) | `manga has not backed up since Sunday. Amazon refused a delete — one permission is missing from the key this machine uses.` (the second sentence is the error class's `verdict` string, section 7.4 — **not** its `cause`, which is longer and is used on the job page; unknown class → `The run stopped with an error; open the record to see it.`) | `Sun 13 Sep 04:00 · failed after 1 h 07 m · 1 of 2 jobs failing · next run tomorrow 05:00, in 21 h 18 m` | `Fix the permission →` (the error class's fix label; unknown class → `Open the run record →`) |
+| Overdue | `<job> should have run at <HH:MM> and did not. The schedule is on, but nothing was recorded.` — when `crontab_stale` is true the second sentence is `The schedule file on disk does not match your jobs; restart the container.` | `expected <Dow D Mon HH:MM> · last run <relative> · <N of M> jobs overdue` | `Open <job> →` |
 | Running | `<job> is running now.` | `started <HH:MM> · <elapsed> so far · usually ~<median>` (omit the last clause with no median) | `Watch it in Activity →` |
 | All OK | `Everything ran. <Both jobs / All N jobs> backed up on schedule and nothing needs you.` (one job: `appdata backed up on schedule and nothing needs you.`) | `appdata 05:00 · 4 m 12 s · manga Sun 04:00 · 2 h 09 m · next run tomorrow 05:00, in 21 h 18 m` (one segment per job, newest first, then the next run) | `Open <most recently run job> →` |
 | Paused only / Not run yet only | `Nothing has run yet.` (not run yet) / `Every job is paused.` | `<N> jobs · next run —` | `Run <job> now` (POST) / `Resume <job>` |
@@ -461,17 +513,22 @@ the countdown ticks every second client-side from `next_scheduled` in the JSON.
 `.slabel` `Needs you` + `<span class="cnt">· <N></span>`. `.needs{display:grid; gap:.75rem}`. Each
 `.needs-row`: `grid-template-columns:minmax(0,1fr) 170px; gap:.75rem; align-items:center;
 border:1px solid var(--border); border-left:0`; `.is-blocker{border-color:var(--danger-border)}`;
-`.is-warning{border-color:var(--warn-border)}`; `.act{padding-right:1rem; display:flex;
+`.is-warning{border-color:var(--warn-border)}`; `.is-advice{border-color:var(--border)}`;
+`.act{padding-right:1rem; display:flex;
 justify-content:flex-end}`. Under 620px one column, `.act` left-aligned with `padding:0 1rem .75rem 1rem`.
-Order: blockers, then warnings, then setup gaps. Empty → the band collapses to one `--faint` line
+Order: blockers, then warnings, then advice, then setup gaps (a setup-gap row keeps its own level but
+sorts after the job rows of that level). Empty → the band collapses to one `--faint` line
 `Nothing needs you.`
 
 Row sources (`status.needs_you()`, section 7.7): (a) each job whose last failed run classifies as a
 blocker error class (section 7.4) → BLOCKER; (b) `crontab_stale` → WARNING; (c) each failing Setup
 readiness check (section 5.10) → BLOCKER for the passphrase check, WARNING for the others; (d) a
-restore mount that is missing while at least one job exists → WARNING; (e) a warm-up that is ready
-to download → NOTE-level row with `[Download now →]`. An acknowledged create-screen blocker
-(section 5.8 §3.3) never appears here.
+restore mount that is missing while at least one job exists → WARNING; (e) a warm-up that is ready to
+download → ADVICE, not note: it carries a button, and a note by definition has "no rule, no ground, no
+label, nothing to do" (4.5). It renders as the Advice signal (`sig-advice`, label `Advice`, the hollow
+circle-dot glyph, `.needs-row.is-advice`) with the copy `<strong>manga is warmed up.</strong> The files
+are readable until Tue 22 Sep, then they go cold again.` and `btn btn-sm` `Download now →` →
+`/jobs/manga#restore-band`. An acknowledged create-screen blocker (section 5.8 §3.3) never appears here.
 
 Blocker row (the IAM example):
 ```
@@ -490,7 +547,12 @@ scheduled run then succeeds.
 `<strong>manga cannot finish a run.</strong>`; `./setup.sh` in `<code>`. `.errline`: mono .82rem `--ink`,
 `background:var(--bg); border:1px solid var(--danger-border); padding:.4rem .5rem; display:block;
 overflow-x:auto; white-space:pre; margin:.45rem 0`. Generic blocker row: `<strong><job> cannot finish a
-run.</strong> <cause>` · errline · hint `<fix>` · hint `<time> · open the run record →` · button `<fix label>`.
+run.</strong> <board>` · errline · hint `<fix>` · hint `<time> · open the run record →` · button
+`<fix label>`, where `<board>` is the error class's `board` template filled with the job's schedule
+words — `{dow}` = the day the schedule fires (`Sunday`, `day`, `Monday and Thursday`, from
+`cron.describe`) and `{since}` = the date of the last OK run (`6 September`) or `the first run` when
+there has never been one. When the class has no `board` template, `needs_you()` falls back to its
+`cause` (7.4), which always reads as a standalone sentence.
 
 Warning row (restore never tested):
 ```
@@ -500,8 +562,8 @@ nothing has yet proved it can actually read your snapshots back.
 (hint) A test pulls one file into a scratch folder and costs about a cent.
                                                      [ Test a restore → ]  (→ /jobs/<newest snapshot job>#rail)
 ```
-Other warning rows: `The scheduler is running an older schedule. Restart the container so your latest
-job settings take effect.` [`How →` → `/setup`]; `Nowhere to put restored files yet. Add the path
+Other warning rows: `The schedule file on disk does not match your jobs. Restart the container so your
+latest job settings take effect.` [`How →` → `/setup`]; `Nowhere to put restored files yet. Add the path
 mapping /mnt/user/restore → /restore to this container (read/write) and restart it.` [`How →` →
 `/setup`]; `Bucket versioning could not be checked with the backup key. Confirm it is on in the AWS
 console, then mark it here.` [`Open Setup →`]; readiness rows reuse their failing sentence (5.10).
@@ -522,7 +584,7 @@ border-bottom:1px solid var(--border); vertical-align:top`; `.num` right mono ta
 | 3 | `Last run` | `.cell2`: `.v` mono .92rem `--ink` `04:00` over `.s` mono .78rem `--faint` `Sun, 2 d ago`; never ran → `—` / `never` | |
 | 4 | `Took` | `.v` `1 h 07 m` (`--danger` if failed, `--warn` if slow) over `.s` `stopped early · ~2 h 12 m` / `~4 m 08 s typical` / `no typical yet` | `col-took`, hidden < 900px |
 | 5 | `Next run` | `Sun 04:00` / `in 4 d 20 h`; paused → `—` / `paused`; not computable → `—` / `can't compute this schedule` | |
-| 6 | `Last 14 runs` | the run strip (section 6.5) | `col-strip` `width:168px`, hidden < 900px |
+| 6 | `Last 14 runs` | the run strip (section 6.5) | `col-strip` `width:168px`, hidden < 900px. "Runs" means backup runs: the strip and the counts beside it are over `kind == "backup"` records only, so a Sunday restore is never a green cell and never changes `13 OK in 14 runs` |
 | 7 | `Size` (`.num`) | `.v` `<span class="p-measured">1.78 TB</span>` over `.s` `232,021 files`; unmeasured → `.p-assumed` `20 GB` / `assumed` | |
 | 8 | `Per month` (`.num`) | `.v` `$1.85` over `.s` `projected`; appdata `.v` `<span class="p-assumed">$2.69</span>` / `settles month 6`; keep_all → `still climbing`; unavailable → `—` / `no price yet` | |
 
@@ -544,7 +606,7 @@ Head: `.slabel` `What it costs`; right `.more.linklike` `Open the full cost view
 |---|---|---|
 | `In the bucket now` | `<span class="p-measured">1.86 TB</span>` | `measured 14 Sep 07:40 · 2 folders` |
 | `Last invoice` | `<span class="p-invoiced">$3.98</span>` | `August 2026 · the real bill` |
-| `The model says` | `$4.54<span class="s"> /mo</span>` | `both jobs, once settled` (`all jobs, once settled` for N ≠ 2; `at least` prefix when any job keeps everything) |
+| `The model says` | `<span class="p-assumed">$4.54</span><span class="s"> /mo</span>` (the total inherits the weakest mark among the jobs it sums, 4.6 — `.p-assumed` here because appdata's `$2.69` is assumed; unmarked when every job's figure is `projected`) | `both jobs, once settled` (`all jobs, once settled` for N ≠ 2; `at least` prefix when any job keeps everything) |
 | `Difference` | `+$0.56` in `--warn` (`--ok` when |pct| ≤ 10%) | `+14.1% · model runs high` |
 
 Delta line `.delta`: `model <b>$4.54</b> · invoice <b>$3.98</b> · <b>+14.1%</b> — close enough to trust,
@@ -560,8 +622,8 @@ the bill` (num). Rows: `manga` · `<span class="mono p-measured">1.78 TB</span> 
 split` (hint); `appdata` · `<span class="mono p-measured">52.71 GB</span> <span class="hint">+ <span
 class="p-assumed">~11.6 GB</span> of old versions</span>` · `Instant <code>STANDARD</code>` · `<span
 class="p-assumed">$2.69</span> <span class="hint">/mo</span>` · `not split`; totals row (`colspan=3`,
-hint) `Both jobs, every month once settled` · `<strong class="mono">$4.54</strong>` · `<span class="mono
-p-invoiced">$3.98</span>`.
+hint) `Both jobs, every month once settled` · `<strong class="mono p-assumed">$4.54</strong>` · `<span
+class="mono p-invoiced">$3.98</span>`.
 
 Note: `The bill is not split per job: Amazon's cost report comes back as one number for the whole
 account (or for the whole bucket when it is tagged), so “share of the bill” cannot be split between
@@ -577,7 +639,7 @@ caches: `usage.json`, `billing.json`, jobs + model).
 
 Acceptance:
 - [ ] `/` renders 200 with an empty `/cache` and a provisioned `/config` (no jobs → the empty verdict); 302 → `/setup` when unprovisioned.
-- [ ] Example fixture renders the Failed verdict, the IAM blocker row with `Fix the permission →` pointing at `/setup/destination`, manga above appdata, manga's strip with one red cell, appdata's `$2.69` dotted.
+- [ ] Example fixture renders the Failed verdict (the error class's `verdict` sentence), the IAM blocker row with its `board` sentence and `Fix the permission →` pointing at `/setup/destination`, manga above appdata, manga's strip with one red cell, appdata's `$2.69` and the `$4.54` total both dotted, manga's `$1.85` unmarked.
 - [ ] A held lock on `locks/appdata.lock` renders `Running` and disables nothing on the Board (buttons live on the job page).
 - [ ] `status.json` polled by the page; a changed token flashes; the countdown ticks.
 - [ ] No `<th>` or label contains a forbidden term (10.3).
@@ -613,7 +675,11 @@ run record →` (mono, `--muted`); when the lock is held but no start record exi
 before this app was watching`.
 
 #### Transient Done (`#run-done`, `sig sig-success`, hidden by default)
-After a Run now completes (the poll sees the new record): label `Done`; body `Run finished in 4 m 09 s.
+Trigger, exactly: shown when a poll returns `active: null` **and** `last.id` differs from the `last.id`
+this page session saw on its previous poll — whatever started that run (Run now, the schedule, the
+command line). Never on first paint: the first poll only records the baseline `last.id`. The body is
+built from `last`, not from anything the page remembers about a button press, so a scheduled run that
+finishes while the page is open announces itself the same way. Label `Done`; body `Run finished in 4 m 09 s.
 New restore point <span class="mono">c37b0d5e</span> — 6 files changed, 214 MB new.` (Plain copy: `Run
 finished in 2 h 09 m. 1,204 files copied, 3.1 GB.`; File history: `Run finished in 8 m 12 s. 12 files
 uploaded, 40 MB.`). Auto-hides after 7 s.
@@ -644,7 +710,11 @@ WHY THIS HAPPENS                       │ WHAT TO DO
 <cause from the error class>           │ <fix from the error class>
                                        │ [ Fix the permission → ]   open the run record →
 ```
-Two `.slabel` columns (`.grid2`); the fix button appears only when the class has a `fix_route`. The
+The `.sig.sig-failure` box ends at the `.errline`: it carries the time, the duration, the exit code, the
+verbatim error and the link to the record, and no button — a retrospective signal states what happened
+(4.5). The two `.slabel` columns (`.grid2` `WHY THIS HAPPENS` / `WHAT TO DO`) are siblings of the signal,
+rendered directly under it and outside `.sig`'s body, and the fix button lives at the foot of `WHAT TO
+DO`; it appears only when the class has a `fix_route`. The
 prune case adds a first line to the cause: `The files themselves were copied; the clean-up of old
 versions was refused, so the keep rule is not being applied.` An `aborted` run reads `stopped without
 reporting` in place of `stopped after …` and the killed class's cause/fix. Unknown class: the two
@@ -652,12 +722,19 @@ columns are replaced by `The tool reported an error this app does not recognise.
 run record; the last lines usually name the reason.`
 
 #### Ledger — `Last 30 runs`
-Head right `.slabel.mono` `30 OK · 0 failed` (counts over the cells shown). `.ledger-wrap{overflow-x:auto;
+The same rule as the Board strip: **backup runs only** (`kind == "backup"`). Head right `.slabel.mono`
+`30 OK · 0 failed` (counts over the cells shown). `.ledger-wrap{overflow-x:auto;
 padding-bottom:4px}` → `.ledger{min-width:358px}` → `.strip[role=img][aria-label]` with 30 `.cellx` at
-10×20px (section 6.5), then `.bars` (flex, gap 2px, `align-items:flex-end; height:20px; margin-top:3px`;
-each `.bar` 10px wide `background:var(--border-strong)`; the tallest gets `.tall{background:var(--muted)}`),
-one bar per cell at the same pitch, `height = max(2px, round(20px × duration_s / max_duration_in_window))`
-(padding cells: 2px `--grid`); then `.ledger-axis` (flex space-between, mono .72rem `--faint`,
+10×20px (section 6.5), then `.bars[aria-hidden="true"]` (flex, gap 2px, `align-items:flex-end;
+height:20px; margin-top:3px`; each `.bar` 10px wide `background:var(--border-strong)`; the tallest gets
+`.tall{background:var(--muted)}`), one bar per cell at the same pitch, height on a **squared** scale:
+`height_px = max(2, round(20 × (duration_s / max_duration_in_window) ** 2))` (padding cells: 2px
+`--grid`). Squared, not linear, because the bars exist to make one slow run legible: linearly the
+example's typical 4 m 08 s beside a 8 m 52 s peak draws every normal bar at 9–10 px against 20 px and
+the row reads as noise, while squared it reproduces the mockup exactly — (252/532)² × 20 ≈ 4.5 px for a
+typical run, 20 px for the tall one (mockup lines 691–702 draw 4–6 px bars and one 20 px `.tall`; R6).
+The bars are decorative: `aria-hidden` keeps them out of the strip's own `aria-label`, which already
+carries every duration. Then `.ledger-axis` (flex space-between, mono .72rem `--faint`,
 `max-width:358px`): `<date of the oldest run shown>` · `last 7 runs →` · `latest`.
 Hint: `Thirty runs, none failed. The bars under the strip are how long each run took — the tall one is
 Fri 28 Aug at <span class="mono">8 m 52 s</span>, twice the usual and still well inside normal. Hover any
@@ -679,16 +756,28 @@ Snapshot backup — restore-point list. `.rphead` (grid `22px 130px 92px minmax(
 `--surface`) with `input[type=radio] name="point"`, `.d` mono .88rem `--ink`, `.id` mono .82rem
 `--muted`, `.m` mono .78rem `--faint`:
 
+Which rows are visible, stated once and used everywhere: **the newest six restore points, then the
+oldest — seven rows when the count is 8 or more; when the count is 7 or fewer every point is a row and
+there is no `<details>`.** `N` in the summary is `count − 7`. (The mockup's seventh row was labelled
+"kept as the weekly one"; Appendix B #27 drops that claim because restic does not record why a snapshot
+was kept, and the newest-six rule replaces it while keeping the mockup's seven rows and its
+`Show the other 7 restore points`.)
+
 | `.d` | `.id` | `.m` |
 |---|---|---|
 | `Tue 15 Sep 05:00` (checked) | `a81f3c2e` | `52.71 GB · 6 files changed, 218 MB new · today` |
 | `Mon 14 Sep 05:00` | `7c41e9b0` | `52.68 GB · 4 files changed, 96 MB new` |
-| … newest five, then the oldest: `Wed 18 Mar 05:00` | `4b02fa71` | `38.09 GB · the first backup` |
+| `Sun 13 Sep 05:00` | `2b90f4d5` | `52.66 GB · 9 files changed, 402 MB new` |
+| `Sat 12 Sep 05:00` | `e5d1a06c` | `52.61 GB · 3 files changed, 71 MB new` |
+| `Fri 11 Sep 05:00` | `91f7bc3d` | `52.60 GB · 7 files changed, 188 MB new` |
+| `Thu 10 Sep 05:00` | `4a2e8d1a` | `52.55 GB · 2 files changed, 40 MB new` |
+| `Wed 18 Mar 05:00` (the oldest) | `4b02fa71` | `38.09 GB · the first backup` |
 
-Then `<details>` `Show the other <N> restore points` → a plain table (`td.mono` date, `td.mono.hint` id,
-`td.hint` size). Under it the hint `Fourteen points are kept, because your keep rule is: last 3, then one
-a day for 7 days, one a week for 4 weeks, one a month for 6 months.` (keep-rule sentence from 4.3;
-`keep_all` → `Every point is kept — your keep rule is Keep everything.`). Points without a restic
+Then `<details>` `Show the other <N> restore points` (`Show the other 7 restore points` for the example's
+14) → a plain table (`td.mono` date, `td.mono.hint` id, `td.hint` size). Under it the hint `Fourteen
+points are kept, because your keep rule is: last 3, then one a day for 7 days, one a week for 4 weeks,
+one a month for 6 months.` (the `keep_rule_prose` form from 4.3; `keep_all` → `Every point is kept —
+your keep rule is Keep everything.`). Points without a restic
 summary (made before restic 0.17) show `.m` `size not recorded`. Under 620px the grid collapses to
 `22px minmax(0,1fr)` and `.id`/`.m` hide. Empty cache: `Restore points have not been listed yet.` +
 `btn btn-sm` `List them now` (POST `/jobs/<name>/restore-points/refresh`); stale cache (older than the
@@ -696,8 +785,12 @@ last OK run): hint `listed <relative> · Refresh` link.
 
 File history — the same list, one row per OK run (`.d` the run's finish time, `.id` the run id's first
 8 characters, `.m` `12 files uploaded, 40 MB`), plus a `Path` field: `label.fld` `Restore` with a
-`select#scope` of `Everything as of this point` / one entry per top-level folder from the catalog, and
-a text input `#path` `or one file, by path` (relative, mono).
+`select#scope` of exactly **two** options — `Everything as of this point` (value `.`) and `One file, by
+path` (value `file`) — and, when `file` is chosen, a text input `#path` `or one file, by path`
+(relative, mono). There are no per-folder options here: the engine's two File history invocations are
+`.` (every path live at that moment) and one relpath (`vfiles.py:296`), so a folder choice would have no
+argv to produce (7.5.6) and would silently restore everything or nothing. Per-folder File history
+restores are out of scope for this increment (Appendix B, decision 47).
 
 Plain copy — no points (ruling R8). A `.defgrid` titled by `.slabel` `What is there now`: `Copy as of`
 `Sun 6 Sep 06:09 · last completed run`; `Files` `232,021 <hint>measured 14 Sep 07:40</hint>`; `Size`
@@ -736,31 +829,52 @@ before a single file of it can be read, Amazon has to warm it up, and that takes
 hours</strong> and is charged separately. Worth knowing before the night you need it.` + hint linklike
 `See what a manga restore takes →`.
 
-Guard (`.guard`: `border:1px solid var(--danger-border); background:var(--danger-bg); padding:1rem;
-radius 4px`): `<strong>This writes 52.71 GB to your array and starts a charged download.</strong> Type
-the job name to confirm.` → `.confirm` row: `label.fld` `Type <span class="mono">appdata</span>`,
-`input#confirm-name` (`placeholder`, `autocomplete=off`, `spellcheck=false`, max-width 16rem), `btn
-btn-primary#start-restore` `Start restore` (disabled), `span.hint#confirm-hint` `Disabled until the name
-matches.` JS: on input, enabled iff `value.trim() === name`; hint → `Ready. This starts a charged download
-of 52.71 GB.` in `--ok`. Submit = `POST /jobs/<name>/restore` (fields `point|scope|path`, `target`,
-`tier`, `confirm`, `csrf`) → 302 to the run record (section 5.4).
+**The band never starts anything.** The whole section from the restore-point list down to the button is
+one `<form method="get" action="/jobs/<name>/restore">` whose fields are `point` (versioned) or
+`scope` + `path` (others), `target`, `tier` and the hidden `intent` (`restore` | `thaw` | `download`).
+Submitting it is a plain navigation to the confirmation page (5.4), which owns the typed-name confirm
+and the one POST that starts work. This is the single restore flow: the job page collects the choice,
+`/jobs/<name>/restore` states the consequence and takes the confirmation, the run record is the live
+operation. There is no typed-name field on the job page.
 
-Cold tier: the button is `Warm up first — up to 12 h` and a `select#tier` `Retrieval speed` precedes it
-(options from 4.3; default Standard); the guard reads `<strong>This asks Amazon to warm up 232,021
-files, one request each — the request itself takes hours to send — and starts a charged warm-up of
-1.78 TB.</strong> Type the job name to confirm.` Submit = `POST /jobs/<name>/thaw`. With a warm-up in
-progress the band shows the waiting state (5.4) and `[Check now]`; when ready, `Download now` submits
-`POST /jobs/<name>/restore`. Snapshot backup on a cold tier (a hand-edited or acknowledged config):
-BLOCKER `This snapshot store is on a thaw-first tier. Every read — even listing dates — needs the whole
-store warmed up first.` with `[Warm up the store — one request per object, hours to days]` (POST
-`/thaw` with scope `.`) and `move the job to an instant tier for future backups →` (edit).
+Guard (`.guard`: `border:1px solid var(--danger-border); background:var(--danger-bg); padding:1rem;
+radius 4px`) — text only here, no input: `<strong>This writes 52.71 GB to your array and starts a charged
+download.</strong> The next screen shows the full cost and asks you to type the job name.` Under it the
+`.confirm` row holds just the submit: `btn btn-primary#go-restore` `Start restore →` (the id
+`#start-restore` belongs to the confirmation page's real button, 5.4) and
+`span.hint#go-hint` `Pick a restore point and a folder first.` JS enables the button as soon as a
+point (or scope/path) and a non-empty, valid `target` are present, and swaps the hint to `Next: confirm
+what this will do.`; with no JS the button is enabled and the confirmation page does the validating.
+
+Cold tier: the button is `Warm up first — up to 12 h →`, `intent=thaw`, and a `select#tier` `Retrieval
+speed` precedes it (options from 4.3; default Standard — the confirmation page repeats the select so the
+choice can still be changed there); the guard reads `<strong>This asks Amazon to warm up 232,021 files,
+one request each — the request itself takes hours to send — and starts a charged warm-up of
+1.78 TB.</strong> The next screen shows both speeds priced and asks you to type the job name.` With a
+warm-up in progress the band shows the waiting state (5.4) and `[Check now]` (that one is a real
+`POST /jobs/<name>/thaw/check` — it starts nothing and costs nothing); when it is ready the button
+becomes `Download now →` with `intent=download`, again a GET to the confirmation page. Snapshot backup
+on a cold tier (a hand-edited or acknowledged config): BLOCKER `This snapshot store is on a thaw-first
+tier. Every read — even listing dates — needs the whole store warmed up first.` with `[Warm up the store
+— one request per object, hours to days]` (a link to `/jobs/<name>/restore?intent=thaw&scope=.`) and
+`move the job to an instant tier for future backups →` (edit).
 
 #### What this job costs
 Head `.slabel` `What this job costs`; `.more` `Open the full cost view →`. `.grid4`: `First bill`
 `<span class="p-assumed">$1.39</span>` / `month 1 · projected`; `By month 6` `<span class="p-assumed">$2.67</span>`
 / `old versions have built up`; `Every month after` `<span class="p-assumed">$2.69</span>` / `settles from
 month 6 — it stops rising`; `In the bucket now` `<span class="p-measured">64 GB</span>` / `measured 14 Sep
-07:40`. `keep_all` → `Every month after` `Keeps growing` / `there is no plateau for this job`. Plain copy
+07:40`.
+
+`In the bucket now` on a **Snapshot backup** job is the whole snapshot store, not this job's share of
+it: every versioned job writes into the one fixed `appdata/` prefix (`backup-job.sh:36`) and `usage.json`
+measures prefixes, so no honest per-job split exists. With more than one Snapshot backup job the `.s`
+sub-line becomes `measured 14 Sep 07:40 · whole snapshot store · shared by <N> jobs`, `in_bucket_monthly`
+prices that whole prefix at `STANDARD`, and the cost view's totals row counts the store **once** (5.6
+band 2). With exactly one Snapshot backup job the figure is that job's, and the sub-line stays
+`measured <date>`.
+
+`keep_all` → `Every month after` `Keeps growing` / `there is no plateau for this job`. Plain copy
 at 0% change → all three unmarked, `By month 6` `$1.85` / `same as every month`.
 
 Table `<th>` `Where the money goes` · `How much of it` · `Where that number came from`:
@@ -781,12 +895,14 @@ and repaints the band's figures with the flash; the stamp flips to `.is-live`).
 
 #### How it is set up (`.defgrid` `200px minmax(0,1fr)`; `dt` .84rem `--faint`; hairline row rules)
 Head `.slabel` `How it is set up`; `.more.linklike` `Edit →`. Rows: `What it protects` `.mono
-/mnt/user/appdata_backups`; `What happens to it` `Snapshot backup — a point in time, restore any date`;
+/mnt/user/appdata_backups`; `What happens to it` `Snapshot backup — a point in time, restore any date`
+(Plain copy → `Plain copy — a straight copy, no history`; File history → `File history — every version
+of every file`);
 `Storage tier` `Instant <code>STANDARD</code> — readable the second you ask` (cold: `Thaw first, hours
 <code>DEEP_ARCHIVE</code> — up to 12 hours before a file can be read`; an acknowledged blocker adds the
 sub-line `acknowledged: Snapshot backup on a thaw-first tier, 15 Sep`); `How much changes between runs`
 `A little — about 1% a night <span class="hint">(an assumption you set, used for every cost figure
-above)</span>`; `Keep rule` (sentence from 4.3); `When it runs` `Every day at 05:00` (`cron.describe`;
+above)</span>`; `Keep rule` (`keep_rule_label`, 4.3); `When it runs` `Every day at 05:00` (`cron.describe`;
 paused → `Every day at 05:00 — paused`); `Where it goes` `.mono s3://bw-backups/appdata/`; `When you
 delete a file locally` `keep it in the copy` / `delete it from the copy too` (Plain copy only); `Already
 bundled` `no` / `yes, about 0.05 GB each` (Plain copy, File history); `State` `Scheduled` / `Paused`;
@@ -827,15 +943,31 @@ to the bucket`, `Versioning off — old versions unprotected`); unknown: `dot-wa
 writes today's date into this row.` Cold tier (ruling R11): button `Test restore — warm up one file, ~$0.02,
 up to 48 h` and hint `Asks Amazon to warm up the most recently copied file at Bulk speed, then downloads
 it to <span class="mono">/mnt/user/restore/manga/test/</span> when it is ready.` (price = `restore_quote`
-for that one object at Bulk, rounded up to the cent, minimum `$0.01`). While a test is pending: the row
-reads `Warming up · ready by ~Wed 17 Sep 04:00` and the button is `Check now`.
+for that one object at Bulk, rounded up to the cent, minimum `$0.01`).
+
+The pending cold test, end to end (ruling R11 — the only two-step operation in the app):
+- After the first press, `restore.sh <job> test` has written `state/<job>.test-thaw.json` and ended `ok`
+  with `"tested_pending":true` (7.5.3 §9). The `Restore ever tested` row becomes `.v` `Warming up` in
+  `--warn` with `.t` `ready by ~Wed 17 Sep 04:00` (from `test_pending.expected_ready_by`), and the
+  button becomes `Check now` — no price on its face, because checking costs nothing.
+- `Check now` **re-POSTs `/jobs/<name>/test-restore`**. There is no separate endpoint: the script sees
+  `test-thaw.json`, runs `aws s3api head-object` on the one key, and either (a) it is still warming —
+  it rewrites `test-thaw.json`, ends `ok` with `"tested_pending":true`, the row is unchanged and the
+  redirect carries the `note` flash `Still warming up — ready by ~Wed 17 Sep 04:00.`; or (b) it is
+  ready — it `rclone copyto`s the key to `/mnt/user/restore/<job>/test/<basename>`, verifies it is
+  non-empty, writes `state/<job>.tested.json`, deletes `test-thaw.json` and ends `ok` with
+  `tested_path`/`tested_bytes`. The row then reads `.v` `Tested 17 Sep 09:12` (`--ok`) with `.t`
+  `<basename>, kept under /mnt/user/restore/<job>/test/` — kept, not deleted, because on a cold tier it
+  cost hours and money to get; the warm test still deletes its scratch copy (Appendix B, decision 30).
+- `POST /jobs/<name>/thaw/check` is NOT this button: it reads `<job>.thaw.json` (a scoped warm-up for a
+  real restore), never `<job>.test-thaw.json`.
 
 Data: `status.json` (8.2), `restore-points.json` (8.5), `readiness.recovery_summary()` (7.7),
 `estimate_io.job_cost_band()` NEW (8.7), `jobs_io.get`.
 
 Acceptance:
-- [ ] appdata fixture: OK token, five status figures, 30-cell ledger with bars, seven visible restore points + details, needs-line all green, guard enables only on the exact name.
-- [ ] manga fixture: Failed token, failure record with the prune line and `Fix the permission →`, `Copies` figure, "What is there now", `Warm up first — up to 12 h`, cold rail button copy.
+- [ ] appdata fixture: OK token, five status figures, 30-cell ledger with bars, seven visible restore points + details, needs-line all green; the band's form is `method="get" action="/jobs/appdata/restore"` and carries no `confirm` field.
+- [ ] manga fixture: Failed token, failure record with the prune line and `Fix the permission →`, `Copies` figure, "What is there now", the band's button `Warm up first — up to 12 h →` (a GET to the confirmation page), cold rail button copy.
 - [ ] Held lock: `Run now` disabled and labelled `Running…`, live line present.
 - [ ] `···` menu: Pause flips to Paused (token, `Next run —`), Resume restores; Delete requires the typed name.
 - [ ] No forbidden term outside `.tooldetail`, `<code>`, `.cmd`.
@@ -875,22 +1007,48 @@ One `.step` card (bounded object) holding:
 
 Live state: while `outcome == running` the page polls `…/runs/<id>.json` every 2 s, shows the work bar,
 a `.progress` line (`1.2 GB of 52.7 GB · 6 m 40 s left` when parseable from rclone `Transferred:` lines
-or restic `percent_done`; else `working… 2 m 14 s`). If the record has not appeared within 30 s of
-the redirect, the page reads `This run never reported starting. The job was probably busy (another
-run held its lock) — check Activity.` with `[Back to <job>]`. When it ends the page re-renders in place.
+or restic `percent_done`; else `working… 2 m 14 s`). When it ends the page re-renders in place.
+
+Pending state — the landing page of every `Run now`, `Start restore`, warm-up, download and test
+restore. Those POSTs redirect the moment `ops.launch` returns; the child writes its start line only
+after it has loaded the config, read `jobs.json` and taken the lock (hundreds of milliseconds), so the
+first GET routinely finds no record. It must not 404. `GET /jobs/<name>/runs/<run_id>` returns **200 in
+a `pending` state** when the id matches `RUN_ID_RE`, the job exists, the id's own timestamp is within
+the last 10 minutes and no record exists yet: token `Running` (`tok-running`), h1 `Starting…`, lead
+`Starting the run — waiting for it to report in.`, the work bar on, no defgrid, polling
+`…/runs/<id>.json` every 2 s. `…/runs/<id>.json` answers `200 {"outcome":"pending","live":true,"id":…}`
+in the same window. After 30 s of pending the page swaps in place to `This run never reported starting.
+The job was probably busy (another run held its lock) — check Activity.` with `[Back to <job>]` and
+stops polling; the work bar goes off.
+
+404 (the error page of 5.14, JSON for `.json` / `log`) is then reserved for exactly three cases: an id
+that does not match `RUN_ID_RE`, an unknown job, and a well-formed id older than 10 minutes with no
+record. Ten minutes is the pending window (`runs.PENDING_WINDOW_S = 600`), parsed from the id's own
+`YYYYMMDDTHHMMSSZ` prefix, so a stale bookmark still 404s.
 
 Data: `runs.get_run` (7.1.7), `errors.classify` (7.4), `runs.read_log`, `status.median`. Contract 8.3.
 
 Acceptance:
 - [ ] `GET /jobs/manga/runs/<id>` for the fixture: Failed token, error line verbatim, cause/fix with `Fix the permission →`, command, log.
-- [ ] `GET /jobs/x/runs/not-an-id` → 404 error page; unknown id → 404 error page.
+- [ ] `GET /jobs/appdata/runs/not-an-id` → 404 error page; a well-formed id minted just now with no record → 200 with the pending copy (`Starting…`); the same id with a start line appended → the live record; a well-formed id stamped yesterday with no record → 404.
+- [ ] `POST /jobs/appdata/run` followed immediately by a GET of its redirect target → 200, never 404.
 - [ ] Live polling stops when the record closes; the log endpoint's `X-Log-Eof` honoured.
 
 ### 5.4 Get data back — `/jobs/<name>/restore`
 
-Purpose: confirmation and the live operation. The job page's band collects the choice; this page
-states exactly what is about to happen, and after submit becomes the operation. `GET` with query
-parameters (`point`, `scope`, `path`, `target`, `tier`) renders the confirmation; `POST` starts it.
+Purpose: the one confirmation step, and the only place a restore can be started. The job page's band
+collects the choice and navigates here (5.2); this page states exactly what is about to happen, takes
+the typed-name confirmation, and POSTs. `GET` with query parameters renders the confirmation; `POST`
+starts the work and redirects to the run record, which is the live operation page (5.3).
+
+Query contract (all optional except as noted; contract 8.10): `intent` ∈ `restore` (default) | `thaw` |
+`download`; `point` (a restore-point id or `latest`, required for a versioned `restore`); `scope` (a
+top-level folder or `.`, default `.`); `path` (one file, relative); `target` (host path, defaults to the
+band's default when absent); `tier` ∈ `Bulk|Standard|Expedited` (warm-up kinds only, default `Standard`).
+Unknown or ill-formed values are not an error page: the field falls back to its default and the page
+renders the fallback in place, so a hand-typed URL can always be corrected on screen. An `intent` the
+job's type cannot do (a `thaw` on a warm tier, a `point` on a Plain copy) renders the page with a
+BLOCKER and no primary button.
 
 Layout: reading container; eyebrow `.slabel` `<job> · get data back`; h1 `Restore Tue 15 Sep 05:00`
 (`Warm up manga`, `Download manga`, `Restore everything as of Tue 15 Sep 05:03`, `Restore one file as of
@@ -908,10 +1066,24 @@ started yet.` One `.step` card with a `.defgrid`:
 | `Takes` | `about <N> min at <speed>` (speed = median bytes/s of this job's OK runs when known, else `starts immediately; the copy runs as fast as your line allows`) / cold: `up to 12 h warm-up, then the copy` |
 
 For a warm-up: `Retrieval speed` `select#tier` with the options from 4.3, the honest hours per option,
-and the two priced quotes. Then the same guard + typed-name confirm as 5.2 (button `Start restore` /
-`Warm up first — up to 12 h` / `Download now`). Submit → POST; server validation failures re-render this
-page with the field error (`Type the job name exactly as shown to start.`, `That folder already has
-files in it. Pick a new folder so nothing gets overwritten.`, `The folder must be inside /mnt/user/restore.`);
+and the two priced quotes.
+
+Then the guard and the typed-name confirm — they live here and nowhere else. `.guard` (same CSS as
+5.2): `<strong>This writes 52.71 GB to your array and starts a charged download.</strong> Type the job
+name to confirm.` (warm-up: `<strong>This asks Amazon to warm up 232,021 files, one request each — the
+request itself takes hours to send — and starts a charged warm-up of 1.78 TB.</strong> Type the job name
+to confirm.`) → `.confirm` row: `label.fld` `Type <span class="mono">appdata</span>`,
+`input#confirm-name` (`placeholder`, `autocomplete=off`, `spellcheck=false`, max-width 16rem), `btn
+btn-primary#start-restore` (disabled) labelled `Start restore` / `Warm up first — up to 12 h` /
+`Download now` by intent, and `span.hint#confirm-hint` `Disabled until the name matches.` JS: on input,
+enabled iff `value.trim() === name`; the hint becomes `Ready. This starts a charged download of
+52.71 GB.` in `--ok`. With no JS the button is enabled and the server rejects a wrong name.
+
+The whole card is one `<form method="post">` posting to `/jobs/<name>/restore` (`intent` `restore` or
+`download`) or `/jobs/<name>/thaw` (`intent` `thaw`) with `point|scope|path`, `target`, `tier`,
+`confirm` and `csrf`. Server validation failures re-render this page at 400 with the field error and
+every value intact (`Type the job name exactly as shown to start.`, `That folder already has files in
+it. Pick a new folder so nothing gets overwritten.`, `The folder must be inside /mnt/user/restore.`);
 success → 302 to the run record, which is the live operation page (5.3). The work bar shows on every
 page while any operation is live.
 
@@ -928,6 +1100,8 @@ Contracts 8.5 and the POST table in 8.10.
 
 Acceptance:
 - [ ] Confirmation renders for each type with the correct verb, target and quote.
+- [ ] The guard enables the primary button only on the exact job name (this is the only screen with `#confirm-name`).
+- [ ] `GET /jobs/appdata/restore` with no query renders with the band's defaults (scope `.`, the default dated target, `intent=restore`).
 - [ ] POST with wrong `confirm` → 400 re-render with the message and values intact.
 - [ ] Target outside the root / non-empty / under the source → 400 with the exact sentence.
 - [ ] Lock held → 409 with the busy blocker flash.
@@ -951,12 +1125,28 @@ with `Show 100 more`. One table, `<th>`: `When` (time cell) · `Job` (name link;
 the work bar is on. Empty: `Nothing has run yet.` + `Run appdata now` (POST, the first enabled job) or
 `Create the first job →`. Footer link: `Raw shared log →` → `/logs`.
 
+System records have their own record page. `_system` is not a valid job name, so
+`/jobs/_system/runs/<id>` cannot exist; instead **`GET /activity/<run_id>`** (plus `.json` and `/log`,
+same contracts as 8.3) renders the run-record template of 5.3 for a record whose `job` is null: eyebrow
+`system · <what>` (`usage refresh`, `billing check`, `destination probe`, `destination setup`), h1
+`<What> Tue 15 Sep 09:04 — OK`, no job link, no restore-point row, and `← All activity` in place of
+`← <job>`. Every system row in the table and in `activity.json` carries `record: "/activity/<id>"`;
+job rows keep `/jobs/<name>/runs/<id>`. A malformed or unknown id → the 404 error page (there is no
+pending state for system operations: `sysop` appends its start event synchronously before it works).
+
+Kind `provision` is written by the provisioning success paths: `provision_validate` and
+`provision_automated` call `runs.append_event(cache_dir, None, {...,"kind":"provision","event":"start"})`
+immediately before the tool runs and the matching `end` event after it, synchronously in the request
+(they already block on the tool and already re-render on failure), so "destination setup" appears in
+Activity with its outcome and its scrubbed output as the log.
+
 Data: `runs.read_all(cache_dir, jobs)` merging `state/*.runs.jsonl` and `state/_system.runs.jsonl`
 (7.1.7); contract 8.4.
 
 Acceptance:
 - [ ] Merges job and `_system` records newest first; filters work as query parameters; `limit` honoured.
-- [ ] Each row links to the correct run record; system rows have no job link.
+- [ ] Each row links to the correct run record; system rows have no job link and their `Record · open →` resolves to `/activity/<id>` with a 200.
+- [ ] A successful `POST /setup/destination/validate` leaves one `provision` record in `_system.runs.jsonl` and one Activity row.
 
 ### 5.6 Cost workbench — `/cost`
 
@@ -971,16 +1161,25 @@ and the work bar shows) and `btn btn-sm` `Check the bill` (POST `/costs/billing/
 Explorer is connected but not tag-scoped, a `sig-note` inside the band: `This invoice is the whole AWS
 account, not just these backups. Until a cost-allocation tag scopes it (Keys & secrets → Billing), the
 difference above compares a projection for two folders against everything you pay Amazon.` Not
-connected: `Last invoice` `—` / `billing not connected` and a `linklike` `Connect AWS billing →` that
-opens band 5's form.
+connected: `Last invoice` `—` / `billing not connected` and a `linklike` `Connect AWS billing →` →
+`/setup/keys#billing` (the credential is edited there and nowhere else, band 5).
 
 Band 2 — Per job. `<th>` `Job` · `What it keeps for you` · `Storage tier` · `Projected` · `In the
 bucket` · `Δ`: `manga` · `<p-measured>1.78 TB</p-measured> · 232,021 files` · `Thaw first, hours
 <code>DEEP_ARCHIVE</code>` · `$1.85 /mo` · `<p-measured>1.78 TB</p-measured> · $1.85 /mo priced now` ·
 `±$0.00`; `appdata` · `52.71 GB + ~11.6 GB of old versions` · `Instant <code>STANDARD</code>` ·
 `<p-assumed>$2.69</p-assumed> /mo` · `64 GB · $1.47 /mo priced now` · `−$1.22 <hint>versions still
-piling up</hint>`; totals rule `All jobs` · `$4.54` · `$3.32` · `−$1.22`. `In the bucket` prices the
+piling up</hint>`; totals rule `All jobs` · `<span class="p-assumed">$4.54</span>` · `$3.32` ·
+`−$1.22` (the `Projected` total takes the weakest mark among its jobs, 4.6). `In the bucket` prices the
 measured prefix at its class now (`estimate_io.current_costs`, shared store priced at STANDARD).
+
+Snapshot backup rows show the **whole** snapshot store in `In the bucket`, because it is one shared
+`appdata/` prefix (5.2): with more than one such job the cell gains the `.hint` sub-line `whole snapshot
+store · shared by <N> jobs`, every one of those rows shows the same bytes and the same
+`in_bucket_monthly`, and the `All jobs` totals row counts the store **once** — summing the rows would
+bill it N times. `Δ` on those rows is then `—` with the `.hint` `not comparable — one shared store`,
+because a per-job difference against a shared measurement would be a number nobody can act on. With a
+single Snapshot backup job (the example) none of this is visible: the store is that job's.
 
 Band 3 — Projection. `.projgrid{grid-template-columns:minmax(0,1fr) 300px}` (one column ≤ 900px). Left:
 the SVG chart (`#cost-timeline`, viewBox 720×260, the existing `drawCostChart` reworked): three curves
@@ -997,8 +1196,23 @@ scenario-wide `Restore` (`restore_fraction` as `How much you'd get back: all of 
 (250 ms debounce, `GET /cost.json?<params>`, the changed figures flash, the curve morphs over 180 ms);
 a lever differing from the saved job gets a 2px `--accent` left rule and the readout `was: 1%`; the
 panel head shows the chip `scratch — not saved` with `[Apply to appdata]` (POST `/jobs/<name>/assumptions`,
-writes `assumptions` on that job) and `[Reset]`. Scenario-wide levers persist in
-`$CONFIG_DIR/cost.json` NEW via `[Apply]` on their group.
+writes `assumptions` on that job) and `[Reset]`.
+
+The whole lever panel is a real `<form method="get" action="/cost">` whose inputs are exactly the query
+parameters `/cost.json` accepts, and it ends with
+`<noscript><button class="btn">Recalculate</button></noscript>` — the preserved no-JS fallback
+(`estimate.html:215`, 2.3). Without JS the form submits, `/cost` re-renders server-side with the same
+figures, and nothing on the page is a dead control. The JS path just intercepts the submit and calls
+`cost.json` instead.
+
+The scenario-wide levers (`restore_fraction`, `restores_per_year`, `retrieval_tier`) persist, because
+they are not per-job: `[Apply]` on that group posts **`POST /costs/scenario`** (`csrf`,
+`restore_fraction` ∈ `1 | 0.5 | 0.1`, `restores_per_year` int ≥ 0, `retrieval_tier` ∈
+`Bulk | Standard | Expedited`) → 302 `/cost` with the `success` flash `Saved.` It writes
+`$CONFIG_DIR/cost.json` NEW, whose entire shape is
+`{"restore_fraction": 1.0, "restores_per_year": 1, "retrieval_tier": "Standard", "set_at": "<iso>"}`
+(temp + `os.replace`; a missing or unparseable file means the model's own defaults and is never an
+error). Out-of-range values → 400 with the field message; the file is written only on a clean parse.
 
 Band 4 — What a restore costs. `<th>` `Job` · `Data out` · `Warm-up` · `Speed` · `Total, once` · ``:
 `appdata` · `52.71 GB` · `none — instant tier` · `—` · `$4.74` · `[Get data back →]`; `manga` ·
@@ -1007,10 +1221,19 @@ Band 4 — What a restore costs. `<th>` `Job` · `Data out` · `Warm-up` · `Spe
 get cheaper when the storage does.`
 
 Band 5 — Assumptions and billing. The persisted assumptions listed as `.defgrid` rows with `.p-assumed`
-marks and `set 12 Sep` stamps; the Cost Explorer form (existing fields `COST_EXPLORER_ACCESS_KEY_ID`,
-`COST_EXPLORER_SECRET_ACCESS_KEY`, `COST_EXPLORER_SESSION_TOKEN`, `COST_EXPLORER_TAG`; buttons
-`Connect` / `Disconnect`; lead `Optional and read-only: a separate Cost Explorer credential, never the
-runtime backup key.`); last, the collapsed `<details>` `How this is calculated` with the five existing
+marks and `set 12 Sep` stamps. Then billing — a **read-out, not a form**. There is exactly one editing
+surface for the Cost Explorer credential and it is Keys & secrets (5.12), because two write-only forms
+over one secret, with two save routes, is how a value silently ends up half-saved. Connected:
+`.defgrid`-style line `Billing: connected · read-only Cost Explorer credential · tag <COST_EXPLORER_TAG>`
+(`tag not scoped` when it is empty) plus `linklike` `Change under Keys & secrets →` →
+`/setup/keys#billing`. (`Check the bill` stays where it already is, on band 1 beside the figure it
+refreshes; it is not repeated here.) Not
+connected: `Billing: not connected — the invoice column stays empty.` plus `linklike`
+`Connect AWS billing →` → the same anchor. Lead, unchanged in voice: `Optional and read-only: a separate
+Cost Explorer credential, never the runtime backup key.` `POST /costs/billing` is deleted (the route
+301s to `/setup/keys`), and the `Connected AWS billing.` / `Disconnected AWS billing.` flashes move to
+the Keys & secrets save path, which raises them when the `COST_EXPLORER_*` group goes from empty to set
+or set to empty. Last, the collapsed `<details>` `How this is calculated` with the five existing
 bullets re-voiced: `Amazon bills every object as at least 128 KB on the cold tiers.` · `Data out is
 priced at the first-tier rate.` · `Replacing a file on a tier with a minimum stay is charged for the
 whole minimum.` · `Snapshot backups keep old versions according to the keep rule; Plain copies keep
@@ -1028,6 +1251,9 @@ Acceptance:
 - [ ] Band 1 figures come from caches only (no Cost Explorer call during render).
 - [ ] Scrubber readout matches `projection.primary.months[m-1]` to the cent; `keep_all` shows `still climbing` and no plateau line.
 - [ ] Levers: edit → flash + morph; Apply writes `assumptions`; Reset returns to saved.
+- [ ] The lever panel is a `GET /cost` form carrying the `cost.json` parameters and ending in the `<noscript>` `Recalculate` button; `GET /cost?change_rate_pct=10` renders the recomputed figures server-side with JS off.
+- [ ] `POST /costs/scenario` writes `$CONFIG_DIR/cost.json` and redirects with `Saved.`; an out-of-range `restore_fraction` → 400 and no file written.
+- [ ] `/cost` contains no `COST_EXPLORER_*` input; `POST /costs/billing` is gone and `/costs/billing` 301s to `/setup/keys#billing`.
 
 ### 5.7 Raw log — `/logs`
 
@@ -1071,8 +1297,11 @@ saved `measured.at` as `Mon 14 Sep`. While walking: `measuring…` with `—`. W
 `bytes: 0`): `Couldn't finish measuring this folder — it may be extremely large or unreadable.` and
 `20 GB is a placeholder, not a measurement. Run this job once to measure it.`; every downstream figure
 switches to `.n.assumed`. Partial (`capped` with bytes): append ` (measurement may be incomplete)` and
-render as assumed. The wizard posts `size_gb`, `file_count` and `measured_at` (today `file_count` never
-reaches the model — fix it).
+render as assumed. The wizard posts `size_gb`, `file_count`, `measured_at` and the two hidden fields
+`measured_bytes` (the exact byte count, straight from `/jobs/source-size`) and `measured_capped` — the
+first because `size_gb` is a rounded GB float and `job["measured"]["bytes"]` must be exact, the second
+because a capped walk has to stay visibly capped after a save (7.8, 8.6). Today `file_count` never
+reaches the model at all — fix that too.
 
 #### §3 Section 2 · The plan
 `<h2 class="lbl">2 · The plan</h2>`; sub-headings `<h3 class="subh">` (15px/1.4/620).
@@ -1094,16 +1323,40 @@ works on cold storage.`; `Plain copy` · `archive` — `Cheapest. The current st
 history.` `.term`: mono .92em `--faint`, dotted underline (`text-decoration-color:var(--border-strong)`,
 offset 3px), `cursor:help`.
 
-Recommendation rules (`storage_advice.recommend_type(size_gb, file_count, change_rate_pct, measured)`
-NEW, pure; returns `None` on an unmeasured folder or when no rule fires), evaluated in order:
+Recommendation rules (`storage_advice.recommend_type(*, size_gb, file_count, change_rate_pct, measured,
+change_rate_set=True)` NEW, pure, keyword-only — the numeric arguments are easy to transpose, so the
+signature forbids it; returns `None` on an unmeasured folder or when no rule fires), evaluated in order:
 1. `file_count < 10,000 and change_rate_pct > 0` → Snapshot backup. Why: `<count> files in <size> that
    change <churn phrase> between runs is the shape this is for.` Rule: `under 10,000 files and some
    change → Snapshot backup`.
-2. `file_count ≥ 50,000 and size_gb / file_count < 0.001 and change_rate_pct == 0` → Plain copy. Why:
-   `<count> files in <size> that only ever get added is the shape this is for.` Rule: `very many small
-   files and no change → Plain copy`.
+2. `file_count ≥ 50,000 and size_gb / file_count < 0.01 and change_rate_pct == 0` → Plain copy. Why:
+   `<count> files in <size> that only ever get added is the shape this is for.` Rule: `more than 50,000
+   files and nothing changes → Plain copy`. The size clause is an average under 10 MB per file, not 1 MB:
+   the owner's own example (manga, 232,021 files in 1.78 TB) averages 7.9 MB, and a rule that cannot fire
+   for the job it was written for is not a rule. What actually drives the advice at this shape is the
+   object COUNT — 232,021 upload requests, one per file — which is why 10 MB is still narrow enough to
+   exclude a folder of a few large files.
 3. `size_gb ≥ 500 and change_rate_pct == 0` → Plain copy. Why: `<size> that only ever gets added is the
    shape this is for.` Rule: `large and nothing changes → Plain copy`.
+**The change rate is not an answer until the owner gives one.** The fresh form starts at ~1% (Appendix B
+#17), so a literal reading of rules 2 and 3 (`change_rate_pct == 0`) would mean the manga-shaped folder
+— 232,021 files, 1.78 TB, the very job these rules were written for — gets no RECOMMENDED block at all
+until the owner happens to click the `Nothing` radio. That is the owner's chosen block silently
+disabled on the example job, so the predicate is evaluated against a tri-state, not a number:
+
+- `recommend_type` takes one more keyword, `change_rate_set: bool` (default `True`).
+- While the change-rate radios are **untouched in this session** (`change_rate_set=False`), rules are
+  evaluated with the change rate treated as unset: rule 1 requires only `file_count < 10,000`; rules 2
+  and 3 drop their `change_rate_pct == 0` clause and fire on shape alone. Rule order is unchanged, so
+  a small folder still lands on rule 1.
+- The moment the owner clicks any change-rate radio, `change_rate_set` is `True` and the predicates read
+  exactly as written above. The edit screen always passes `True` (a saved `assumptions.change_rate_pct`
+  is a real answer, 7.8).
+- The form carries this as `change_rate_touched=1` on `/jobs/estimate.json` once a radio is clicked;
+  absent means untouched (8.6).
+- Only the PREDICATE ignores the change rate. The printed `Why:` sentence always uses the form's current
+  value, so a fresh appdata form prints "…that change a little between runs…" exactly as the mockup does.
+
 No rule → no radio checked and, in the block's place, `.sev.note`: `No recommendation for this folder —
 none of the rules fit its shape. Pick the kind yourself; the table below is priced for all three.`
 Churn phrases: 0% `never`, 1% `a little`, 10% `some`, 30% `a lot`. Re-evaluated when the folder,
@@ -1130,7 +1383,14 @@ href="/setup/about#tiers" title="AWS S3 storage class">STANDARD</a></span></labe
 
 Per month = `classes[i].monthly` (the candidate re-priced on that class with the current type, change
 rate and keep rule; `—` with `title="still growing — Keep everything never plateaus"` when unbounded);
-Getting it back = the Bulk-tier ceiling (static); Minimum stay = `prices.min_storage_duration_days`;
+Getting it back = a literal static map, served as `classes[i].read_access` and never derived from a
+tier: `STANDARD → instant`, `STANDARD_IA → instant`, `GLACIER_IR → instant`, `GLACIER → 3–5 h`,
+`DEEP_ARCHIVE → ≤48 h` (verbatim from mockup-ledger-runbook.html lines 835 and 841). The two cold values
+are deliberately not one tier's numbers — GLACIER prints its Standard-speed window and DEEP_ARCHIVE its
+Bulk ceiling, which is what each one's default retrieval actually costs the owner in waiting; "the
+Bulk-tier ceiling" would print `5–12 h` for GLACIER and contradict both the table and the mockup. The
+per-speed detail lives in the warm-up step's `Retrieval speed` options (4.3), not here.
+Minimum stay = `prices.min_storage_duration_days`;
 All of it, once = `classes[i].restore_once` (the model's `restore_cost` at fraction 1.0, scenario tier).
 Blocked rows follow the selected type live: Snapshot backup → `GLACIER`, `DEEP_ARCHIVE`; the other two
 types → none. Selecting a blocked row is allowed and raises the WON'T RUN block. Sentence under the
@@ -1172,6 +1432,8 @@ versions</h3>`; `<div id="keep-block">` with radios `name="retention_type"`:
 | `k-days` | `days` | `Keep for <input name="retention_days" value="180"> days` | `<span class="k-delta">+$13.32/mo</span> · 180 restore points` |
 | `k-n` | `count` | `Keep the last <input name="retention_count" value="30"> versions` | `<span class="k-delta">+$2.22/mo</span> · 30 restore points` |
 
+The mono run in the tiered `.why` is `keep_rule_compact` (4.3) — the blend's compact grammar, used on
+this screen and nowhere else; `keep_rule_label` and `keep_rule_prose` are the skeleton's two forms.
 Inline number inputs are `width:5ch`, mono. `Advanced ▸` on the tiered option reveals four inputs
 `keep_last / keep_daily / keep_weekly / keep_monthly` labelled `last`, `daily`, `weekly`, `monthly`
 (defaults 3/7/4/6). Deltas = `keep_options[k].delta_monthly` (the old-versions cost of that policy at
@@ -1204,6 +1466,15 @@ appdata` (the live name; `this job` before one is typed) `$2.69`; row 2 (top hai
 appdata + manga` `$4.54`. Dead cells: this job's typical when unbounded → `still growing`; the all-jobs
 typical when any job is unbounded → `at least $X` (`all_jobs.typical_floor`); the six-month cells always
 print the real totals. Assumed size → both `.n.assumed`. Any figure the server cannot compute → `—`.
+
+**What drives `.n.assumed` on this screen — and only on this screen:** `provenance.size == "assumed"`,
+nothing else. That means the folder walk failed, or no folder has been measured yet and the 20 GB /
+1,000-file placeholder is standing in. Every other `provenance.*` key in the 8.6 response is ignored
+here. The change-rate assumption is already declared twice — by the radios the owner just set and by the
+`An assumption. It never changes what gets backed up.` line under them — so marking it a third time
+would dot and dim every figure on a normal, fully measured form, the opposite of what the blend mockup
+draws (at the default ~1% every figure there is plain; Appendix B #49). The skeleton screens keep the
+full 4.6 rule, because their reader did not set the assumption and has to be told it exists.
 Closing sentences `#when-note`: `About <span class="n">$2.69</span> a month once history has built up.
 Your first bill is <span class="n">$1.39</span>, because no old versions exist yet. <button
 class="linkish" data-toggle="new-working">Show working ▸</button>` — unbounded: `No typical month —
@@ -1226,7 +1497,10 @@ because no old versions exist yet.`
 **§3.7 Heads-up blocks** (`.sev.heads`: rule 2px `--warn`, `--warn-bg`; tab glyph outline triangle
 `<path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M6 1 11.2 10.6H.8z"/>`,
 text `Heads up`) under the class table, from `warnings[]`:
-1. per-object overhead (cold tier, ≥ 50,000 effective objects averaging < 1 MB): `232,021 objects × 40
+1. per-object overhead (cold tier, ≥ 50,000 effective objects averaging under 10 MB — raise
+   `storage_advice.class_advice`'s current `(size_gb * 1024 / object_count) < 1.0` to `< 10.0`, for the
+   same reason as recommendation rule 2: at 7.9 MB average the manga example is exactly the case this
+   warning describes, and the cost it warns about is per-request, not per-byte): `232,021 objects × 40
    KB of per-object overhead on <b>Deepest</b> · <span class="mono">DEEP_ARCHIVE</span>, and uploads cost
    ~10× more per request there — $11.60, once, and $0.05 a month on top of the data. Bundling them first
    (one .cbz per chapter, or tar) collapses the count.` + `btn btn-ghost btn-xs` `My files are already
@@ -1297,8 +1571,21 @@ Live estimate errors (`{"error"}` 400) → a `.sev.note` line under section 2 an
 validation on blur (name charset; cron shape; tiered keeps not all zero; days ≥ 0; count ≥ 1; source
 present); field errors `.sm` in `--danger` under the control. On submit the server re-renders this page
 with every value intact and errors anchored: `job name must be…` → name; `source …` → section 1;
-`schedule …` → section 3; retention messages → keep block; `unknown storage class` → class table. Corrupt
-`jobs.json` → the error page with `jobs.json is not valid JSON; fix or remove it before editing jobs.`
+`schedule …` → section 3; retention messages → keep block; `unknown storage class` → class table.
+
+Corrupt `jobs.json` on save (`JobsFileError`) → **a 200 re-render of this form**, every typed value
+intact, with a top-of-page `sig-failure` carrying `jobs.json is not valid JSON; fix or remove it before
+editing jobs.` Not the error page and not a flash-and-redirect: the owner has just filled in four
+sections, and both of the other two behaviours throw that away for a fault that has nothing to do with
+what was typed. The error page and the `failure` flash are removed from 8.10 and 5.15 for this route;
+the flash survives only on `POST /jobs/<name>/delete`, which has no form to re-render.
+
+Live recompute keeps its no-JS fallback (2.3): the form ends with
+`<noscript><button type="submit" name="recalc" value="1">Recalculate</button></noscript>`. A POST
+carrying `recalc=1` re-renders this page with every figure computed server-side from the submitted
+values and **saves nothing** — no `jobs.json` write, no redirect, no flash — so the page is honest with
+JS off instead of showing stale or empty numbers.
+
 CSRF kept. Save → 302 `/jobs/<name>` with the success flash `Saved appdata.` + `[Run it now]`.
 
 Data: `wizard_estimate` (8.6), `jobs_io.validate` (7.8). JS: 250 ms debounce on any form change;
@@ -1317,9 +1604,22 @@ Acceptance:
 Same template and four sections, pre-filled from `jobs_io.get`; `lbl` `Edit job`; `h1` = the job name.
 Locked (rendered as read-only `.defgrid` rows, not disabled inputs): `Name` — `The name is the tag on
 every snapshot and the folder name in the bucket. To rename, create a new job and delete this one.`;
-`Kind` — composite token, `Set at creation. Changing the kind would leave what is already stored under a
-different recovery model. To change it, create a new job.`; `Where it goes` — the mono identity line.
-The RECOMMENDED block is not shown. Everything else is editable. Diff-aware: the saved value of every
+`Kind` — a read-only `dd` holding the type's user-facing label followed by its `.term` chip, exactly as
+the create screen's radio prints it minus the input: `Snapshot backup <span class="term"
+title="jobs.json: type = versioned (restic)">versioned</span>` (`Plain copy · archive`, `File history ·
+versioned-files`) — plus the sentence `Set at creation. Changing the kind would leave what is already
+stored under a different recovery model. To change it, create a new job.`; `Where it goes` — the mono
+identity line. The RECOMMENDED block is not shown.
+
+A blocker the owner already acknowledged does not have to be argued again. When the saved job carries an
+`acknowledged` entry (7.8) whose `code` **and** `class` match a blocker the server raises for the
+submitted form, that blocker counts as acknowledged: the block renders already in its Acknowledged state
+(visible, `Save it anyway ▸` replaced by `Acknowledged — will save anyway`, footer enabled,
+`#create-why` reading `Saving with the blocker acknowledged.`), and the form emits the hidden
+`acknowledge_blocker=<code>` for it so an untouched save round-trips. Changing the class to a different
+blocked class is a NEW blocker — the codes match but the classes do not — and must be acknowledged
+again; changing it to an allowed class clears the block and leaves the stale `acknowledged` entry in
+place, harmless and dated. Everything else is editable. Diff-aware: the saved value of every
 control is embedded (`<script type="application/json" id="saved-job">`); a changed control's row gets a
 2px `--accent` left rule and `was: <saved value in the same idiom>` (`was: Instant · STANDARD`, `was: A
 little — rare replacements (~1%)`, `was: every day at 03:00`); the footer adds `(was $2.41)` after the
@@ -1401,8 +1701,13 @@ Reading container; eyebrow `Setup · keys & secrets`; h1 `What this machine hold
 what each value is for. Secrets are write-only: leave a field blank to keep what is there.` Four groups
 (`.slabel` heads, `.defgrid`-style rows label / input / status):
 - **Destination**: `S3_BUCKET`, `AWS_REGION`, `S3_ENDPOINT`, `AWS_ACCESS_KEY_ID` (secret), `AWS_SECRET_ACCESS_KEY` (secret), `RCLONE_TRANSFERS`, `RCLONE_BWLIMIT`.
-- **Recovery**: `RESTIC_PASSWORD` shown as `Recovery passphrase <span class="mono hint">RESTIC_PASSWORD</span>` with the sentence `Without it, no snapshot backup can be read: not by you, not by Amazon, not by anyone. Write it down somewhere that survives this machine.`; `RESTIC_REPOSITORY` as a read-only readout `derived: s3:s3.us-east-1.amazonaws.com/bw-backups/appdata`.
-- **Billing**: `COST_EXPLORER_ACCESS_KEY_ID`, `COST_EXPLORER_SECRET_ACCESS_KEY`, `COST_EXPLORER_SESSION_TOKEN` (secrets; `the read-only billing credential, never the runtime backup key`), `COST_EXPLORER_TAG`.
+Every env key name on this screen renders inside `<code class="hint">` — not a bare `span.mono` — so
+the one screen that must print `RESTIC_PASSWORD`, `RESTIC_REPOSITORY`, `RCLONE_TRANSFERS` and
+`RCLONE_BWLIMIT` puts them where 4.3 allows an implementation name to appear and where the vocabulary
+test drops them by construction (10.3).
+
+- **Recovery**: `RESTIC_PASSWORD` shown as `Recovery passphrase <code class="hint">RESTIC_PASSWORD</code>` with the sentence `Without it, no snapshot backup can be read: not by you, not by Amazon, not by anyone. Write it down somewhere that survives this machine.`; `RESTIC_REPOSITORY` as a read-only readout `derived: s3:s3.us-east-1.amazonaws.com/bw-backups/appdata`.
+- **Billing** (`<h2 class="slabel" id="billing">Billing</h2>` — the anchor `/cost` links to): `COST_EXPLORER_ACCESS_KEY_ID`, `COST_EXPLORER_SECRET_ACCESS_KEY`, `COST_EXPLORER_SESSION_TOKEN` (secrets; `the read-only billing credential, never the runtime backup key`), `COST_EXPLORER_TAG`. **This is the only place those four are edited** (5.6 band 5 is a read-out). On save, a group that went from all-empty to set flashes `Connected AWS billing.` in addition to `Saved.`; set to all-empty flashes `Disconnected AWS billing.`
 - **This machine**: `TZ`, `LOG_LEVEL`, `SOURCE_ROOT`, `APPRISE_URLS`, `NOTIFY_ON_SUCCESS`, `HEALTHCHECK_URL`, `GUI_PORT`, `GUI_ENABLED`, and the new `RESTORE_ROOT`, `RESTORE_ROOT_HOST`, `SOURCE_ROOT_HOST`.
 Group membership is `config_io.KEY_GROUPS` NEW; keys in the template but in no group fall into **This
 machine**. Secret status is three-state (`config_io.secrets_status_3`): `set` / `not set` / `still the
@@ -1457,12 +1762,14 @@ into `.notices` under the topbar; an uncategorised flash renders as `note`. Stri
 | Keys saved | `success` | `Saved.` |
 | Usage refresh started | `note` | `Refreshing usage — watch it in Activity →` |
 | Billing check started | `note` | `Checking the bill — watch it in Activity →` |
-| Billing connected / disconnected | `success` | `Connected AWS billing.` / `Disconnected AWS billing.` |
+| Keys saved, billing group newly set / cleared (5.12 — the only billing write path) | `success` | `Connected AWS billing.` / `Disconnected AWS billing.` |
 | No bucket on refresh | `blocker` | `Set the bucket under Setup → Destination before refreshing usage.` |
 | Destination validated / provisioned | `success` | `Destination set: <bucket> in <region>. Next: the recovery passphrase, then the first job.` |
 | Restore points listed | `success` / `failure` | `Listed 14 restore points.` / `Could not list restore points: <reason>` |
 | Warm-up check | `note` | `Checked 20 files: 3 ready, 17 still warming.` |
-| Corrupt jobs.json | `failure` | `jobs.json is not valid JSON; fix or remove it before editing jobs.` |
+| Test restore still warming (5.2 rail, `Check now`) | `note` | `Still warming up — ready by ~Wed 17 Sep 04:00.` |
+| Scenario levers saved | `success` | `Saved.` |
+| Corrupt jobs.json on delete | `failure` | `jobs.json is not valid JSON; fix or remove it before editing jobs.` (on `POST /jobs` the same sentence is a `sig-failure` at the top of the re-rendered form instead, 5.8 §8 — a flash would lose the form) |
 
 Shell (every page): topbar `.topbar` sticky, `--surface`, bottom hairline, full-bleed; `.topbar-in`
 `max-width:1240px; min-height:56px; display:flex; gap:1rem; flex-wrap:wrap; padding-block:8px`: brand
@@ -1479,8 +1786,8 @@ authentication" banner is not rendered anywhere. Work bar `#workbar` (section 6.
 `Where a number came from`: `52.71 GB` (p-measured) `— measured. Something walked the folder or read the
 bucket, on a date it will tell you.` · `~11.6 GB` (p-assumed) `— assumed. Dotted, and printed dimmer,
 because it rests on a guess you made.` · `$3.98` (p-invoiced) `— invoiced. This is the bill Amazon
-actually sent.` · `$4.54` `— projected, no line. A projection takes the weakest mark of everything that
-fed it.`; `How loudly it is telling you`: `Note — background explanation. No box, no colour, nothing to
+actually sent.` · `$1.85` `— projected, no line at all. A projection takes the weakest mark of
+everything that fed it, and this one was fed only by measurements.`; `How loudly it is telling you`: `Note — background explanation. No box, no colour, nothing to
 do.` · `Advice — take it or leave it. Usually comes with a one-click accept.` · `Warning — will cost you
 money or surprise you later. Nothing is stopped.` · `Blocker — stops the button. Names the two ways out
 and jumps you to the control.` · `Done — only ever a moment after you press something. Then it clears
@@ -1504,7 +1811,7 @@ color-scheme: dark;
 --danger:#F0616B; --danger-bg:#2A1417; --danger-border:#5A2A2E;
 --ink-strong:#F5F8FC;                     /* verdict line and flashing figures only */
 --grid:#20262F;                           /* empty strip cells */
---ok-dim:#2C6B52; --warn-dim:#6B5326; --danger-dim:#7A3239;   /* strip positions 8–14 */
+--ok-dim:#2C6B52; --warn-dim:#6B5326; --danger-dim:#7A3239;   /* strip: every cell 8+ from the right */
 --prov-measured:rgba(70,192,138,.55); --prov-assumed:rgba(224,177,90,.55); --prov-invoiced:rgba(76,141,255,.55);
 --radius:6px; --radius-sm:4px;
 --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -1524,10 +1831,14 @@ var(--font-sans); padding-inline:var(--gutter); margin:0}`. Dark-committed: no l
 `h3 .92rem/620`; `.slabel .72rem/650 uppercase .1em --faint` (the form screen's `.lbl` is 11px mono
 uppercase .12em); `.lead --muted max-width 66ch`; `.hint --faint .84rem`; `.sm 13px/1.5`; mono figures
 `.92rem/−.01em` (`.cell2 .v`), sub-values `.78rem --faint`; `.sfig .v 1.15rem`; `.fig.big 1.35rem/500`;
+`label.fld .9rem/520 --ink` (`display:block; margin:0 0 var(--sp-2)`; `.confirm label.fld{margin-bottom:.35rem}` — the
+restore band's and the confirmation page's field labels, mockup-night-shift.html line 256);
 buttons `.86rem/560`, `.btn-sm .78rem`, `.btn-xs` 11px mono uppercase .12em; `code` `.88em` on
 `--surface-2` with 1px `--border`, radius 2px, padding `.05em .3em`; `pre` `.8rem` on `--bg`, 1px
-`--border`, padding .75rem, radius 4px, `overflow-x:auto`. Weights used app-wide: 400, 500, 550, 560,
-620, 640, 650, 680 — exactly as the mockups use them (R6); do not introduce others.
+`--border`, padding .75rem, radius 4px, `overflow-x:auto`. Weights used app-wide: 400, 500, 520, 550,
+560, 600, 620, 640, 650, 680 — exactly as the mockups use them (R6); do not introduce others. (520 is
+`label.fld`; 600 is `.tok` (4.7) and `.sig .label` (4.5), mockup lines 118 and 140 — both were in the
+spec's own component definitions before they were in this list.)
 
 ### 6.3 Spacing, containers, rules, radius
 
@@ -1541,7 +1852,19 @@ strip surfaces and on the state token. No shadows, no hover lifts, no entrance f
 1px `--border-strong` on `--surface`, radius 4px, padding `.45rem .8rem`, hover `--surface-2`;
 `.btn-primary` `--accent` bg + border, ink `--accent-ink`, hover `--accent-hover`; `.btn-ghost`
 transparent `--muted`; `[disabled]{opacity:.45; cursor:not-allowed}`; `.linklike`/`.linkish` accent
-text buttons; global `:focus-visible{outline:2px solid var(--accent); outline-offset:2px}`. Inputs and
+text buttons; global `:focus-visible{outline:2px solid var(--accent); outline-offset:2px}`.
+
+On `.form` pages the buttons follow the blend, which is the visual truth for that screen (R6;
+mockup-ledger-runbook.html lines 136–150): `.form .btn{border-radius:0; background:transparent;
+font-size:14px; padding:.44rem .85rem; border:1px solid var(--border-strong)}`,
+`.form .btn:hover{background:var(--surface-2)}`, `.form .btn-ghost{border-color:var(--border)}` — a
+visible border, not the shell's borderless ghost, because the blocker's `Use File history instead` /
+`Use Instant, cheaper` and the footer's `Create and run it now` are ghosts that must read as buttons —
+`.form .btn-primary` as elsewhere but hovering `#6AA1FF` (= `--accent-hover`),
+`.form .btn-danger{color:var(--danger); border-color:var(--border)}`, and
+`.btn-xs{font-size:11px; font-family:var(--font-mono); text-transform:uppercase; letter-spacing:.12em;
+padding:.2rem .5rem}` (`.btn-xs` exists only on this screen, so it needs no `.form` scope).
+`.form .btn[disabled]:hover{background:transparent}`. Inputs and
 selects mono .88rem on `--bg`, 1px `--border-strong`, radius 4px, `max-width:26rem` (the form screen:
 `--surface-2` ground, radius 0, `color-scheme:dark`). `details` 1px `--border`, radius 4px,
 `--surface-2`, padding `.5rem .8rem`; `summary` .88rem/550 `--muted`, hover `--ink`.
@@ -1570,12 +1893,20 @@ selects mono .88rem on `--bg`, 1px `--border-strong`, radius 4px, `max-width:26r
 
 - **Job row + rail**: section 5.1 band 3 (`tr.jobrow`, `.cell2`, `.jobname`, `.jobpath`,
   `.compact-only`), section 5.2 rail (`.rail`, `.rrow`, `.dot`, `.dot-warn`, `.dot-danger`).
-- **Run strip** (`.strip[role=img]` of `.cellx`): the job's last 14 run records (30 on the job page),
-  oldest → newest left to right, newest rightmost, left-padded with empty cells (ruling R2). Cell
+- **Run strip** (`.strip[role=img]` of `.cellx`): the job's last 14 **backup** run records (30 on the
+  job page) — `kind == "backup"` with outcome `ok`, `failed` or `aborted`, plus a running backup as the
+  rightmost cell — oldest → newest left to right, newest rightmost, left-padded with empty cells
+  (ruling R2). Restore, download, warm-up and test-restore records are operations, not runs: they are
+  never cells and never counted, so a Sunday restore cannot paint a green square or turn
+  `1 failed, 13 OK in 14 runs` into `1 failed, 14 OK in 15 runs`. They live in Activity (5.5) and on
+  their own record pages. Cell
   9×18px (`.ledger .cellx` 10×20px), gap 2px, radius 0; `.col-strip{width:168px}`. Classes by outcome:
   `ok` `--ok`, `slow` `--warn` (OK but > 3× typical), `fail` `--danger` (failed or aborted), `running`
-  `--accent` with the pulse (rightmost only); positions 8–14 from the right add `dim` (`--ok-dim`,
-  `--warn-dim`, `--danger-dim`); padding cells `--grid` with `title="no run on record yet"` and no link.
+  `--accent` with the pulse (rightmost only); **every cell at position 8 or more from the right adds
+  `dim`** (`--ok-dim`, `--warn-dim`, `--danger-dim`) — positions 8–14 on the Board's 14-cell strip and
+  8–30 on the job page's 30-cell ledger, so only the newest 7 are ever saturated and "last week reads
+  loudest" holds at both lengths (the mockup dims ledger cells 1–23 and saturates the last 7);
+  padding cells `--grid` with `title="no run on record yet"` and no link.
   Each real cell is `<a href="/jobs/<name>/runs/<id>">` with `title` = `Tue 15 Sep 05:00 · OK · 4 m 12 s ·
   restore point a81f3c2e` / `Sun 13 Sep 04:00 · FAILED after 1 h 07 m · AccessDenied` (error class's
   short name: the first token of the error before `:`) / `Fri 28 Aug 05:00 · OK · 8 m 52 s — slowest run on
@@ -1597,7 +1928,10 @@ selects mono .88rem on `--bg`, 1px `--border-strong`, radius 4px, `max-width:26r
   live, `Copy` button; Activity's inline `<pre>` is the same style at `max-height:40vh`).
 - **Command block** `.cmd` (`pre` + `btn btn-sm copy` `Copy` → `Copied` 1.4 s; `data-copy` holds the
   one-line form). **Error line** `.errline`.
-- **Guard + confirm-to-act** `.guard`, `.confirm` — 5.2; used for restore and delete only.
+- **Guard + confirm-to-act** `.guard`, `.confirm` — the typed-name confirm exists in exactly two places:
+  the restore confirmation page (5.4) and the job page's Delete dialog (5.2). The job page's own
+  `.guard` in the Get data back band is the same box with no input — a statement of consequence above a
+  button that only navigates (5.2).
 - **Card** `.step` (form step, run record, restore confirm, the three destination paths) and `.card`
   (tree, class table), `.levers`.
 - **Buttons/inputs** — 6.3; **chip** `.chip`, **clock** `.clock`, **switcher** `nav.switcher` — 5.15.
@@ -1619,7 +1953,7 @@ selects mono .88rem on `--bg`, 1px `--border-strong`, radius 4px, `max-width:26r
 Facts this rests on (verified on `7d1a181`): `CACHE_DIR=/cache`, `CONFIG_DIR=/config`; `$CACHE_DIR/state`,
 `locks`, `logs` are created at boot (`scripts/entrypoint.sh:15`); `acquire_lock NAME` opens fd 9 on
 `$CACHE_DIR/locks/<name>.lock` and `flock -n 9`, released by the kernel when every holder exits
-(`scripts/lib/common.sh:48-57`); the only run state today is `$CACHE_DIR/state/<job>.json`
+(`scripts/lib/common.sh:48-57` — this spec changes that one flag to `-w 5`, 7.1.5); the only run state today is `$CACHE_DIR/state/<job>.json`
 (`scripts/backup-job.sh:45-46,105-108`); restic backup runs with `--json` tee'd to
 `state/<job>-last.jsonl` (`backup-job.sh:56-58`); rclone runs `copy|sync … --stats-one-line --stats 30s -v`
 (`backup-job.sh:82-87`); the crontab is rendered once at boot (`entrypoint.sh:24-35`) and supercronic
@@ -1635,7 +1969,7 @@ File map:
 |---|---|---|
 | `scripts/lib/runs.sh` | NEW | Run-record writer (append-only JSONL), per-run log path, rotation, tool-stat parsers. Pure bash + grep/awk/tail/find. |
 | `scripts/lib/points.sh` | NEW | `points_refresh JOB TYPE` → `$CACHE_DIR/state/<job>.points.json` after a successful backup and on demand. |
-| `scripts/lib/common.sh` | CHANGED | `die` records its message in `_BE_LAST_ERR`. |
+| `scripts/lib/common.sh` | CHANGED | `die` records its message in `_BE_LAST_ERR`; `acquire_lock` waits 5 s (`flock -w 5`) instead of failing instantly. |
 | `scripts/backup-job.sh` | CHANGED | Lock first, `runs_start`, per-run log via tee, stats per engine, prune failures recorded, `runs_end` on both paths, points refresh, legacy state file kept. |
 | `scripts/restore.sh` | CHANGED | Lock for mutating actions; run records (`restore` / `download` / `thaw` / `test-restore`); `list --json`, `thaw-status`, `test`, `.` scope, `--include`; honours `BE_RUN_ID`; persists warm-up state. |
 | `scripts/entrypoint.sh` | CHANGED | `mkdir -p logs/runs restore-test`; `python3 -m app.engine.runs boot`; `supercronic -inotify`; pid file. |
@@ -1643,13 +1977,13 @@ File map:
 | `app/engine/cron.py` | NEW | 5-field cron evaluator (`next_after`, `describe`), TZ helper. |
 | `app/engine/errors.py` | NEW | Error-class table. |
 | `app/engine/sysop.py` | NEW | Detached system operations (usage refresh, billing check, destination probe) recorded under `_system`. |
-| `app/engine/vfiles.py` | CHANGED | `backup()` returns bytes/totals; `restore_all()`; `list --json`. |
+| `app/engine/vfiles.py` | CHANGED | `backup()` returns bytes/totals; `restore_all()`; `list --json`; a new `thaw` subcommand (7.5.3 §7). |
 | `app/engine/catalog.py` | CHANGED | `paths(conn)`, `current_totals(conn)`. |
 | `app/gui/status.py` | NEW | State derivation, next run, overdue, strip, median, streak, verdict, needs-you, `crontab_stale`. |
 | `app/gui/points.py` | NEW | Restore-point views per type from caches. |
 | `app/gui/ops.py` | NEW | Launches scripts detached with a pre-assigned run id; sync helpers with timeouts; `validate_target`. |
 | `app/gui/readiness.py` | NEW | Recovery readiness + setup checks; `WARMUP` table; passphrase three-state. |
-| `app/gui/vocab.py` | NEW | The vocabulary dicts (4.3) used by templates and JSON; the forbidden-term list for the test. |
+| `app/gui/vocab.py` | NEW | The vocabulary dicts (4.3) used by templates and JSON; `FORBIDDEN_TERMS`, `ALLOWED_PHRASES` and `TERM_EXEMPTIONS` for the vocabulary test (10.3). |
 | `app/gui/jobs_io.py` | CHANGED | `created_at`, `assumptions`, `measured`, `acknowledged`; `set_enabled()`; `render_crontab()`; delete removes the job's cache files. |
 | `app/gui/config_io.py` | CHANGED | `secrets_status_3()`, `KEY_GROUPS`. |
 | `app/gui/estimate_io.py` | CHANGED (extended only) | `wizard_estimate` extension, `restore_quote`, `board_cost`, `job_cost_band`, `cost_page`, `delta_verdict`, `provenance_of`. |
@@ -1729,6 +2063,10 @@ _runs_esc() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/
   printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'; }
 _runs_now()   { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 _runs_num()   { case "${1:-}" in ''|*[!0-9]*) printf 'null' ;; *) printf '%s' "$1" ;; esac; }
+# _runs_str VALUE -> a JSON string when non-empty, the literal null when empty. Use it for EVERY
+# optional member; `${V:+"$V"}${V:-null}` is wrong bash (`:-` yields the VALUE when V is set, so a set
+# V prints the string twice) and produces an unparseable line.
+_runs_str()   { if [ -n "${1:-}" ]; then printf '"%s"' "$(_runs_esc "$1")"; else printf 'null'; fi; }
 runs_new_id() { printf '%s-%s\n' "$(date -u +%Y%m%dT%H%M%SZ)" "$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"; }
 runs_file()   { printf '%s/state/%s.runs.jsonl\n' "$CACHE_DIR" "$1"; }
 runs_set_command() { BE_RUN_COMMAND="${1:0:500}"; }
@@ -1740,14 +2078,19 @@ runs_start() {
   case "${BE_RUN_ID:-}" in $_RUNS_ID_GLOB) ;; *) BE_RUN_ID="$(runs_new_id)" ;; esac
   export BE_RUN_ID
   BE_RUN_JOB="$job"; BE_RUN_KIND="$kind"; BE_RUN_START_EPOCH="$(date +%s)"; BE_RUN_COMMAND=""; BE_RUN_ENDED=0
+  BE_RUN_STARTED=1          # the ONLY flag that says a start line was written (BE_RUN_ID is pre-set by the GUI)
   BE_RUN_LOG="logs/runs/$job/$BE_RUN_ID.log"; export BE_RUN_LOG
   printf '{"v":1,"id":"%s","job":"%s","kind":"%s","event":"start","trigger":"%s","started_at":"%s","pid":%d,"log":"%s"%s}\n' \
     "$BE_RUN_ID" "$(_runs_esc "$job")" "$kind" "$(_runs_esc "${BE_TRIGGER:-scheduled}")" "$(_runs_now)" "$$" \
     "$BE_RUN_LOG" "${extra:+,$extra}" >>"$(runs_file "$job")"
 }
-# runs_end OUTCOME EXIT_CODE [ERROR] [EXTRA_MEMBERS]  — idempotent; no-op if runs_start never ran
+# runs_end OUTCOME EXIT_CODE [ERROR] [EXTRA_MEMBERS]  — idempotent; no-op if runs_start never ran.
+# The guard MUST key on BE_RUN_STARTED, never on BE_RUN_ID: `ops.launch` pre-assigns BE_RUN_ID in the
+# child's environment, so a run that dies before runs_start (lock collision, job not found, missing
+# source) still has an id — keying on the id would append an end line with BE_RUN_JOB/KIND/START_EPOCH
+# unset and abort inside the EXIT trap under `set -u`.
 runs_end() {
-  [ -n "${BE_RUN_ID:-}" ] && [ "${BE_RUN_ENDED:-0}" -eq 0 ] || return 0
+  [ "${BE_RUN_STARTED:-0}" -eq 1 ] && [ "${BE_RUN_ENDED:-0}" -eq 0 ] || return 0
   local outcome="$1" rc="${2:-0}" err="${3:-}" extra="${4:-}" f errj="null"
   f="$(runs_file "$BE_RUN_JOB")"
   [ -n "$err" ] && errj="\"$(_runs_esc "${err:0:1000}")\""
@@ -1760,12 +2103,24 @@ runs_end() {
 _runs_rotate() { local f="$1" job="$2" n; n="$(wc -l <"$f" 2>/dev/null || echo 0)"
   if [ "$n" -gt "$RUNS_ROTATE_AT" ]; then tail -n "$RUNS_KEEP_LINES" "$f" >"$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"; fi
   find "$CACHE_DIR/logs/runs/$job" -name '*.log' -type f -mtime +"$RUNS_LOG_KEEP_DAYS" -delete 2>/dev/null || true; }
+# --- generic failure path, shared by backup-job.sh and restore.sh -------------
+# runs_fail MSG [RC] [EXTRA] — record-only: no state file, no notify, no healthcheck.
+runs_fail() { runs_end failed "${2:-1}" "$1" "${3:-}" || true; }
+# runs_exit_trap RC — install as: trap 'runs_exit_trap "$?"' EXIT
+runs_exit_trap() { local rc="$1"
+  if [ "$rc" -ne 0 ] && [ "${_BE_FAIL_HANDLED:-0}" -eq 0 ]; then runs_fail "${_BE_LAST_ERR:-exited with status $rc}" "$rc"; fi
+  [ -n "${_BE_TEE_PID:-}" ] && { exec 1>&- 2>&-; wait "$_BE_TEE_PID" 2>/dev/null || true; }; }
 # tool-stat parsers (end-of-run, from files the run wrote)
 _restic_summary_field() { grep '"message_type":"summary"' "$1" 2>/dev/null | tail -n1 | grep -o "\"$2\":[0-9]*" | head -n1 | cut -d: -f2; }
 _restic_snapshot_id()   { grep '"message_type":"summary"' "$1" 2>/dev/null | tail -n1 | grep -o '"snapshot_id":"[a-f0-9]*"' | head -n1 | cut -d'"' -f4 | cut -c1-8; }
-_rclone_stat_bytes()  { grep -E '^Transferred:[[:space:]]+[0-9.]+ ?[KMGTPE]?i?B? / ' "$1" 2>/dev/null | tail -n1 |
+# rclone prints TWO lines that start with "Transferred:" in every stats block — bytes first
+# ("Transferred:   3.100 GiB / 3.100 GiB, 100%, 8.912 MiB/s, ETA 0s") then files
+# ("Transferred:            1204 / 1204, 100%"). The bytes grep therefore REQUIRES a unit token, and the
+# files grep requires the "N / M," shape; without that, `tail -n1` returns the files line for both and
+# bytes_added silently becomes the file count.
+_rclone_stat_bytes()  { grep -E '^Transferred:[[:space:]]+[0-9.]+ [KMGTPE]?i?B / ' "$1" 2>/dev/null | tail -n1 |
   awk '{n=$2; u=$3; m=1; if(u~/^Ki?B?/)m=1024; else if(u~/^Mi?B?/)m=1024^2; else if(u~/^Gi?B?/)m=1024^3; else if(u~/^Ti?B?/)m=1024^4; else if(u~/^Pi?B?/)m=1024^5; printf "%d", n*m}'; }
-_rclone_stat_files()  { grep -E '^Transferred:[[:space:]]+[0-9]+ / [0-9]+' "$1" 2>/dev/null | tail -n1 | awk '{print $2}'; }
+_rclone_stat_files()  { grep -E '^Transferred:[[:space:]]+[0-9]+ / [0-9]+,' "$1" 2>/dev/null | tail -n1 | awk '{print $2}'; }
 _rclone_stat_errors() { grep -E '^Errors:[[:space:]]+[0-9]+' "$1" 2>/dev/null | tail -n1 | awk '{print $2}'; }
 _vfiles_stat() { grep -o "$2=[0-9]*" "$1" 2>/dev/null | tail -n1 | cut -d= -f2; }
 _first_error_line() { grep -m1 -E 'AccessDenied|Error|error|denied|failed' "$1" 2>/dev/null | cut -c1-300; }
@@ -1796,34 +2151,75 @@ main() {
     *) _fail "job '$JOB' has unknown type '$JOB_TYPE'" ;;
   esac
   local dur=$(( $(date +%s) - BE_RUN_START_EPOCH ))
-  runs_end ok 0 "" "\"snapshot_id\":${SNAP_ID:+\"$SNAP_ID\"}${SNAP_ID:-null}${RUN_STATS:+,$RUN_STATS}" || log_warn "could not record run"   # (5)
+  runs_end ok 0 "" "\"snapshot_id\":$(_runs_str "${SNAP_ID:-}")${RUN_STATS:+,$RUN_STATS}" || log_warn "could not record run"   # (5)
   _write_state success "" 0                                                                    # (6)
   points_refresh "$JOB" "$JOB_TYPE" || log_warn "restore-point cache refresh failed for '$JOB' (non-fatal)"   # (7)
   log_info "job '$JOB' complete ($JOB_TYPE, ${dur}s)"
   notify success "backup '$JOB' OK" "$JOB_TYPE finished in ${dur}s"; healthcheck success
 }
 ```
-Engine hooks:
+Engine hooks. **`backup-job.sh` runs under `set -euo pipefail` (line 3), so every tool call whose exit
+status the script wants to inspect must be written `rc=0; <tool> … | tee … || rc=$?` — never
+`<tool> … | tee …; rc=${PIPESTATUS[0]}`.** With `pipefail` a failing tool makes the whole pipeline
+non-zero and `errexit` leaves the script on that line: the `rc=` assignment never runs, `RUN_STATS` is
+never computed, and the EXIT trap records the generic `job exited with status 1` with phase `copy` —
+which is exactly the manga example (`phase":"prune"`, `copied":true`) failing to be producible.
+`|| rc=$?` both suppresses `errexit` and receives the pipeline's status (verified:
+`bash -c 'set -euo pipefail; false | tee /dev/null; echo reached'` prints nothing). The same rule
+applies to every hook below and to `restore.sh` (7.5.3), which is also `set -euo pipefail` (line 4).
+
 - `_run_versioned` (51–75): before `restic … backup` add `runs_set_command "restic -r $RESTIC_REPOSITORY
   backup $src --tag $JOB"`; after the `SNAP_ID=` line (58) set `SNAP_ID="$(_restic_snapshot_id "$f")"`,
   `COPIED=1` and build `RUN_STATS` from `_restic_summary_field` (`files_new`, `files_changed`,
   `data_added`, `total_files_processed`, `total_bytes_processed`; `files_added` = new+changed, null only
   when both are absent). The prune step (71–72) becomes
-  `restic … forget --prune --tag "$JOB" "${forget_args[@]}" 2>&1 | tee -a "$CACHE_DIR/state/$JOB-prune.log" >/dev/null; rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || _fail_phase prune "prune failed: $(_first_error_line "$CACHE_DIR/state/$JOB-prune.log")"`
+  ```bash
+  local plog="$CACHE_DIR/state/$JOB-prune.log" rc=0; : >"$plog"
+  restic … forget --prune --tag "$JOB" "${forget_args[@]}" 2>&1 | tee -a "$plog" >/dev/null || rc=$?
+  [ "$rc" -eq 0 ] || _fail_phase prune "prune failed: $(_first_error_line "$plog")"
+  ```
+  **`: >"$plog"` is not optional.** `_first_error_line` is `grep -m1`, so an appended-forever log makes
+  every later failure record repeat the FIRST error the file ever saw: the owner fixes the IAM
+  permission, the next failure is something else entirely, and the Board still says `AccessDenied:
+  s3:DeleteObjectVersion` and still offers `Fix the permission →`. Truncate at the start of every run,
+  exactly as `$rlog` already does. The same line is required for `$JOB-prune.log` in `_run_archive` and
+  for `$JOB-vfiles.log` in `_run_vfiles`.
   (the cold-tier deferral at line 70 stays a warning).
 - `_run_archive` (77–93): drop `--stats-one-line` from `args` (83); replace line 86 with
-  `runs_set_command "rclone $verb $src s3:$S3_BUCKET/media/$JOB --s3-storage-class $JOB_STORAGE_CLASS"; local rlog="$CACHE_DIR/state/$JOB-rclone.log"; : >"$rlog"; rclone "${args[@]}" 2>&1 | tee -a "$rlog"; rc=${PIPESTATUS[0]}`,
+  ```bash
+  runs_set_command "rclone $verb $src s3:$S3_BUCKET/media/$JOB --s3-storage-class $JOB_STORAGE_CLASS"
+  local rlog="$CACHE_DIR/state/$JOB-rclone.log" rc=0; : >"$rlog"
+  rclone "${args[@]}" 2>&1 | tee -a "$rlog" || rc=$?
+  ```
   then compute `RUN_STATS` (`files_added`, `bytes_added`, `files_total:null`, `bytes_total:null`,
-  `rclone_errors`) BEFORE `[ "$rc" -eq 0 ] || _fail "rclone $verb failed for '$JOB'"`; on success
-  `COPIED=1`. The prune call (89–91) becomes
-  `python3 -m app.engine.archive_prune "$JOB" --type … --days … --count … 2>&1 | tee -a "$CACHE_DIR/state/$JOB-prune.log" >/dev/null; rc=${PIPESTATUS[0]}; [ "$rc" -eq 0 ] || _fail_phase prune "$(_first_error_line "$CACHE_DIR/state/$JOB-prune.log")"`.
-  `app/engine/archive_prune.py` must print the S3 error's stderr on failure and exit 1 (it already
-  raises `S3Error("<tool> failed (exit N): <stderr>")`, `app/engine/s3.py:31-35`); its `main` prints
-  `AccessDenied: s3:DeleteObjectVersion` when the stderr contains `AccessDenied` and the operation was
-  `delete-object` with a version id (map the aws call to the IAM action name), else the raw first line.
+  `rclone_errors`) from `$rlog` — the stats block is written even on a partial failure, so the record
+  still says how far it got — and only then `[ "$rc" -eq 0 ] || _fail "rclone $verb failed for '$JOB'"`;
+  on success `COPIED=1`. The prune call (89–91) becomes
+  ```bash
+  local plog="$CACHE_DIR/state/$JOB-prune.log" rc=0; : >"$plog"
+  python3 -m app.engine.archive_prune "$JOB" --type … --days … --count … 2>&1 | tee -a "$plog" >/dev/null || rc=$?
+  [ "$rc" -eq 0 ] || _fail_phase prune "$(_first_error_line "$plog")"
+  ```
+  `app/engine/archive_prune.py` must print the S3 error's stderr on failure and exit 1. Today it does
+  neither: `prune()` lets `S3Error("<tool> failed (exit N): <stderr>")` (`app/engine/s3.py:31-35`)
+  propagate out of `main` as a Python traceback, and `_first_error_line`'s
+  `grep -m1 -E 'AccessDenied|Error|error|denied|failed'` would match the traceback's own echoed source
+  line (`raise S3Error(f"{argv[0]} failed …")`) before it ever reached the message — the failure record
+  would quote the app's source code at the owner. So `main` wraps the `prune()` call in
+  `except s3.S3Error as e:`, prints **one** line to stderr and `return 1`, with no traceback:
+  `AccessDenied: s3:DeleteObjectVersion` when the stderr contains `AccessDenied` and the failing call
+  was `delete-object` with `--version-id`; `AccessDenied: s3:ListBucketVersions` when it was
+  `list-object-versions`; otherwise the first non-empty line of the tool's stderr, truncated to 300
+  characters. (The mapping is call → IAM action name, which is what the owner has to paste into the
+  policy.) `tests/engine/test_archive_prune.py` gains a case per branch, asserting the exit code is 1,
+  stdout+stderr is a single line, and `Traceback` appears nowhere.
 - `_run_vfiles` (95–103): `runs_set_command "python3 -m app.engine.vfiles backup $1"`; run as
-  `python3 -m app.engine.vfiles backup "$1" 2>&1 | tee -a "$CACHE_DIR/state/$JOB-vfiles.log"`; parse
-  `uploaded=`, `bytes=`, `files_total=`, `bytes_total=` with `_vfiles_stat`; `COPIED=1` on success.
+  ```bash
+  local vlog="$CACHE_DIR/state/$JOB-vfiles.log" rc=0; : >"$vlog"
+  python3 -m app.engine.vfiles backup "$1" 2>&1 | tee -a "$vlog" || rc=$?
+  ```
+  parse `uploaded=`, `bytes=`, `files_total=`, `bytes_total=` from `$vlog` with `_vfiles_stat`, then
+  `[ "$rc" -eq 0 ] || _fail "file-history backup failed for '$JOB'"`; `COPIED=1` on success.
 - Replace `_record_failure` / `_fail` / `_usb_exit_trap` (105–110):
 ```bash
 _write_state() { local outcome="$1" msg="$2" rc="$3"; mkdir -p "$CACHE_DIR/state"
@@ -1832,8 +2228,12 @@ _write_state() { local outcome="$1" msg="$2" rc="$3"; mkdir -p "$CACHE_DIR/state
     "$(_runs_esc "${msg:0:1000}")" "$rc" "${BE_RUN_ID:-}" "$(date -u -d "@${BE_RUN_START_EPOCH:-$(date +%s)}" '+%Y-%m-%dT%H:%M:%SZ')" "$(_runs_now)" \
     >"$CACHE_DIR/state/$JOB.json"; }
 _record_failure() { local msg="$1" rc="${2:-1}" phase="${3:-copy}"; _BE_FAIL_HANDLED=1
-  runs_end failed "$rc" "$msg" "\"phase\":\"$phase\",\"copied\":$([ "${COPIED:-0}" -eq 1 ] && echo true || echo false)${SNAP_ID:+,\"snapshot_id\":\"$SNAP_ID\"}${RUN_STATS:+,$RUN_STATS}" || true
-  [ -n "${BE_RUN_ID:-}" ] || [ -z "${JOB_TYPE:-}" ] && _write_state failure "$msg" "$rc"
+  runs_end failed "$rc" "$msg" "\"phase\":\"$phase\",\"copied\":$([ "${COPIED:-0}" -eq 1 ] && echo true || echo false),\"snapshot_id\":$(_runs_str "${SNAP_ID:-}")${RUN_STATS:+,$RUN_STATS}" || true
+  # Same guard as runs_end, and for the same reason: only a run that actually started owns the legacy
+  # state file. A lock collision (BE_RUN_ID pre-set by the GUI, runs_start never reached) must leave
+  # state/<job>.json exactly as the last real run wrote it. The `-z JOB_TYPE` arm keeps a pre-lock
+  # config failure ("job not found") visible in the legacy file, which is all that exists for it.
+  if [ "${BE_RUN_STARTED:-0}" -eq 1 ] || [ -z "${JOB_TYPE:-}" ]; then _write_state failure "$msg" "$rc"; fi
   notify failure "backup '$JOB' FAILED" "$msg"; healthcheck failure; }
 _fail()       { _record_failure "$1" 1 copy; die "$1"; }
 _fail_phase() { _record_failure "$2" 1 "$1"; die "$2"; }
@@ -1841,9 +2241,18 @@ _usb_exit_trap() { local rc="$1"
   if [ "$rc" -ne 0 ] && [ "$_BE_FAIL_HANDLED" -eq 0 ]; then _record_failure "${_BE_LAST_ERR:-job exited with status $rc}" "$rc"; fi
   [ -n "${_BE_TEE_PID:-}" ] && { exec 1>&- 2>&-; wait "$_BE_TEE_PID" 2>/dev/null || true; }; }
 ```
-`common.sh:die` becomes `die() { _BE_LAST_ERR="$*"; log_error "$*"; exit 1; }`. A lock collision now
-dies before `runs_start`, so `runs_end` is a no-op and the legacy file is not clobbered (the guard in
-`_record_failure`); the collision is a WARN in the global log only. `docker stop` → the TERM trap →
+`common.sh:die` becomes `die() { _BE_LAST_ERR="$*"; log_error "$*"; exit 1; }`, and
+`common.sh:acquire_lock` changes its one flag — `flock -n 9` → **`flock -w 5 9`**. The GUI now probes
+that same lock file on every Board and job-page poll (7.2) by taking `LOCK_EX|LOCK_NB` for microseconds;
+with `-n`, a scheduled fire that lands inside one of those microseconds loses the race, dies before
+`runs_start`, and the backup is skipped with nothing but a WARN in the global log — no record, no Board
+signal, exactly the "board that cries wolf" (in reverse) the direction warns about. Five seconds is far
+longer than any probe and far shorter than any real run, so a genuine holder still loses the race and
+still reports `another <job> run is in progress`. The change is one flag and one bats case
+(`acquire_lock` against a lock held for 1 s succeeds; against one held for 10 s fails). A lock collision
+dies before `runs_start`, so `BE_RUN_STARTED` is 0: `runs_end` is a no-op and `_write_state` is skipped,
+leaving `state/<job>.json` as the last real run wrote it even though the GUI had already pre-assigned
+`BE_RUN_ID` in the environment; the collision is a WARN in the global log only. `docker stop` → the TERM trap →
 a `failed` record with `exit_code` 143; SIGKILL → a dangling start → `aborted` by reconcile (7.2).
 
 #### 7.1.6 Prune failures are failures
@@ -1859,6 +2268,7 @@ warnings.
 RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$")
 BACKUP_KINDS = ("backup",); OP_KINDS = ("restore", "download", "thaw", "test-restore")
 SYSTEM_JOB = "_system"
+PENDING_WINDOW_S = 600            # a launched run may take this long to write its start line (5.3)
 
 @dataclasses.dataclass
 class RunRecord:
@@ -1886,6 +2296,8 @@ class ReadResult:
 
 def valid_run_id(s: str) -> bool
 def new_run_id() -> str                                   # utcnow compact + secrets.token_hex(2)
+def run_id_started_at(run_id: str) -> datetime | None     # the id's own UTC stamp, None if malformed
+def is_pending(run_id: str, *, now=None) -> bool          # valid id, no record, stamp within PENDING_WINDOW_S
 def runs_path(cache_dir, job) -> Path                     # <cache>/state/<job>.runs.jsonl
 def lock_path(cache_dir, job) -> Path                     # <cache>/locks/<job>.lock
 def is_locked(cache_dir, job) -> bool
@@ -1944,7 +2356,12 @@ def is_locked(cache_dir, job) -> bool:
         except BlockingIOError: return True
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN); return False
 ```
-No heartbeat, no PID checks: the kernel releases the lock on any process death. The `running` record
+No heartbeat, no PID checks: the kernel releases the lock on any process death. The probe takes an
+exclusive lock, so it is itself a (very short) holder — which is why `acquire_lock` must wait rather
+than fail instantly (`flock -w 5`, 7.1.5); a 30-second poll that happens to coincide with the 05:00
+fire must not be what skips tonight's backup. The probe holds the lock for microseconds and releases it
+in the same call; it never blocks a real run for measurable time, and the runner's own `acquire_lock`
+remains the single source of truth about who is running. The `running` record
 tells WHAT is running (`kind`, `id`, `started_at`, `command`, log); lock held with no running record →
 still RUNNING, `active=None`, sub-line `running · started before this app was watching`.
 `reconcile()`: for every folded `running` record, if `force` (boot) or `not is_locked()` → append
@@ -1954,6 +2371,9 @@ only gets the sub-line `taking longer than usual (typical 2 h 12 m)`. Reconcile 
 `entrypoint.sh:prepare()`, `|| log_warn`) and lazily from every `read_runs(reconcile=True)`.
 Single-flight: `POST /jobs/<name>/run` → 409 with the busy blocker flash when locked; otherwise
 `ops.launch` and 302 to the run record; the runner's own `acquire_lock` closes the probe/launch race.
+That redirect lands before the child has written anything, so the run record renders its `pending`
+state (5.3) until the start line appears — and, if the child lost the lock race and died, tells the
+owner so after 30 s instead of 404ing.
 
 ### 7.3 OVERDUE · NOT RUN YET · PAUSED · NEXT RUN
 
@@ -1963,16 +2383,23 @@ GRACE_S = 15 * 60                                              # ruling R9
 def overdue(job, last, now, tz) -> tuple[datetime | None, datetime | None]:
     """-> (expected_at, overdue_since); None when not overdue / not computable."""
     if not job.get("enabled", True): return None, None
-    ref = last.started_at if last else parse(job.get("created_at"))
+    ref = (last.finished_at or last.started_at) if last else parse(job.get("created_at"))
     if ref is None: return None, None                          # legacy job, never ran: not computable
     try: expected = cron.next_after(job["schedule"], ref, tz)   # first fire strictly after ref
     except cron.CronError: return None, None
     if now > expected + timedelta(seconds=GRACE_S): return expected, expected + timedelta(seconds=GRACE_S)
     return None, None
 ```
-"Next fire after the last START" needs only `next_after`, is immune to schedule edits and is reset
-correctly by a manual run; `last` includes failed runs on purpose (a job that failed today is Failed,
-not also Overdue). Running takes precedence, so a long run in flight is never Overdue. Sub-lines:
+The reference instant is the last completed run's **finish**, falling back to its start only if a
+record somehow has no `finished_at`. A run that was still going when a scheduled tick landed counts as
+that tick's run. Using `started_at` instead produces a false Overdue on the most ordinary sequence
+there is: the owner presses Run now at 04:50, the 05:00 tick fires into `acquire_lock` and dies with no
+record (7.1.5), the manual run finishes at 05:10, `next_after(schedule, 04:50)` is the 05:00 tick that
+was skipped — and at 05:15 the Board calls a job Overdue that backed up five minutes ago. That is the
+board crying wolf, and it is the one thing this screen cannot afford. `next_after` alone is still all
+that is needed: it is immune to schedule edits and is reset correctly by a manual run; `last` includes
+failed runs on purpose (a job that failed today is Failed, not also Overdue). Running takes precedence,
+so a long run in flight is never Overdue. Sub-lines:
 `Overdue — expected Mon 14 Sep 03:00, 1 d 6 h ago · last ran Sun 13 Sep 03:00`; never ran: `Overdue —
 never ran · expected Mon 14 Sep 03:00, 1 d 6 h ago · created 12 Sep`. NOT RUN YET = no completed
 backup run and not overdue. PAUSED = `enabled == false`.
@@ -2005,19 +2432,45 @@ rendering converts to `local_tz()`; the zone is printed once per page. `TZ` edit
 Scheduler agreement: `entrypoint.sh` starts `supercronic -inotify "$CACHE_DIR/crontab" &` and writes
 `$!` to `$CACHE_DIR/supercronic.pid`; `jobs_io.render_crontab(config_dir, cache_dir, scripts_dir,
 dry_run=False)` writes the crontab in exactly the entrypoint's format (`<schedule> <scripts_dir>/backup-job.sh <name>`
-for enabled valid jobs; temp + `os.replace`) after every `upsert`, `delete`, `set_enabled`; if the
-file is still stale 2 s after a write (inotify may not fire on Unraid's FUSE share) the GUI sends
-`SIGUSR2` to the pid in `supercronic.pid`. `status.crontab_stale` = on-disk crontab ≠ `render_crontab(dry_run=True)`.
+for enabled valid jobs; temp + `os.replace`) after every `upsert`, `delete`, `set_enabled`. **After
+every crontab write the GUI sends `SIGUSR2` to the pid in `supercronic.pid`** — unconditionally, not
+after a delay and not on a condition: inotify may not fire on Unraid's FUSE share, the signal is
+supercronic's own reload trigger, and re-reading an unchanged file costs nothing. The call is wrapped so
+a missing pid file, an unparseable pid or `ProcessLookupError` (ESRCH — the container is running without
+the scheduler, which is legal: `GUI_ENABLED` and the scheduler are independent) is ignored silently.
+
+`status.crontab_stale` = on-disk crontab ≠ `render_crontab(dry_run=True)`, and that is its **whole**
+definition: it detects a failed write or a hand-edited `jobs.json`, nothing else. It cannot mean "the
+scheduler has not reloaded", because there is nothing to compare against — supercronic exposes no
+reload state, and the GUI has just written the file, so on-disk always equals the render the instant
+after a successful save. Any copy that promises otherwise is a promise the app cannot keep, which is why
+the Board's warning reads `The schedule file on disk does not match your jobs. Restart the container so
+your latest job settings take effect.` (5.1) and the verdict's second sentence reads `The schedule file
+on disk does not match your jobs; restart the container.` — both true statements about the file.
 `next_run` per job = `cron.next_after(schedule, now)` (paused → `—`; `CronError` → `—` with the note
 `can't compute this schedule`); Board `next_scheduled` = min over enabled jobs.
 
 ### 7.4 Error classes — `app/engine/errors.py`
 ```python
 @dataclasses.dataclass(frozen=True)
-class ErrorClass: code: str; short: str; cause: str; fix: str; fix_label: str | None; fix_route: str | None; blocker: bool
+class ErrorClass:
+    code: str; short: str
+    verdict: str                  # ONE line, Board band 1's second sentence (5.1)
+    cause: str                    # the full "WHY THIS HAPPENS" paragraph (job page, run record)
+    board: str | None             # needs-you row body; may contain {dow} and {since}
+    fix: str; fix_label: str | None; fix_route: str | None; blocker: bool
 def classify(error: str | None, exit_code: int | None, outcome: str | None, log_tail: str = "") -> ErrorClass | None
 ```
 Match on `error` first, then the last 200 lines of the run log. `fix_route` may contain `<name>`.
+
+Three fields, three surfaces, because the same failure has to be said at three lengths and the sources
+each wrote it differently: `verdict` is the Board verdict's second sentence (one line, beside a
+button); `cause` is the `WHY THIS HAPPENS` column on the job page and the run record (a paragraph, with
+room to explain); `board` is the needs-you row's body, which is the only one that knows the job's
+schedule. `status.needs_you()` renders `<strong>{job} cannot finish a run.</strong> {board}` with
+`{dow}` = the schedule's day word from `cron.describe` (`Sunday`, `day`, `Monday and Thursday`) and
+`{since}` = the date of the last OK run (`6 September`), or `the first run` when there has never been
+one; when `board` is `None` it falls back to `{cause}`, which always stands alone as a sentence.
 
 | code | matches | short | cause | fix | fix label → route | blocker |
 |---|---|---|---|---|---|---|
@@ -2031,6 +2484,27 @@ Match on `error` first, then the last 200 lines of the run log. `fix_route` may 
 | `killed` | exit_code in (137, 143) or outcome `aborted` | `stopped` | `The run was stopped from outside — the container restarted or was stopped.` | `Nothing to fix if you restarted it on purpose; otherwise check the container's log.` | — | no |
 | `busy` | `another .* run is in progress` | `busy` | `Started while another operation on this job was still running.` | `Wait for the running operation; this one will run at its next scheduled time.` | — | no |
 | `unknown` | anything else | first token before `:` (≤ 24 chars) | `The tool reported an error this app does not recognise.` | `Read the log below; the last lines usually name the reason.` | — | no |
+
+`verdict` and `board` per class (verbatim; `board` is `None` wherever the row would have to guess which
+step failed, and the row then prints `cause`):
+
+| code | `verdict` | `board` |
+|---|---|---|
+| `iam-version-perms` | `Amazon refused a delete — one permission is missing from the key this machine uses.` | `Amazon refused a delete, so every {dow} run stops at the same point. The files are copied, but old versions have not been cleaned up since {since}.` |
+| `access-denied` | `Amazon refused a request — one permission is missing from the key this machine uses.` | — |
+| `repo-locked` | `Two snapshot backups tried to use the store in the same minute.` | — |
+| `wrong-passphrase` | `The recovery passphrase on this machine does not open the snapshot store.` | — |
+| `cold-object` | `The files are still cold — Amazon has to warm them up before anything can read them.` | — |
+| `source-missing` | `The folder this job protects was not there when the run started.` | — |
+| `no-space` | `The disk this job writes to is full.` | — |
+| `killed` | `The run was stopped from outside — the container restarted or was stopped.` | — |
+| `busy` | `Another operation on this job was still running.` | — |
+| `unknown` | `The run stopped with an error; open the record to see it.` | — |
+
+The `unknown` verdict is the same sentence 5.1 prints when `classify` returns `None`, so the Board has
+one code path either way. Note that the example's verdict says *refused a delete*: the Night Shift
+mockup wrote "refused the upload", which is wrong for this error — `DeleteObjectVersion` is refused
+during the clean-up step, after the files are copied (Appendix B, decision 48).
 
 Blocker classes mirror into the Board's needs-you lane; the others are retrospective failure records only.
 
@@ -2078,7 +2552,7 @@ stays (tests import it); `job_run` uses `ops.launch(cfg, [f"{SCRIPTS_DIR}/backup
 ```
 restore.sh <job> list [--json]
 restore.sh <job> restore <snapshot-id|latest> <target-dir> [--include <path>]   (versioned only)
-restore.sh <job> thaw <prefix|.> [--tier Bulk|Standard|Expedited] [--dry-run]   (archive, versioned-files, versioned: whole store)
+restore.sh <job> thaw <prefix|.> [--tier Bulk|Standard|Expedited] [--dry-run]   (archive: any prefix; versioned-files: "." only, via vfiles thaw; versioned: whole store)
 restore.sh <job> thaw-status <prefix|.>                                            (archive, versioned-files)
 restore.sh <job> download <prefix|.> <target-dir>                                  (archive only)
 restore.sh <job> <path|.> <target> [--asof TS] [--tier Bulk|Standard|Expedited]   (versioned-files; "." = every file)
@@ -2089,9 +2563,26 @@ restore.sh <job> test                                                           
    `thaw` → `thaw`; `test` → `test-restore`). For record kinds: `acquire_lock "$job"` (die → "another
    <job> run is in progress"), `runs_start "$job" "$kind" "\"params\":{…}"` (values `_runs_esc`'d:
    `point`, `scope`, `target`, `tier`, `asof`, `include`), `exec > >(tee -a "$CACHE_DIR/$BE_RUN_LOG") 2>&1`,
-   the same traps as backup-job.sh; every success branch ends `runs_end ok 0 "" "<extra>"`. The
+   then the failure path below; every success branch ends `runs_end ok 0 "" "<extra>"`. The
    versioned-files branch no longer `exec`s python (line 123): `python3 -m app.engine.vfiles restore
    "$job" "$@" || _fail "file-history restore failed for '$job'"` so `runs_end` runs.
+
+   **The failure path, spelled out** — "the same traps as backup-job.sh" is not implementable and would
+   be wrong if it were: `_fail`, `_record_failure`, `_write_state`, `_fail_phase` and `_usb_exit_trap`
+   are defined *inside* `scripts/backup-job.sh`, not in a lib, and they are backup-specific — they
+   overwrite `state/<job>.json` (the job's last-BACKUP state, which the Board and the legacy
+   `runner.read_state` both read), notify `backup '<job>' FAILED`, and ping the backup healthcheck. A
+   failed restore must do none of those three: it must not make the Board say the backup failed, must
+   not tell Apprise a backup failed, and must not fail a healthcheck that watches backups. So the
+   generic half moves into `scripts/lib/runs.sh` as `runs_fail` and `runs_exit_trap` (7.1.4), and:
+   - `backup-job.sh` keeps its own `_record_failure` — `runs_fail` (with the `phase`/`copied`/stats
+     extras) **plus** `_write_state`, notify and healthcheck — and keeps installing
+     `trap '_usb_exit_trap "$?"' EXIT`, which is now a two-line wrapper that adds nothing but
+     `_record_failure`'s richer extras.
+   - `restore.sh` installs `trap 'runs_exit_trap "$?"' EXIT` and defines
+     `_fail() { _BE_FAIL_HANDLED=1; runs_fail "$1"; notify failure "restore '$job' FAILED" "$1"; die "$1"; }`
+     — a run record and a notification, no state file, no healthcheck. `list` and `thaw-status` install
+     no trap at all (they take no lock and write no record, so there is nothing to close).
 3. `.` = whole scope: `[ "$prefix" = "." ] && prefix=""` so the remote is `s3:$S3_BUCKET/media/$job/`;
    in vfiles `.` dispatches to `restore_all`.
 4. `list --json`: versioned → `restic -r … snapshots --tag "$job" --json`; archive → `points_render
@@ -2099,14 +2590,36 @@ restore.sh <job> test                                                           
    versioned-files → `python3 -m app.engine.vfiles restore "$job" list --json`.
 5. `restore` (versioned) gains `--include <path>`; on success counts `find "$target" -type f | wc -l`
    and `du -sb` → extra members `"files_restored":N,"bytes_restored":B,"target":"…"`.
-6. `download`: `rclone copy … -v 2>&1 | tee -a "$CACHE_DIR/state/$job-rclone.log"`, stats parsed like
-   the backup (`files_restored`, `bytes_restored`, `rclone_errors`); non-zero → `_fail "download reported
-   errors — N files were not ready yet (still warming up) or failed"`.
+6. `download`: errexit-safe, exactly as the backup hooks (7.1.5) —
+   ```bash
+   rlog="$CACHE_DIR/state/$job-rclone.log"; rc=0
+   rclone copy … -v 2>&1 | tee -a "$rlog" || rc=$?
+   ```
+   then parse the stats (`files_restored`, `bytes_restored`, `rclone_errors`) from `$rlog`, then
+   `[ "$rc" -eq 0 ] || _fail "download reported errors — N files were not ready yet (still warming up)
+   or failed"`. Written the other way round (`; rc=${PIPESTATUS[0]}`), `set -euo pipefail` at line 4
+   would exit the script on the failing pipeline and the record would lose both the stats and the
+   sentence.
 7. `thaw`: after issuing, count requests `n` and write `$CACHE_DIR/state/$job.thaw.json` (7.6); extra
-   `"objects_requested":n,"tier":"…"`; versioned case: restore-object for every key under `appdata/`
-   with the log line `Warming up the whole snapshot store (every snapshot job shares it). This issues
-   one request per object and can take a long time for a large store.`; a warm tier → exit 2 `job is
-   not on a thaw-first tier`; a live count line every 500 objects `warmed 12 500 of ~232 021`.
+   `"objects_requested":n,"tier":"…"`; a warm tier → exit 2 `job is not on a thaw-first tier`; a live
+   count line every 500 objects `warmed 12 500 of ~232 021`. Three branches, one per type:
+   - **archive**: `rclone lsf -R --files-only s3:$S3_BUCKET/media/$job/$prefix` → `aws s3api
+     restore-object` per key. Every key under the prefix is a current file, so warming them all is
+     exactly what was asked for.
+   - **versioned** (a hand-edited or acknowledged cold store): restore-object for every key under
+     `appdata/`, with the log line `Warming up the whole snapshot store (every snapshot job shares it).
+     This issues one request per object and can take a long time for a large store.`
+   - **versioned-files**: dispatches to a NEW subcommand,
+     `python3 -m app.engine.vfiles thaw <job> <scope|.> [--asof TS] [--tier T]`. It must NOT use the
+     archive branch: a File history prefix holds `media/<job>/<rel>@<ts>-<uuid>` for **every version
+     ever stored** plus `_catalog/catalog.sqlite` (`app/engine/vfiles.py:115`), so `rclone lsf` over it
+     would warm — and charge for — the entire history, while the confirm page quoted the current files
+     and 7.5.5 promises the catalog decides what gets warmed. The subcommand instead selects, through
+     the catalog, the version current at `--asof` (or now) for every path under `<scope>`, calls
+     `s3.thaw()` only for rows whose `storage_class` is in `vfiles._COLD_CLASSES`, prints
+     `thaw requested: <path>` per file and a final `thaw_requested=N skipped=K`, and exits 0.
+     `restore_all()` reuses the same selection, so a warm-up followed by a restore reports the same
+     count and never warms a version the restore will not read.
 8. `thaw-status <prefix|.>`: sample up to 20 keys (`rclone lsf -R --files-only`), `aws s3api head-object
    … --query Restore --output text` each → `None` / `ongoing-request="true"` / `ongoing-request="false"`;
    print `{"sampled":n,"ready":r,"pending":p,"not_requested":c}`; merged into `thaw.json.last_check`.
@@ -2117,7 +2630,10 @@ restore.sh <job> test                                                           
    recently modified key (`rclone lsf -R --files-only --format tp` sorted by time, last) with `Tier=Bulk`,
    write `$CACHE_DIR/state/$job.test-thaw.json` `{"key","requested_at","expected_ready_by","copy_expires_at","run_id"}`,
    exit 0 with `"tested_pending":true`; a later `test` with that file present and `head-object` reporting
-   ready → `rclone copyto` the key to `$RESTORE_ROOT/$job/test/<basename>` (kept), then record;
+   ready → `rclone copyto` the key to `$RESTORE_ROOT/$job/test/<basename>` (kept), then record; a later
+   `test` with `head-object` reporting **not** ready → rewrite `test-thaw.json` (same key, same
+   `expected_ready_by`) and end `ok` with `"tested_pending":true` again, so pressing `Check now` twice
+   costs nothing and changes nothing (5.2 rail);
    versioned-files → first path from `vfiles restore list` → `vfiles restore <job> <path> <dir>`
    (`thaw-requested` → the same pending state). On a completed test: verify the file exists and is
    non-empty, write `$CACHE_DIR/state/$job.tested.json` `{"at","path","bytes","run_id"}`, delete the
@@ -2155,7 +2671,8 @@ are added; `backup()` returns `{"uploaded","deleted","pruned","bytes","files_tot
 | Start restore, point P | versioned | `<job> restore <P> <container-target>` |
 | Start restore, one folder | versioned | `<job> restore <P> <target> --include <path>` |
 | Download, scope S | archive (warm, or cold + ready) | `<job> download <S or .> <target>` |
-| Warm up, scope S, speed T | archive / versioned-files | `<job> thaw <S or .> --tier <Bulk|Standard>` |
+| Warm up, scope S, speed T | archive | `<job> thaw <S or .> --tier <Bulk|Standard>` (rclone lists the prefix, one restore-object per key) |
+| Warm up, speed T | versioned-files | `<job> thaw . --tier <Bulk|Standard>` → `python3 -m app.engine.vfiles thaw <job> . --tier <T>` (catalog-selected current versions only, 7.5.3 §7). `.` is the only scope: File history has no folder scope (5.2) |
 | Warm up the store | versioned (cold) | `<job> thaw .` |
 | Check warm-up | archive / versioned-files | `<job> thaw-status <S or .>` (sync) |
 | Restore everything as of point | versioned-files | `<job> . <target> --asof <epoch> --tier <T>` |
@@ -2231,7 +2748,11 @@ Launches `python3 -m app.engine.sysop probe` (detached, kind `probe`, job `_syst
 `state/_probe.json` `{"destination":{"state","probed_at","detail"},"versioning":{"state","checked_at"}}`
 where an `AccessDenied` on `get-bucket-versioning` gives `unknown`. `POST /setup/versioning-confirmed`
 sets `versioning.state = "confirmed_by_hand"` with the time. The provisioning validate/automated
-success paths write the same `_probe.json` (they just ran the probe).
+success paths write the same `_probe.json` (they just ran the probe) and are also the only writers of
+run kind `provision`: each calls `runs.append_event(cache_dir, None, {...,"kind":"provision",
+"event":"start"})` immediately before the tool runs and the matching `end` event after it, synchronously
+in the request — those routes already block on the tool — so "destination setup" shows up in Activity
+with its outcome and its scrubbed output as the record's log (5.5). No other code writes that kind.
 
 #### 7.7.3 System operations — `app/engine/sysop.py`
 `python3 -m app.engine.sysop usage-refresh|billing-check|probe`: takes `locks/_system.lock`
@@ -2252,6 +2773,26 @@ still shown, stamped with its date.
   never resets them.
 - `measured`: `{"bytes": int, "count": int, "at": iso, "capped": bool}` or absent.
 - `acknowledged`: `[{"code": "snapshots_on_cold_class", "class": "DEEP_ARCHIVE", "at": iso}]` or absent.
+
+**How `job_save` builds those two from the POST** — stated because today's `job_save`
+(`routes.py:250-268`) builds a fixed dict and `validate` drops unknown keys, so an implementer would
+otherwise have to invent it, and because `size_gb` (a 2-decimal GB float) cannot reconstruct a byte
+count. The form gains two hidden fields, listed in 8.6: `measured_bytes` (int, copied verbatim from
+`/jobs/source-size`'s `bytes`) and `measured_capped` (`1`, or the field absent). Then:
+
+```python
+if f.get("measured_bytes"):
+    job["measured"] = {"bytes": int(f["measured_bytes"]), "count": int(f.get("file_count") or 0),
+                       "at": f.get("measured_at") or now_iso(), "capped": bool(f.get("measured_capped"))}
+job["assumptions"] = {"change_rate_pct": float(f.get("change_rate_pct") or 0),
+                      "bundled": bool(f.get("packing")), "pack_member_gb": float(f.get("pack_member_gb") or 0.05),
+                      "set_at": now_iso()}
+```
+`measured` is written only when `measured_bytes` is present, so an edit that never re-measures keeps the
+saved measurement and its date; `assumptions` is always written (the radios always have a value) and
+`set_at` is refreshed on every save, which is what the "set 12 Sep" stamps on the cost view read.
+`jobs_io.validate` passes both through after type-checking each member (wrong types → the key is
+dropped, never a 500), and `emit_shell` ignores both.
 - `set_enabled(config_dir, name, enabled) -> dict` (strict load, flip, write; `JobsFileError` like delete).
 - `render_crontab(config_dir, cache_dir, scripts_dir, *, dry_run=False) -> str` (7.3), called after every write.
 - `delete()` also removes the job's cache files (7.1.9) when given `cache_dir`.
@@ -2278,9 +2819,29 @@ the placeholder, and reports `size_provenance` per job (`measured | observed | a
   `PRICES_LIVE` for that request: `load_prices(region, cache_dir=…, live=(kind == "live"))`; `price_kind
   = "live"` iff `prices.source.startswith("aws-price-list")`; a live failure returns bundled with
   `live_failed: true`.
-- `restore_quote` (7.6); `delta_verdict` (4.6); `provenance_of(inputs) -> str` (4.6);
-  `board_cost(config_dir, cache_dir, prices)` (the Board's band 4 figures from caches);
-  `job_cost_band(job, …)` (5.2's four figures and four rows); `cost_page(params, …)` (5.6).
+- `restore_quote` (7.6); `delta_verdict` (4.6); `board_cost(config_dir, cache_dir, prices)` (the
+  Board's band 4 figures from caches); `job_cost_band(job, …)` (5.2's four figures and four rows);
+  `cost_page(params, …)` (5.6).
+- `provenance_of(inputs) -> str` returns **only** `"assumed"` or `"projected"` (4.6). `"measured"` and
+  `"invoiced"` are set directly on observed figures (`size_provenance`, `in_bucket_*`, the invoice) and
+  never come out of this function. A figure whose inputs are all measured is `"projected"` and renders
+  with no mark at all.
+- **`keep_all` at 0% change is bounded, and the adapter is what says so.** `model.project()`
+  (`app/estimator/model.py:388`) sets `unbounded = any(retention_type == "keep_all")` regardless of
+  churn, which is correct arithmetic in general and wrong at exactly one point: at 0% nothing is ever
+  replaced, so there are no old versions to accumulate and the curve is flat. The model is NOT touched
+  (2.3). Instead the adapter overrides, after calling it:
+  `unbounded = proj.unbounded and change_rate_pct > 0` — applied to `projection`, to `all_jobs`, and to
+  each `keep_options[*]`. At 0% the flat curve means `steady_state_monthly` is the typical figure and
+  `steady_month` is 1, so the create screen prints a real typical month instead of "still growing" and
+  `keep_options["keep_all"].delta_monthly` is `0.0` rather than `null` (8.6). Test:
+  `keep_all` + 0% → `unbounded is False`, `typical == first_bill`, `delta_monthly == 0.0`.
+- **The legacy response keys do not change shape.** `advice` (the `class_advice` list, each
+  `{level, text, …}`) and `guidance` (`type_advice`) are returned byte-identical to today; `warnings[]`
+  is **additive** — the same findings re-voiced in the blend's vocabulary for the Heads-up blocks
+  (5.8 §3.7) — and `blockers[]` likewise. Nothing reads `advice` in the new UI, but keeping it lets
+  `tests/gui/test_jobs_estimate_routes.py` keep asserting on it unchanged (10.2), which is the cheapest
+  possible proof that the re-voicing did not change which findings fire.
 
 ### 7.10 Migration and compatibility
 - `state/<job>.json` keeps its keys plus `run_id`, `started_at`, `finished_at`; `runner.read_state`
@@ -2306,7 +2867,10 @@ can be marked carries a sibling `<key>_provenance` ∈ `measured | assumed | inv
 ```jsonc
 {"generated_at":"…","tz":"UTC","next_scheduled":{"job":"appdata","at":"2026-09-16T05:00:00Z"}|null,
  "verdict":{"state":"failed","job":"manga","h2":"…","sub":"…","button":{"label":"Fix the permission →","href":"/setup/destination"}},
- "needs_you":[{"level":"blocker|warning|note","code":"iam-version-perms","job":"manga","text":"…","strong":"manga cannot finish a run.",
+ // level ∈ blocker | warning | advice | note; sort order blockers, warnings, advice, setup gaps (5.1).
+ // `advice` is the level of an actionable-but-not-urgent row (a warm-up ready to download); `note`
+ // stays reserved for rows with nothing to do, which therefore never carry `fix`.
+ "needs_you":[{"level":"blocker","code":"iam-version-perms","job":"manga","text":"…","strong":"manga cannot finish a run.",
                "errline":"AccessDenied: s3:DeleteObjectVersion","hint":"Two ways out: …","when":"2026-09-13T04:00:00Z",
                "record":"/jobs/manga/runs/20260913T040000Z-b21c","fix":{"label":"Fix the permission →","href":"/setup/destination"}}],
  "jobs":[JobStatus…],                       // sorted worst first (4.7)
@@ -2314,7 +2878,9 @@ can be marked carries a sibling `<key>_provenance` ∈ `measured | assumed | inv
          "model_monthly":4.54,"model_monthly_provenance":"assumed","model_floor":null,"delta":{"amount":0.56,"pct":14.1,"verdict":"…","short":"+14.1% · model runs high"}|null,
          "why_high_note":"…"|null,
          "per_job":[{"name":"manga","size_bytes":…,"size_provenance":"measured","file_count":232021,"ext":".cbz","old_versions_gb":null,
-                     "tier_label":"Thaw first, hours","storage_class":"DEEP_ARCHIVE","monthly":1.85,"monthly_provenance":"measured","settles":null}],
+                     "tier_label":"Thaw first, hours","storage_class":"DEEP_ARCHIVE","monthly":1.85,"monthly_provenance":"projected","settles":null}],
+         // `monthly_provenance` ∈ assumed | projected only (4.6): it is a computed figure. `measured`
+         // belongs to `size_bytes`/`in_bucket_bytes`, `invoiced` to `invoice.amount`.
          "price":{"kind":"bundled","region":"us-east-1","date":"2026-08-27"}}}
 ```
 
@@ -2329,29 +2895,53 @@ can be marked carries a sibling `<key>_provenance` ∈ `measured | assumed | inv
  "next_run":"2026-09-16T05:00:00Z"|null,"next_run_note":null|"paused"|"can't compute this schedule",
  "expected_at":null,"overdue_since":null,
  "median_s":248.0|null,"slow_last":false,
+ // Every count below, and every strip cell, is over `kind == "backup"` records ONLY (6.5): restores,
+ // downloads, warm-ups and test restores are operations, not runs, and must not colour the strip or
+ // move the counts. `last` is likewise the last backup run — the job page's "Last run" figure.
  "streak":30,"runs_total":112,"ok_14":14,"failed_14":0,
  "strip":[{"run_id":null,"started_at":null,"outcome":null,"duration_s":null,"slow":false,"dim":true,"snapshot_id":null,"title":"no run on record yet"},
           …14 (or 30 with "ledger":true) cells, oldest first…],
  "bars":[2,4,…],                              // job page only: pixel heights per ledger cell
  "error_class":{"code":"iam-version-perms","short":"AccessDenied","cause":"…","fix":"…","fix_label":"…","fix_route":"/setup/destination","blocker":true}|null,
  "points":{"count":14,"oldest":"…","newest":"…","kind":"snapshots|current-copy|file-history","stale":false}|null,
- "thaw":{…7.6…}|null,"test_pending":{…}|null,
+ "thaw":{…7.6…}|null,
+ // test_pending mirrors state/<job>.test-thaw.json verbatim (7.5.3 §9), null when no cold test is
+ // waiting; the rail reads expected_ready_by for its `ready by ~…` line (5.2).
+ "test_pending":{"key":"media/manga/2026/ch-0412.cbz","requested_at":"2026-09-15T04:02:11Z",
+                 "expected_ready_by":"2026-09-17T04:02:11Z","copy_expires_at":"2026-09-24T04:02:11Z",
+                 "run_id":"20260915T040211Z-1c8e"}|null,
  "crontab_stale":false,
  "cost":{…job_cost_band (8.7)…}}               // job page only (`?band=cost`)
 ```
 
 ### 8.3 Run record — `GET /jobs/<name>/runs/<run_id>.json` and `…/log`
+
+`GET /activity/<run_id>`, `/activity/<run_id>.json` and `/activity/<run_id>/log` are the same three
+contracts for a system record (`job: null`, `_system.runs.jsonl`, 5.5): identical JSON with `"job":
+null`, no `snapshot_id`, no `median_s`, and no pending state (a system operation appends its start
+event synchronously, so a missing record is a 404, never "starting"). `_system` is not a valid job name,
+so `/jobs/_system/runs/<id>` does not exist and must 404 like any unknown job.
+
 `.json`: the `RunRecord` fields of 7.1.7 as JSON (datetimes ISO), plus `live: bool`, `median_s`,
 `error_class` (8.2 shape) and `progress: {"done_bytes","total_bytes","eta_s"}|null` parsed from the
 log tail (rclone `Transferred:` lines; restic `percent_done` from the `-last.jsonl`). `…/log?offset=N`
 → `text/plain` chunk (≤ 64 KB) with headers `X-Log-Offset: <new offset>` and `X-Log-Eof: 0|1`; 404 JSON
-when the record has no log. Unknown or malformed id → 404 (HTML page for the record route, JSON for `.json`/`log`).
+when the record has no log.
+
+Pending (5.3): a well-formed id for an existing job with no record yet and an id timestamp inside
+`PENDING_WINDOW_S` (600 s) → the record route renders 200 in the pending state and `.json` returns
+`{"generated_at":…,"tz":…,"id":"<run_id>","job":"<name>","outcome":"pending","live":true,"pending_since":"<id timestamp>"}`
+with status 200; `…/log` returns an empty body with `X-Log-Offset: 0` and `X-Log-Eof: 0`. 404 (HTML page
+for the record route, JSON for `.json`/`log`) only for a malformed id, an unknown job, or a well-formed
+id older than the window with no record.
 
 ### 8.4 `GET /activity.json`
 `{"generated_at","tz","filters":{"job","kind","outcome","limit"},"items":[{"id","job":"appdata"|null,"kind","what":"scheduled run",
 "trigger","outcome","label":"OK|Failed|Running|Stopped|Waiting","started_at","finished_at","duration_s","error","record":"/jobs/appdata/runs/…","log":true}]}`
 — newest first, merged across jobs and `_system`, `kind` filter accepts `runs` (backup), `restores`
-(restore/download/thaw/test-restore), `setup` (usage-refresh/billing-check/probe/provision).
+(restore/download/thaw/test-restore), `setup` (usage-refresh/billing-check/probe/provision). `record`
+is `/jobs/<job>/runs/<id>` when `job` is a name and **`/activity/<id>` when `job` is null** (8.3): there
+is no job route for a system record, and every row in this feed must resolve.
 
 ### 8.5 `GET /jobs/<name>/restore-points.json`
 Snapshot backup:
@@ -2361,7 +2951,8 @@ Snapshot backup:
  "points":[{"id":"a81f3c2e","time":"2026-09-15T05:00:01Z","label":"Tue 15 Sep 05:00","size_bytes":56594862080,
             "files_total":533,"files_new":2,"files_changed":4,"bytes_added":228589568,"summary":true}],
  "count":14,"newest":"…","oldest":"2026-03-18T05:00:02Z","size_provenance":"measured","default_point":"a81f3c2e",
- "keep_rule_sentence":"last 3, then one a day for 7 days, one a week for 4 weeks, one a month for 6 months"}
+ "keep_rule_prose":"last 3, then one a day for 7 days, one a week for 4 weeks, one a month for 6 months",
+ "keep_rule_label":"Last 3 · one a day for 7 days · one a week for 4 weeks · one a month for 6 months"}
 ```
 Plain copy: `{"job":"manga","type":"archive","kind":"current-copy","storage_class":"DEEP_ARCHIVE","cold":true,
 "as_of":"2026-09-06T06:09:00Z","as_of_source":"last successful run","folders":["2019","2020","2021"],
@@ -2369,14 +2960,22 @@ Plain copy: `{"job":"manga","type":"archive","kind":"current-copy","storage_clas
 "mirror":false,"note":"current copy only — no version history","thaw":{…}|null}`.
 File history: `{"job":"photos","type":"versioned-files","kind":"file-history",…,"points":[{"id":"20260915T050001Z-91aa",
 "time":"…","asof":1757912590,"label":"Tue 15 Sep 05:03","files_added":12,"bytes_added":40120033}],"count":37,
-"folders":[…],"file_count":18234,"size_bytes":…,"size_provenance":"measured","size_source":"catalog","thaw":null}`.
+"file_count":18234,"size_bytes":…,"size_provenance":"measured","size_source":"catalog","thaw":null}` —
+no `folders` member: File history's scope is `.` or one file by path (5.2), so a folder list would be a
+control with no argv behind it.
 Empty cache → `{"job","type","kind","points":[],"count":0,"fetched_at":null,"stale":true}`.
 
 ### 8.6 `GET /jobs/estimate.json?<form fields>&prices=<kind>` (create/edit job)
 Request = every form field (`csrf` ignored): `type`, `source`, `size_gb`, `file_count`, `measured_at`,
-`schedule`, `enabled`, `storage_class`, `retention_type`, `retention_days`, `retention_count`,
-`keep_last`, `keep_daily`, `keep_weekly`, `keep_monthly`, `mirror`, `packing`, `pack_member_gb`,
-`change_rate_pct`, `name`, `prices`. Response (existing keys kept; `wizard_estimate` 7.9):
+`measured_bytes`, `measured_capped`, `schedule`, `enabled`, `storage_class`, `retention_type`,
+`retention_days`, `retention_count`, `keep_last`, `keep_daily`, `keep_weekly`, `keep_monthly`, `mirror`,
+`packing`, `pack_member_gb`, `change_rate_pct`, `change_rate_touched`, `name`, `prices`. The same list
+is what `POST /jobs` carries. Three of them are new and all three are hidden or implicit:
+`measured_bytes` (int, verbatim from `/jobs/source-size`) and `measured_capped` (`1` or absent) exist
+because `size_gb` is a rounded GB float and `job["measured"]["bytes"]` must be exact (7.8);
+`change_rate_touched` (`1` or absent) is what makes the recommendation rules read the change rate as
+unset on a fresh form (5.8 §3.1) — the edit screen always sends `1`. Response (existing keys kept;
+`wizard_estimate` 7.9):
 ```jsonc
 {"this_job_monthly":2.69,"new_total_monthly":4.54,"this_job_restore":4.74,
  "price_source":"…","price_date":"2026-08-27","price_kind":"bundled","price_region":"us-east-1","live_failed":false,
@@ -2403,7 +3002,9 @@ Request = every form field (`csrf` ignored): `type`, `source`, `size_gb`, `file_
  "provenance":{"this_job_monthly":"assumed","first_bill":"assumed","total_6mo":"assumed","classes":"assumed","size":"measured"}}
 ```
 Errors: `{"error":"<message>"}` with 400 (the existing `ValueError` path). At 0% change every
-`keep_options[*].delta_monthly` is `0.0` (including `keep_all`, `unbounded:false`).
+`keep_options[*].delta_monthly` is `0.0` (including `keep_all`, whose `unbounded` is `false` and whose
+`points`/`reach_days` stay `null`), and `projection.unbounded` / `all_jobs.unbounded` are `false` too —
+the adapter's override, not a model change (7.9).
 
 ### 8.7 `GET /cost.json?<what-if params>` and `job_cost_band`
 `cost.json` = `{**asdict(Estimate), "projection": projection_bundle, "current": current_costs, "billing":
@@ -2424,28 +3025,38 @@ cached billing_view, "delta": {…}, "per_job": [{"name","size_bytes","size_prov
 Board: `status` (8.1 as a dict), `csrf`. Job page: `job`, `status` (8.2 with `ledger:true` and `cost`),
 `points` (8.5), `readiness` (the job's entry of 7.7.1 plus the global checks), `restore` (default target,
 mount state, quote(s), tier options), `sibling_cold` (name or None), `csrf`. Run record: `job`, `rec`,
-`error_class`, `median_s`, `live`. Get data back: `job`, `choice` (point/scope/path/target/tier),
-`quote`, `needs`, `errors` (field → message), `csrf`. Activity: `items`, `filters`, `jobs`. Cost:
+`error_class`, `median_s`, `live`, `pending` (5.3). Get data back: `job`, `intent`, `choice`
+(point/scope/path/target/tier, each already defaulted), `quote`, `needs`, `blocker` (None or the
+impossible-intent signal), `errors` (field → message), `csrf`. Activity: `items`, `filters`, `jobs`. Cost:
 `cost` (8.7), `form` (levers), `csrf`. Create/edit: `job` (None or the saved job), `saved_json` (for
 diffing), `source_root_host`, `storage_classes`, `other_jobs` (`[{name, schedule, type, enabled}]`),
 `defaults` (fresh-form defaults), `errors`, `csrf`. Setup: `checks`, `lan_sentence`. Destination /
 keys / about: as today plus `groups`, `secret_status` (three-state), `tools`.
 
-### 8.10 Form POST contracts
+### 8.10 Form GET and POST contracts
+
+One GET form: `GET /jobs/<name>/restore?intent=&point=&scope=&path=&target=&tier=` — the Get data back
+band's navigation to the confirmation page (5.2, 5.4). It mutates nothing, needs no CSRF, always renders
+200 for an existing job (ill-formed values fall back to defaults in place; an impossible `intent`
+renders a BLOCKER instead of the primary button), and 404s only for an unknown job. Every mutating
+restore/warm-up/download POST below originates from that confirmation page; the only restore-family POST
+that does not is `test-restore` (one file, its price on the button face) and `thaw/check` (starts nothing).
+
 | Route | Fields | Success | Failure |
 |---|---|---|---|
-| `POST /jobs` | 8.6's fields + `acknowledge_blocker` (repeatable) + `run_now` (`1` from "Create and run it now") | 302 `/jobs/<name>` (+ launch when `run_now`) | 200 re-render with `errors`; corrupt jobs.json → error page |
+| `POST /jobs` | 8.6's fields + `acknowledge_blocker` (repeatable) + `run_now` (`1` from "Create and run it now") + `recalc` (`1` from the `<noscript>` button: re-render with server-computed figures, save nothing) | 302 `/jobs/<name>` (+ launch when `run_now`) | 200 re-render with `errors`; corrupt jobs.json → **200 re-render** with the `sig-failure` sentence and every value intact (5.8 §8), never the error page |
 | `POST /jobs/<name>/run` | `csrf` | 302 `/jobs/<name>/runs/<id>` | 409 flash `blocker` |
 | `POST /jobs/<name>/pause` · `/resume` | `csrf` | 302 back to the job page with the flash | — |
 | `POST /jobs/<name>/delete` | `csrf`, `confirm` | 302 `/` | 400 re-render of the job page with `Type the job name exactly as shown to delete.` |
-| `POST /jobs/<name>/restore` | `csrf`, `point` (versioned) / `scope` + `path` (others), `target`, `tier`, `confirm` | 302 run record | 400 re-render (5.4) / 409 |
-| `POST /jobs/<name>/thaw` | `csrf`, `scope`, `tier`, `confirm` | 302 run record | 400 / 409 |
+| `POST /jobs/<name>/restore` (from 5.4 only) | `csrf`, `intent` (`restore`\|`download`), `point` (versioned) / `scope` + `path` (others), `target`, `tier`, `confirm` | 302 run record | 400 re-render of 5.4 / 409 |
+| `POST /jobs/<name>/thaw` (from 5.4 only) | `csrf`, `scope`, `tier`, `confirm` | 302 run record | 400 re-render of 5.4 / 409 |
 | `POST /jobs/<name>/thaw/check` | `csrf` | 302 job page + `note` flash | 400 when no warm-up is pending |
 | `POST /jobs/<name>/test-restore` | `csrf` | 302 run record | 409 |
+| `POST /jobs/<name>/test-restore` again, while `test-thaw.json` exists (the rail's `Check now`, 5.2) | `csrf` | 302 run record; still cold → `note` flash `Still warming up — ready by ~<time>.`; ready → the file is downloaded and `tested.json` written | 409 |
 | `POST /jobs/<name>/restore-points/refresh` | `csrf` | 302 job page + flash | flash `failure` |
 | `POST /jobs/<name>/assumptions` | `csrf`, `change_rate_pct`, `packing`, `pack_member_gb` | 302 `/cost` | 400 |
 | `POST /costs/refresh` · `/costs/billing/refresh` · `/setup/probe` | `csrf` | 302 with the `note` flash | `blocker` flash when no bucket |
-| `POST /costs/billing` | as today | 302 `/cost` | — |
+| `POST /costs/scenario` | `csrf`, `restore_fraction` ∈ `1|0.5|0.1`, `restores_per_year` int ≥ 0, `retrieval_tier` ∈ `Bulk|Standard|Expedited` | 302 `/cost` + `Saved.`; writes `$CONFIG_DIR/cost.json` (5.6 band 3) | 400 with the field message; nothing written |
 | `POST /setup/keys` | as today's `/config` | 302 `/setup/keys` + `Saved.` | 200 re-render with field messages |
 | `POST /setup/versioning-confirmed` | `csrf` | 302 `/setup` | — |
 | `POST /setup/destination/manual/render` · `/validate` · `/automated` | as today | 302 `/setup` with the success flash | 400 re-render (unchanged) |
@@ -2462,10 +3073,13 @@ Every `abort()` in `routes.py` today, and what replaces it:
 | 276 | `abort(400)` on any `ValueError` in `job_save` | re-render `job_form.html` with `errors` mapped to fields (5.8 §8), status 200 |
 | 286 | `abort(404)` on run of an unknown job | error page `There is no job called <name>` |
 
-New error sites: run record 404s (`There is no run <id> for <name>`), restore validation 400s
+New error sites: run record 404s (`There is no run <id> for <name>` — only outside the pending window,
+5.3), restore validation 400s
 (re-render), busy 409s (`abort(409, description=f"{name} is busy — a backup or restore is already
 running. Wait for it to finish.")` for JSON callers, a `blocker` flash + redirect for form callers),
-`JobsFileError` → error page with the plain cause. The handlers live in `app/gui/__init__.py`
+`JobsFileError` → the error page with the plain cause **except on `POST /jobs`**, which re-renders the
+form at 200 with the sentence as a `sig-failure` and every value intact (5.8 §8), and on
+`POST /jobs/<name>/delete`, which keeps the `failure` flash (5.15). The handlers live in `app/gui/__init__.py`
 (`register_error_handlers(app)`): for each of 400/403/404/405/409/500 render `error.html` (5.14)
 unless the request path ends in `.json` or hits `/jobs/browse`, `/jobs/source-size`, `/log`, in
 which case return `{"error": <sentence>}`. 500 also logs the traceback (`app.logger.exception`).
@@ -2504,7 +3118,34 @@ shells out (monkeypatch `runner`, `provision`, `usage`, `billing`, and now `ops.
   form only, so this test asserts `id="cost-timeline"`, `id="month"` (scrubber), `Refresh usage`,
   `How this is calculated`; `Restoring is retrieval + egress` → `Getting it back is warm-up plus download
   out of Amazon.`; `/estimate` in nav → `/cost`.
-- `test_costs_routes.py:261-267`: `current spend` → `In the bucket now`; `connect aws billing` → `Connect`.
+- `test_costs_routes.py` — four groups, and the first two are semantic changes, not renames:
+  - **100–185, the `/costs/refresh` tests** (`test_refresh_calls_collect_usage_and_saves_cache`,
+    `test_refresh_includes_versioned_files_job_prefix`, the two not-500 guards,
+    `test_refresh_without_bucket_flashes_and_does_not_call_collect_usage`) assert that the route calls
+    `usage.collect_usage` **synchronously** and that `usage.load_cached` then holds the result. 5.6
+    makes it a detached `ops.launch_py(… "usage-refresh")` + `note` flash, so they are rewritten:
+    monkeypatch `ops.launch_py`, assert it was called with `usage-refresh`, assert the response is 302
+    with the flash, and assert `usage.collect_usage` was **not** called in the request. The
+    `collect_usage` / `save_cached` / media-prefix assertions move verbatim to `test_sysop.py`, where
+    they belong now; the no-bucket case keeps its `blocker` flash and its "launched nothing" assertion.
+  - **226–258, the `billing_view` tests** assert it calls `billing.monthly_costs` / `billing.forecast`
+    live and returns `{"connected": True, "error": …}`. 7.7.3 makes it cache-only, so they seed
+    `$CACHE_DIR/billing.json` and assert the parsed view; the `BillingError` case moves to
+    `test_sysop.py` and asserts `billing.json`'s `error` member instead.
+  - **261–267**: `current spend` → `In the bucket now`.
+  - Anything asserting the Cost Explorer form on `/cost` (`connect aws billing`, the `COST_EXPLORER_*`
+    inputs, `POST /costs/billing`) moves to `test_config_routes.py` against `/setup/keys#billing`,
+    which is now the only editing surface (5.6 band 5, 5.12); `/cost` is asserted to contain no
+    `COST_EXPLORER_` string at all.
+- `test_jobs_estimate_routes.py`, the advice tests — they stay green **unchanged** and are the guard
+  that the re-voicing did not change which findings fire: 7.9 requires `advice[]` and `guidance` to be
+  returned byte-identical, with `warnings[]` additive, so 125–140 (`"bundle" in advice`), 271
+  (`level == "danger"`) and 279 (`advice == []`) need no edit. One test in that file must be **inverted**,
+  for a different reason: `test_jobs_estimate_no_bundle_warning_for_large_objects` (≈141–147) asserts
+  that 1824 GB over 232,021 files — 8.05 MB average — raises no bundling advice. Appendix B #43 raises
+  that threshold from 1 MB to 10 MB precisely so the manga example does fire, so the test becomes
+  `test_jobs_estimate_bundle_warning_at_manga_shape` asserting `"bundle" in advice`, and a new
+  companion asserts silence above 10 MB average (e.g. `size_gb=1824, file_count=100000`, 18.7 MB).
 - `test_app.py`: `/` → 302 `/setup` when unprovisioned and 200 when provisioned; the `no authentication`
   assertion moves to `/setup` (`This GUI has no login`).
 - `test_about_routes.py`: `/about` → 301 `/setup/about`; the footer link asserts `/setup/about` on `/`.
@@ -2516,14 +3157,45 @@ shells out (monkeypatch `runner`, `provision`, `usage`, `billing`, and now `ops.
 
 ### 10.3 New tests
 - `tests/gui/test_vocabulary.py`: render every page with the example fixture (jobs.json + state
-  files + `runs.jsonl` + `points.json` + `usage.json` + `billing.json`); strip `<code>`, `<pre>`,
-  `<script>`, `.term`, `.cmd`, `.errline`, `details.tooldetail`; assert none of `vocab.FORBIDDEN_TERMS`
-  (`restic`, `rclone`, `repository`, `snapshot_id`, `egress`, `ingest`, `thaw`, `churn`, `retention`,
-  `prune`, `catalog`, `vfiles`, `versioned-files`, `Bulk copy`, `Mirror`, `OpenTofu`, `supercronic`,
-  `steady state`, `steady-state`) appears (the About page is exempt). Mono law: parse each page with
+  files + `runs.jsonl` + `points.json` + `usage.json` + `billing.json`) and assert no forbidden term
+  survives. The rules are exact, because the test must be able to go green against the copy this
+  document mandates:
+  - **What is searched**: the visible text only. Parse the HTML, drop the whole subtree of `<code>`,
+    `<pre>`, `<script>`, `<style>`, `.term`, `.cmd`, `.errline`, `details.tooldetail`, and any
+    `span.mono` whose text is an env key name (`^[A-Z0-9_]+$`), then concatenate the remaining text
+    nodes. Attributes are never searched — `name="retention_type"`, `value="versioned-files"`,
+    `href="/setup/about#restic"` and `data-when-type` are markup, not language.
+  - **How it matches**: case-sensitive, whole word — `re.search(rf"\b{re.escape(term)}\b", text)`.
+    Case sensitivity is what lets `RESTIC_PASSWORD` stand as an env key while `restic` stays banned as
+    a word.
+  - **`vocab.FORBIDDEN_TERMS`**: `restic`, `rclone`, `repository`, `snapshot_id`, `egress`, `ingest`,
+    `thawing`, `thawed`, `restore-request`, `churn`, `retention`, `prune`, `catalog`, `vfiles`,
+    `versioned-files`, `Bulk copy`, `Mirror`, `OpenTofu`, `supercronic`, `steady state`, `steady-state`.
+    Bare `thaw` is NOT on the list and must not be added: the tier name `Thaw first, hours ·
+    DEEP_ARCHIVE` and its lowercase form `thaw-first tier` are the vocabulary (4.3) and appear on the
+    Board, the job page, the restore pages, the cost page and Setup. `vocab.ALLOWED_PHRASES =
+    ("Thaw first", "thaw-first")` is asserted positively — at least one of them renders on the manga
+    job page — so a later "cleanup" cannot quietly delete the tier name.
+  - **Per-page exemptions** (`vocab.TERM_EXEMPTIONS`, keyed by URL prefix — the only ones; every other
+    page is checked against the full list):
+
+    | Page | Exempt terms | Why |
+    |---|---|---|
+    | `/setup/about` | all of them | it is the glossary (5.13) |
+    | `/setup/destination`, `/setup/destination/*` | `OpenTofu` | the preserved copy names the tool that creates the bucket: "We create the bucket with OpenTofu", "What AWS / OpenTofu reported" (5.11), asserted by existing tests |
+    | `/setup/keys` | `restic`, `repository` | the Recovery group prints the env key names `RESTIC_PASSWORD` and `RESTIC_REPOSITORY` beside the plain names (5.12); the case-sensitive rule already covers them, the exemption makes it intentional |
+
+  Mono law: parse each page with
   `html.parser`; every text node matching `^\$?\d[\d,]*(\.\d+)?( ?(GB|MB|TB|KB|%|s|m|h|d|files))?$` or
-  `^\d{2}:\d{2}$` must have an ancestor with a class in `{mono, n, v, fig, stamp, price-stamp, errline,
-  cmd, clock, chip, tok, delta, d, id, m, k-delta, figs}`; the state token, clock and chip are mono.
+  `^\d{2}:\d{2}$` must have **an ancestor at any depth** with a class in `{mono, n, v, s, t, sub, scrub,
+  num, fig, stamp, price-stamp, errline, cmd, clock, chip, tok, delta, d, id, m, k-delta, figs, classes,
+  ledger-axis}`; the state token, clock and chip are mono. The list is the set of classes this document's
+  own markup actually uses for mono numbers, and it must stay in step with it: `.s` carries sub-values
+  (`232,021 files`, `5 files`, `/mo`), `.t` the rail stamps, `.sub` the verdict line, `.scrub` the month
+  readout, `.num` the Board's numeric columns, and `classes` is on `table.classes` itself — its cells
+  (`$2.69`, `30 d`, `180 d`) are mono by CSS with no class of their own, which the any-depth ancestor
+  rule covers. Written without those, the test fails on the Board, the job page and the create screen,
+  i.e. on correct markup, which is the one thing a lint must never do.
 - `tests/engine/test_runs.py`: fold rules; `is_locked`; `reconcile` (lock free → one aborted line,
   idempotent; lock held → untouched; `force`); `materialize_backfill` once; `read_log` offsets and
   path refusal; `median_duration_s` (window 30, < 3 → None), `streak`; `boot` never raises on a
@@ -2536,14 +3208,29 @@ shells out (monkeypatch `runner`, `provision`, `usage`, `billing`, and now `ops.
 - `tests/engine/test_errors.py`: one case per class; `AccessDenied: s3:DeleteObjectVersion` →
   `iam-version-perms`, `blocker=True`.
 - `tests/engine/test_vfiles_restore_all.py`: two paths + a tombstone; `asof` picks the older version;
-  cold → `thaw` argv, `thaw_requested == 1`; the totals line; `list --json`.
+  cold → `thaw` argv, `thaw_requested == 1`; the totals line; `list --json`. Plus the new `vfiles thaw`
+  subcommand (7.5.3 §7): a job holding **two versions of one path**, both cold, issues **exactly one**
+  `restore-object` — the current one — and prints `thaw_requested=1`; a warm version is counted in
+  `skipped=` and issues nothing; `thaw .` and a following `restore_all` report the same
+  `thaw_requested` count, because both select through the catalog. (The point of the test is that the
+  rclone-prefix approach would have issued two and billed for the history.)
 - `tests/gui/test_status.py` (fake clock; runs seeded with `runs.append_event`): the precedence matrix
   (lock held > paused > overdue > failed > ok > not run yet — note Overdue outranks Failed only in
   precedence, not in sort; assert both orders of 4.7); daily job last run 3 days ago → `expected_at` the
   next fire, overdue 15 min later; 14 minutes after a missed fire → not overdue; a running lock during
   a missed fire → Running, not Overdue; paused never overdue; never-ran with `created_at` 3 days ago →
   Overdue; without → Not run yet; unparsable cron → `next_run None` with the note; sort order;
-  `crontab_stale`; strip padding, dim by position, slow rule, aborted as failed, titles.
+  `crontab_stale`; strip padding, dim by position, slow rule, aborted as failed, titles. Two vectors
+  this spec's review added, both of which a naive implementation gets wrong:
+  - **a manual run that straddles a tick is not overdue.** Seed one `backup` run started 04:50 and
+    finished 05:10 on a `0 5 * * *` job; at 05:30 the job is OK, not Overdue. (With `ref =
+    started_at` the 05:00 tick is "missed" and the Board cries wolf five minutes after a successful
+    backup, 7.3.)
+  - **an operation is not a run.** Seed 14 OK backups and one `restore` record (and one `thaw`, and one
+    `test-restore`) newer than all of them; the strip still has 14 cells, all `ok`, the newest of them
+    the newest *backup*; `ok_14 == 14`, `failed_14 == 0`, `runs_total == 14`, `streak == 14`, and
+    `median_s` is unchanged by the restore's duration. Then seed a failed restore: the job's state is
+    still `OK` and the Board shows no failure (6.5, 8.2).
 - `tests/gui/test_points.py`: versioned from a `points.json` fixture (with and without `summary`,
   RFC3339 with nanoseconds and offset); archive from `points.json` + `usage.json`; versioned-files from
   a seeded sqlite catalog + runs; `stale`.
@@ -2551,10 +3238,20 @@ shells out (monkeypatch `runner`, `provision`, `usage`, `billing`, and now `ops.
   format; `run_sync` timeout → `OpsTimeout`; `validate_target` rules (root escape, non-empty, source
   path, auto-suffix).
 - `tests/gui/test_restore_routes.py` (monkeypatch `ops.launch` to capture argv; tmp `RESTORE_ROOT`):
-  every row of 7.5.6 → exact argv and 302 to `/jobs/<name>/runs/<id>`; confirm mismatch → 400 with the
-  sentence and values intact; lock held → 409; cold versioned → the store-warm-up path; thaw on a warm
-  tier → 400; `/thaw/check` merges `last_check`; test-restore on cold → the Bulk warm-up argv; missing
-  mount → 400 with the mount copy; bad run id → 404; `/log?offset` headers.
+  the job page's band is a GET form (`method="get"`, `action="/jobs/appdata/restore"`, no `confirm`
+  input, no `#confirm-name`); `GET /jobs/appdata/restore` with the band's query renders the confirm page
+  with `#confirm-name` and launches nothing; `GET` with a junk `tier`/`scope` still renders 200 with the
+  defaults; `GET` for an unknown job → 404; then every row of 7.5.6 posted from that page → exact argv
+  and 302 to `/jobs/<name>/runs/<id>`; confirm mismatch → 400 re-render with the sentence and values
+  intact; lock held → 409; cold versioned → the store-warm-up path; thaw on a warm tier → the BLOCKER
+  render on GET and 400 on POST; `/thaw/check` merges `last_check`; test-restore on cold → the Bulk
+  warm-up argv; missing mount → 400 with the mount copy; bad run id → 404; `/log?offset` headers. Also
+  the cold test restore's two steps (5.2 rail, R11): the first POST launches `restore.sh <job> test`;
+  with `state/<job>.test-thaw.json` seeded and the stubbed script reporting "still cold", the second
+  POST of the **same** route redirects with the `note` flash `Still warming up — ready by ~…` and the
+  rail still reads `Warming up`; with the stub reporting ready, it writes `tested.json` and the rail
+  reads `Tested <date>` with the kept path. `POST /jobs/<name>/thaw/check` with only `test-thaw.json`
+  present (no `thaw.json`) → 400: the two files are not interchangeable.
 - `tests/gui/test_readiness.py`: passphrase three-state; size provenance propagates to
   `cost_full_restore.provenance`; totals; cold job gets both tiers; `setup_checks` rows and sort.
 - `tests/gui/test_activity_routes.py`: merge, filters, `limit`, `/activity.json` shape.
@@ -2563,16 +3260,34 @@ shells out (monkeypatch `runner`, `provision`, `usage`, `billing`, and now `ops.
   raise — the page must still render).
 - `tests/gui/test_job_page_routes.py`: 5.2 acceptance items; `Copies` for archive; failure record for
   the prune case; pause/resume/delete confirm.
-- `tests/gui/test_run_record_routes.py`: 5.3 acceptance items.
+- `tests/gui/test_run_record_routes.py`: 5.3 acceptance items, including the pending window — a fresh
+  well-formed id → 200 with `Starting…` and `.json` `{"outcome":"pending"}`; the same id after a start
+  line is appended → the live record; an id stamped 20 minutes ago with no record → 404; a malformed id
+  → 404; `POST …/run` (with `ops.launch` monkeypatched to do nothing) then a GET of the redirect target
+  → 200, proving the primary flow never lands on 404.
 - `tests/gui/test_jobs_io.py` additions: `created_at` set/preserved/passed; `assumptions`, `measured`,
   `acknowledged` round-trip; `set_enabled`; `render_crontab` byte-identical to the entrypoint format;
   `delete` removes the cache files.
 - `tests/gui/test_estimate_io.py` additions: `classes` has 5 rows in `STORAGE_CLASSES` order, blocked
   exactly for versioned × {GLACIER, DEEP_ARCHIVE}; `keep_options` deltas ≥ 0, all zero at 0% change,
   `null` only for `keep_all` with change > 0; `all_jobs.first_bill ≥ projection.first_bill`;
-  `typical_floor`; `price_kind` flips with `?prices=`; `recommend_type` fires rule 1 on (533, 52.71, 1),
-  rule 2 on (232021, 1780, 0), rule 3 on (10, 600, 0), `None` unmeasured; `first_bill_reason` cases;
-  `restore_quote.amount == model.restore_cost(...)` for the same inputs; `delta_verdict` bands;
+  `typical_floor`; `keep_all` at 0% change → `unbounded is False`, `typical == first_bill`,
+  `delta_monthly == 0.0` and `steady_month == 1` (the adapter override of 7.9 — without it the create
+  screen prints "still growing" for a job that cannot grow, and the model stays untouched);
+  `price_kind` flips with `?prices=`; `recommend_type` — always called with keywords,
+  never positionally — fires rule 1 on `(size_gb=52.71, file_count=533, change_rate_pct=1)`, rule 2 on
+  the manga shape `(size_gb=1780, file_count=232021, change_rate_pct=0)` (this is the case the 10 MB
+  average threshold exists for; assert `rule` contains `more than 50,000 files`), rule 3 on
+  `(size_gb=600, file_count=10, change_rate_pct=0)`, and returns `None` for `measured=False`; plus the
+  fresh-form tri-state of 5.8 §3.1 — the manga shape with `change_rate_pct=1, change_rate_set=False`
+  still fires rule 2, the same shape with `change_rate_set=True` fires nothing (`None`), and
+  `(size_gb=52.71, file_count=533, change_rate_pct=1, change_rate_set=False)` still fires rule 1, so a
+  fresh form recommends for both example jobs and a deliberate answer is honoured literally;
+  `class_advice` raises heads-up 1 on that same manga shape on `DEEP_ARCHIVE` and not on
+  `(size_gb=1780, file_count=40)`; `first_bill_reason` cases;
+  `restore_quote.amount == model.restore_cost(...)` for the same inputs; `delta_verdict` bands at the
+  15/30 boundaries (±14.1% → `close enough to trust`, matching the Board example; ±20% → `model runs
+  high/low`; ±40% → `far apart`);
   `provenance_of` weakest-input rule; `board_cost` with and without caches.
 - `tests/gui/test_job_form_routes.py` additions: POST with a blocker and no ack → 200 re-render with
   `#class-blocker` visible; with ack → 302 and `acknowledged` persisted; POST on an existing name with a
@@ -2580,7 +3295,19 @@ shells out (monkeypatch `runner`, `provision`, `usage`, `billing`, and now `ops.
 - `tests/gui/test_errors.py`: each handler renders `error.html` with the right h1; JSON paths return
   JSON; CSRF 400 says `That form had expired`.
 - `tests/gui/test_sysop.py`: each sysop kind writes start/end events under `_system`, `billing.json`
-  written, failure → `failed` with the message (functions monkeypatched).
+  written, failure → `failed` with the message (functions monkeypatched); plus the assertions that moved
+  here from `test_costs_routes.py` (10.2): `usage-refresh` calls `collect_usage` with the right bucket
+  and media-prefix list and saves the cache, `billing-check` writes `billing.json`, and a `BillingError`
+  lands in that file's `error` member rather than anywhere near a render.
+- `tests/engine/test_archive_prune.py` additions (7.1.5): an `S3Error` from a versioned delete prints
+  exactly `AccessDenied: s3:DeleteObjectVersion` and returns 1; from `list-object-versions`,
+  `AccessDenied: s3:ListBucketVersions`; any other stderr, its first line truncated to 300 chars. In
+  every case stdout+stderr is one line and contains no `Traceback` — the run record quotes this text
+  verbatim to the owner.
+- `tests/gui/test_costs_scenario.py` (or an addition to `test_costs_routes.py`): `POST /costs/scenario`
+  writes `$CONFIG_DIR/cost.json` with the four members and redirects with `Saved.`; a bad
+  `restore_fraction` → 400 and no file; a missing file is read as defaults and never raises; `/cost`
+  renders with the saved scenario applied.
 - Estimator guard `tests/estimator/test_untouched.py`: hashes of `app/estimator/model.py`, `tiered.py`,
   `prices.py`, `usage.py`, `billing.py`, `schedule.py` equal the values recorded at the start of the
   branch (compute them in the first commit; the test fails if any file changes, forcing an explicit,
@@ -2588,11 +3315,28 @@ shells out (monkeypatch `runner`, `provision`, `usage`, `billing`, and now `ops.
 - bats: `tests/bats/runs.bats` (writer functions, escaping validated with a real `python3 -c
   json.loads`, rotation, stat parsers against fixtures `tests/bats/fixtures/restic-backup-summary.jsonl`,
   `rclone-final-stats.txt` (captured on the box from rclone 1.68.2 before merging), `restic-snapshots.json`,
-  `restic-ls.jsonl`, `aws-head-object-*.txt`); `backup-job.bats` additions (start+end lines, stats from
-  stubs, lock held → no record and legacy file untouched, `BE_TRIGGER=manual`, prune failure → `failed`
-  with `phase":"prune"`, points cache written); `restore.bats` additions (records + lock, `list --json`
-  no lock, `download .` argv, `thaw .` writes `thaw.json`, `thaw-status` counts, `test` per type,
-  vfiles `.` in-process); `entrypoint.bats` (dirs created, `runs boot` invoked, `-inotify` argv via a
+  `restic-ls.jsonl`, `aws-head-object-*.txt`), plus three cases that pin the bugs this spec's review
+  found: (a) the `rclone-final-stats.txt` fixture contains BOTH `Transferred:` lines
+  (`Transferred:   3.100 GiB / 3.100 GiB, 100%, 8.912 MiB/s, ETA 0s` and
+  `Transferred:            1204 / 1204, 100%`) and the test asserts `_rclone_stat_bytes` → `3328599654`
+  and `_rclone_stat_files` → `1204`, i.e. the two parsers never return the same number; (b) a versioned
+  `runs_end ok` whose `SNAP_ID=a81f3c2e` produces a line that `python3 -c 'import json,sys;
+  [json.loads(l) for l in sys.stdin]'` parses and whose `snapshot_id` is exactly `a81f3c2e` (and, with
+  `SNAP_ID` empty, `null`); (c) `runs_end` with `BE_RUN_ID` exported but `runs_start` never called
+  appends nothing and returns 0 under `set -u`; `backup-job.bats` additions (start+end lines, stats from
+  stubs, `BE_TRIGGER=manual`, points cache written; an rclone stub that prints a full stats block and
+  then exits 1 → the end line has `"outcome":"failed"`, `"phase":"copy"` AND `"files_added":1204`,
+  proving the errexit-safe hook ran the parser; a restic stub that succeeds on `backup` and exits 1 on
+  `forget` printing `AccessDenied: s3:DeleteObjectVersion` → the end line has `"outcome":"failed"`,
+  `"phase":"prune"`, `"copied":true` and that error string; a lock held by a background `flock` with
+  `BE_RUN_ID=20260915T050001Z-3f9a` exported → exit ≠ 0, no `state/<job>.runs.jsonl` created and the
+  pre-seeded legacy `state/<job>.json` byte-identical afterwards; and the `-w 5` pair (7.1.5):
+  `acquire_lock` against a lock a background process releases after ~1 s **succeeds**, against one held
+  for the whole test **fails** with `another <job> run is in progress` — the first case is the GUI's
+  poll probe, which must never be what skips a backup); `restore.bats` additions (records +
+  lock, `list --json` no lock, `download .` argv, a download whose rclone stub exits 1 after a stats
+  block still records `bytes_restored`, `thaw .` writes `thaw.json`, `thaw-status` counts, `test` per
+  type, vfiles `.` in-process); `entrypoint.bats` (dirs created, `runs boot` invoked, `-inotify` argv via a
   supercronic shim with `GUI_ENABLED=false`).
 - Integration: `restore_appdata.bats` (ok end line with a real `snapshot_id`, `points.json`, `list
   --json`, `test` writes `tested.json`, `restore latest` record with `files_restored ≥ 1`);
@@ -2636,13 +3380,16 @@ screens read it), then the shell, then screens, then the create/edit screen, the
 8. **Board.** `/` + `status.json`; `test_board_routes.py`. Commit.
 9. **Job page.** `/jobs/<name>` + `status.json` + pause/resume/delete + Tool detail + rail;
    `test_job_page_routes.py`. Commit.
-10. **Run record + Activity.** `/jobs/<name>/runs/<id>` (+ `.json`, `/log`), `/activity` (+ `.json`);
-    tests. Commit.
+10. **Run record + Activity.** `/jobs/<name>/runs/<id>` (+ `.json`, `/log`), `/activity` (+ `.json`),
+    `/activity/<run_id>` (+ `.json`, `/log`) for system records, the `provision` events on the
+    provisioning success paths; tests. Commit.
 11. **Get data back.** The band on the job page, `/jobs/<name>/restore`, thaw/check/test-restore/points
     refresh routes; `test_restore_routes.py`. Commit.
-12. **Cost workbench.** `/cost` + `cost.json`, `estimate_io.cost_page`/`board_cost`/`job_cost_band`/
-    `delta_verdict`/`provenance_of`/`restore_quote`, sysop launches for refresh/billing; update
-    `test_estimate_routes.py`, `test_costs_routes.py`, `test_estimate_io.py`. Commit.
+12. **Cost workbench.** `/cost` + `cost.json`, `POST /costs/scenario` + `$CONFIG_DIR/cost.json`, the
+    `<noscript>` recalculate path, `estimate_io.cost_page`/`board_cost`/`job_cost_band`/
+    `delta_verdict`/`provenance_of`/`restore_quote`, the `keep_all`-at-0% override, sysop launches for
+    refresh/billing, the removal of `POST /costs/billing`; update `test_estimate_routes.py`,
+    `test_costs_routes.py` (per 10.2), `test_estimate_io.py`, add `test_sysop.py` moves. Commit.
 13. **Setup, Destination, Keys, About.** 5.10–5.13; IAM template + tofu policy change; update
     `test_provision_routes.py`, `test_config_routes.py`, `test_about_routes.py`, `test_app.py`. Commit.
 14. **Create/edit job.** `wizard_estimate` extension + `recommend_type` + `warnings` (7.9), the
@@ -2658,7 +3405,7 @@ Risks and mitigations:
 |---|---|
 | rclone's final stats block differs from the regex on rclone 1.68.2 | Capture the real block on the box before step 2 merges (`rclone copy /tmp/x s3:<bucket>/tmp-verify -v --stats 1s 2>&1 | tail -6`) into the fixture; the integration test asserts `bytes_added > 0`; fallback `--use-json-log --stats-log-level NOTICE` and parse the last line's `stats` object. |
 | `restic snapshots --json` summary member names on 0.17.3 | Confirm with `restic snapshots --json | head -c 2000` on the box; the parser reads the names in 7.1.3 (`total_bytes_processed`, `files_new`, …). |
-| `supercronic -inotify` not firing on Unraid's FUSE `/cache` | The `SIGUSR2` fallback after 2 s (7.3) and the `crontab_stale` warning on the Board; verify on the box (12). |
+| `supercronic -inotify` not firing on Unraid's FUSE `/cache` | An unconditional `SIGUSR2` to `supercronic.pid` after every crontab write (7.3) — belt and braces, ignored if the scheduler is not running — plus the `crontab_stale` warning for a write that failed outright; verify on the box (12.7). |
 | A timezone/DST mismatch turns a healthy install into a red Board | Cron and `now` are evaluated in the same zone; `TZ=UTC` ships; DST vectors in `test_cron.py`; the 15-minute grace absorbs skew; Running takes precedence over Overdue. |
 | A `running` record left by a killed process | Reconcile at boot and lazily on read, gated on the kernel lock; never by age. |
 | Thousands of `restore-object` calls for a big Plain copy | The confirm page states it (`the request itself takes hours to send`); the run record shows the count line every 500 objects; the operation is detached. |
@@ -2684,14 +3431,19 @@ On the box, in this order:
 5. Open `/jobs/appdata` — OK token, status strip, one-cell ledger, restore points (press `List them
    now` if empty; expect 14), needs-line green, guard disabled until the name is typed; `···` → Pause →
    token Paused, `Next run —`; Resume.
-6. Press `Run now` — redirect to the run record; the log tails live; `Running…` on the job page; when
+6. Press `Run now` — redirect to the run record, which shows `Starting…` for a moment (never a 404) and
+   then the live record; the log tails live; `Running…` on the job page; when
    done, the Done signal and a second strip cell. `cat /cache/logs/runs/appdata/<id>.log` fills.
-7. Edit appdata's schedule (change the minute) — `cat /cache/crontab` changed within 2 s; `docker logs`
-   shows supercronic's reload line; no `scheduler is running an older schedule` warning on the Board.
+7. Edit appdata's schedule (change the minute) — `cat /cache/crontab` already shows the new minute when
+   the save returns (the GUI writes it in the request, not on a timer); `docker logs` shows
+   supercronic's reload line, triggered by inotify or by the `SIGUSR2` the GUI always sends (7.3); the
+   Board shows no `The schedule file on disk does not match your jobs` warning.
 8. Rail → `Test restore — one file, ~$0.01` — the run record shows the restored path; the rail row
    reads `Tested <today>`; `/setup` shows `Tested … · appdata`.
-9. Get data back → pick the newest point, keep the default target, type `appdata`, `Start restore` —
-   the run record shows progress and ends `Done`; `ls /mnt/user/restore/appdata/<date>/backup/media/appdata_backups/` lists files.
+9. Get data back → pick the newest point, keep the default target, press `Start restore →` (the band
+   only navigates) → on the confirmation page check the size, cost and target, type `appdata`, press
+   `Start restore` — the run record shows progress and ends `Done`;
+   `ls /mnt/user/restore/appdata/<date>/backup/media/appdata_backups/` lists files.
 10. Open `/jobs/manga` — Failed (if the permission is still missing) with the failure record and `Fix
     the permission →`; `Copies 1`; `What is there now`; `Warm up first — up to 12 h` with the two quotes.
     Do NOT start the warm-up unless intended (it issues 232,021 requests).
@@ -2729,7 +3481,8 @@ Night Shift mockup (`mockup-night-shift.html`):
 | `#run-done` transient | 5.2 Transient Done |
 | `.statusstrip` | 5.2 status strip |
 | Ledger `.ledger`, `.bars`, `.ledger-axis`, hint | 5.2 ledger |
-| `#restore-band`: `.rphead`, `.rp`, details, target, `.needsline`, sibling warning, `.guard`, `.confirm`, JS (1190–1198) | 5.2 Get data back, 5.4 |
+| `#restore-band`: `.rphead`, `.rp`, details, target, `.needsline`, sibling warning | 5.2 Get data back (a GET form) |
+| `.guard`, `.confirm`, `#confirm-name`, `#start-restore` and their JS (1190–1198) | 5.4 — the mockup drew them in the band; they move to the confirmation page so the name is typed once (Appendix B, decision 42). The band keeps `.guard` as text only. |
 | "What this job costs" `.grid4`, table, delta, legend, `#price-stamp`, `#live-prices` | 5.2 cost band |
 | "How it is set up" `.defgrid`, `Edit →` | 5.2 settings |
 | Tool detail `<details>`, `.cmd`, Copy | 5.2 Tool detail, 6.5 |
@@ -2807,8 +3560,10 @@ Decisions made in this document (chosen default and why):
    because the former would be false.
 2. **Restore root is `/mnt/user/restore` (singular)**: the owner context (R11) uses it; the mockup's
    `/mnt/user/restores/` is replaced in all copy and in `RESTORE_ROOT_HOST`.
-3. **Strip saturation is by position** (cells 1–7 from the right saturated, 8–14 dim), not by age — it
-   follows from R2 ("older than the last 7 runs") and keeps a weekly job's strip readable.
+3. **Strip saturation is by position** — the 7 rightmost cells saturated, every cell 8 or more from the
+   right dim, at any strip length (8–14 on the Board, 8–30 on the job-page ledger) — not by age. It
+   follows from R2 ("older than the last 7 runs"), matches the mockup's ledger (cells 1–23 dim, last 7
+   saturated) and keeps a weekly job's strip readable.
 4. **Typical duration** = median of OK backup runs among the newest 30 backup records, undefined below
    three OK runs (`no typical yet`); "slow" = duration > 3× typical AND typical ≥ 60 s (so a 5 s job
    never reads slow at 15 s).
@@ -2843,7 +3598,11 @@ Decisions made in this document (chosen default and why):
 17. **Fresh-form defaults**: change rate ~1% (the state in which every control has a visible
     consequence; the owner can drop it to 0% and the page explains what that does), time 05:00, days
     preset 180, count preset 30, tier STANDARD, keep rule tiered for Snapshot backup and days 180 for
-    the other two.
+    the other two. The ~1% default is a *display* default, not an answer: until the owner touches a
+    change-rate radio the recommendation rules evaluate the change rate as **unset**
+    (`change_rate_set=False`, 5.8 §3.1), because rules 2 and 3 require 0% and would otherwise never fire
+    for the manga-shaped folder they were written for — the RECOMMENDED block would be silently absent
+    on exactly the example job. The printed churn wording still follows the radios.
 18. **Tiered on non-Snapshot types** is visible, struck, with the reason and the radio disabled (the
     class-table principle), and still snaps to days on a type change.
 19. **Bundled and mirror controls' placement**: bundled under the class-table sentence (it moves the
@@ -2864,7 +3623,10 @@ Decisions made in this document (chosen default and why):
     the Board, the job page and Setup.
 27. **"Kept as daily/weekly/monthly"** sub-copy on restore points is dropped: restic does not store the
     reason a snapshot was kept, so it cannot be promised; the rows show size and change stats and the
-    keep-rule sentence sits under the list.
+    keep-rule sentence sits under the list. That removed the mockup's sixth row ("kept as the weekly
+    one") and with it the rule that produced seven visible rows, so the rule is restated in its place:
+    **the newest six points plus the oldest** (5.2). Seven rows and `Show the other 7 restore points`
+    for the example's 14, exactly as the mockup renders, with no claim restic cannot back.
 28. **Per-folder restore pricing** for Plain copy scopes is quoted as a full restore with the note
     `priced as a full restore` (no per-folder sizes are cached).
 29. **Warm-up default speed** in the GUI is Standard (the headline "up to 12 h" everywhere in Night
@@ -2895,5 +3657,78 @@ Decisions made in this document (chosen default and why):
     without hard-coding it.
 40. **A `Mark as confirmed` by-hand state** for versioning is accepted as readiness (`confirmed_by_hand`)
     because the runtime key may never be able to probe it.
+41. **The delta verdict bands are 15/30, not 10/25** (4.6). The mockup pairs the example's `+14.1%` with
+    "close enough to trust, and it errs on the expensive side", which a 10% band would contradict; the
+    copy ships verbatim, so the band moved to fit it. The `Difference` figure's own colour keeps the
+    tighter 10% threshold, because the mockup also prints that `+$0.56` in `--warn` (R6), and its
+    sub-line (`+14.1% · model runs high`) is a direction label, not a verdict.
+42. **One restore flow: the band collects, the confirmation page starts** (5.2, 5.4). The job page's Get
+    data back band is a GET form that navigates to `/jobs/<name>/restore`; that page owns the `.guard`,
+    the typed-name confirm and the single POST. The mockup drew the guard and `Start restore` inside the
+    band (its button is an inert `type="button"`), and the direction describes both "type-the-job-name
+    confirm" and a `/jobs/<name>/restore` operation — specified both ways, the owner would have typed the
+    name twice or the confirmation page would have been unreachable. The confirmation page wins because
+    it is where the honest cold-storage numbers live (cost, warm-up hours, what gets written where),
+    which is shaping decision 1's whole point; the band keeps the mockup's guard box as a text-only
+    statement of consequence.
+43. **Recommendation rule 2 and heads-up 1 trigger at an average under 10 MB**, not 1 MB (5.8 §3.1,
+    §3.7; `storage_advice.py:69` changes from `< 1.0` to `< 10.0` MB). At 1 MB neither could fire for
+    manga — 232,021 files in 1.78 TB averages 7.9 MB — yet both texts are written about manga, and the
+    cost they describe is per-request, driven by the object count.
+44. **A launched run's record page has a `pending` state** (5.3). `Run now` and every restore POST
+    redirect to `/jobs/<name>/runs/<id>` before the child has taken the lock and written its start line,
+    so a well-formed id with no record yet renders 200 and polls for ten minutes
+    (`runs.PENDING_WINDOW_S`), turning into "This run never reported starting" after 30 s. 404 is
+    reserved for a malformed id, an unknown job, or a stale id — otherwise the app's most-used button
+    would land on an error page.
+45. **A retrospective signal still has a fix button — outside the box** (4.5, 5.2, 5.3). The direction's
+    "never a fix button" keeps the failure signal a statement of what happened; the recognised error
+    class's `WHY THIS HAPPENS` / `WHAT TO DO` columns render beneath it, and `WHAT TO DO` is where
+    `Fix the permission →` lives. Without this, the app's most important failure would be a dead end,
+    which is audit problem 9.
+46. **A total carries the weakest mark among the jobs it sums** (4.6). `$4.54` includes appdata's
+    assumed `$2.69`, so it renders `.p-assumed` on the Board's `The model says` figure and on both
+    totals rows. The mockups drew totals unmarked, which contradicts the rule the same page's legend
+    explains; decision 33 already applied the rule uniformly to the first bill, and a total that hides
+    an assumption is the one number most likely to be quoted back as fact.
+47. **No per-folder File history restore in this increment** (5.2, 7.5.6). The engine has exactly two
+    File history invocations — `.` (every path live at that moment) and one relpath — so a folder
+    picker would be a control with no argv behind it. The scope select offers `Everything as of this
+    point` and `One file, by path`. Adding `restore_all(prefix=…)` later is a contained change: one
+    argument, one trailing-slash argv form, one test.
+48. **The IAM verdict says "refused a delete"** (5.1, 7.4). The Night Shift mockup's verdict reads
+    "refused the upload", which is wrong for this error: `DeleteObjectVersion` is refused during the
+    clean-up step, *after* the files have been copied — which is also why the needs-row's third
+    sentence had to change (decision 1). Copy that describes the wrong step sends the owner to the
+    wrong fix.
+49. **The create/edit screen marks by size alone** (5.8 §3.6): `.n.assumed` is driven by
+    `provenance.size == "assumed"` and nothing else. On this screen the owner *is* the source of the
+    change-rate assumption — the radios are two inches above the figure and the line under them says so
+    — and marking it again would dot and dim every number on a fully measured form, which is not what
+    the blend draws. The skeleton screens keep the full 4.6 rule, because their reader did not set it.
+50. **Duration bars use a squared scale**, `max(2, round(20 × (d / d_max)²))` (5.2). The mockup draws
+    typical runs at 4–6 px against a 20 px peak; linear would draw them at 9–10 px and the row would
+    read as noise rather than as "one run took twice as long". R6 makes the mockup the truth on size.
+51. **Buttons follow the blend on `.form` pages and Night Shift everywhere else** (6.3). The two
+    mockups genuinely differ (radius 0 vs 4, transparent vs `--surface`, a bordered ghost vs a
+    borderless one), and the create screen's blocker fixes and footer rely on the bordered ghost reading
+    as a button. Scoping by container is the only rule that keeps both mockups' screens looking like
+    themselves.
+52. **The Cost Explorer credential has exactly one editing surface**, Keys & secrets (5.6 band 5,
+    5.12). `/cost` shows a status line and a link. Two write-only forms over one secret, with two save
+    routes and a `'••••• (unchanged)'` placeholder in both, is how a value ends up half-saved with
+    nobody able to say which form last won.
+53. **A corrupt `jobs.json` on save re-renders the form**, it does not take over the page (5.8 §8). The
+    owner has just filled in four sections; an error page or a flash-and-redirect throws all of it away
+    for a fault that has nothing to do with what was typed. The flash survives only on delete, which has
+    no form to re-render.
+54. **`Check now` on a pending cold test restore re-POSTs `/jobs/<name>/test-restore`** (5.2, R11).
+    One endpoint, one script, one state file: the script decides from `test-thaw.json` whether this is
+    "still warming" or "download it now". `/thaw/check` is a different operation over a different file
+    (`thaw.json`, a scoped warm-up for a real restore) and the two must not be crossed.
+55. **The run strip counts backup runs only** (6.5, 8.2). Run records now cover restores, downloads,
+    warm-ups and test restores, and R2 defines a run as an invocation of `backup-job.sh`. A restore
+    painting a green square — or a failed restore painting a red one — would make the one row the owner
+    reads every morning mean something other than "did my backups run".
 
 <!-- end of spec -->
