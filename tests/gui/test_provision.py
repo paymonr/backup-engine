@@ -215,3 +215,82 @@ def test_console_steps_walk_through_bucket_creation():
     assert "unraid-backup" in steps  # suggested naming convention
     # spec 5.11: step 5 reads the retention default (180 days), matching the model.
     assert "expire old versions after 180 days" in steps
+
+
+# --- verify_admin_can_provision (capability preflight) ----------------------
+#
+# `sts get-caller-identity` (aws_account_id above) succeeds for creds that
+# CANNOT touch IAM -- e.g. a plain `aws sts get-session-token` session with no
+# MFA. Those creds pass the account lookup, then blow up mid-`tofu apply` at
+# the IAM user with InvalidClientTokenId, leaving an orphaned bucket. This
+# probe catches that BEFORE tofu ever runs, using an ACCOUNT-LEVEL IAM read
+# that works for both an IAM user and a role/SSO principal -- never
+# `iam get-user`, which requires --user-name for a role/SSO caller and would
+# falsely reject valid credentials that CAN provision.
+
+def test_verify_admin_can_provision_success_probes_account_level_iam_read():
+    seen = {}
+
+    def fake(args, *, region, key, secret, session_token=None):
+        seen["args"] = args
+        return _CP(returncode=0, stdout="", stderr="")
+
+    provision.verify_admin_can_provision("us-east-1", "AKIA", "sek", run=fake)
+    assert seen["args"][0] == "iam"
+    assert seen["args"][1] != "get-user"
+    assert seen["args"][1] in ("get-account-summary", "list-account-aliases")
+
+
+def test_verify_admin_can_provision_forwards_session_token():
+    seen = {}
+
+    def fake(args, *, region, key, secret, session_token=None):
+        seen["token"] = session_token
+        return _CP(returncode=0)
+
+    provision.verify_admin_can_provision("us-east-1", "AKIA", "sek", "TOKEN", run=fake)
+    assert seen["token"] == "TOKEN"
+
+
+def test_verify_admin_can_provision_raises_token_kind_on_invalid_client_token_id():
+    def fake(args, *, region, key, secret, session_token=None):
+        return _CP(returncode=255, stderr="An error occurred (InvalidClientTokenId) when "
+                                          "calling the GetAccountSummary operation: The "
+                                          "security token included in the request is invalid.")
+
+    with pytest.raises(provision.AdminCapabilityError) as ei:
+        provision.verify_admin_can_provision("us-east-1", "ASIAFAKE", "sek", "tok", run=fake)
+    assert ei.value.kind == "token"
+
+
+def test_verify_admin_can_provision_raises_permission_kind_on_access_denied():
+    def fake(args, *, region, key, secret, session_token=None):
+        return _CP(returncode=254,
+                   stderr="An error occurred (AccessDenied) when calling the "
+                          "GetAccountSummary operation: User: arn:aws:iam::123:user/x is "
+                          "not authorized to perform: iam:GetAccountSummary")
+
+    with pytest.raises(provision.AdminCapabilityError) as ei:
+        provision.verify_admin_can_provision("us-east-1", "AKIA", "sek", run=fake)
+    assert ei.value.kind == "permission"
+
+
+def test_verify_admin_can_provision_raises_unknown_kind_for_other_failures():
+    def fake(args, *, region, key, secret, session_token=None):
+        return _CP(returncode=1, stderr="some unrelated network error")
+
+    with pytest.raises(provision.AdminCapabilityError) as ei:
+        provision.verify_admin_can_provision("us-east-1", "AKIA", "sek", run=fake)
+    assert ei.value.kind == "unknown"
+
+
+def test_verify_admin_can_provision_scrubs_key_secret_and_token_from_detail():
+    def fake(args, *, region, key, secret, session_token=None):
+        return _CP(returncode=1, stderr="AccessDenied for AKIA and sek and tok123")
+
+    with pytest.raises(provision.AdminCapabilityError) as ei:
+        provision.verify_admin_can_provision("us-east-1", "AKIA", "sek", "tok123", run=fake)
+    assert "AKIA" not in ei.value.detail
+    assert "sek" not in ei.value.detail
+    assert "tok123" not in ei.value.detail
+    assert "***" in ei.value.detail

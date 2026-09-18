@@ -166,6 +166,7 @@ def test_automated_form_renders(client):
 
 def test_automated_success_writes_runtime_key_and_never_shows_secrets(client, dirs, monkeypatch):
     from app.gui import provision
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
     monkeypatch.setattr(provision, "run_tofu_apply",
                         lambda *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
                                          "AWS_SECRET_ACCESS_KEY": "runsek",
@@ -190,6 +191,7 @@ def test_automated_failure_saves_nothing(client, dirs, monkeypatch):
     def boom(*a, **k):
         raise provision.TofuError("apply", "boom")
 
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
     monkeypatch.setattr(provision, "run_tofu_apply", boom)
     token = _csrf(client, "/setup/destination/automated")
     r = client.post("/setup/destination/automated",
@@ -214,6 +216,7 @@ def test_automated_form_shows_auto_naming_and_region_default(client):
 def test_automated_auto_names_bucket_from_account(client, dirs, monkeypatch):
     from app.gui import provision
     monkeypatch.setattr(provision, "aws_account_id", lambda *a, **k: "123456789012")
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
     monkeypatch.setattr(provision, "run_tofu_apply",
                         lambda bucket, *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
                                                  "AWS_SECRET_ACCESS_KEY": "runsek",
@@ -234,6 +237,7 @@ def test_automated_override_bucket_skips_account_lookup(client, dirs, monkeypatc
         raise AssertionError("account lookup must be skipped when an override is provided")
 
     monkeypatch.setattr(provision, "aws_account_id", boom)
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
     monkeypatch.setattr(provision, "run_tofu_apply",
                         lambda bucket, *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
                                                  "AWS_SECRET_ACCESS_KEY": "runsek",
@@ -253,6 +257,7 @@ def test_automated_failure_surfaces_the_real_tofu_error(client, monkeypatch):
     def boom(*a, **k):
         raise provision.TofuError("apply", "Error: creating S3 Bucket: BucketAlreadyOwnedByYou")
 
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
     monkeypatch.setattr(provision, "run_tofu_apply", boom)
     token = _csrf(client, "/setup/destination/automated")
     r = client.post("/setup/destination/automated",
@@ -277,3 +282,104 @@ def test_automated_account_lookup_failure_saves_nothing(client, dirs, monkeypatc
                           "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
     assert r.status_code == 400
     assert not Path(dirs["config"], "secrets.env").exists()
+
+
+# --- capability preflight (reject IAM-incapable admin creds before tofu) ----
+#
+# `aws_account_id` (sts get-caller-identity) succeeds for a plain
+# `sts get-session-token` session with no MFA -- those creds still cannot
+# touch IAM and blow up mid-`tofu apply`, leaving an orphaned bucket. The
+# route must call `provision.verify_admin_can_provision` after the account
+# lookup and BEFORE `run_tofu_apply` ever runs.
+
+def test_automated_token_barred_creds_save_nothing_and_guide_temp_creds(client, dirs, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise provision.AdminCapabilityError("token", "InvalidClientTokenId")
+
+    monkeypatch.setattr(provision, "verify_admin_can_provision", boom)
+    token = _csrf(client, "/setup/destination/automated")
+    r = client.post("/setup/destination/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ASIAFAKETEMPKEY",
+                          "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
+    assert r.status_code == 400
+    assert not Path(dirs["config"], "secrets.env").exists()
+    assert not Path(dirs["config"], "backup.env").exists()
+    assert b"ASIA" in r.data
+    assert b"session token" in r.data.lower()
+    assert b"Nothing was saved" in r.data
+    assert b"ASIAFAKETEMPKEY" not in r.data and b"ADMINS" not in r.data
+
+
+def test_automated_permission_barred_creds_save_nothing_and_name_the_fix(client, dirs, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise provision.AdminCapabilityError("permission", "AccessDenied")
+
+    monkeypatch.setattr(provision, "verify_admin_can_provision", boom)
+    token = _csrf(client, "/setup/destination/automated")
+    r = client.post("/setup/destination/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "AKIAADMIN", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
+    assert r.status_code == 400
+    assert not Path(dirs["config"], "secrets.env").exists()
+    assert b"allowed to create IAM users" in r.data
+    assert b"provisioning permissions" in r.data
+    assert b"Nothing was saved" in r.data
+
+
+def test_automated_unknown_capability_failure_shows_generic_message_and_detail(client, dirs, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise provision.AdminCapabilityError("unknown", "some odd network error")
+
+    monkeypatch.setattr(provision, "verify_admin_can_provision", boom)
+    token = _csrf(client, "/setup/destination/automated")
+    r = client.post("/setup/destination/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "AKIAADMIN", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
+    assert r.status_code == 400
+    assert not Path(dirs["config"], "secrets.env").exists()
+    assert b"couldn" in r.data.lower() and b"provision" in r.data.lower()
+    assert b"some odd network error" in r.data
+
+
+def test_automated_capability_check_runs_before_tofu_apply(client, dirs, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise provision.AdminCapabilityError("token", "InvalidClientTokenId")
+
+    def tofu_must_not_run(*a, **k):
+        raise AssertionError("run_tofu_apply must not run on IAM-incapable admin creds")
+
+    monkeypatch.setattr(provision, "verify_admin_can_provision", boom)
+    monkeypatch.setattr(provision, "run_tofu_apply", tofu_must_not_run)
+    token = _csrf(client, "/setup/destination/automated")
+    r = client.post("/setup/destination/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ASIAFAKE", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"})
+    assert r.status_code == 400   # tofu_must_not_run would have raised AssertionError -> 500
+
+
+def test_automated_success_flashes_delete_admin_key_nudge(client, dirs, monkeypatch):
+    from app.gui import provision
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
+    monkeypatch.setattr(provision, "run_tofu_apply",
+                        lambda *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
+                                         "AWS_SECRET_ACCESS_KEY": "runsek",
+                                         "bucket": "acme", "region": "us-east-1"})
+    token = _csrf(client, "/setup/destination/automated")
+    r = client.post("/setup/destination/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"},
+                    follow_redirects=True)
+    assert r.status_code == 200
+    sec = Path(dirs["config"], "secrets.env").read_text()
+    assert "AWS_ACCESS_KEY_ID=AKIARUN" in sec
+    assert b"never stored your admin key" in r.data
+    assert b"delete that access key" in r.data

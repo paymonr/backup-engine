@@ -38,12 +38,20 @@
     <p class="hint">The bucket is created automatically as
        <code>unraid-backup-&lt;your-account-id&gt;</code>.</p>
 
+    <p class="hint">Create a permanent access key (IAM → your user → Security credentials →
+       Create access key). It's used once to provision and never stored — delete it
+       afterward. <strong>SSO / Identity Center users:</strong> paste your role credentials
+       including the session token below.</p>
+
     <div class="field"><label for="ak">Admin access key <code class="hint">ADMIN_ACCESS_KEY_ID</code></label>
       <input id="ak" name="ADMIN_ACCESS_KEY_ID" autocomplete="off" required></div>
     <div class="field"><label for="sk">Admin secret key <code class="hint">ADMIN_SECRET_ACCESS_KEY</code></label>
       <input id="sk" name="ADMIN_SECRET_ACCESS_KEY" type="password" autocomplete="off" required></div>
-    <div class="field"><label for="st">Admin session token <code class="hint">ADMIN_SESSION_TOKEN</code> <small>(optional)</small></label>
+    <div class="field"><label for="st">Session token <code class="hint">ADMIN_SESSION_TOKEN</code> <small>(optional)</small></label>
       <input id="st" name="ADMIN_SESSION_TOKEN" type="password" autocomplete="off"></div>
+    <p class="hint" id="st-hint">Required for temporary credentials (access key starts with
+       <code>ASIA</code>: SSO / Identity Center / CloudShell).</p>
+    <p class="hint" id="asia-warning" style="display:none;color:var(--danger)" role="alert"></p>
 
     <details style="margin-top:var(--sp-2)">
       <summary>Advanced — override the bucket name</summary>
@@ -56,4 +64,27 @@
     </div>
   </form>
 </section>
+
+<script>
+// Progressive enhancement only: catch the common "pasted a temporary key, forgot
+// the session token" mistake before it round-trips to the server. The server-side
+// capability preflight (provision.verify_admin_can_provision) is the real gate —
+// this is just a faster, friendlier no-op when JS is off or elements are missing.
+(function () {
+  var form = document.querySelector(".form");
+  var ak = document.getElementById("ak");
+  var st = document.getElementById("st");
+  var warn = document.getElementById("asia-warning");
+  if (!form || !ak || !st || !warn) return;
+  form.addEventListener("submit", function (e) {
+    var key = (ak.value || "").trim();
+    if (key.slice(0, 4) === "ASIA" && !(st.value || "").trim()) {
+      e.preventDefault();
+      warn.textContent = "Temporary credential detected — paste its session token too.";
+      warn.style.display = "";
+      st.focus();
+    }
+  });
+})();
+</script>
 {% endblock %}

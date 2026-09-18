@@ -97,6 +97,52 @@ def aws_account_id(region, key, secret, session_token=None, *, run=_run_aws) -> 
     return account
 
 
+class AdminCapabilityError(Exception):
+    """Raised when admin credentials can be READ (they pass `sts get-caller-identity`)
+    but cannot be trusted to provision IAM. This catches the case `aws_account_id`
+    cannot: temporary creds from a plain `aws sts get-session-token` (no MFA), which
+    AWS bars from every IAM API call. Left uncaught, those creds sail through the
+    account lookup, `tofu apply` creates the bucket, and it dies mid-apply at the
+    IAM user with InvalidClientTokenId -- leaving an orphaned half-provisioned
+    bucket. `.kind` is one of "token" (temporary/invalid security token),
+    "permission" (reached AWS, not authorized for IAM) or "unknown" (anything else)."""
+    def __init__(self, kind: str, detail: str = ""):
+        super().__init__(f"admin credentials cannot provision IAM ({kind})")
+        self.kind = kind
+        self.detail = detail
+
+
+_TOKEN_ERR_RE = re.compile(r"InvalidClientTokenId|security token .* invalid", re.I)
+_PERM_ERR_RE = re.compile(r"AccessDenied|not authorized", re.I)
+
+
+def verify_admin_can_provision(region, key, secret, session_token=None, *, run=_run_aws) -> None:
+    """Preflight: can these (admin) credentials reach IAM at all -- BEFORE `tofu
+    apply` tries to create the backup-engine-runtime IAM user/policy/key. Probes an
+    ACCOUNT-LEVEL IAM read, `iam get-account-summary`, which succeeds for both an
+    IAM user AND a role/assumed-role/SSO principal.
+
+    Deliberately NOT `iam get-user`: called with no `--user-name` it resolves to
+    the caller itself for an IAM user, but a role/STS/SSO principal has no IAM
+    user of its own, so AWS rejects it with "Must specify userName when calling
+    with non-User credentials" -- a valid, IAM-capable SSO credential would be
+    falsely rejected by that call. `get-account-summary` has no such blind spot.
+
+    Raises AdminCapabilityError (secrets always scrubbed from `.detail`) on any
+    non-zero exit; returns None (does nothing) on success."""
+    cp = run(["iam", "get-account-summary"], region=region, key=key, secret=secret,
+             session_token=session_token)
+    if cp.returncode == 0:
+        return
+    stderr = cp.stderr or ""
+    detail = _scrub(stderr, key, secret, session_token or "")
+    if _TOKEN_ERR_RE.search(stderr):
+        raise AdminCapabilityError("token", detail)
+    if _PERM_ERR_RE.search(stderr):
+        raise AdminCapabilityError("permission", detail)
+    raise AdminCapabilityError("unknown", detail)
+
+
 def derive_bucket_name(account: str) -> str:
     """The automated-mode default bucket name for an account (valid S3 name)."""
     return f"unraid-backup-{account}"

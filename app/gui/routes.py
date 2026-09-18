@@ -1472,6 +1472,12 @@ def provision_automated_run():
         # No override -> auto-name unraid-backup-<account>, read from the admin creds.
         bucket = override or provision.derive_bucket_name(
             provision.aws_account_id(region, admin_key, admin_secret, session_token))
+        # Capability preflight (BEFORE tofu touches AWS): `aws_account_id` above
+        # succeeds even for creds that can't reach IAM (e.g. a plain
+        # `sts get-session-token` session with no MFA) — that combination sails
+        # through the account lookup, then dies mid-`tofu apply` at the IAM user,
+        # leaving an orphaned half-provisioned bucket. Catch it here instead.
+        provision.verify_admin_can_provision(region, admin_key, admin_secret, session_token)
         result = provision.run_tofu_apply(bucket, region, admin_key, admin_secret, session_token)
     except provision.AccountLookupError as e:
         return render_template("provision_automated.html", csrf=security.issue_csrf(),
@@ -1479,6 +1485,26 @@ def provision_automated_run():
                                error="Couldn't read your AWS account from those admin "
                                      "credentials — check the key and try again. Nothing was saved.",
                                error_detail=e.detail), 400
+    except provision.AdminCapabilityError as e:
+        if e.kind == "token":
+            msg = ("These credentials can't manage AWS IAM, so provisioning can't create "
+                   "the backup user. If they're temporary (access key starts with `ASIA` "
+                   "— from `aws sts get-session-token`, SSO, or CloudShell), plain session "
+                   "tokens can't touch IAM: use an MFA-authenticated session, an SSO/"
+                   "Identity Center role, or a permanent access key — and check the token "
+                   "hasn't expired. Nothing was saved.")
+            detail = None
+        elif e.kind == "permission":
+            msg = ("These credentials reached AWS but aren't allowed to create IAM users/"
+                   "policies. Use a credential with provisioning permissions (an admin, or "
+                   "the documented provisioning policy). Nothing was saved.")
+            detail = None
+        else:
+            msg = "Couldn't verify these credentials can provision — nothing was saved."
+            detail = e.detail
+        return render_template("provision_automated.html", csrf=security.issue_csrf(),
+                               bucket=override, region=region,
+                               error=msg, error_detail=detail), 400
     except provision.TofuError as e:
         return render_template("provision_automated.html", csrf=security.issue_csrf(),
                                bucket=override, region=region,
@@ -1496,8 +1522,9 @@ def provision_automated_run():
     # Record the successful automated provisioning so Activity shows it (spec 5.5).
     provision.record_setup(cfg["CACHE_DIR"], bucket=result["bucket"], region=result["region"],
                            mode="automated")
-    flash(f"Destination set: {result['bucket']} in {result['region']}. Next: the recovery "
-          f"passphrase, then the first job.", "success")
+    flash(f"Destination set: {result['bucket']} in {result['region']}. We never stored "
+          f"your admin key — you can delete that access key in AWS now. Next: the "
+          f"recovery passphrase, then the first job.", "success")
     return redirect(url_for("gui.setup_page"))
 
 @bp.get("/jobs")
