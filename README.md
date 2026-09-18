@@ -481,6 +481,14 @@ The GUI can set up the AWS destination three ways (**Provision** in the nav):
   OpenTofu module once, reads the runtime key from `tofu output`, saves it, and discards the
   admin credentials. It is a one-shot create — teardown/update stay in `setup.sh`.
 
+  To create the permanent access key the automated wizard asks for: in the **Console**, go to
+  **IAM** → **Users** → your user → **Security credentials** → **Create access key** → choose
+  the **Command Line Interface (CLI)** use case → **Create access key**, then copy both the
+  access key ID and secret (shown once). Or via **CLI**:
+  `aws iam create-access-key --user-name <your-iam-user>`, copying `AccessKeyId` /
+  `SecretAccessKey` from the output. Either way, delete it once provisioning finishes:
+  `aws iam delete-access-key --user-name <your-iam-user> --access-key-id <AKIA…>`.
+
 The runtime IAM policy is defined **once** in `provisioning/iam-policy.json.tmpl` and rendered
 into both the OpenTofu module and the GUI, so there is no drift. As always, keep this GUI
 behind a reverse proxy / SSO — the automated mode handles admin credentials, so never expose

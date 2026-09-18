@@ -164,6 +164,16 @@ def test_automated_form_renders(client):
     assert b"transient" in r.data.lower()
 
 
+def test_automated_form_shows_access_key_creation_instructions(client):
+    # In-app instructions for creating the permanent access key the automated
+    # screen asks for — both the Console (manual) and CLI paths.
+    r = client.get("/setup/destination/automated")
+    assert r.status_code == 200
+    assert b"Create access key" in r.data
+    assert b"Security credentials" in r.data
+    assert b"aws iam create-access-key" in r.data
+
+
 def test_automated_success_writes_runtime_key_and_never_shows_secrets(client, dirs, monkeypatch):
     from app.gui import provision
     monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)

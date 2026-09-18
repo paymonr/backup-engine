@@ -43,6 +43,44 @@
        afterward. <strong>SSO / Identity Center users:</strong> paste your role credentials
        including the session token below.</p>
 
+    <details class="tooldetail" style="margin-top:var(--sp-3)">
+      <summary>How do I create an access key?</summary>
+
+      <p class="hint" style="margin-top:var(--sp-3)"><strong>In the AWS Console (manual):</strong></p>
+      <ol style="margin:var(--sp-2) 0 0">
+        <li>Open the AWS Console → <strong>IAM</strong> → <strong>Users</strong>, and select your
+          user (or one with permission to create S3 buckets and IAM users).</li>
+        <li>Open the <strong>Security credentials</strong> tab → under <strong>Access keys</strong>,
+          choose <strong>Create access key</strong>.</li>
+        <li>Choose the <strong>Command Line Interface (CLI)</strong> use case, acknowledge the
+          recommendation, then <strong>Create access key</strong>.</li>
+        <li>Copy the <strong>Access key ID</strong> and <strong>Secret access key</strong> (the
+          secret is shown only once — copy both, or download the .csv), and paste them above.</li>
+      </ol>
+
+      <p class="hint" style="margin-top:var(--sp-4)"><strong>With the AWS CLI:</strong></p>
+      <div class="cmd" style="margin-top:var(--sp-2)">
+        <pre>aws iam create-access-key --user-name &lt;your-iam-user&gt;</pre>
+        <button type="button" class="btn btn-sm copy" data-copy="aws iam create-access-key --user-name <your-iam-user>">Copy</button>
+      </div>
+      <p class="hint">Copy <code>AccessKeyId</code> and <code>SecretAccessKey</code> from the
+         output into the fields above (the secret is shown only once).</p>
+
+      <p class="hint" style="margin-top:var(--sp-3)">After provisioning, remove it:</p>
+      <div class="cmd" style="margin-top:var(--sp-2)">
+        <pre>aws iam delete-access-key --user-name &lt;your-iam-user&gt; --access-key-id &lt;AKIA…&gt;</pre>
+        <button type="button" class="btn btn-sm copy" data-copy="aws iam delete-access-key --user-name <your-iam-user> --access-key-id <AKIA…>">Copy</button>
+      </div>
+
+      <p class="hint" style="margin-top:var(--sp-3)">An IAM user can have at most 2 access keys;
+         if you're at the limit, delete an unused one first —
+         <code>aws iam list-access-keys --user-name &lt;your-iam-user&gt;</code>.</p>
+
+      <p class="hint" style="margin-top:var(--sp-4)">This permanent key is used once to provision
+         and never stored — delete it afterward. Using SSO / temporary credentials? Paste all
+         three fields including the session token instead.</p>
+    </details>
+
     <div class="field"><label for="ak">Admin access key <code class="hint">ADMIN_ACCESS_KEY_ID</code></label>
       <input id="ak" name="ADMIN_ACCESS_KEY_ID" autocomplete="off" required></div>
     <div class="field"><label for="sk">Admin secret key <code class="hint">ADMIN_SECRET_ACCESS_KEY</code></label>
