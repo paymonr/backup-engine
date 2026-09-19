@@ -651,3 +651,69 @@
   for (var j = 0; j < toggles.length; j++) toggles[j].addEventListener("change", applyVisibility);
   applyVisibility();
 })();
+
+// Copy buttons (".copy", spec: provision_automated/manual/scripted, job.html,
+// run_record.html): most carry data-copy="<literal text>"; run_record.html's log
+// button instead carries data-copy-target="runlog" and copies that element's live
+// textContent (the log can grow/stream in place, so it isn't inlined into an
+// attribute). One document-level delegated listener so current AND future copy
+// buttons work. Pure progressive enhancement: guarded end to end, never throws.
+//
+// navigator.clipboard requires a secure context (https or localhost); this app is
+// served over plain http on a LAN IP (e.g. http://192.168.1.227:8099), where it's
+// undefined. Feature-detect it and fall back to the legacy hidden-textarea +
+// document.execCommand("copy") approach.
+(function () {
+  function readText(btn) {
+    var targetId = btn.getAttribute("data-copy-target");
+    if (targetId) {
+      var el = document.getElementById(targetId);
+      return el ? el.textContent : "";
+    }
+    return btn.getAttribute("data-copy") || "";
+  }
+  function legacyCopy(text) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.left = "-1000px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch (e) {}
+  }
+  function flash(btn) {
+    try {
+      var original = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(function () {
+        try { btn.textContent = original; } catch (e) {}
+      }, 1500);
+    } catch (e) {}
+  }
+  document.addEventListener("click", function (ev) {
+    try {
+      var btn = ev.target && ev.target.closest && ev.target.closest(".copy");
+      if (!btn) return;
+      var text = readText(btn);
+      if (!text) return;
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(function () {
+          flash(btn);
+        }, function () {
+          legacyCopy(text);
+          flash(btn);
+        });
+      } else {
+        legacyCopy(text);
+        flash(btn);
+      }
+    } catch (e) {}
+  });
+})();

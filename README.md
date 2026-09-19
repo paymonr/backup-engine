@@ -77,8 +77,9 @@ chosen afterward by creating jobs in the GUI's Jobs screen, not by editing a con
 ## Provision the destination
 
 The engine needs one S3 bucket and one least-privilege IAM user (object-only access to
-`appdata/*` and `media/*` — never bucket configuration). Phase 1 ships two ways to get there;
-a third, fully interactive GUI wizard is planned for a later phase.
+`appdata/*` and `media/*` — never bucket configuration). These are the two command-line ways to
+get there; the GUI also has a fully interactive automated wizard — see
+[Provisioning wizard](#provisioning-wizard).
 
 ### Mode: scripted (`setup.sh`) — recommended
 
@@ -143,11 +144,12 @@ yourself), replicate what the module does:
    `config/secrets.env` (see [Configure](#configure)), then start the container and confirm a
    run succeeds — that's your end-to-end validation that the keys and permissions work.
 
-### Mode: automated GUI wizard (planned, later phase)
+### Mode: automated GUI wizard
 
 A GUI flow that takes transient admin credentials, drives the OpenTofu module for you, and
-discards the admin credentials afterward, writing only the runtime keys to `secrets.env`. Not
-part of the Phase-1 headless engine — see the [Roadmap](#roadmap).
+discards the admin credentials afterward, writing only the runtime keys to `secrets.env`.
+Available now in the GUI (**Provision** in the nav) alongside the scripted and guided-manual
+modes above — see [Provisioning wizard](#provisioning-wizard) for the full walkthrough.
 
 ## Configure
 
