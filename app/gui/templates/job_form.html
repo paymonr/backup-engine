@@ -15,6 +15,7 @@
 {%- endmacro -%}
 
 {% block body %}
+<section class="screen form" aria-label="{{ 'Edit job' if is_edit else 'New job' }}">
 {% if jobsfile_error %}
 <div class="sig sig-failure" style="margin-bottom:16px"><span class="glyph" aria-hidden="true">
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4"/><path d="M4.4 4.4 7.6 7.6M7.6 4.4 4.4 7.6"/></svg></span>
@@ -352,4 +353,5 @@
       form posts, plus the saved typical + schedule prose the JS can't recompute. -#}
   <script type="application/json" id="saved-cmp">{{ (saved_cmp or {}) | tojson }}</script>
 </form>
+</section>
 {% endblock %}
