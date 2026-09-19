@@ -247,7 +247,7 @@
     <label class="radio" data-when-type="archive versioned-files"><input type="checkbox" name="packing" value="1" {{ 'checked' if fv.packing == '1' }}>
       <span>My files are already bundled (.cbz, tar)</span></label>
     <label class="sm" data-when-type="archive versioned-files" data-when-packing="1" style="display:block;margin-left:34px">
-      Typical archive size <input type="number" name="pack_member_gb" value="{{ fv.pack_member_gb }}" step="0.01" min="0.001" style="width:5rem" class="mono"> GB each
+      Typical archive size <input type="number" name="pack_member_gb" value="{{ fv.pack_member_gb }}" step="any" min="0.001" style="width:5rem" class="mono"> GB each
       <span class="faint"> — cost estimate only; the tool copies files as they are and won't bundle for you.</span></label>
 
     <!-- 2e · What it costs — WHEN × WHOSE (5.8 §3.6) -->

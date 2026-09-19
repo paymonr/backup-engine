@@ -153,6 +153,39 @@ def test_post_clean_form_saves_and_redirects_to_job_page(client, app):
     assert jobs[0]["name"] == "movies" and jobs[0]["type"] == "archive"
 
 
+# --- no hidden number field can silently block the whole form (regression) --
+# A <input type=number> whose default value violates its own min/step is INVALID;
+# if it's hidden (a collapsed section) the browser refuses to submit the form with
+# no visible message — the create button "does nothing". Every rendered number
+# input's default value must satisfy its own constraints. (pack_member_gb had
+# step="0.01" min="0.001" value="0.05": base 0.001 + n*0.01 never hits 0.05.)
+
+def _number_inputs(html):
+    import re
+    for tag in re.findall(r"<input\b[^>]*\btype=\"number\"[^>]*>", html):
+        attr = dict(re.findall(r'(\w+)="([^"]*)"', tag))
+        yield attr.get("name") or attr.get("id") or "?", attr
+
+
+def test_no_number_input_default_violates_its_own_step(client):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    seen = 0
+    for name, attr in _number_inputs(body):
+        val, step = attr.get("value", ""), attr.get("step", "")
+        if val == "" or step == "any":
+            continue
+        seen += 1
+        v = float(val)
+        s = float(step) if step else 1.0
+        base = float(attr["min"]) if attr.get("min") not in (None, "") else 0.0
+        n = (v - base) / s
+        assert abs(n - round(n)) < 1e-9, (
+            f"{name}: value {val} is off the step ladder (min={attr.get('min')}, "
+            f"step={step or '1'}) -> the field is invalid and, if hidden, silently "
+            f"blocks the whole form from submitting")
+    assert seen or "type=\"number\"" not in body      # sanity: we actually checked some
+
+
 # --- an incomplete form is rejected LOUDLY, never silently -----------------
 # The client gates the footer so an incomplete form can't be posted; if one is
 # (JS off, or a server-only check like a bad folder), the rejection must land in a
