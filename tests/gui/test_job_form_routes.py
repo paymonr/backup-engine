@@ -153,6 +153,31 @@ def test_post_clean_form_saves_and_redirects_to_job_page(client, app):
     assert jobs[0]["name"] == "movies" and jobs[0]["type"] == "archive"
 
 
+# --- an incomplete form is rejected LOUDLY, never silently -----------------
+# The client gates the footer so an incomplete form can't be posted; if one is
+# (JS off, or a server-only check like a bad folder), the rejection must land in a
+# prominent "Not saved" banner at the top — a 200 re-render with only a buried line
+# four sections down reads to the owner as "the button did nothing" (regression).
+
+@pytest.mark.parametrize("missing,overrides,needle", [
+    ("name",   {"name": ""},                 "job name must be"),
+    ("type",   {"type": ""},                  "unknown job type"),
+    ("source", {"source": ""},                "source is required"),
+])
+def test_incomplete_post_rerenders_with_prominent_banner(client, app, missing, overrides, needle):
+    t = _csrf(client)
+    data = {"csrf": t, "name": "goodname", "type": "versioned", "source": "appdata",
+            "schedule": "0 5 * * *", "storage_class": "STANDARD", "enabled": "1",
+            "retention_type": "days", "retention_days": "180"}
+    data.update(overrides)
+    r = client.post("/jobs", data=data)
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200                         # re-render, NOT a redirect
+    assert "Not saved" in body                          # prominent top banner present
+    assert needle in body                               # names the actual problem
+    assert _jobs(app) == []                             # saved nothing
+
+
 # --- the edit lock (5.9) ---------------------------------------------------
 
 def _seed(app, job):

@@ -440,10 +440,30 @@
         "</span> to store the files.";
     }
   }
-  function footerEnabled(on) {
+  var NAME_RE = /^[A-Za-z0-9._-]+$/;
+  // What (if anything) stops this form from saving, worded for the wizard's steps and
+  // ordered like jobs_io.validate. A fresh job has no folder, no kind and no name, so
+  // clicking Create just 200-re-renders with a buried error -- which reads as "the
+  // button does nothing". Gate the footer instead, and say exactly what's missing.
+  function missingReason() {
+    if (isEdit) return "";                        // kind/name/source are locked & pre-set
+    if (!((($("#source-input") || {}).value) || "")) return "Pick a folder above first.";
+    if (!$('input[name="type"]:checked')) return "Choose what kind of backup this is (step 2).";
+    var nm = ((($('[name="name"]') || {}).value) || "").trim();
+    if (!nm) return "Name the job (step 4) to create it.";
+    if (nm === "." || nm === ".." || !NAME_RE.test(nm)) return "Job names use letters, digits, dot, dash and underscore only.";
+    return "";
+  }
+  function footerEnabled(on, reason) {
     var b = $("#create-btn"), r = $("#create-run-btn"), why = $("#create-why");
     if (b) b.disabled = !on; if (r) r.disabled = !on;
-    if (why) { why.hidden = on; if (!on) why.textContent = "Fix the blocker above first."; }
+    if (why) { why.hidden = on; why.style.color = "var(--danger)"; if (!on) why.textContent = reason || "Fix the blocker above first."; }
+  }
+  // Combine the two gates: a standing unacknowledged blocker OR an incomplete form.
+  function refreshFooter() {
+    var blocked = !!(lastData && (lastData.blockers || []).some(function (b) { return !acked[b.code]; }));
+    var reason = blocked ? "Fix the blocker above first." : missingReason();
+    footerEnabled(!reason, reason);
   }
   function blockerOf(d, code) { return (d.blockers || []).filter(function (b) { return b.code === code; })[0]; }
   function paintBlocker(d) {
@@ -457,10 +477,9 @@
     }
     var tb = $("#tiered-blocker"), tiered = blockerOf(d, "all_zero_tiered");
     if (tb) tb.hidden = !tiered;
-    // The footer is disabled while ANY blocker stands unacknowledged (an all-zero
-    // tiered keep is a hard WON'T RUN — never overridable, so it always disables).
-    var unacked = (d.blockers || []).some(function (b) { return !acked[b.code]; });
-    footerEnabled(!unacked);
+    // The footer stays disabled while ANY blocker stands unacknowledged (an all-zero
+    // tiered keep is a hard WON'T RUN — never overridable) OR the form is incomplete.
+    refreshFooter();
   }
   function paintWarnings(d) {
     var box = $("#warnings"); if (!box) return;
@@ -516,6 +535,10 @@
   function schedule() { clearTimeout(timer); timer = setTimeout(update, 250); }
   form.addEventListener("input", schedule);
   form.addEventListener("change", schedule);
+  // Re-gate the footer immediately on every edit (don't wait for the debounced fetch),
+  // so naming the job or picking a folder enables the buttons at once.
+  form.addEventListener("input", refreshFooter);
+  form.addEventListener("change", refreshFooter);
 
   // ---- delegated clicks ----------------------------------------------------
   form.addEventListener("click", function (e) {
@@ -544,8 +567,9 @@
       var h = document.createElement("input"); h.type = "hidden"; h.name = "acknowledge_blocker"; h.value = blk.code;
       form.appendChild(h);
       var b = el.closest("#save-anyway"); b.textContent = "Acknowledged — will save anyway"; b.disabled = true;
-      footerEnabled(true);
-      var why = $("#create-why"); if (why) { why.hidden = false; why.style.color = "var(--faint)"; why.textContent = "Saving with the blocker acknowledged."; }
+      refreshFooter();   // re-gate: acking clears the blocker, but completeness still applies
+      var why = $("#create-why");
+      if (why && !$("#create-btn").disabled) { why.hidden = false; why.style.color = "var(--faint)"; why.textContent = "Saving with the blocker acknowledged."; }
       return;
     }
     var ft = el.closest("[data-fix-type]");
@@ -581,6 +605,7 @@
     r.addEventListener("change", function () { typeTouched = true; });
   });
 
+  refreshFooter();   // gate the footer at once (a fresh job starts incomplete)
   update();
 })();
 
