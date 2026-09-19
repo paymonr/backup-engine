@@ -13,7 +13,7 @@ from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jo
                dirsize, attributions, status, vocab, points, readiness, ops)
 from ..estimator.prices import load_prices
 from ..estimator import usage
-from ..engine import cron, runs, errors
+from ..engine import cron, runs, errors, progress
 
 bp = Blueprint("gui", __name__)
 
@@ -242,6 +242,19 @@ def job_page(name):
         sibling_cold=_sibling_cold(cfg, job_def),
         dowdate=lambda iso: _dow_date(iso, tz),
         schedule_desc=schedule_desc, csrf=security.issue_csrf())
+
+
+@bp.get("/jobs/<name>/progress.json")
+def job_progress(name):
+    """Live progress for a RUNNING job (spec 5.5): percent / bytes / ETA read from the
+    engine's own output that the runner already tees to $CACHE_DIR/state. Returns
+    {"running": false} when idle. Polled by the running Activity row, the home health
+    card and the job page; a plain GET like /logs (read-only, no CSRF)."""
+    cfg = current_app.config
+    job_def = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job_def is None:
+        return jsonify({"running": False}), 404
+    return jsonify(progress.read_progress(cfg["CACHE_DIR"], name, job_def.get("type")))
 
 
 @bp.post("/jobs/<name>/pause")

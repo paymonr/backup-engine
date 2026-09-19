@@ -109,6 +109,7 @@
       </div>
       <p class="typeline">{{ vocab.TYPE_LINES.get(job.type, s.type_label) }}</p>
       <p class="pathline">{{ ident.source_display or job.source }} &nbsp;→&nbsp; {{ ident.s3 }}{% if ident.tag %} · tag {{ ident.tag }}{% endif %}</p>
+      {% if s.state == 'RUNNING' %}<div class="jobprog" data-progress-job="{{ s.name }}" style="margin-top:var(--sp-3);max-width:34rem"><div class="jobprog-bar"><div class="jobprog-fill" style="width:0"></div></div><span class="jobprog-text sm mono">working…</span></div>{% endif %}
     </div>
     <div class="actions">
       <form method="post" action="/jobs/{{ s.name }}/run" style="display:inline">

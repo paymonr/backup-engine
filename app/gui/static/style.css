@@ -143,6 +143,16 @@ summary:hover{ color:var(--ink); }
   background:var(--accent); animation:slide 1.2s linear infinite; }
 @keyframes slide{ from{ transform:translateX(-100%); } to{ transform:translateX(320%); } }
 
+/* Live job progress (5.5): a determinate bar wherever a running job is shown
+   (Activity, the home board, the job page). Falls back to the indeterminate
+   `slide` animation when the engine reports no percent. */
+.jobprog{ margin-top:6px; }
+.jobprog-top{ margin:12px 0 4px; }
+.jobprog-bar{ position:relative; height:6px; border-radius:999px; background:var(--surface-2); overflow:hidden; }
+.jobprog-fill{ position:absolute; inset:0 auto 0 0; width:0; background:var(--accent); border-radius:999px; transition:width .5s ease; }
+.jobprog-bar.indet .jobprog-fill{ width:38%; transition:none; animation:slide 1.2s linear infinite; }
+.jobprog-text{ display:block; margin-top:3px; color:var(--faint); }
+
 /* ============================================================
    Bands + section labels (5.1, 5.8)
    ============================================================ */

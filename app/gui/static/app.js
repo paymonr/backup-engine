@@ -742,3 +742,59 @@
     } catch (e) {}
   });
 })();
+
+// Live job progress (spec 5.5): poll /jobs/<job>/progress.json and paint a determinate
+// bar wherever a running job is shown (Activity top strip, home board rows, job page
+// header). Falls back to the indeterminate bar when the engine reports no percent;
+// reloads the page once when a tracked job finishes so outcomes/strips refresh.
+(function () {
+  var els = Array.prototype.slice.call(document.querySelectorAll("[data-progress-job]"));
+  if (!els.length) return;
+  function fmtBytes(b) {
+    if (b == null) return null;
+    var g = b / (1024 * 1024 * 1024);
+    if (g >= 1) return g.toFixed(1) + " GB";
+    var m = b / (1024 * 1024);
+    return m >= 1 ? m.toFixed(0) + " MB" : Math.max(0, Math.round(b / 1024)) + " KB";
+  }
+  function fmtEta(s) {
+    if (s == null) return null;
+    if (s < 60) return "~" + Math.max(1, Math.round(s)) + "s left";
+    if (s < 3600) return "~" + Math.round(s / 60) + "m left";
+    return "~" + Math.floor(s / 3600) + "h " + Math.round((s % 3600) / 60) + "m left";
+  }
+  function text(d) {
+    var parts = [];
+    if (d.percent != null) parts.push(Math.round(d.percent) + "%");
+    if (d.bytes_done != null && d.bytes_total != null) parts.push(fmtBytes(d.bytes_done) + " / " + fmtBytes(d.bytes_total));
+    else if (d.files_done != null && d.files_total != null) parts.push(d.files_done + " / " + d.files_total + " files");
+    var eta = fmtEta(d.eta_seconds); if (eta) parts.push(eta);
+    return parts.join(" · ") || "working…";
+  }
+  els.forEach(function (el) {
+    var job = el.getAttribute("data-progress-job");
+    var bar = el.querySelector(".jobprog-bar"), fill = el.querySelector(".jobprog-fill"),
+        label = el.querySelector(".jobprog-text");
+    var everRan = false, done = false;
+    function tick() {
+      fetch("/jobs/" + encodeURIComponent(job) + "/progress.json", { cache: "no-store" })
+        .then(function (r) { return r.ok ? r.json() : { running: false }; })
+        .then(function (d) {
+          if (d && d.running) {
+            everRan = true;
+            if (d.percent != null) {
+              if (bar) bar.classList.remove("indet");
+              if (fill) fill.style.width = Math.max(0, Math.min(100, d.percent)) + "%";
+            } else if (bar) { bar.classList.add("indet"); }
+            if (label) label.textContent = text(d);
+            setTimeout(tick, 2000);
+          } else if (everRan && !done) {
+            done = true; setTimeout(function () { location.reload(); }, 700);  // show final outcome
+          }
+          // never-ran + not-running: stop quietly (server row is already correct)
+        })
+        .catch(function () { setTimeout(tick, 4000); });
+    }
+    tick();
+  });
+})();

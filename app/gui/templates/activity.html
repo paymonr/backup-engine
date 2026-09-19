@@ -20,7 +20,12 @@
 
 {% block body %}
 <section class="screen dense" aria-label="Activity">
-  {% if items and items[0].outcome == 'running' %}<div class="workbar" aria-hidden="true"></div>{% endif %}
+  {% if items and items[0].outcome == 'running' and items[0].job %}
+  <div class="jobprog jobprog-top" data-progress-job="{{ items[0].job }}" aria-label="Progress of {{ items[0].job }}">
+    <div class="jobprog-bar"><div class="jobprog-fill" style="width:0"></div></div>
+    <span class="jobprog-text sm mono">{{ items[0].job }} — working…</span>
+  </div>
+  {% elif items and items[0].outcome == 'running' %}<div class="workbar" aria-hidden="true"></div>{% endif %}
 
   <p class="slabel">Activity</p>
   <h1>What this machine has done</h1>
