@@ -27,6 +27,18 @@ def _csrf(client, path):
         return s["_csrf"]
 
 
+@pytest.fixture(autouse=True)
+def captured_probe(monkeypatch):
+    """Capture the post-provision destination probe launch instead of spawning a real
+    detached subprocess. Autouse so no success-path test spawns `sysop probe`; tests
+    that assert the launch inspect the returned list."""
+    from app.gui import routes
+    calls = []
+    monkeypatch.setattr(routes.ops, "launch_py",
+                        lambda cfg, module, args, **kw: calls.append((module, list(args))) or "rid")
+    return calls
+
+
 # --- old /provision* paths 301 to the new /setup/destination* ---------------
 
 @pytest.mark.parametrize("old,new", [
@@ -393,3 +405,86 @@ def test_automated_success_flashes_delete_admin_key_nudge(client, dirs, monkeypa
     assert "AWS_ACCESS_KEY_ID=AKIARUN" in sec
     assert b"never stored your admin key" in r.data
     assert b"delete that access key" in r.data
+
+
+def test_automated_delete_admin_key_reminder_is_persistent_not_auto_dismiss(client, dirs, monkeypatch):
+    # base.html auto-dismisses ONLY data-flash="success" after 7s; the security-
+    # important delete-key reminder must ride a persistent (warning) flash instead.
+    from app.gui import provision
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
+    monkeypatch.setattr(provision, "run_tofu_apply",
+                        lambda *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
+                                         "AWS_SECRET_ACCESS_KEY": "runsek",
+                                         "bucket": "acme", "region": "us-east-1"})
+    token = _csrf(client, "/setup/destination/automated")
+    r = client.post("/setup/destination/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"},
+                    follow_redirects=True)
+    html = r.data.decode()
+    assert 'data-flash="warning"' in html
+    # order: the success ack renders first, then the persistent warning holding the
+    # reminder — so the reminder text sits inside the warning flash, not the success one.
+    s = html.index('data-flash="success"')
+    w = html.index('data-flash="warning"')
+    reminder = html.index("delete that access key")
+    assert s < w < reminder
+    # and the reminder is NOT inside the auto-dismissed success flash.
+    assert 'data-flash="success"' not in html[w:reminder]
+
+
+def test_automated_success_launches_destination_probe(client, dirs, monkeypatch, captured_probe):
+    # After writing the NEW runtime key the route relaunches the destination probe
+    # (same as "Probe now") so /setup reflects the new key, not a stale probe.
+    from app.gui import provision
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
+    monkeypatch.setattr(provision, "run_tofu_apply",
+                        lambda *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
+                                         "AWS_SECRET_ACCESS_KEY": "runsek",
+                                         "bucket": "acme", "region": "us-east-1"})
+    token = _csrf(client, "/setup/destination/automated")
+    r = client.post("/setup/destination/automated",
+                    data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                          "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"},
+                    follow_redirects=True)
+    assert r.status_code == 200
+    assert ("app.engine.sysop", ["probe"]) in captured_probe
+
+
+def test_automated_probe_launches_after_creds_written(client, dirs, monkeypatch):
+    # The probe must fire only AFTER the fresh creds land in secrets.env (else it
+    # would read the old key). Assert secrets.env already holds the new key at launch.
+    from app.gui import provision, routes
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
+    monkeypatch.setattr(provision, "run_tofu_apply",
+                        lambda *a, **k: {"AWS_ACCESS_KEY_ID": "AKIARUN",
+                                         "AWS_SECRET_ACCESS_KEY": "runsek",
+                                         "bucket": "acme", "region": "us-east-1"})
+    seen = {}
+
+    def fake_launch(cfg, module, args, **kw):
+        p = Path(dirs["config"], "secrets.env")
+        seen["args"] = list(args)
+        seen["secrets_at_launch"] = p.read_text() if p.exists() else ""
+        return "rid"
+
+    monkeypatch.setattr(routes.ops, "launch_py", fake_launch)
+    token = _csrf(client, "/setup/destination/automated")
+    client.post("/setup/destination/automated",
+                data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                      "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"},
+                follow_redirects=True)
+    assert seen["args"] == ["probe"]
+    assert "AWS_ACCESS_KEY_ID=AKIARUN" in seen["secrets_at_launch"]
+
+
+def test_validate_success_launches_destination_probe(client, dirs, monkeypatch, captured_probe):
+    from app.gui import provision
+    monkeypatch.setattr(provision, "validate_runtime_key", lambda *a, **k: None)
+    token = _csrf(client, "/setup/destination/manual")
+    r = client.post("/setup/destination/validate",
+                    data={"csrf": token, "bucket": "acme", "region": "eu-west-1",
+                          "AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"},
+                    follow_redirects=True)
+    assert r.status_code == 200
+    assert ("app.engine.sysop", ["probe"]) in captured_probe

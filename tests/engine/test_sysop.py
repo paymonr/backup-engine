@@ -146,6 +146,105 @@ def test_probe_versioning_access_denied_is_unknown(tmp_path, monkeypatch):
     assert probe["versioning"]["state"] == "unknown"
 
 
+# --- _runtime_key: secrets.env is the source of truth, not the (stale) env ----
+
+def test_runtime_key_prefers_secrets_env_over_stale_process_env(tmp_path, monkeypatch):
+    # The container exported the OLD key into the process env at startup; after a
+    # re-provision, secrets.env holds the NEW key and must win.
+    _cache, cfgdir = _setup(tmp_path, monkeypatch,
+                            secrets="AWS_ACCESS_KEY_ID=NEWKEY\nAWS_SECRET_ACCESS_KEY=NEWSEC\n")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "OLDKEY")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "OLDSEC")
+    assert sysop._runtime_key(cfgdir) == ("NEWKEY", "NEWSEC")
+
+
+def test_runtime_key_falls_back_to_env_when_secrets_absent(tmp_path, monkeypatch):
+    _cache, cfgdir = _setup(tmp_path, monkeypatch)  # no secrets.env written
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ENVKEY")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ENVSEC")
+    assert sysop._runtime_key(cfgdir) == ("ENVKEY", "ENVSEC")
+
+
+def test_runtime_key_falls_back_to_env_when_secrets_has_no_aws_key(tmp_path, monkeypatch):
+    # secrets.env exists but carries no runtime AWS pair (e.g. only a CE credential).
+    _cache, cfgdir = _setup(tmp_path, monkeypatch,
+                            secrets="COST_EXPLORER_ACCESS_KEY_ID=c\nCOST_EXPLORER_SECRET_ACCESS_KEY=d\n")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ENVKEY")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ENVSEC")
+    assert sysop._runtime_key(cfgdir) == ("ENVKEY", "ENVSEC")
+
+
+# --- probe rides out a not-yet-propagated key --------------------------------
+
+def test_probe_retries_on_invalid_access_key_then_succeeds(tmp_path, monkeypatch):
+    cache, cfgdir = _setup(tmp_path, monkeypatch, secrets="AWS_ACCESS_KEY_ID=k\nAWS_SECRET_ACCESS_KEY=s\n")
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise sysop.provision.ValidationError(
+                "list", "An error occurred (InvalidAccessKeyId) ... key does not exist")
+        return None
+
+    monkeypatch.setattr(sysop.provision, "validate_runtime_key", flaky)
+    monkeypatch.setattr(sysop.provision, "_run_aws",
+                        lambda args, **k: _CP(0, json.dumps({"Status": "Enabled"})))
+    slept = []
+    monkeypatch.setattr(sysop.time, "sleep", lambda s: slept.append(s))
+    rc = sysop.run("probe")
+    assert rc == 0
+    probe = json.loads(Path(cache, "state", "_probe.json").read_text())
+    assert probe["destination"]["state"] == "ok"
+    assert calls["n"] == 3            # two transient failures, then success
+    assert len(slept) == 2            # one backoff before each retry
+
+
+def test_probe_gives_up_after_propagation_bound(tmp_path, monkeypatch):
+    # Realistic creds so probe's secret-scrub doesn't mangle the recorded detail.
+    cache, cfgdir = _setup(tmp_path, monkeypatch,
+                           secrets="AWS_ACCESS_KEY_ID=AKIAEXAMPLE\nAWS_SECRET_ACCESS_KEY=examplesecret\n")
+    calls = {"n": 0}
+
+    def always_bad(*a, **k):
+        calls["n"] += 1
+        raise sysop.provision.ValidationError(
+            "list", "An error occurred (InvalidAccessKeyId) ... key does not exist")
+
+    monkeypatch.setattr(sysop.provision, "validate_runtime_key", always_bad)
+    monkeypatch.setattr(sysop.provision, "_run_aws", lambda args, **k: _CP(255, "", "denied"))
+    slept = []
+    monkeypatch.setattr(sysop.time, "sleep", lambda s: slept.append(s))
+    rc = sysop.run("probe")
+    assert rc == 0
+    probe = json.loads(Path(cache, "state", "_probe.json").read_text())
+    assert probe["destination"]["state"] == "failed"
+    assert "InvalidAccessKeyId" in probe["destination"]["detail"]
+    # bounded: one initial attempt + the fixed backoff schedule, ~<=20s total.
+    assert calls["n"] == len(sysop._PROBE_RETRY_DELAYS) + 1
+    assert len(slept) == len(sysop._PROBE_RETRY_DELAYS)
+    assert sum(slept) <= 20
+
+
+def test_probe_does_not_retry_a_non_transient_failure(tmp_path, monkeypatch):
+    cache, cfgdir = _setup(tmp_path, monkeypatch, secrets="AWS_ACCESS_KEY_ID=k\nAWS_SECRET_ACCESS_KEY=s\n")
+    calls = {"n": 0}
+
+    def denied(*a, **k):
+        calls["n"] += 1
+        raise sysop.provision.ValidationError("put", "AccessDenied: s3:PutObject")
+
+    monkeypatch.setattr(sysop.provision, "validate_runtime_key", denied)
+    monkeypatch.setattr(sysop.provision, "_run_aws", lambda args, **k: _CP(255, "", "denied"))
+    slept = []
+    monkeypatch.setattr(sysop.time, "sleep", lambda s: slept.append(s))
+    sysop.run("probe")
+    probe = json.loads(Path(cache, "state", "_probe.json").read_text())
+    assert probe["destination"]["state"] == "failed"
+    assert calls["n"] == 1            # no retry on a non-transient error
+    assert slept == []
+
+
 # --- run id + records ------------------------------------------------------
 
 def test_honours_preassigned_be_run_id(tmp_path, monkeypatch):

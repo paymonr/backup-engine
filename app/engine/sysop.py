@@ -15,6 +15,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -47,13 +48,20 @@ def _run_id() -> str:
 
 
 def _runtime_key(config_dir: str) -> tuple[str, str]:
-    """The runtime AWS key for the probe. Prefer the process environment (the
-    container's load_config exports it); fall back to a LOCAL parse of secrets.env
-    so config_io's write-only contract is left untouched."""
-    key = os.environ.get("AWS_ACCESS_KEY_ID", "")
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-    if key and secret:
-        return key, secret
+    """The runtime AWS key for the probe. Prefer the CURRENT secrets.env over the
+    process environment.
+
+    Ordering matters: the container's entrypoint (lib/config.sh load_config) exports
+    the runtime key into this long-running Flask process AT STARTUP, so `os.environ`
+    holds whatever key was in secrets.env when the container started. After a
+    re-provision writes a NEW key to secrets.env, that env is STALE (it still carries
+    the old — possibly already-deleted — key) while secrets.env is the source of
+    truth. Reading env first would make the probe (a child of Flask that inherits
+    os.environ) fail with InvalidAccessKeyId against a live, correctly-provisioned
+    destination. So parse secrets.env FIRST — with a LOCAL reader that leaves
+    config_io's write-only contract untouched — and fall back to the process env only
+    when secrets.env carries no runtime key/secret (e.g. a fresh container before any
+    provision)."""
     p = Path(config_dir, "secrets.env")
     vals: dict[str, str] = {}
     if p.exists():
@@ -63,7 +71,46 @@ def _runtime_key(config_dir: str) -> tuple[str, str]:
                 continue
             k, _, v = s.partition("=")
             vals[k.strip()] = v.strip().strip('"').strip("'")
-    return vals.get("AWS_ACCESS_KEY_ID", ""), vals.get("AWS_SECRET_ACCESS_KEY", "")
+    key = vals.get("AWS_ACCESS_KEY_ID", "")
+    secret = vals.get("AWS_SECRET_ACCESS_KEY", "")
+    if key and secret:
+        return key, secret
+    return (os.environ.get("AWS_ACCESS_KEY_ID", ""),
+            os.environ.get("AWS_SECRET_ACCESS_KEY", ""))
+
+
+# A freshly-created IAM access key can transiently 401 (InvalidAccessKeyId, or an
+# invalid-security-token error) for a few seconds until it propagates across AWS. In
+# the probe — which may fire the instant provisioning writes a new key — ride that
+# out with a bounded retry rather than record a false failure. Scoped to the probe
+# ONLY: provision.validate_runtime_key's behaviour for the admin/apply flow is
+# unchanged.
+_PROBE_TRANSIENT_RE = re.compile(
+    r"InvalidAccessKeyId|InvalidClientTokenId|security token .* invalid|RequestExpired",
+    re.I,
+)
+# Backoff between retries, in seconds. One initial attempt + these retries; the sum
+# bounds the extra wait to ~18s so an immediate post-provision probe rides out key
+# propagation without hanging the operation.
+_PROBE_RETRY_DELAYS = (1, 2, 3, 3, 4, 5)
+
+
+def _validate_with_propagation_retry(bucket, region, key, secret, *, log) -> None:
+    """provision.validate_runtime_key, but tolerant of a not-yet-propagated key:
+    on a transient InvalidAccessKeyId/token error, retry with backoff (bounded by
+    _PROBE_RETRY_DELAYS) before letting the ValidationError propagate. A
+    non-transient failure (AccessDenied, NoSuchBucket, …) is re-raised immediately."""
+    for attempt in range(len(_PROBE_RETRY_DELAYS) + 1):
+        try:
+            provision.validate_runtime_key(bucket, region, key, secret)
+            return
+        except provision.ValidationError as e:
+            detail = getattr(e, "detail", "") or str(e)
+            if attempt >= len(_PROBE_RETRY_DELAYS) or not _PROBE_TRANSIENT_RE.search(detail):
+                raise
+            delay = _PROBE_RETRY_DELAYS[attempt]
+            log(f"probe: runtime key not propagated yet ({e.step}); retry in {delay}s")
+            time.sleep(delay)
 
 
 # --- the three operations --------------------------------------------------
@@ -110,7 +157,7 @@ def probe(cfg, *, log) -> None:
     key, secret = _runtime_key(config_dir)
 
     try:
-        provision.validate_runtime_key(bucket, region, key, secret)
+        _validate_with_propagation_retry(bucket, region, key, secret, log=log)
         dest = {"state": "ok", "probed_at": _now_iso(), "detail": "Write, read, delete — all OK"}
     except provision.ValidationError as e:
         # An unreachable destination is a RECORDED probe result, not a run failure.

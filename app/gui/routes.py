@@ -1260,6 +1260,16 @@ def setup_probe():
     return redirect(url_for("gui.setup_page"))
 
 
+def _launch_destination_probe(cfg) -> None:
+    """Launch a detached destination probe the same way "Probe now" does, so /setup
+    reflects the CURRENT runtime key. Best-effort: provisioning has already succeeded
+    and the creds are written, so a launch hiccup must never fail the success path."""
+    try:
+        ops.launch_py(cfg, "app.engine.sysop", ["probe"], kind="probe")
+    except Exception:  # noqa: BLE001 — a probe-launch failure never breaks provisioning
+        pass
+
+
 @bp.post("/setup/versioning-confirmed")
 def setup_versioning_confirmed():
     # "Mark as confirmed" (spec 5.10): when an object-only key can't read bucket
@@ -1444,6 +1454,9 @@ def provision_validate():
                                 "AWS_REGION": region, "S3_BUCKET": bucket})
     # Record the successful destination setup so Activity shows it (spec 5.5).
     provision.record_setup(cfg["CACHE_DIR"], bucket=bucket, region=region, mode="validate")
+    # Refresh the destination probe on the NEW key so /setup reflects it, not a stale
+    # pre-provision result (the running process still holds the old startup env key).
+    _launch_destination_probe(cfg)
     flash(f"Destination set: {bucket} in {region}. Next: the recovery passphrase, "
           f"then the first job.", "success")
     return redirect(url_for("gui.setup_page"))
@@ -1522,9 +1535,18 @@ def provision_automated_run():
     # Record the successful automated provisioning so Activity shows it (spec 5.5).
     provision.record_setup(cfg["CACHE_DIR"], bucket=result["bucket"], region=result["region"],
                            mode="automated")
-    flash(f"Destination set: {result['bucket']} in {result['region']}. We never stored "
-          f"your admin key — you can delete that access key in AWS now. Next: the "
+    # Reflect the NEW runtime key on /setup: launch a fresh destination probe the
+    # same way "Probe now" does. The running Flask process still holds the OLD key in
+    # its startup env, so without this /setup would keep showing a stale pre-provision
+    # probe; the launched probe reads the freshly-written secrets.env (sysop._runtime_key)
+    # and tolerates key propagation (sysop retry), overwriting any stale _probe.json.
+    _launch_destination_probe(cfg)
+    flash(f"Destination set: {result['bucket']} in {result['region']}. Next: the "
           f"recovery passphrase, then the first job.", "success")
+    # The delete-your-admin-key reminder is a security action: render it as a
+    # persistent (warning) flash so it does NOT auto-dismiss like `success` does.
+    flash("We never stored your admin key — delete that access key in AWS now.",
+          "warning")
     return redirect(url_for("gui.setup_page"))
 
 @bp.get("/jobs")
