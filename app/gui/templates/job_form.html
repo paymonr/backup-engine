@@ -195,10 +195,10 @@
           <button type="button" class="linklike" id="advanced-keep">Advanced ▸</button></span></label>
       <fieldset class="retention" id="tiered-advanced" data-when-type="versioned" data-when-retention="tiered" hidden style="border:0;padding:0;margin:8px 0 0 34px">
         <div style="display:flex;flex-wrap:wrap;gap:10px 16px">
-          <label class="sm">last <input type="number" min="0" name="keep_last" value="{{ fv.keep_last }}" style="width:5ch" class="mono"></label>
-          <label class="sm">daily <input type="number" min="0" name="keep_daily" value="{{ fv.keep_daily }}" style="width:5ch" class="mono"></label>
-          <label class="sm">weekly <input type="number" min="0" name="keep_weekly" value="{{ fv.keep_weekly }}" style="width:5ch" class="mono"></label>
-          <label class="sm">monthly <input type="number" min="0" name="keep_monthly" value="{{ fv.keep_monthly }}" style="width:5ch" class="mono"></label>
+          <label class="sm">last <input type="number" min="0" name="keep_last" value="{{ fv.keep_last }}" style="width:4rem" class="mono"></label>
+          <label class="sm">daily <input type="number" min="0" name="keep_daily" value="{{ fv.keep_daily }}" style="width:4rem" class="mono"></label>
+          <label class="sm">weekly <input type="number" min="0" name="keep_weekly" value="{{ fv.keep_weekly }}" style="width:4rem" class="mono"></label>
+          <label class="sm">monthly <input type="number" min="0" name="keep_monthly" value="{{ fv.keep_monthly }}" style="width:4rem" class="mono"></label>
         </div>
       </fieldset>
       <!-- all-zero tiered keep: a WON'T RUN beside the Advanced inputs (5.8 §3.3) -->
@@ -209,11 +209,11 @@
         <div class="acts"><button type="button" class="btn btn-ghost btn-xs" id="fix-tiered-keeps">Use last 3 · daily 7 · weekly 4 · monthly 6</button></div>
       </div>
       <label class="radio" for="k-days"><input type="radio" id="k-days" name="retention_type" value="days" {{ 'checked' if fv.retention_type == 'days' }}>
-        <span>Keep for <input type="number" name="retention_days" value="{{ fv.retention_days }}" style="width:5ch" class="mono"> days</span>
+        <span>Keep for <input type="number" name="retention_days" value="{{ fv.retention_days }}" style="width:4rem" class="mono"> days</span>
         <span class="why"><span class="k-delta" data-keep="days">{{ money((ko.get('days') or {}).get('delta_monthly')) }}/mo</span> ·
           <span class="mono" data-keep-points="days">{{ (ko.get('days') or {}).get('points', 0) }}</span> restore points</span></label>
       <label class="radio" for="k-n"><input type="radio" id="k-n" name="retention_type" value="count" {{ 'checked' if fv.retention_type == 'count' }}>
-        <span>Keep the last <input type="number" name="retention_count" value="{{ fv.retention_count }}" style="width:5ch" class="mono"> versions</span>
+        <span>Keep the last <input type="number" name="retention_count" value="{{ fv.retention_count }}" style="width:4rem" class="mono"> versions</span>
         <span class="why"><span class="k-delta" data-keep="count">{{ money((ko.get('count') or {}).get('delta_monthly')) }}/mo</span> ·
           <span class="mono" data-keep-points="count">{{ (ko.get('count') or {}).get('points', 0) }}</span> restore points</span></label>
     </div>
@@ -239,7 +239,7 @@
     <label class="radio" data-when-type="archive versioned-files"><input type="checkbox" name="packing" value="1" {{ 'checked' if fv.packing == '1' }}>
       <span>My files are already bundled (.cbz, tar)</span></label>
     <label class="sm" data-when-type="archive versioned-files" data-when-packing="1" style="display:block;margin-left:34px">
-      Typical archive size <input type="number" name="pack_member_gb" value="{{ fv.pack_member_gb }}" step="0.01" min="0.001" style="width:6ch" class="mono"> GB each
+      Typical archive size <input type="number" name="pack_member_gb" value="{{ fv.pack_member_gb }}" step="0.01" min="0.001" style="width:5rem" class="mono"> GB each
       <span class="faint"> — cost estimate only; the tool copies files as they are and won't bundle for you.</span></label>
 
     <!-- 2e · What it costs — WHEN × WHOSE (5.8 §3.6) -->

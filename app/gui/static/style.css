@@ -422,6 +422,8 @@ input, select, textarea{ font:inherit; width:100%; max-width:26rem; padding:.45r
   background:var(--bg); color:var(--ink); border:1px solid var(--border-strong); border-radius:var(--radius-sm);
   font-family:var(--font-mono); font-size:.88rem; }
 input[type=checkbox], input[type=radio]{ width:auto; max-width:none; padding:0; accent-color:var(--accent); }
+input[type=number]{ -moz-appearance:textfield; appearance:textfield; }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button{ -webkit-appearance:none; margin:0; }
 input:focus, select:focus, textarea:focus{ outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
 /* the form screen grounds inputs on --surface-2 with square corners (6.3) */
 .form input, .form select, .form textarea{ background:var(--surface-2); border-radius:0; font-size:14px; }
@@ -499,6 +501,8 @@ input:focus, select:focus, textarea:focus{ outline:2px solid var(--accent); outl
 .tree label{ display:flex; gap:8px; align-items:center; padding:4px 6px; font-size:14px; cursor:pointer; margin:0; }
 .tree label:hover{ background:var(--surface-2); }
 .tree input{ width:auto; max-width:none; accent-color:var(--accent); }
+.tree li{ display:flex; flex-wrap:wrap; align-items:center; }
+.tree li > ul.tree{ flex-basis:100%; }
 .tree .expand{ appearance:none; background:transparent; border:0; cursor:pointer; width:1.1rem;
   color:var(--muted); font-family:var(--font-mono); font-size:inherit; line-height:1; padding:0; }
 .tree .expand:hover{ color:var(--ink); }
