@@ -144,3 +144,33 @@ def test_keys_save_flashes_saved(client, dirs):
     r = client.post("/setup/keys", data={"csrf": token, "S3_BUCKET": "b"},
                     follow_redirects=True)
     assert b"Saved." in r.data
+
+
+# --- base bucket name: editable, repoint warning (Task 10) ------------------
+
+def test_settings_updates_base_bucket_name(client, app):
+    token = _csrf(client)
+    r = client.post("/setup/keys", data={"csrf": token, "S3_BUCKET": "new-base-name"})
+    assert r.status_code in (200, 302, 303)
+    assert config_io.read_backup_env(app.config["CONFIG_DIR"])["S3_BUCKET"] == "new-base-name"
+
+
+def test_keys_get_renders_current_base_bucket_name(client, dirs, template_path):
+    config_io.write_backup_env(template_path, dirs["config"], {"S3_BUCKET": "already-set-bucket"})
+    body = client.get("/setup/keys").get_data(as_text=True)
+    assert "already-set-bucket" in body
+
+
+def test_keys_page_warns_repointing_does_not_move_data(client):
+    body = client.get("/setup/keys").get_data(as_text=True).lower()
+    assert "repoint" in body
+    assert "does not move" in body or "not move" in body
+
+
+def test_keys_save_rejects_blank_base_bucket(client, dirs, template_path):
+    config_io.write_backup_env(template_path, dirs["config"], {"S3_BUCKET": "keep-me"})
+    token = _csrf(client)
+    r = client.post("/setup/keys", data={"csrf": token, "S3_BUCKET": "   "},
+                    follow_redirects=True)
+    assert r.status_code == 200
+    assert config_io.read_backup_env(dirs["config"])["S3_BUCKET"] == "keep-me"

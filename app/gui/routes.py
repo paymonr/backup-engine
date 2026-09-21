@@ -1363,18 +1363,34 @@ def config_save():
         abort(400, description="csrf")
     cfg = current_app.config
     f = request.form
+    before = config_io.read_backup_env(cfg["CONFIG_DIR"])
+
+    # The base bucket (Task 10, spec 5.12/multi-bucket): editable, but never blank —
+    # an empty value would fall back to the template's placeholder on write, silently
+    # repointing the app to a bucket nobody chose. A full S3-name format check is
+    # deliberately NOT applied here (unlike the per-job dedicated bucket, which uses
+    # buckets.valid_bucket_name) so an already-saved, less-strict legacy name keeps
+    # round-tripping through this same form.
+    new_bucket = f.get("S3_BUCKET", "").strip()
+    if not new_bucket:
+        flash("Bucket name can't be blank — nothing was saved.", "failure")
+        return redirect(url_for("gui.config_page"))
+
     env_keys = [k for k in config_io.template_keys(cfg["TEMPLATE_PATH"])
                 if k not in _KEY_SECRET_FIELDS]
-    before = config_io.read_backup_env(cfg["CONFIG_DIR"])
     before_ce = config_io.read_cost_explorer_creds(cfg["CONFIG_DIR"])
-    config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
-                               {k: f.get(k, "") for k in env_keys})
+    values = {k: f.get(k, "") for k in env_keys}
+    values["S3_BUCKET"] = new_bucket
+    config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"], values)
     # Write the runtime key AND the Cost Explorer billing credential in one pass —
     # write_secrets rebuilds secrets.env from the managed UNION, so writing one group
     # never drops the other, and a blank field keeps what is there (write-only, 5.12).
     config_io.write_secrets(cfg["CONFIG_DIR"], {k: f.get(k, "") for k in _KEY_SECRET_FIELDS})
     after_ce = config_io.read_cost_explorer_creds(cfg["CONFIG_DIR"])
     flash("Saved.", "success")
+    if new_bucket != (before.get("S3_BUCKET", "") or "").strip():
+        flash(f"Base bucket repointed to {new_bucket!r}. Existing data was NOT moved "
+              "from the old bucket.", "warning")
     if f.get("TZ", "").strip() and f.get("TZ", "").strip() != (before.get("TZ", "") or "").strip():
         flash("TZ changes take effect after a restart.", "note")
     if before_ce is None and after_ce is not None:
