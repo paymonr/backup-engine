@@ -28,9 +28,12 @@ def test_render_policy_action_set_matches_least_privilege():
     ]
 
 
-def test_policy_template_has_exactly_one_placeholder():
+def test_policy_template_placeholders():
+    # bucket_admin_role_arn added (multi-bucket feature) so the runtime user can
+    # sts:AssumeRole the bucket-admin role; render_policy defaults it to "*" so
+    # existing one-arg callers/tests are unaffected.
     txt = provision.POLICY_TEMPLATE.read_text()
-    assert set(re.findall(r"\$\{(\w+)\}", txt)) == {"bucket_arn"}
+    assert set(re.findall(r"\$\{(\w+)\}", txt)) == {"bucket_arn", "bucket_admin_role_arn"}
 
 
 def test_tofu_module_consumes_canonical_policy_template():
@@ -162,6 +165,39 @@ def test_apply_writes_tfvars_as_injection_safe_json():
     parsed = _json.loads(rec["tfvars"])
     assert set(parsed.keys()) == {"bucket_name", "region"}
     assert parsed["bucket_name"] == evil   # malicious content stays a plain string value
+
+
+TOFU_OUTPUT_WITH_MULTI_BUCKET = _json.dumps({
+    "runtime_access_key_id": {"value": "AKIARUNTIME", "sensitive": True},
+    "runtime_secret_access_key": {"value": "runtimesecret", "sensitive": True},
+    "bucket_name": {"value": "acme-backups"},
+    "region": {"value": "us-east-1"},
+    "bucket_admin_role_arn": {"value": "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"},
+    "runtime_extra_buckets_policy_arn":
+        {"value": "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets"},
+})
+
+
+def test_apply_captures_bucket_admin_role_and_extra_buckets_policy_arns():
+    def run(args, *, cwd, env):
+        class CP:
+            returncode = 0
+            stdout = TOFU_OUTPUT_WITH_MULTI_BUCKET if args[0] == "output" else ""
+            stderr = ""
+        return CP()
+
+    out = provision.run_tofu_apply("acme-backups", "us-east-1", "K", "S", run=run)
+    assert out["bucket_admin_role_arn"] == "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"
+    assert out["runtime_extra_buckets_policy_arn"] == \
+        "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets"
+
+
+def test_apply_tolerates_tofu_output_missing_multi_bucket_keys():
+    # An older/stubbed `tofu output` without the multi-bucket outputs must not
+    # raise -- run_tofu_apply reads them defensively.
+    out = provision.run_tofu_apply("b", "us-east-1", "K", "S", run=_fake_tofu({}))
+    assert out["bucket_admin_role_arn"] == ""
+    assert out["runtime_extra_buckets_policy_arn"] == ""
 
 
 class _CP:

@@ -12,6 +12,12 @@ output "runtime_secret_access_key" {
   value     = aws_iam_access_key.runtime.secret
   sensitive = true
 }
+output "bucket_admin_role_arn" {
+  value = aws_iam_role.bucket_admin.arn
+}
+output "runtime_extra_buckets_policy_arn" {
+  value = aws_iam_policy.runtime_extra_buckets.arn
+}
 output "rclone_remote" {
   value = {
     type          = "s3"

@@ -19,6 +19,7 @@ from ..engine import runs
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POLICY_TEMPLATE = REPO_ROOT / "provisioning" / "iam-policy.json.tmpl"
+BUCKET_ADMIN_POLICY_TEMPLATE = REPO_ROOT / "provisioning" / "bucket-admin-policy.json.tmpl"
 OPENTOFU_DIR = REPO_ROOT / "opentofu"
 PROVISIONING_DIR = REPO_ROOT / "provisioning"
 
@@ -27,9 +28,16 @@ def bucket_arn(bucket: str) -> str:
     return f"arn:aws:s3:::{bucket}"
 
 
-def render_policy(bucket: str, tmpl_path: str | Path = POLICY_TEMPLATE) -> str:
+def render_policy(bucket: str, bucket_admin_role_arn: str = "*",
+                  tmpl_path: str | Path = POLICY_TEMPLATE) -> str:
     tmpl = Path(tmpl_path).read_text()
-    return Template(tmpl).substitute(bucket_arn=bucket_arn(bucket))
+    return Template(tmpl).substitute(bucket_arn=bucket_arn(bucket),
+                                     bucket_admin_role_arn=bucket_admin_role_arn)
+
+
+def render_bucket_admin_policy(bucket: str, tmpl_path: str | Path = BUCKET_ADMIN_POLICY_TEMPLATE) -> str:
+    tmpl = Path(tmpl_path).read_text()
+    return Template(tmpl).substitute(bucket=bucket)
 
 
 # Probe object lives under an ALLOWED prefix (appdata/*) — the least-privilege
@@ -279,6 +287,11 @@ def run_tofu_apply(bucket, region, admin_key, admin_secret, session_token=None,
             "AWS_SECRET_ACCESS_KEY": data["runtime_secret_access_key"]["value"],
             "bucket": data["bucket_name"]["value"],
             "region": data["region"]["value"],
+            # Multi-bucket feature outputs: absent from an older/stubbed `tofu
+            # output` (e.g. tests), so read defensively rather than requiring them.
+            "bucket_admin_role_arn": data.get("bucket_admin_role_arn", {}).get("value", ""),
+            "runtime_extra_buckets_policy_arn":
+                data.get("runtime_extra_buckets_policy_arn", {}).get("value", ""),
         }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

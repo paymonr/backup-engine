@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from app.gui import provision
+
 
 def test_iam_policy_has_required_version_actions():
     """Verify the IAM policy template includes required actions for archive version management."""
@@ -25,3 +27,17 @@ def test_iam_policy_has_required_version_actions():
     object_rw_stmt = statements_by_sid["ObjectRW"]
     assert "s3:DeleteObjectVersion" in object_rw_stmt["Action"], \
         f"ObjectRW statement missing s3:DeleteObjectVersion. Current actions: {object_rw_stmt['Action']}"
+
+
+def test_runtime_policy_has_sts_and_wildcard(tmp_path):
+    doc = provision.render_policy("unraid-backup-123")
+    assert "sts:AssumeRole" in doc
+    assert "arn:aws:s3:::unraid-backup-123-*/*" in doc
+
+
+def test_bucket_admin_policy_has_create_and_config():
+    doc = provision.render_bucket_admin_policy("unraid-backup-123")
+    for a in ("s3:CreateBucket", "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
+              "s3:PutLifecycleConfiguration", "s3:PutBucketTagging", "s3:PutBucketPublicAccessBlock"):
+        assert a in doc
+    assert "s3:DeleteBucket" not in doc     # delete lives on a separate teardown grant

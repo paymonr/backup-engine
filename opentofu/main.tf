@@ -5,7 +5,9 @@ resource "aws_s3_bucket" "backup" {
 
 resource "aws_s3_bucket_versioning" "backup" {
   bucket = aws_s3_bucket.backup.id
-  versioning_configuration { status = "Enabled" }
+  versioning_configuration {
+    status = var.base_bucket_versioned ? "Enabled" : "Suspended"
+  }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "backup" {
@@ -51,10 +53,48 @@ resource "aws_iam_user_policy" "runtime" {
   name = "${var.name_prefix}-runtime-object-only"
   user = aws_iam_user.runtime.name
   policy = templatefile("${path.module}/../provisioning/iam-policy.json.tmpl", {
-    bucket_arn = aws_s3_bucket.backup.arn
+    bucket_arn            = aws_s3_bucket.backup.arn
+    bucket_admin_role_arn = aws_iam_role.bucket_admin.arn
   })
 }
 
 resource "aws_iam_access_key" "runtime" {
   user = aws_iam_user.runtime.name
+}
+
+# --- Bucket-admin role: create/config/version-toggle for per-job dedicated
+# buckets (spec: extra buckets are provisioned via AssumeRole, never on the
+# everyday runtime key). Delete permissions deliberately live elsewhere
+# (a separate teardown grant), not here.
+resource "aws_iam_role" "bucket_admin" {
+  name = "${var.name_prefix}-bucket-admin"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { AWS = aws_iam_user.runtime.arn }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "bucket_admin" {
+  name = "${var.name_prefix}-bucket-admin-create-config"
+  role = aws_iam_role.bucket_admin.name
+  policy = templatefile("${path.module}/../provisioning/bucket-admin-policy.json.tmpl", {
+    bucket = var.bucket_name
+  })
+}
+
+# --- Extra-buckets managed policy: attached to the runtime user so it can
+# reach dedicated per-job buckets (<base>-*). Starts as an inert placeholder;
+# populated with real bucket grants as dedicated-bucket jobs are created.
+resource "aws_iam_policy" "runtime_extra_buckets" {
+  name   = "${var.name_prefix}-runtime-extra-buckets"
+  policy = file("${path.module}/../provisioning/extra-buckets-policy.json.tmpl")
+}
+
+resource "aws_iam_user_policy_attachment" "runtime_extra_buckets" {
+  user       = aws_iam_user.runtime.name
+  policy_arn = aws_iam_policy.runtime_extra_buckets.arn
 }

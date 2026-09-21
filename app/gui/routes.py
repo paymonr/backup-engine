@@ -1544,7 +1544,10 @@ def provision_automated_run():
                              "AWS_SECRET_ACCESS_KEY": result["AWS_SECRET_ACCESS_KEY"]})
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
-                                "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"]})
+                                "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"],
+                                "BUCKET_ADMIN_ROLE_ARN": result.get("bucket_admin_role_arn", ""),
+                                "RUNTIME_EXTRA_BUCKETS_POLICY_ARN":
+                                    result.get("runtime_extra_buckets_policy_arn", "")})
     # Record the successful automated provisioning so Activity shows it (spec 5.5).
     provision.record_setup(cfg["CACHE_DIR"], bucket=result["bucket"], region=result["region"],
                            mode="automated")

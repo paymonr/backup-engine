@@ -16,3 +16,8 @@ variable "abort_incomplete_multipart_days" {
   type    = number
   default = 7
 }
+variable "base_bucket_versioned" {
+  type        = bool
+  default     = true
+  description = "Versioning status of the base backup bucket. Suspend only for a deliberate migration; per-job dedicated buckets are unaffected."
+}

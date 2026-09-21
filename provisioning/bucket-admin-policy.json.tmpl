@@ -1,0 +1,13 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "CreateAndConfig", "Effect": "Allow",
+      "Action": ["s3:CreateBucket","s3:PutBucketVersioning","s3:PutBucketPublicAccessBlock",
+                 "s3:PutBucketOwnershipControls","s3:PutEncryptionConfiguration",
+                 "s3:PutLifecycleConfiguration","s3:PutBucketTagging",
+                 "s3:GetBucketLocation","s3:GetBucketVersioning"],
+      "Resource": ["arn:aws:s3:::${bucket}-*"] },
+    { "Sid": "CreateBucketGlobal", "Effect": "Allow",
+      "Action": ["s3:CreateBucket"], "Resource": ["*"] }
+  ]
+}
