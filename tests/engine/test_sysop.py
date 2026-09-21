@@ -55,6 +55,44 @@ def test_usage_refresh_calls_collect_usage_and_saves_cache(tmp_path, monkeypatch
     assert end["outcome"] == "ok"
 
 
+def test_usage_refresh_measures_dedicated_bucket_jobs_against_their_own_bucket(tmp_path, monkeypatch):
+    jobs = [
+        {"name": "appdata", "type": "versioned", "source": "appdata_backups",
+         "schedule": "0 5 * * *", "storage_class": "STANDARD"},
+        {"name": "photos", "type": "versioned", "source": "photos_backups",
+         "schedule": "0 5 * * *", "storage_class": "STANDARD",
+         "dedicated": True, "bucket": "photos-bucket"},
+        {"name": "movies", "type": "archive", "source": "media/movies",
+         "schedule": "0 5 * * *", "storage_class": "DEEP_ARCHIVE",
+         "dedicated": True, "bucket": "movies-bucket"},
+    ]
+    cache, cfgdir = _setup(tmp_path, monkeypatch, jobs=jobs)
+    calls = []
+    def fake_collect(bucket, archive_jobs, has_versioned, *, rclone_config=None, runner=None):
+        calls.append((bucket, list(archive_jobs), has_versioned))
+        if bucket == "photos-bucket":
+            return {"appdata": {"bytes": 111, "count": 1}}
+        if bucket == "movies-bucket":
+            return {"media/movies": {"bytes": 222, "count": 2}}
+        # base bucket: only the non-dedicated versioned job remains
+        return {"appdata": {"bytes": 9, "count": 3}}
+    monkeypatch.setattr(sysop.usage, "collect_usage", fake_collect)
+    rc = sysop.run("usage-refresh")
+    assert rc == 0
+
+    # base collect saw NO dedicated jobs at all (not their names, not their buckets)
+    base_call = [c for c in calls if c[0] == "my-bucket"][0]
+    assert base_call == ("my-bucket", [], True)
+    # dedicated jobs were collected against THEIR OWN bucket, not the base
+    assert ("photos-bucket", [], True) in calls
+    assert ("movies-bucket", ["movies"], False) in calls
+
+    cached = json.loads(Path(cache, "usage.json").read_text())["data"]
+    assert cached["appdata"] == {"bytes": 9, "count": 3}
+    assert cached["appdata:photos"] == {"bytes": 111, "count": 1}
+    assert cached["media/movies"] == {"bytes": 222, "count": 2}
+
+
 def test_usage_refresh_failure_records_failed_and_still_exits_0(tmp_path, monkeypatch):
     cache, cfgdir = _setup(tmp_path, monkeypatch)
     def boom(*a, **k):

@@ -121,11 +121,35 @@ def usage_refresh(cfg, *, log) -> None:
     if not bucket:
         raise SysopError("no S3 bucket is configured")
     jobs = jobs_io.load(config_dir)
-    # archive AND versioned-files jobs each write to media/<name> (estimate_io._size_for).
-    media_jobs = [j["name"] for j in jobs if j.get("type") in ("archive", "versioned-files")]
-    has_versioned = any(j.get("type") == "versioned" for j in jobs)
     rclone_config = str(Path(cache, "rclone.conf"))
-    data = usage.collect_usage(bucket, media_jobs, has_versioned, rclone_config=rclone_config)
+
+    # A job with ITS OWN dedicated bucket (multi-bucket, Task 12) never lives in
+    # the base bucket, so it must be measured against its own bucket separately
+    # (below) instead of folding into -- or being silently dropped from -- the
+    # base collect.
+    dedicated = [j for j in jobs if j.get("dedicated") and j.get("bucket")]
+    dedicated_names = {j["name"] for j in dedicated}
+    non_dedicated = [j for j in jobs if j["name"] not in dedicated_names]
+
+    # archive AND versioned-files jobs each write to media/<name> (estimate_io._size_for).
+    base_media = [j["name"] for j in non_dedicated if j.get("type") in ("archive", "versioned-files")]
+    base_has_versioned = any(j.get("type") == "versioned" for j in non_dedicated)
+    data = usage.collect_usage(bucket, base_media, base_has_versioned, rclone_config=rclone_config)
+
+    for j in dedicated:
+        job_bucket = j["bucket"]
+        if j.get("type") == "versioned":
+            # estimate_io keys a dedicated versioned job's usage as "appdata:<name>"
+            # (never the shared "appdata") so it isn't folded into every other
+            # versioned job's aggregate.
+            d = usage.collect_usage(job_bucket, [], True, rclone_config=rclone_config)
+            data[f"appdata:{j['name']}"] = d.get("appdata")
+        elif j.get("type") in ("archive", "versioned-files"):
+            # The media/<name> key is bucket-agnostic -- only the source bucket
+            # differs -- so merge straight in under the same key.
+            d = usage.collect_usage(job_bucket, [j["name"]], False, rclone_config=rclone_config)
+            data[f"media/{j['name']}"] = d[f"media/{j['name']}"]
+
     usage.save_cached(cache, data)
     log(f"usage: measured {sum(1 for v in data.values() if v)} of {len(data)} prefix(es)")
 
