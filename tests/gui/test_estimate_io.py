@@ -17,6 +17,13 @@ AJOB = {"name": "movies", "type": "archive", "source": "movies",
 VFJOB = {"name": "docs", "type": "versioned-files", "source": "docs",
          "schedule": "0 2 * * *", "enabled": True, "storage_class": "DEEP_ARCHIVE",
          "retention_days": 45}
+# Task 12: a VERSIONED job with its own dedicated bucket -- gets its own restic
+# repo (spec: "a restic job in its own bucket gets its own repo"), so its usage
+# must never be folded into (or steal from) the shared "appdata" aggregate.
+VJOB_DEDICATED = {"name": "vault", "type": "versioned", "source": "vault",
+                  "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                  "dedicated": True, "bucket": "acme-vault", "bucket_versioned": True,
+                  "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}
 
 def _cfg(tmp_path, jobs=None, env=""):
     cfg = tmp_path / "config"
@@ -77,6 +84,28 @@ def test_size_defaults_without_usage(tmp_path):
     by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [AJOB]), SRC))
     assert by["movies"].size_gb == estimate_io._DEFAULT_SIZE_GB
     assert by["movies"].file_count == estimate_io._DEFAULT_FILES
+
+# --- Task 12: a versioned job with its OWN dedicated bucket ----------------
+
+def test_size_for_dedicated_versioned_job_uses_its_own_usage_key(tmp_path):
+    # "appdata" is the shared base-bucket aggregate (here it happens to belong
+    # to the job literally named "appdata", VJOB); "appdata:vault" is the
+    # dedicated job's OWN repo. The dedicated job must resolve to its own
+    # measured size, not the shared one -- and vice versa.
+    usage = {"appdata": {"bytes": 30 * 1024 ** 3, "count": 42},
+             "appdata:vault": {"bytes": 500 * 1024 ** 3, "count": 900}}
+    by = _by_name(estimate_io.scenario_from_jobs(
+        _cfg(tmp_path, [VJOB, VJOB_DEDICATED]), SRC, usage=usage))
+    assert by["appdata"].size_gb == 30 and by["appdata"].file_count == 42
+    assert by["vault"].size_gb == 500 and by["vault"].file_count == 900
+
+
+def test_size_for_dedicated_versioned_job_falls_back_when_unmeasured(tmp_path):
+    # No usage cache at all yet -- must not crash, and must fall back to the
+    # module defaults exactly like any other never-measured job.
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [VJOB_DEDICATED]), SRC))
+    assert by["vault"].size_gb == estimate_io._DEFAULT_SIZE_GB
+    assert by["vault"].file_count == estimate_io._DEFAULT_FILES
 
 # --- Task 4: versioned-files -> cost profile mapping ---
 
@@ -386,6 +415,32 @@ def test_restore_quote_override_size_is_measured(tmp_path):
     assert q["size_gb"] == 200.0 and q["provenance"] == "measured"
 
 
+def test_restore_quote_dedicated_versioned_job_measured_from_its_own_key(tmp_path):
+    # Task 12: "measured" provenance for a dedicated-bucket versioned job must
+    # come from ITS OWN usage-cache key, not the shared "appdata" one.
+    cfg = _cfg(tmp_path, [VJOB, VJOB_DEDICATED])
+    cache = _cache(tmp_path, data={"appdata:vault": {"bytes": 500 * 1024 ** 3, "count": 900}})
+    q = estimate_io.restore_quote(cfg, cache, _prices(), "vault", tier="Standard")
+    assert q["provenance"] == "measured"
+    assert q["size_gb"] == 500
+
+
+# --- current_costs (5.6/8.7): priced usage cache, caches only --------------
+
+def test_current_costs_dedicated_versioned_job_gets_its_own_row(tmp_path):
+    # Task 12: the dedicated job's usage must show up as ITS OWN labeled row,
+    # separate from (never folded into) the shared base-bucket aggregate.
+    cfg = _cfg(tmp_path, [VJOB, VJOB_DEDICATED])
+    data = {"appdata": {"bytes": 30 * 1024 ** 3, "count": 42},
+            "appdata:vault": {"bytes": 500 * 1024 ** 3, "count": 900}}
+    cache = _cache(tmp_path, data=data)
+    cur = estimate_io.current_costs(cfg, cache, _prices())
+    by_label = {p["label"]: p for p in cur["prefixes"]}
+    assert by_label[estimate_io._APPDATA_LABEL]["bytes"] == 30 * 1024 ** 3
+    assert by_label["vault"]["bytes"] == 500 * 1024 ** 3
+    assert by_label["vault"]["class"] == "STANDARD"
+
+
 # --- board_cost (8.1): the Board's cost object, caches only ----------------
 
 def test_board_cost_with_caches(tmp_path):
@@ -424,6 +479,22 @@ def test_board_cost_no_jobs(tmp_path):
     assert bc["per_job"] == [] and bc["model_monthly"] is None
 
 
+def test_board_cost_dedicated_versioned_job_not_merged_into_shared(tmp_path):
+    # Task 12: the dedicated job's per-job entry must resolve to its OWN cache
+    # entry, not the base bucket's shared "appdata" aggregate -- and it must not
+    # be dropped from per_job either.
+    cfg = _cfg(tmp_path, [VJOB, VJOB_DEDICATED])
+    data = {"appdata": {"bytes": 30 * 1024 ** 3, "count": 42},
+            "appdata:vault": {"bytes": 500 * 1024 ** 3, "count": 900}}
+    cache = _cache(tmp_path, data=data)
+    bc = estimate_io.board_cost(cfg, cache, _prices())
+    by_name = {p["name"]: p for p in bc["per_job"]}
+    assert {"appdata", "vault"} <= set(by_name)
+    assert by_name["appdata"]["size_bytes"] == 30 * 1024 ** 3
+    assert by_name["vault"]["size_bytes"] == 500 * 1024 ** 3
+    assert by_name["vault"]["size_provenance"] == "measured"
+
+
 # --- job_cost_band (8.7) ----------------------------------------------------
 
 def test_job_cost_band_figures_and_change_rate(tmp_path):
@@ -447,6 +518,27 @@ def test_job_cost_band_shared_store_flag(tmp_path):
     assert band["shared_store"] is True and band["shared_by"] == 2
 
 
+def test_job_cost_band_dedicated_versioned_job_is_not_shared(tmp_path):
+    # Task 12: a dedicated-bucket versioned job has its OWN repo -- it must
+    # never report itself as sharing "appdata" with the other versioned job,
+    # even though both are type "versioned".
+    cfg = _cfg(tmp_path, [VJOB, VJOB_DEDICATED])
+    data = {"appdata:vault": {"bytes": 500 * 1024 ** 3, "count": 900}}
+    cache = _cache(tmp_path, data=data)
+    band = estimate_io.job_cost_band(VJOB_DEDICATED, cfg, cache, _prices())
+    assert band["shared_store"] is False
+    assert band["in_bucket_bytes"] == 500 * 1024 ** 3
+    assert band["size_provenance"] == "measured"
+
+
+def test_job_cost_band_base_job_not_counted_shared_with_dedicated_sibling(tmp_path):
+    # The BASE-bucket job's own shared count must exclude the dedicated sibling
+    # -- it isn't part of that repo, so it doesn't count toward "shared by N".
+    cfg = _cfg(tmp_path, [VJOB, VJOB_DEDICATED])
+    band = estimate_io.job_cost_band(VJOB, cfg, _cache(tmp_path), _prices())
+    assert band["shared_store"] is False and band["shared_by"] == 1
+
+
 # --- cost_page (8.7) --------------------------------------------------------
 
 def test_cost_page_shape(tmp_path):
@@ -461,6 +553,22 @@ def test_cost_page_shape(tmp_path):
     assert {p["name"] for p in page["per_job"]} == {"appdata", "movies"}
     assert {r["name"] for r in page["restore"]} == {"appdata", "movies"}
     assert set(page["assumptions"]) == {"jobs", "scenario"}
+
+
+def test_cost_page_dedicated_versioned_job_attributed_and_not_shared(tmp_path):
+    # Task 12: the whole Cost workbench payload must resolve the dedicated job's
+    # own size/cost (not the shared aggregate's) and never flag it "shared_store".
+    cfg = _cfg(tmp_path, [VJOB, VJOB_DEDICATED])
+    data = {"appdata": {"bytes": 30 * 1024 ** 3, "count": 42},
+            "appdata:vault": {"bytes": 500 * 1024 ** 3, "count": 900}}
+    cache = _cache(tmp_path, data=data)
+    page = estimate_io.cost_page({}, cfg, cache, _prices(), SRC)
+    by_name = {p["name"]: p for p in page["per_job"]}
+    assert {"appdata", "vault"} <= set(by_name)
+    assert by_name["vault"]["size_bytes"] == 500 * 1024 ** 3
+    assert by_name["appdata"]["size_bytes"] == 30 * 1024 ** 3
+    assert by_name["vault"]["shared_store"] is False
+    assert by_name["appdata"]["shared_store"] is False
 
 
 def test_cost_page_scrubber_matches_projection_months(tmp_path):

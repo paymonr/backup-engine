@@ -83,10 +83,11 @@ def _num(params: Mapping, key: str, fallback, *, label: str) -> float:
 
 def _size_for(job: dict, usage) -> tuple[float, int]:
     """bytes/count from cached usage: versioned -> the shared appdata restic
-    aggregate; archive AND versioned-files -> their own media/<name> S3 prefix
-    (both write to a per-job prefix, not the shared repo). Falls back to
+    aggregate (or, for a job with its OWN dedicated bucket, that job's own
+    repo -- Task 12); archive AND versioned-files -> their own media/<name> S3
+    prefix (both write to a per-job prefix, not the shared repo). Falls back to
     module defaults for an un-backed-up job."""
-    key = "appdata" if job.get("type") == "versioned" else f"media/{job['name']}"
+    key = _prefix_for(job.get("type", "versioned"), job["name"], bool(job.get("dedicated")))
     u = (usage or {}).get(key)
     if u:
         return u["bytes"] / (1024 ** 3), int(u["count"])
@@ -773,15 +774,25 @@ def current_costs(config_dir, cache_dir, prices) -> dict:
     thing reports unavailable only when there is nothing usable at all."""
     cached = usage.load_cached(cache_dir)
     data = (cached or {}).get("data") or {}
-    jobs_by_name = {j["name"]: j for j in jobs_io.load(config_dir)}
+    jobs = jobs_io.load(config_dir)
+    jobs_by_name = {j["name"]: j for j in jobs}
+    # Task 12: map each job's OWN usage-cache key straight back to it, so a
+    # dedicated-bucket versioned job (key "appdata:<name>", not the shared
+    # "appdata") is never mislabeled or folded into the shared aggregate below.
+    key_to_job = {_prefix_for(j.get("type", "versioned"), j["name"], bool(j.get("dedicated"))): j
+                  for j in jobs}
     prefixes = []
     for prefix, u in data.items():
         if not u:
             continue
         gb = u["bytes"] / (1024 ** 3)
+        job = key_to_job.get(prefix)
         if prefix == "appdata":
             cls, label = "STANDARD", _APPDATA_LABEL
+        elif job is not None:
+            cls, label = job.get("storage_class", "STANDARD"), job["name"]
         else:
+            # Orphaned prefix (renamed/deleted job) -- best-effort label, as before.
             name = prefix.split("/", 1)[1] if "/" in prefix else prefix
             job = jobs_by_name.get(name)
             cls = (job or {}).get("storage_class", "STANDARD")
@@ -941,8 +952,17 @@ def _usage_data(cache_dir) -> tuple[dict, str | None]:
     return (cached.get("data") or {}), fetched_str
 
 
-def _prefix_for(engine, name) -> str:
-    return "appdata" if engine == "versioned" else f"media/{name}"
+def _prefix_for(engine, name, dedicated=False) -> str:
+    """The usage-cache key for a job. A versioned job normally shares the ONE
+    "appdata" restic aggregate in the base bucket -- but a job with its OWN
+    dedicated bucket (multi-bucket, Task 12) gets its own repo there, so it must
+    key separately or its usage would be folded into (or steal from) every other
+    versioned job's shared number. Archive/versioned-files jobs already have
+    their own media/<name> prefix regardless of which bucket that prefix lives
+    in, so they need no such split."""
+    if engine == "versioned":
+        return f"appdata:{name}" if dedicated else "appdata"
+    return f"media/{name}"
 
 
 def restore_quote(config_dir, cache_dir, prices, job_name, *, fraction=1.0,
@@ -958,7 +978,9 @@ def restore_quote(config_dir, cache_dir, prices, job_name, *, fraction=1.0,
         raise ValueError(f"no job called {job_name}")
     if tier not in RETRIEVAL_TIERS:
         raise ValueError(f"unknown retrieval tier '{tier}'")
-    measured = (size_gb is not None) or (data.get(_prefix_for(ji.engine, job_name)) is not None)
+    dedicated = bool((jobs_io.get(config_dir, job_name) or {}).get("dedicated"))
+    measured = (size_gb is not None) or (
+        data.get(_prefix_for(ji.engine, job_name, dedicated)) is not None)
     if size_gb is not None:
         ji = replace(ji, size_gb=float(size_gb))
     if file_count is not None:
@@ -1002,10 +1024,12 @@ def board_cost(config_dir, cache_dir, prices) -> dict:
         return empty
 
     est = estimate(scenario, prices)
+    jobs_raw = {jj["name"]: jj for jj in jobs_io.load(config_dir)}
     per_job = []
     for j in scenario.jobs:
         li = est.jobs[j.name]
-        u = data.get(_prefix_for(j.engine, j.name))
+        dedicated = bool(jobs_raw.get(j.name, {}).get("dedicated"))
+        u = data.get(_prefix_for(j.engine, j.name, dedicated))
         size_prov = "measured" if u else "assumed"
         monthly = li.storage + li.versioning + li.ingest_monthly + li.rotation_monthly
         per_job.append({
@@ -1046,11 +1070,15 @@ def job_cost_band(job, config_dir, cache_dir, prices) -> dict:
     change-rate assumption row's value, and the whole-account delta. Cache-only."""
     name = job.get("name")
     engine = job.get("type", "versioned")
+    dedicated = bool(job.get("dedicated"))
     data, fetched_str = _usage_data(cache_dir)
-    u = data.get(_prefix_for(engine, name))
+    u = data.get(_prefix_for(engine, name, dedicated))
     size_prov = "measured" if u else "assumed"
-    shared_by = sum(1 for j in jobs_io.load(config_dir) if j.get("type") == "versioned")
-    shared_store = engine == "versioned" and shared_by > 1
+    # A job in its OWN dedicated bucket has its OWN repo -- it neither shares
+    # nor counts toward another versioned job's shared "appdata" store (Task 12).
+    shared_by = sum(1 for j in jobs_io.load(config_dir)
+                    if j.get("type") == "versioned" and not j.get("dedicated"))
+    shared_store = engine == "versioned" and not dedicated and shared_by > 1
     price = ({"kind": prices.source, "region": _region(config_dir), "date": prices.date}
              if prices is not None else None)
     invoice = _invoice_from_cache(read_billing_cache(cache_dir))
@@ -1178,18 +1206,22 @@ def cost_page(params: Mapping, config_dir, cache_dir, prices, source_root) -> di
     billing = read_billing_cache(cache_dir)
     invoice = _invoice_from_cache(billing)
 
-    versioned_count = sum(1 for j in scenario.jobs if j.engine == "versioned")
     jobs_raw = {jj["name"]: jj for jj in jobs_io.load(config_dir)}
+    # A dedicated-bucket versioned job has its own repo -- exclude it from the
+    # "how many jobs share appdata" count (Task 12).
+    versioned_count = sum(1 for j in scenario.jobs
+                          if j.engine == "versioned" and not jobs_raw.get(j.name, {}).get("dedicated"))
     per_job, restore_rows = [], []
     for j in scenario.jobs:
         li = est.jobs[j.name]
-        key = _prefix_for(j.engine, j.name)
+        dedicated = bool(jobs_raw.get(j.name, {}).get("dedicated"))
+        key = _prefix_for(j.engine, j.name, dedicated)
         u = data.get(key)
         size_bytes = u["bytes"] if u else None
         size_prov = "measured" if u else "assumed"
         monthly = li.storage + li.versioning + li.ingest_monthly + li.rotation_monthly
         in_bucket_monthly = (by_prefix.get(key) or {}).get("monthly")
-        shared = j.engine == "versioned" and versioned_count > 1
+        shared = j.engine == "versioned" and not dedicated and versioned_count > 1
         pj_delta = None
         if not shared and in_bucket_monthly is not None:
             pj_delta = round(in_bucket_monthly - monthly, 2)
