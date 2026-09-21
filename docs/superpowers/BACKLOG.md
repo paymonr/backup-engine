@@ -54,24 +54,41 @@ retry 3×/backoff/transient-only; naming), then → spec (`docs/superpowers/spec
 
 ---
 
-## 3. One-bucket-per-job-type architecture  — DESIGN PAUSED
+## 3. Optional per-job dedicated S3 buckets (just-in-time)  — BUILT (awaiting merge/deploy)
 
-**What:** move from one shared bucket (prefixes `appdata/`, `media/`) to one bucket
-per job type, to use AWS built-in controls (Object Lock/WORM, versioning, lifecycle)
-per type instead of hand-rolling them per prefix.
+Reframed from "one-bucket-per-job-type" to **opt-in, per-job** dedicated buckets,
+JIT-created at job save via STS AssumeRole (runtime key stays object-only). Object
+Lock deferred; drivers = isolation/lifecycle/cost + per-bucket versioning.
 
-**Status:** classified architectural; brainstorming started, then paused for the
-create-job bug, the progress monitor, and the resilience discussion. Open design
-questions captured earlier: per-type (not per-job) to preserve restic shared-repo
-dedup; Object Lock scope (v1 vs follow-on); versioning defaults per type; IAM
-granularity; restic repo derivation per bucket; migration (clean slate — no real
-data yet); cost-model adapters (per-bucket vs per-prefix); the OpenTofu rewrite.
+**Status:** spec `docs/superpowers/specs/2026-09-19-multi-bucket-design.md`, plan
+`docs/superpowers/plans/2026-09-19-multi-bucket.md`, built via SDD on branch
+`ui-redesign-nightshift` (commits eb4970f..89bf72b). Whole-branch review = SHIP;
+1064 tests pass (only the pre-existing unrelated billing date-test fails). NOT yet
+merged to master or deployed.
+
+**Follow-ons (deferred, not blocking):**
+- **F1 — cost collection for dedicated buckets:** `app/engine/sysop.py` `usage_refresh`
+  still measures only the base bucket, so the app's own cost workbench shows empty
+  storage/cost for a dedicated job (AWS-console per-bucket cost still works). Make
+  usage_refresh query each dedicated job's bucket and write the `appdata:<name>` /
+  `media/<name>` usage-cache key that `estimate_io` already reads.
+- **Object Lock / WORM:** the deferred v2 (needs the restic-prune-vs-immutability design).
+- **Minor cleanups** (all triaged non-blocking at final review): uncommented
+  backup.env.example keys; dead `..`/IP branches in `valid_bucket_name`; scrub
+  access-key-id/session-token in AssumeRoleError too; friendly message when
+  BUCKET_ADMIN_ROLE_ARN is unconfigured; first-run "repointed" flash; teardown CLI
+  continue-on-error vs fail-fast.
 
 ---
 
-## Smaller deferred notes
-- **Job-delete UX gap:** deleting a job leaves its S3 data (by design). Add a clear
-  warning on delete, and optionally a separate "delete this job's data" action.
+## Other
+- **Pre-existing failing test (own fix):** `tests/estimator/test_billing.py::test_forecast_parses`
+  fails today (asserts month `2026-09`, gets `2026-10`) — a hardcoded-date/clock-drift
+  bug, NOT caused by any recent work (fails on older commits too). Deserves its own fix.
+- **Orphaned worktree:** `.kilo/worktrees/evanescent-seashore/` holds a pre-feature
+  duplicate of provision.py/routes.py — clutter, not run by the app; consider pruning.
 - **Recovery-passphrase nudge:** `RESTIC_PASSWORD` lives in the container's
   `secrets.env`; the backup is unrecoverable off-box without it. Prompt the user to
   store a copy safely.
+- **Job-delete data:** deleting a job leaves its S3 data (by design; a note now warns
+  for dedicated-bucket jobs). A separate "delete this job's data" action is still open.
