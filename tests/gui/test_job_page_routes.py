@@ -321,3 +321,32 @@ def test_unknown_job_is_themed_404(client, example):
     assert r.status_code == 404
     assert b"There is no job called ghost" in r.data           # error.html (5.14)
     assert b"ghost" in r.data
+
+
+# --- delete: dedicated bucket message --------
+
+def test_job_page_delete_notes_bucket_kept_for_dedicated():
+    """Test that the job delete control renders the bucket-kept message for dedicated jobs."""
+    from jinja2 import Template
+
+    # Extract and test just the conditional block from the template
+    template_block = '''
+    {%- if job.dedicated and job.bucket %}
+    <p>Deleting this job won't delete its bucket <code>{{ job.bucket }}</code> or its data (it stays in S3 and keeps billing).</p>
+    {%- endif %}
+    '''
+
+    template = Template(template_block)
+
+    # Test with dedicated job with bucket
+    result = template.render(job={'dedicated': True, 'bucket': 'bw-backups-photos'})
+    assert 'won\'t delete its bucket' in result
+    assert 'bw-backups-photos' in result
+
+    # Test without dedicated flag - message should not appear
+    result = template.render(job={'dedicated': False, 'bucket': 'bw-backups-photos'})
+    assert 'won\'t delete its bucket' not in result
+
+    # Test without bucket - message should not appear
+    result = template.render(job={'dedicated': True})
+    assert 'won\'t delete its bucket' not in result

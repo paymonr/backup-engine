@@ -134,6 +134,9 @@
             <input type="hidden" name="csrf" value="{{ csrf }}">
             <button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left;color:var(--danger)">Delete…</button>
           </form>
+          {% if job.dedicated and job.bucket %}
+          <p class="hint" style="margin-top:var(--sp-2)">Deleting this job won't delete its bucket <code>{{ job.bucket }}</code> or its data (it stays in S3 and keeps billing).</p>
+          {% endif %}
         </div>
       </details>
     </div>
