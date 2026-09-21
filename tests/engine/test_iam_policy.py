@@ -29,9 +29,27 @@ def test_iam_policy_has_required_version_actions():
         f"ObjectRW statement missing s3:DeleteObjectVersion. Current actions: {object_rw_stmt['Action']}"
 
 
-def test_runtime_policy_has_sts_and_wildcard(tmp_path):
+def test_manual_policy_has_no_sts_or_wildcard():
+    # render_policy(bucket) with NO role ARN is the MANUAL copy-paste flow's
+    # render (routes.py's Guided screen). It must stay the ORIGINAL
+    # object-only, single-bucket policy: no sts:AssumeRole, no <bucket>-*
+    # wildcard. Resource:"*" on AssumeRole shown to a user as "least
+    # privilege" would be a privilege-escalation primitive.
     doc = provision.render_policy("unraid-backup-123")
-    assert "sts:AssumeRole" in doc
+    assert "sts:AssumeRole" not in doc
+    assert "unraid-backup-123-*" not in doc
+
+
+def test_automated_policy_has_scoped_sts_and_wildcard():
+    # The automated/tofu path renders with a CONCRETE bucket-admin role ARN --
+    # then, and only then, the multi-bucket statements appear, and
+    # sts:AssumeRole is scoped to that real ARN, never "*".
+    role_arn = "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"
+    doc = provision.render_policy("unraid-backup-123", role_arn)
+    parsed = json.loads(doc)
+    stmts = {s["Sid"]: s for s in parsed["Statement"]}
+    assert stmts["AssumeBucketAdminRole"]["Action"] == "sts:AssumeRole"
+    assert stmts["AssumeBucketAdminRole"]["Resource"] == role_arn
     assert "arn:aws:s3:::unraid-backup-123-*/*" in doc
 
 
@@ -41,3 +59,16 @@ def test_bucket_admin_policy_has_create_and_config():
               "s3:PutLifecycleConfiguration", "s3:PutBucketTagging", "s3:PutBucketPublicAccessBlock"):
         assert a in doc
     assert "s3:DeleteBucket" not in doc     # delete lives on a separate teardown grant
+
+
+def test_bucket_admin_policy_config_actions_are_not_bucket_prefix_scoped():
+    # The role is reachable only after AssumeRole and holds no object
+    # read/delete and no DeleteBucket, so Resource:"*" here is contained --
+    # and required, since the feature allows OFF-PREFIX bucket names (a
+    # dedicated bucket need not be named "<base>-*"), so scoping create/config
+    # actions to "<bucket>-*" would deny configuring an off-prefix bucket.
+    doc = provision.render_bucket_admin_policy("unraid-backup-123")
+    assert "unraid-backup-123-*" not in doc
+    parsed = json.loads(doc)
+    assert len(parsed["Statement"]) == 1
+    assert parsed["Statement"][0]["Resource"] == "*"

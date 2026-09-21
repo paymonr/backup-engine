@@ -28,11 +28,35 @@ def bucket_arn(bucket: str) -> str:
     return f"arn:aws:s3:::{bucket}"
 
 
+# Sids of the multi-bucket statements in iam-policy.json.tmpl (sts:AssumeRole +
+# the <bucket>-* wildcard list/object grants). These are only meaningful once a
+# CONCRETE bucket-admin role ARN exists (the automated/tofu path) -- see
+# render_policy below.
+_MULTI_BUCKET_SIDS = {"AssumeBucketAdminRole", "ListBucketWildcard", "ObjectRWWildcard"}
+
+
 def render_policy(bucket: str, bucket_admin_role_arn: str = "*",
                   tmpl_path: str | Path = POLICY_TEMPLATE) -> str:
+    """Render the runtime IAM policy. `render_policy(bucket)` (no role ARN, or
+    an empty one) is the MANUAL copy-paste flow's render (routes.py's
+    /setup/destination Guided screen) -- it returns the ORIGINAL object-only,
+    single-bucket policy with NO sts:AssumeRole and NO <bucket>-* wildcard.
+    A default of "*" for the role ARN must never itself appear as an
+    sts:AssumeRole Resource in a policy shown to a user as "least-privilege"
+    -- Resource:"*" on AssumeRole is a privilege-escalation primitive. The
+    multi-bucket statements (AssumeRole scoped to a REAL role ARN, plus the
+    <bucket>-*/<bucket>-*/* wildcards) only appear when a concrete role ARN is
+    passed in -- the automated/tofu path (opentofu/main.tf renders the same
+    template directly via `templatefile()`, always with a real role ARN)."""
     tmpl = Path(tmpl_path).read_text()
-    return Template(tmpl).substitute(bucket_arn=bucket_arn(bucket),
-                                     bucket_admin_role_arn=bucket_admin_role_arn)
+    role_arn = bucket_admin_role_arn or "*"
+    rendered = Template(tmpl).substitute(bucket_arn=bucket_arn(bucket),
+                                         bucket_admin_role_arn=role_arn)
+    if role_arn == "*":
+        doc = json.loads(rendered)
+        doc["Statement"] = [s for s in doc["Statement"] if s.get("Sid") not in _MULTI_BUCKET_SIDS]
+        rendered = json.dumps(doc, indent=2)
+    return rendered
 
 
 def render_bucket_admin_policy(bucket: str, tmpl_path: str | Path = BUCKET_ADMIN_POLICY_TEMPLATE) -> str:
