@@ -23,11 +23,20 @@ def test_monthly_costs_parses_and_uses_env_creds():
     assert cap["env"]["AWS_ACCESS_KEY_ID"] == "AKIA"
     assert "s3cr3t" not in " ".join(map(str, cap["cmd"]))  # secret never on argv
 
-def test_forecast_parses():
+def test_forecast_parses(monkeypatch):
+    # forecast() forecasts the month AFTER today and formats the month from the clock,
+    # so pin "today" to keep this deterministic regardless of when the suite runs
+    # (previously hard-coded "2026-09", which only held while today was in August).
+    from datetime import date as _date
+    class _Fixed(_date):
+        @classmethod
+        def today(cls):
+            return _date(2026, 8, 15)
+    monkeypatch.setattr(billing, "date", _Fixed)
     cap = {}
     got = billing.forecast({"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "B"},
                            runner=_runner(FC_OUT, cap))
-    assert got == {"month": "2026-09", "amount": 13.0}
+    assert got == {"month": "2026-09", "amount": 13.0}   # Aug today -> forecasts Sep
 
 def test_forecast_malformed_rc0_stdout_returns_none():
     # forecast is best-effort (None on any failure). rc==0 + non-JSON stdout must
