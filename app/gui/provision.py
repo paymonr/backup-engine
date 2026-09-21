@@ -76,6 +76,26 @@ def _run_aws(args, *, region, key, secret, session_token=None):
     )
 
 
+class AssumeRoleError(RuntimeError):
+    def __init__(self, detail: str = ""):
+        super().__init__(f"could not assume the bucket-admin role: {detail}".rstrip(": "))
+
+
+def assume_role(role_arn, *, region, key, secret, session_token=None, run=_run_aws) -> dict:
+    cp = run(["sts", "assume-role", "--role-arn", role_arn,
+              "--role-session-name", "backup-engine-buckets", "--output", "json"],
+             region=region, key=key, secret=secret, session_token=session_token)
+    if cp.returncode != 0:
+        raise AssumeRoleError(_scrub(cp.stderr.strip(), secret))
+    try:
+        c = json.loads(cp.stdout)["Credentials"]
+        return {"AWS_ACCESS_KEY_ID": c["AccessKeyId"],
+                "AWS_SECRET_ACCESS_KEY": c["SecretAccessKey"],
+                "AWS_SESSION_TOKEN": c["SessionToken"]}
+    except (ValueError, KeyError) as e:
+        raise AssumeRoleError(f"unparseable assume-role response ({e})")
+
+
 class AccountLookupError(Exception):
     """Raised when the AWS account id can't be read from the given credentials."""
     def __init__(self, detail: str = ""):
