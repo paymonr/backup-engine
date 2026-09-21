@@ -49,6 +49,15 @@ def read_backup_env(config_dir: str) -> dict[str, str]:
     p = Path(config_dir, "backup.env")
     return _parse_env(p.read_text()) if p.exists() else {}
 
+def bucket_admin_role_arn(config_dir: str) -> str:
+    return read_backup_env(config_dir).get("BUCKET_ADMIN_ROLE_ARN", "").strip()
+
+def extra_buckets_policy_arn(config_dir: str) -> str:
+    return read_backup_env(config_dir).get("RUNTIME_EXTRA_BUCKETS_POLICY_ARN", "").strip()
+
+def base_bucket_versioned(config_dir: str) -> bool:
+    return read_backup_env(config_dir).get("BASE_BUCKET_VERSIONED", "true").strip().lower() != "false"
+
 def write_backup_env(template_path: str, config_dir: str, values: dict[str, str]) -> None:
     out: list[str] = []
     for line in Path(template_path).read_text().splitlines():
