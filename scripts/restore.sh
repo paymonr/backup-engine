@@ -22,6 +22,11 @@ source "$HERE/lib/points.sh"
 _BE_FAIL_HANDLED=0
 RESTORE_EXTRA=""          # extra JSON members a mutating branch parsed before it might fail;
                           # _fail folds them into the failed record (e.g. a download's bytes_restored).
+# Capture any RESTIC_REPOSITORY already in the ambient environment (an explicit external
+# override — some tests/operators set this) BEFORE config.sh's own derivation, and before the
+# per-job env (JOB_BUCKET) is loaded, can touch it. derive_restic_repo() (called below, both
+# from load_config and again after the JOB_* eval) honors this verbatim when non-empty.
+_RESTIC_REPO_OVERRIDE="${RESTIC_REPOSITORY:-}"
 
 usage() {
   cat <<EOF
@@ -52,7 +57,7 @@ _file_bytes() { stat -c%s "$1" 2>/dev/null || { wc -c <"$1" 2>/dev/null | tr -d 
 #     https:// only when it doesn't, mirroring backup-job.sh / app.engine.s3) --------
 _aws_restore_object() {
   local key="$1" tier="$2" dry="$3"
-  local cmd=(aws s3api restore-object --bucket "$S3_BUCKET" --key "$key"
+  local cmd=(aws s3api restore-object --bucket "${JOB_BUCKET:-$S3_BUCKET}" --key "$key"
     --restore-request "Days=7,GlacierJobParameters={Tier=$tier}")
   case "${S3_ENDPOINT:-}" in
     "") ;;
@@ -63,7 +68,7 @@ _aws_restore_object() {
 }
 _aws_head_restore() {
   local key="$1"
-  local cmd=(aws s3api head-object --bucket "$S3_BUCKET" --key "$key" --query Restore --output text)
+  local cmd=(aws s3api head-object --bucket "${JOB_BUCKET:-$S3_BUCKET}" --key "$key" --query Restore --output text)
   case "${S3_ENDPOINT:-}" in
     "") ;;
     http://*|https://*) cmd+=(--endpoint-url "$S3_ENDPOINT") ;;
@@ -110,7 +115,7 @@ _thaw_merge_last_check() {
 _thaw_issue() {
   local remote="$1" tier="$2" dry="$3" listfile total n=0
   listfile="$(mktemp)"
-  rclone --config "$RCLONE_CONFIG" lsf -R --files-only "s3:$S3_BUCKET/$remote" >"$listfile" 2>/dev/null || true
+  rclone --config "$RCLONE_CONFIG" lsf -R --files-only "s3:${JOB_BUCKET:-$S3_BUCKET}/$remote" >"$listfile" 2>/dev/null || true
   total="$(wc -l <"$listfile" | tr -d ' ')"
   while IFS= read -r key; do
     [ -n "$key" ] || continue
@@ -136,7 +141,7 @@ _thaw_status() {
       *'ongoing-request="false"'*) ready=$((ready + 1)) ;;
       *)                           notreq=$((notreq + 1)) ;;
     esac
-  done < <(rclone --config "$RCLONE_CONFIG" lsf -R --files-only "s3:$S3_BUCKET/$remote" 2>/dev/null)
+  done < <(rclone --config "$RCLONE_CONFIG" lsf -R --files-only "s3:${JOB_BUCKET:-$S3_BUCKET}/$remote" 2>/dev/null)
   printf '{"sampled":%d,"ready":%d,"pending":%d,"not_requested":%d}\n' "$sampled" "$ready" "$pending" "$notreq"
   _thaw_merge_last_check "$job" "$sampled" "$ready" "$pending" "$notreq"
 }
@@ -294,7 +299,7 @@ _restore_archive() {
   case "${1:-}" in
     list)
       if [ "${2:-}" = "--json" ]; then points_render "$job" archive
-      else rclone --config "$RCLONE_CONFIG" lsf --dirs-only "s3:$S3_BUCKET/media/$job/"; fi
+      else rclone --config "$RCLONE_CONFIG" lsf --dirs-only "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/"; fi
       ;;
     thaw)
       local prefix="${2:?prefix}" tier="Bulk" dry=""; shift 2
@@ -320,11 +325,11 @@ _restore_archive() {
       local prefix="${2:?prefix}" target="${3:?target dir}"
       [ "$prefix" = "." ] && prefix=""
       mkdir -p "$target"
-      runs_set_command "rclone copy s3:$S3_BUCKET/media/$job/$prefix $target"
+      runs_set_command "rclone copy s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/$prefix $target"
       local rlog="$CACHE_DIR/state/$job-rclone.log" rc=0; : >"$rlog"
       # errexit-safe: rc via `|| rc=$?` so a failing copy doesn't kill the script before
       # the stats (below) are parsed into the record (spec 7.5.3 §6).
-      rclone --config "$RCLONE_CONFIG" copy "s3:$S3_BUCKET/media/$job/$prefix" "$target" -v 2>&1 | tee -a "$rlog" || rc=$?
+      rclone --config "$RCLONE_CONFIG" copy "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/$prefix" "$target" -v 2>&1 | tee -a "$rlog" || rc=$?
       local fr br re
       fr="$(_rclone_stat_files "$rlog")" || true
       br="$(_rclone_stat_bytes "$rlog")" || true
@@ -348,7 +353,7 @@ _test_archive() {
       case "$(_aws_head_restore "$key")" in
         *'ongoing-request="false"'*)
           local dest="${RESTORE_ROOT:-/restore}/$job/test"; mkdir -p "$dest"
-          rclone --config "$RCLONE_CONFIG" copyto "s3:$S3_BUCKET/$key" "$dest/$(basename "$key")" || _fail "test copy failed for '$job'"
+          rclone --config "$RCLONE_CONFIG" copyto "s3:${JOB_BUCKET:-$S3_BUCKET}/$key" "$dest/$(basename "$key")" || _fail "test copy failed for '$job'"
           local f bytes; f="$dest/$(basename "$key")"; bytes="$(_file_bytes "$f")"
           _tested_json_write "$job" "$key" "$bytes"; rm -f "$ttjson"
           runs_end ok 0 "" "\"tested_path\":$(_runs_str "$key"),\"tested_bytes\":$(_runs_num "$bytes")" || log_warn "could not record run"
@@ -360,7 +365,7 @@ _test_archive() {
       esac
     else
       # First cold test: warm the most recently modified object at Bulk, persist, exit pending.
-      local key; key="$(rclone --config "$RCLONE_CONFIG" lsf -R --files-only --format tp "s3:$S3_BUCKET/media/$job/" 2>/dev/null | sort | tail -n1 | sed 's/^[^;]*;//')" || true
+      local key; key="$(rclone --config "$RCLONE_CONFIG" lsf -R --files-only --format tp "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/" 2>/dev/null | sort | tail -n1 | sed 's/^[^;]*;//')" || true
       [ -n "$key" ] || _fail "no objects found to test-restore for '$job'"
       _aws_restore_object "media/$job/$key" Bulk ""
       local ready; ready="$(date -u -d '+48 hours' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || _runs_now)"
@@ -369,9 +374,9 @@ _test_archive() {
     fi
   else
     # Warm tier: copy the first object straight down, verify, record.
-    local key; key="$(rclone --config "$RCLONE_CONFIG" lsf -R --files-only "s3:$S3_BUCKET/media/$job/" 2>/dev/null | head -n1)" || true
+    local key; key="$(rclone --config "$RCLONE_CONFIG" lsf -R --files-only "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/" 2>/dev/null | head -n1)" || true
     [ -n "$key" ] || _fail "no objects found to test-restore for '$job'"
-    rclone --config "$RCLONE_CONFIG" copyto "s3:$S3_BUCKET/media/$job/$key" "$scratch/$(basename "$key")" || _fail "test copy failed for '$job'"
+    rclone --config "$RCLONE_CONFIG" copyto "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/$key" "$scratch/$(basename "$key")" || _fail "test copy failed for '$job'"
     local f bytes; f="$scratch/$(basename "$key")"
     [ -s "$f" ] || _fail "test restore produced no file for '$job'"
     bytes="$(_file_bytes "$f")"
@@ -471,6 +476,10 @@ main() {
   # `set -a` exports the def so the versioned-files engine (a python3 child reading
   # os.environ) inherits JOB_STORAGE_CLASS/etc. Harmless to versioned/archive.
   set -a; eval "$def"; set +a
+  # Re-derive RESTIC_REPOSITORY now that JOB_BUCKET (if this is a dedicated-bucket job) is in
+  # scope — config.sh's source-time derivation (inside load_config, via _load above) ran before
+  # the per-job env existed and could only ever see the base S3_BUCKET.
+  derive_restic_repo
 
   local sub="${1:-}"
   case "$sub" in ""|-h|--help) usage; exit 2 ;; esac

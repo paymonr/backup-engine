@@ -16,6 +16,11 @@ source "$HERE/lib/runs.sh"
 [ -f "$HERE/lib/points.sh" ] && source "$HERE/lib/points.sh"
 _BE_FAIL_HANDLED=0
 JOB="${1:?usage: backup-job.sh <job-name>}"
+# Capture any RESTIC_REPOSITORY already in the ambient environment (an explicit external
+# override — some tests/operators set this) BEFORE config.sh's own derivation, and before the
+# per-job env (JOB_BUCKET) is loaded, can touch it. derive_restic_repo() (called below, both
+# from load_config and again after the JOB_* eval) honors this verbatim when non-empty.
+_RESTIC_REPO_OVERRIDE="${RESTIC_REPOSITORY:-}"
 
 main() {
   trap '_usb_exit_trap "$?"' EXIT; trap 'exit 143' TERM; trap 'exit 130' INT
@@ -25,6 +30,10 @@ main() {
   # `set -a` exports every var the def assigns (emit_shell emits bare `JOB_*=`, no `export`) so the
   # versioned-files engine, a python3 CHILD reading them from os.environ, inherits JOB_STORAGE_CLASS/etc.
   set -a; eval "$def"; set +a
+  # Re-derive RESTIC_REPOSITORY now that JOB_BUCKET (if this is a dedicated-bucket job) is in
+  # scope — config.sh's source-time derivation (inside load_config, above) ran before the
+  # per-job env existed and could only ever see the base S3_BUCKET.
+  derive_restic_repo
   acquire_lock "$JOB"                                                                          # (1)
   runs_start "$JOB" backup "\"type\":\"$JOB_TYPE\",\"storage_class\":\"$JOB_STORAGE_CLASS\""   # (2)
   exec > >(tee -a "$CACHE_DIR/$BE_RUN_LOG") 2>&1; _BE_TEE_PID=$!                              # (3)
@@ -33,7 +42,6 @@ main() {
   local src="$SOURCE_ROOT/$JOB_SOURCE"
   [ -d "$src" ] || _fail "job '$JOB' source '$src' missing"
   : "${RESTIC_CACHE_DIR:=$CACHE_DIR/restic}"
-  : "${RESTIC_REPOSITORY:=s3:${S3_ENDPOINT:-s3.${AWS_REGION:-}.amazonaws.com}/${S3_BUCKET:-}/appdata}"
   RUN_STATS=""; COPIED=0
   case "$JOB_TYPE" in
     versioned) _run_versioned "$src" ;; archive) _run_archive "$src" ;; versioned-files) _run_vfiles "$JOB" ;;
@@ -89,11 +97,11 @@ _run_archive() {
   : "${RCLONE_CONFIG:=$CACHE_DIR/rclone.conf}"; export RCLONE_CONFIG
   [ -f "$RCLONE_CONFIG" ] || render_rclone_conf "$RCLONE_CONFIG"
   : "${RCLONE_TRANSFERS:=8}"; : "${RCLONE_BWLIMIT:=}"
-  local args=("$verb" "$src" "s3:$S3_BUCKET/media/$JOB" --s3-storage-class "$JOB_STORAGE_CLASS"
+  local args=("$verb" "$src" "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$JOB" --s3-storage-class "$JOB_STORAGE_CLASS"
     --transfers "$RCLONE_TRANSFERS" --stats 30s -v)
   [ -n "$RCLONE_BWLIMIT" ] && args+=(--bwlimit "$RCLONE_BWLIMIT")
-  log_info "rclone $verb $src -> s3:$S3_BUCKET/media/$JOB (class=$JOB_STORAGE_CLASS)"
-  runs_set_command "rclone $verb $src s3:$S3_BUCKET/media/$JOB --s3-storage-class $JOB_STORAGE_CLASS"
+  log_info "rclone $verb $src -> s3:${JOB_BUCKET:-$S3_BUCKET}/media/$JOB (class=$JOB_STORAGE_CLASS)"
+  runs_set_command "rclone $verb $src s3:${JOB_BUCKET:-$S3_BUCKET}/media/$JOB --s3-storage-class $JOB_STORAGE_CLASS"
   local rlog="$CACHE_DIR/state/$JOB-rclone.log" rc=0; : >"$rlog"
   rclone "${args[@]}" 2>&1 | tee -a "$rlog" || rc=$?
   # The stats block is written even on a partial failure, so build RUN_STATS BEFORE inspecting rc —
@@ -105,7 +113,7 @@ _run_archive() {
   RUN_STATS="\"files_added\":$(_runs_num "$fa"),\"bytes_added\":$(_runs_num "$ba"),\"files_total\":null,\"bytes_total\":null,\"rclone_errors\":$(_runs_num "$re")"
   [ "$rc" -eq 0 ] || _fail "rclone $verb failed for '$JOB'"
   COPIED=1
-  rclone check "$src" "s3:$S3_BUCKET/media/$JOB" --size-only || log_warn "rclone check differences for '$JOB' (size-only)"
+  rclone check "$src" "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$JOB" --size-only || log_warn "rclone check differences for '$JOB' (size-only)"
   if [ "$JOB_RETENTION_TYPE" != keep_all ]; then
     local plog="$CACHE_DIR/state/$JOB-prune.log" rc=0; : >"$plog"
     python3 -m app.engine.archive_prune "$JOB" --type "$JOB_RETENTION_TYPE" \

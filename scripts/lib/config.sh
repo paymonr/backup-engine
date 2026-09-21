@@ -38,6 +38,29 @@ _load_env_file() {
   done <"$file"
 }
 
+# derive_restic_repo — (re)compute RESTIC_REPOSITORY from S3_ENDPOINT/AWS_REGION and the
+# target bucket, preferring a per-job JOB_BUCKET (dedicated-bucket jobs) and falling back to
+# the base S3_BUCKET. An EXPLICIT external override always wins: if RESTIC_REPOSITORY was
+# already set in the environment before config.sh's own derivation could touch it, the caller
+# captures that original value into _RESTIC_REPO_OVERRIDE (e.g. `_RESTIC_REPO_OVERRIDE="${RESTIC_REPOSITORY:-}"`
+# at the top of the job script, before config.sh is sourced/load_config runs) and this function
+# honors it verbatim instead of recomputing.
+#
+# Why this needs to be a callable function (not just inline in load_config): JOB_BUCKET comes
+# from the per-job env, which job scripts (backup-job.sh, restore.sh) `eval` AFTER they source
+# this file and call load_config — so the source-time derivation below runs too early to see a
+# dedicated bucket. Those scripts call derive_restic_repo() a second time, right after the
+# JOB_* eval, to recompute with JOB_BUCKET in scope.
+derive_restic_repo() {
+  if [ -n "${_RESTIC_REPO_OVERRIDE:-}" ]; then
+    RESTIC_REPOSITORY="$_RESTIC_REPO_OVERRIDE"
+  else
+    local host="${S3_ENDPOINT:-s3.${AWS_REGION:-}.amazonaws.com}"
+    RESTIC_REPOSITORY="s3:${host}/${JOB_BUCKET:-${S3_BUCKET:-}}/appdata"
+  fi
+  export RESTIC_REPOSITORY
+}
+
 load_config() {
   local dir="${1:-${CONFIG_DIR:-/config}}"
   CONFIG_DIR="$dir"
@@ -55,8 +78,7 @@ load_config() {
   : "${GUI_PORT:=8099}"
 
   if [ -z "${RESTIC_REPOSITORY:-}" ]; then
-    local host="${S3_ENDPOINT:-s3.${AWS_REGION:-}.amazonaws.com}"
-    RESTIC_REPOSITORY="s3:${host}/${S3_BUCKET:-}/appdata"
+    derive_restic_repo
   fi
   export CACHE_DIR SOURCE_ROOT LOG_FILE NOTIFY_ON_SUCCESS RESTIC_REPOSITORY \
     GUI_ENABLED GUI_PORT
