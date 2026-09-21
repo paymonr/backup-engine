@@ -325,28 +325,38 @@ def test_unknown_job_is_themed_404(client, example):
 
 # --- delete: dedicated bucket message --------
 
-def test_job_page_delete_notes_bucket_kept_for_dedicated():
-    """Test that the job delete control renders the bucket-kept message for dedicated jobs."""
-    from jinja2 import Template
+def test_job_page_delete_notes_bucket_kept_for_dedicated(client, example, source_root):
+    """Integration test: dedicated job's delete control shows bucket-kept message."""
+    cfg = client.application.config["CONFIG_DIR"]
 
-    # Extract and test just the conditional block from the template
-    template_block = '''
-    {%- if job.dedicated and job.bucket %}
-    <p>Deleting this job won't delete its bucket <code>{{ job.bucket }}</code> or its data (it stays in S3 and keeps billing).</p>
-    {%- endif %}
-    '''
+    # Create source directory for the dedicated job
+    (source_root / "media" / "photos").mkdir(parents=True, exist_ok=True)
 
-    template = Template(template_block)
+    # Seed a dedicated job with its own bucket
+    jobs_io.upsert(cfg, {"name": "photos", "type": "archive", "source": "media/photos",
+                         "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                         "dedicated": True, "bucket": "bw-backups-photos",
+                         "retention": {"type": "keep_all"},
+                         "created_at": "2026-09-01T00:00:00Z"},
+                   source_root=str(source_root))
 
-    # Test with dedicated job with bucket
-    result = template.render(job={'dedicated': True, 'bucket': 'bw-backups-photos'})
-    assert 'won\'t delete its bucket' in result
-    assert 'bw-backups-photos' in result
+    # Seed run history so page renders
+    cache = client.application.config["CACHE_DIR"]
+    _seed_30_ok(cache, "photos")
 
-    # Test without dedicated flag - message should not appear
-    result = template.render(job={'dedicated': False, 'bucket': 'bw-backups-photos'})
-    assert 'won\'t delete its bucket' not in result
+    # Render the job page through the real route
+    body = client.get("/jobs/photos").get_data(as_text=True)
 
-    # Test without bucket - message should not appear
-    result = template.render(job={'dedicated': True})
-    assert 'won\'t delete its bucket' not in result
+    # Assert the message appears for dedicated job
+    assert "won't delete its bucket" in body or "will not delete its bucket" in body
+    assert "bw-backups-photos" in body
+
+
+def test_job_page_delete_does_not_note_bucket_for_non_dedicated(client, example):
+    """Integration test: non-dedicated job's delete control does not show bucket message."""
+    # Use the existing appdata job which is non-dedicated
+    body = client.get("/jobs/appdata").get_data(as_text=True)
+
+    # Assert the message does NOT appear for non-dedicated job
+    assert "won't delete its bucket" not in body
+    assert "will not delete its bucket" not in body
