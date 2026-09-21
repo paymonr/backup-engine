@@ -360,3 +360,32 @@ def test_job_page_delete_does_not_note_bucket_for_non_dedicated(client, example)
     # Assert the message does NOT appear for non-dedicated job
     assert "won't delete its bucket" not in body
     assert "will not delete its bucket" not in body
+
+
+# --- F2: manual copy-paste commands show the JOB's bucket, not the base ------
+
+def test_job_page_manual_commands_use_dedicated_bucket(client, example, source_root):
+    """F2: a dedicated job's identity + manual restic/rclone/s3 paths name ITS OWN
+    bucket, not the shared base."""
+    cfg = client.application.config["CONFIG_DIR"]
+    (source_root / "media" / "photos").mkdir(parents=True, exist_ok=True)
+    jobs_io.upsert(cfg, {"name": "photos", "type": "archive", "source": "media/photos",
+                         "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                         "dedicated": True, "bucket": "bw-backups-photos",
+                         "retention": {"type": "keep_all"},
+                         "created_at": "2026-09-01T00:00:00Z"},
+                   source_root=str(source_root))
+    _seed_30_ok(client.application.config["CACHE_DIR"], "photos")
+    body = client.get("/jobs/photos").get_data(as_text=True)
+    # the identity "Where it goes" + the rclone manual command both name the own bucket
+    assert "s3://bw-backups-photos/media/photos/" in body
+    assert "s3:bw-backups-photos/media/photos" in body
+    # and never the base bucket for this job's own paths
+    assert "s3://bw-backups/media/photos/" not in body
+
+
+def test_job_page_manual_commands_use_base_bucket_for_non_dedicated(client, example):
+    """F2 counterpart: a non-dedicated job still shows the shared base bucket."""
+    body = client.get("/jobs/appdata").get_data(as_text=True)
+    assert "s3://bw-backups/appdata/" in body          # identity uses the base bucket
+    assert "s3:s3.amazonaws.com/bw-backups/appdata" in body   # restic manual command

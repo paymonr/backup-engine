@@ -339,6 +339,21 @@
   <!-- 5 · Storage -->
   <section class="sec{{ dim }}">
     <h2 class="lbl">5 · Storage</h2>
+    {% if is_edit %}
+    {#- The bucket is LOCKED after creation (5.9), just like the kind and the name: a
+        dedicated bucket already holds this job's data, so the edit screen shows it as
+        read-only info and never renders the editable toggle. job_save also ignores any
+        posted dedicated/bucket for an existing job, so the value can't move here. -#}
+    {% if fv.dedicated == '1' %}
+    <dl class="def"><dt>Bucket</dt><dd>This job has its own bucket: <code class="mono">{{ fv.bucket }}</code>
+      <div class="sm faint measure" style="margin-top:4px">Locked — create a new job to change it. Its data
+        stays where it is; editing this job never touches the bucket.</div></dd></dl>
+    {% else %}
+    <dl class="def"><dt>Bucket</dt><dd>Uses the shared bucket <span class="mono">s3://{{ bucket }}</span>
+      <div class="sm faint measure" style="margin-top:4px">Set at creation. To give a job its own bucket,
+        create a new job.</div></dd></dl>
+    {% endif %}
+    {% else %}
     <label class="radio" for="dedicated"><input type="checkbox" id="dedicated" name="dedicated" value="1" {{ 'checked' if fv.dedicated == '1' }}>
       <span>Give this job its own bucket</span></label>
     <p class="sm faint measure" style="margin-top:4px">Optional. By default every job shares
@@ -353,6 +368,7 @@
       <label class="radio" for="bucket_versioned" style="margin-top:10px"><input type="checkbox" id="bucket_versioned" name="bucket_versioned" value="1" {{ 'checked' if fv.bucket_versioned == '1' }}>
         <span>Keep old versions in this bucket too</span></label>
     </div>
+    {% endif %}
   </section>
 
   <div class="formfoot">

@@ -117,7 +117,10 @@ def _job_identity(cfg, job) -> dict:
     up). Versioned jobs share the fixed `appdata/` prefix and are told apart by a
     tag; others write their own `media/<name>/` prefix (estimate_io._size_for)."""
     env = config_io.read_backup_env(cfg["CONFIG_DIR"])
-    bucket = (env.get("S3_BUCKET") or "").strip() or "your-bucket"
+    base = (env.get("S3_BUCKET") or "").strip() or "your-bucket"
+    # F2: a dedicated job's manual restic/rclone/s3 paths must name ITS OWN bucket, not
+    # the shared base — otherwise the copy-paste commands point at the wrong bucket.
+    bucket = (job.get("bucket") or "").strip() or base
     name = job.get("name")
     if job.get("type") == "versioned":
         prefix, tag = "appdata", name
@@ -1711,6 +1714,12 @@ def _saved_form_values(job):
         "packing": "1" if a.get("bundled") else "",
         "pack_member_gb": _g(a.get("pack_member_gb"), "0.05"),
         "mirror": "1" if job.get("mirror") else "0",
+        # The dedicated-bucket state is LOCKED on edit (like type/name); reflect the
+        # job's TRUE state so the edit screen never renders a dedicated job as a base
+        # one (which, on save, would silently repoint it — the Critical fix).
+        "dedicated": "1" if job.get("dedicated") else "",
+        "bucket": job.get("bucket", ""),
+        "bucket_versioned": "1" if job.get("bucket_versioned", True) else "",
     })
     if isinstance(m.get("bytes"), (int, float)) and m["bytes"] > 0:
         fv["size_gb"] = repr(m["bytes"] / (1024 ** 3))
@@ -1967,10 +1976,22 @@ def job_save():
     if acked:
         job["acknowledged"] = [{"code": c, "class": cls, "at": _now_iso()} for c in acked]
 
-    # Opt-in dedicated bucket (Task 8): create + configure it JUST IN TIME, BEFORE
-    # jobs_io.upsert, so a failure here persists NOTHING (fail fast). jobs_io.validate
-    # does not charset-check `bucket` -- valid_bucket_name is the only S3-name gate.
-    if f.get("dedicated"):
+    # Dedicated bucket is LOCKED after creation (like type/name, spec 5.9): editing a
+    # job must PRESERVE its bucket exactly and never touch AWS. On the EDIT path take
+    # dedicated/bucket/bucket_versioned from the SAVED job, ignoring the form, and SKIP
+    # the just-in-time create block entirely (the bucket already exists). Without this,
+    # an edit dropped these fields and jobs_io.upsert wholesale-replaced the job,
+    # silently repointing it to the base bucket and orphaning its data (the Critical).
+    if existing:
+        if existing.get("dedicated"):
+            job["dedicated"] = True
+            job["bucket"] = existing.get("bucket", "")
+            job["bucket_versioned"] = bool(existing.get("bucket_versioned", True))
+    # Opt-in dedicated bucket (Task 8): on CREATE only, create + configure it JUST IN
+    # TIME, BEFORE jobs_io.upsert, so a failure here persists NOTHING (fail fast).
+    # jobs_io.validate does not charset-check `bucket` -- valid_bucket_name is the only
+    # S3-name gate.
+    elif f.get("dedicated"):
         bucket = f.get("bucket", "").strip()
         if not buckets.valid_bucket_name(bucket):
             return _render_job_form(cfg, job=existing, fv=fv,

@@ -340,6 +340,50 @@ def test_edit_posting_a_different_type_keeps_the_saved_type(client, app):
     assert _jobs(app)[0]["type"] == "versioned"                # the saved type wins
 
 
+# --- the dedicated-bucket edit lock (Critical: editing must NOT repoint) ----
+
+def test_edit_dedicated_job_shows_locked_bucket(client, app):
+    # The edit screen must reflect the job's TRUE dedicated state as LOCKED read-only
+    # info — never render a dedicated job as a base-bucket job (which, on save, would
+    # silently repoint it and orphan its data).
+    _seed(app, {"name": "photos", "type": "archive", "source": "media/movies",
+                "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                "dedicated": True, "bucket": "bw-backups-photos", "bucket_versioned": True,
+                "retention": {"type": "keep_all"}})
+    body = client.get("/jobs/photos/edit").get_data(as_text=True)
+    assert "bw-backups-photos" in body                 # its own bucket is shown
+    assert "Locked — create a new job to change it." in body
+    # the editable toggle/field only exist on the CREATE screen
+    assert 'name="dedicated"' not in body
+    assert 'id="bucket"' not in body
+
+
+def test_edit_dedicated_job_preserves_bucket_without_touching_aws(client, app, monkeypatch):
+    # The Critical: editing a dedicated job (here its schedule) must PRESERVE its
+    # dedicated bucket and NEVER call assume_role/ensure_bucket on the edit path.
+    called = []
+    monkeypatch.setattr(provision, "assume_role", lambda *a, **k: called.append("assume_role"))
+    monkeypatch.setattr(buckets, "ensure_bucket", lambda *a, **k: called.append("ensure_bucket"))
+    monkeypatch.setattr(buckets, "grant_object_access", lambda *a, **k: called.append("grant"))
+    _seed(app, {"name": "photos", "type": "archive", "source": "media/movies",
+                "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                "dedicated": True, "bucket": "bw-backups-photos", "bucket_versioned": True,
+                "retention": {"type": "keep_all"}})
+    t = _csrf(client)
+    # Edit the schedule only; the locked form no longer posts dedicated/bucket at all.
+    r = client.post("/jobs", data={
+        "csrf": t, "name": "photos", "type": "archive", "source": "media/movies",
+        "schedule": "0 6 * * *", "storage_class": "STANDARD", "enabled": "1",
+        "retention_type": "keep_all"})
+    assert r.status_code in (302, 303)
+    saved = _jobs(app)[0]
+    assert saved["schedule"] == "0 6 * * *"            # the actual edit took
+    assert saved["dedicated"] is True                  # preserved from the saved job
+    assert saved["bucket"] == "bw-backups-photos"      # SAME bucket, not the base
+    assert saved["bucket_versioned"] is True           # versioning preserved
+    assert called == []                                # AWS never touched on an edit
+
+
 # --- create refuses an existing name (5.8 §5) ------------------------------
 
 def test_create_existing_name_is_rejected(client, app):
