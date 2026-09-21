@@ -82,6 +82,15 @@ merged to master or deployed.
 ---
 
 ## Other
+- **Stale restic-lock blocks nightly prune (FIXED 2026-09-21, but app should self-heal):**
+  On the live box, `appdata_backups` failed its nightly `prune` on 09-20 and 09-21 —
+  backups succeeded (non-exclusive lock) but prune (exclusive lock) hit a STALE
+  non-exclusive lock left by a dead PID after a container restart. Cleared with
+  `restic unlock` (verified via prune --dry-run). Two app improvements worth doing:
+  (a) `backup-job.sh` should `restic unlock` (stale-only) before `forget --prune`, or
+  detect a stale lock and retry; (b) the recorded error was an unhelpful empty
+  "prune failed: " — `_first_error_line` didn't match restic's lock message; improve
+  the error extraction so the run record shows the real cause.
 - **Pre-existing failing test (own fix):** `tests/estimator/test_billing.py::test_forecast_parses`
   fails today (asserts month `2026-09`, gets `2026-10`) — a hardcoded-date/clock-drift
   bug, NOT caused by any recent work (fails on older commits too). Deserves its own fix.
