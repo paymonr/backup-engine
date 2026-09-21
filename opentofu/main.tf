@@ -64,8 +64,9 @@ resource "aws_iam_access_key" "runtime" {
 
 # --- Bucket-admin role: create/config/version-toggle for per-job dedicated
 # buckets (spec: extra buckets are provisioned via AssumeRole, never on the
-# everyday runtime key). Delete permissions deliberately live elsewhere
-# (a separate teardown grant), not here.
+# everyday runtime key). Also carries a separate Teardown statement (enumerate
+# by tag + empty + delete) so JIT buckets -- created outside tofu -- can be
+# torn down; those perms stay on this role only, never the runtime key.
 resource "aws_iam_role" "bucket_admin" {
   name = "${var.name_prefix}-bucket-admin"
   assume_role_policy = jsonencode({

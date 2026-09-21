@@ -55,20 +55,36 @@ def test_automated_policy_has_scoped_sts_and_wildcard():
 
 def test_bucket_admin_policy_has_create_and_config():
     doc = provision.render_bucket_admin_policy("unraid-backup-123")
+    parsed = json.loads(doc)
+    stmts = {s["Sid"]: s for s in parsed["Statement"]}
     for a in ("s3:CreateBucket", "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
               "s3:PutLifecycleConfiguration", "s3:PutBucketTagging", "s3:PutBucketPublicAccessBlock"):
-        assert a in doc
-    assert "s3:DeleteBucket" not in doc     # delete lives on a separate teardown grant
+        assert a in stmts["CreateAndConfig"]["Action"]
+    # DeleteBucket lives on the separate Teardown statement, never CreateAndConfig.
+    assert "s3:DeleteBucket" not in stmts["CreateAndConfig"]["Action"]
+
+
+def test_bucket_admin_policy_has_teardown_statement():
+    # Task 11: enumerate-by-tag + empty + delete for just-in-time buckets (created
+    # outside tofu, so `tofu destroy` can't remove them). Stays on this role only.
+    doc = provision.render_bucket_admin_policy("unraid-backup-123")
+    parsed = json.loads(doc)
+    stmts = {s["Sid"]: s for s in parsed["Statement"]}
+    for a in ("s3:ListAllMyBuckets", "s3:GetBucketTagging", "s3:ListBucketVersions",
+              "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:DeleteBucket"):
+        assert a in stmts["Teardown"]["Action"]
+    assert stmts["Teardown"]["Resource"] == "*"
 
 
 def test_bucket_admin_policy_config_actions_are_not_bucket_prefix_scoped():
-    # The role is reachable only after AssumeRole and holds no object
-    # read/delete and no DeleteBucket, so Resource:"*" here is contained --
-    # and required, since the feature allows OFF-PREFIX bucket names (a
-    # dedicated bucket need not be named "<base>-*"), so scoping create/config
-    # actions to "<bucket>-*" would deny configuring an off-prefix bucket.
+    # The role is reachable only after AssumeRole, so Resource:"*" here is
+    # contained -- and required, since the feature allows OFF-PREFIX bucket
+    # names (a dedicated bucket need not be named "<base>-*"), so scoping
+    # create/config/teardown actions to "<bucket>-*" would deny configuring or
+    # tearing down an off-prefix bucket.
     doc = provision.render_bucket_admin_policy("unraid-backup-123")
     assert "unraid-backup-123-*" not in doc
     parsed = json.loads(doc)
-    assert len(parsed["Statement"]) == 1
-    assert parsed["Statement"][0]["Resource"] == "*"
+    assert len(parsed["Statement"]) == 2   # CreateAndConfig + Teardown
+    for stmt in parsed["Statement"]:
+        assert stmt["Resource"] == "*"
