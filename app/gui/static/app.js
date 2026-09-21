@@ -622,14 +622,16 @@
 })();
 
 // Wizard: show only the controls that apply to the chosen backup type
-// ([data-when-type], e.g. the tiered fieldset / archive mirror) AND the chosen
+// ([data-when-type], e.g. the tiered fieldset / archive mirror), the chosen
 // retention policy ([data-when-retention], e.g. the retention_days/retention_count
-// fields / the tiered fieldset). An element with both attributes needs both to
-// match. Toggled on load and whenever the type or retention_type radio changes.
+// fields / the tiered fieldset), and whether the dedicated-bucket checkbox is on
+// ([data-when-dedicated], the bucket name + versioning fields, Task 8). An element
+// with several of these attributes needs all of them to match. Toggled on load and
+// whenever the type/retention_type/dedicated control changes.
 (function () {
   var form = document.getElementById("job-form");
   if (!form) return;
-  var conds = form.querySelectorAll("[data-when-type], [data-when-retention], [data-when-packing]");
+  var conds = form.querySelectorAll("[data-when-type], [data-when-retention], [data-when-packing], [data-when-dedicated]");
   function curType() {
     var c = form.querySelector('input[name="type"]:checked');
     return c ? c.value : "";
@@ -640,6 +642,10 @@
   }
   function curPacking() {
     var c = form.querySelector('input[name="packing"]');
+    return (c && c.checked) ? "1" : "0";
+  }
+  function curDedicated() {
+    var c = form.querySelector('input[name="dedicated"]');
     return (c && c.checked) ? "1" : "0";
   }
   function applyVisibility() {
@@ -660,21 +666,67 @@
     }
     var rt = curRetention();
     var pk = curPacking();
+    var dd = curDedicated();
     for (var i = 0; i < conds.length; i++) {
       var el = conds[i];
       var wantType = el.getAttribute("data-when-type");
       var wantRetention = el.getAttribute("data-when-retention");
       var wantPacking = el.getAttribute("data-when-packing");
+      var wantDedicated = el.getAttribute("data-when-dedicated");
       var hide = false;
       if (wantType && wantType.split(/\s+/).indexOf(t) === -1) hide = true;         // may list several types
       if (wantRetention && wantRetention.split(/\s+/).indexOf(rt) === -1) hide = true;
       if (wantPacking && wantPacking !== pk) hide = true;
+      if (wantDedicated && wantDedicated !== dd) hide = true;
       el.hidden = hide;
     }
   }
-  var toggles = form.querySelectorAll('input[name="type"], input[name="retention_type"], input[name="packing"]');
+  var toggles = form.querySelectorAll('input[name="type"], input[name="retention_type"], input[name="packing"], input[name="dedicated"]');
   for (var j = 0; j < toggles.length; j++) toggles[j].addEventListener("change", applyVisibility);
   applyVisibility();
+})();
+
+// Wizard: dedicated-bucket name suggestion + off-prefix hint (Task 8). Layers on
+// top of the data-when-dedicated reveal above -- it never touches visibility,
+// only the bucket input's value and the hint text beside it. Mirrors
+// buckets.suggest/slugify (app/engine/buckets.py) so the JS guess matches what
+// the server would compute for the same job name.
+(function () {
+  var form = document.getElementById("job-form");
+  if (!form) return;
+  var dedicated = form.querySelector('input[name="dedicated"]');
+  var bucketInput = form.querySelector('input[name="bucket"]');
+  var hint = document.getElementById("bucket-prefix-hint");
+  if (!dedicated || !bucketInput) return;
+  var base = form.dataset.baseBucket || "";
+  // On the edit screen (or a re-render that already carries a typed bucket) never
+  // clobber what's there -- only a genuinely fresh, empty field auto-fills.
+  var bucketTouched = !!bucketInput.value;
+
+  function slugify(name) {
+    return (name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  function suggest(name) { return base + "-" + slugify(name); }
+  function nameInput() { return form.querySelector('[name="name"]'); }
+
+  function updateHint() {
+    if (!hint) return;
+    var v = bucketInput.value || "";
+    hint.hidden = !v || v === base || v.indexOf(base + "-") === 0;
+  }
+  function prefill() {
+    if (bucketTouched) return;
+    var nm = nameInput();
+    bucketInput.value = suggest(nm ? nm.value : "");
+    updateHint();
+  }
+  bucketInput.addEventListener("input", function () { bucketTouched = true; updateHint(); });
+  dedicated.addEventListener("change", function () { if (dedicated.checked) prefill(); });
+  var nm = nameInput();
+  if (nm) nm.addEventListener("input", function () { if (dedicated.checked) prefill(); });
+
+  if (dedicated.checked) prefill();
+  updateHint();
 })();
 
 // Copy buttons (".copy", spec: provision_automated/manual/scripted, job.html,

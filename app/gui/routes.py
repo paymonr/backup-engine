@@ -13,7 +13,7 @@ from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jo
                dirsize, attributions, status, vocab, points, readiness, ops)
 from ..estimator.prices import load_prices
 from ..estimator import usage
-from ..engine import cron, runs, errors, progress
+from ..engine import cron, runs, errors, progress, buckets, sysop
 
 bp = Blueprint("gui", __name__)
 
@@ -1665,7 +1665,10 @@ def _fresh_form_values():
             "keep_last": "3", "keep_daily": "7", "keep_weekly": "4", "keep_monthly": "6",
             "change_rate_pct": "1", "change_rate_touched": "", "packing": "",
             "pack_member_gb": "0.05", "mirror": "0", "size_gb": "", "file_count": "",
-            "measured_bytes": "", "measured_capped": "", "measured_at": ""}
+            "measured_bytes": "", "measured_capped": "", "measured_at": "",
+            # Opt-in dedicated bucket (Task 8): off by default, versioned by default
+            # (matches the shared bucket's own default posture) once turned on.
+            "dedicated": "", "bucket": "", "bucket_versioned": "1"}
 
 
 def _saved_form_values(job):
@@ -1719,6 +1722,8 @@ def _form_values_from_request(f):
     fv["enabled"] = "1" if f.get("enabled") else ""
     fv["packing"] = "1" if f.get("packing") else ""
     fv["change_rate_touched"] = "1" if f.get("change_rate_touched") else ""
+    fv["dedicated"] = "1" if f.get("dedicated") else ""
+    fv["bucket_versioned"] = "1" if f.get("bucket_versioned") else ""
     return fv
 
 
@@ -1883,6 +1888,15 @@ def job_assumptions(name):
     return redirect(url_for("gui.cost_page_view"))
 
 
+def _runtime_creds(cfg) -> tuple[str, str]:
+    """The current runtime AWS key/secret (secrets.env, preferred over a stale
+    process env) — reused as-is from the existing sysop probe reader so the
+    dedicated-bucket JIT-create path (Task 8) never re-derives its own notion of
+    "the runtime key". Never logged; the caller passes it straight to
+    provision.assume_role and discards it."""
+    return sysop._runtime_key(cfg["CONFIG_DIR"])
+
+
 @bp.post("/jobs")
 def job_save():
     if not security.verify_csrf(request.form.get("csrf", "")):
@@ -1936,6 +1950,33 @@ def job_save():
     # An acknowledged blocker is recorded on the job (7.8) so the Board never nags.
     if acked:
         job["acknowledged"] = [{"code": c, "class": cls, "at": _now_iso()} for c in acked]
+
+    # Opt-in dedicated bucket (Task 8): create + configure it JUST IN TIME, BEFORE
+    # jobs_io.upsert, so a failure here persists NOTHING (fail fast). jobs_io.validate
+    # does not charset-check `bucket` -- valid_bucket_name is the only S3-name gate.
+    if f.get("dedicated"):
+        bucket = f.get("bucket", "").strip()
+        if not buckets.valid_bucket_name(bucket):
+            return _render_job_form(cfg, job=existing, fv=fv,
+                                    errors={"form": f"invalid bucket name {bucket!r}"})
+        role = config_io.bucket_admin_role_arn(cfg["CONFIG_DIR"])
+        env = config_io.read_backup_env(cfg["CONFIG_DIR"])
+        base = env.get("S3_BUCKET", "")
+        region = env.get("AWS_REGION", "us-east-1")
+        akey, asec = _runtime_creds(cfg)          # secrets.env, via the sysop reader
+        try:
+            creds = provision.assume_role(role, region=region, key=akey, secret=asec)
+            buckets.ensure_bucket(bucket, region=region,
+                                  versioned=bool(f.get("bucket_versioned")), creds=creds)
+            if not buckets.is_prefixed(base, bucket):
+                buckets.grant_object_access(config_io.extra_buckets_policy_arn(cfg["CONFIG_DIR"]),
+                                            bucket, region=region, creds=creds)
+        except (provision.AssumeRoleError, buckets.BucketError) as e:
+            return _render_job_form(cfg, job=existing, fv=fv, errors={"form": str(e)})
+        job["dedicated"] = True
+        job["bucket"] = bucket
+        job["bucket_versioned"] = bool(f.get("bucket_versioned"))
+
     try:
         if "retention_type" in f:
             job["retention"] = estimate_io.retention_from_form(

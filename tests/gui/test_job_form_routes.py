@@ -7,6 +7,8 @@ import json
 import pathlib
 import pytest
 from app.gui import config_io, create_app, jobs_io
+import app.engine.buckets as buckets
+import app.gui.provision as provision
 
 
 @pytest.fixture
@@ -21,7 +23,10 @@ def source_root(tmp_path):
 def app(tmp_path, source_root, template_path):
     cfg = tmp_path / "config"; cfg.mkdir()
     config_io.write_secrets(str(cfg), {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
-    (cfg / "backup.env").write_text("S3_BUCKET=bw-backups\nAWS_REGION=us-east-1\n")
+    (cfg / "backup.env").write_text(
+        "S3_BUCKET=bw-backups\nAWS_REGION=us-east-1\n"
+        "BUCKET_ADMIN_ROLE_ARN=arn:aws:iam::111111111111:role/backup-engine-bucket-admin\n"
+        "RUNTIME_EXTRA_BUCKETS_POLICY_ARN=arn:aws:iam::111111111111:policy/backup-engine-runtime-extra-buckets\n")
     return create_app({"CONFIG_DIR": str(cfg), "CACHE_DIR": str(tmp_path / "cache"),
                        "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
                        "SOURCE_ROOT": str(source_root), "SECRET_KEY": "test", "TESTING": True,
@@ -151,6 +156,98 @@ def test_post_clean_form_saves_and_redirects_to_job_page(client, app):
     assert r.headers["Location"].endswith("/jobs/movies")
     jobs = _jobs(app)
     assert jobs[0]["name"] == "movies" and jobs[0]["type"] == "archive"
+
+
+# --- opt-in dedicated bucket: JIT create on save, fail fast (Task 8) --------
+
+def test_dedicated_save_creates_bucket_then_redirects(client, app, monkeypatch):
+    made = {}
+    monkeypatch.setattr(provision, "assume_role", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "ASIA"})
+    monkeypatch.setattr(buckets, "ensure_bucket", lambda name, **k: made.setdefault("name", name))
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
+    assert r.status_code in (302, 303)
+    assert made["name"] == "bw-backups-photos"
+    assert _jobs(app)[0]["dedicated"] is True
+    assert _jobs(app)[0]["bucket"] == "bw-backups-photos"
+    assert _jobs(app)[0]["bucket_versioned"] is True
+
+
+def test_dedicated_save_surfaces_bucket_error(client, app, monkeypatch):
+    monkeypatch.setattr(provision, "assume_role", lambda *a, **k: {})
+
+    def boom(name, **k):
+        raise buckets.BucketError("name_taken", "taken")
+    monkeypatch.setattr(buckets, "ensure_bucket", boom)
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
+    assert r.status_code == 200
+    assert "Not saved" in r.get_data(as_text=True)
+    assert _jobs(app) == []
+
+
+def test_dedicated_save_rejects_invalid_bucket_name_without_touching_aws(client, app, monkeypatch):
+    called = []
+    monkeypatch.setattr(provision, "assume_role", lambda *a, **k: called.append("assume_role"))
+    monkeypatch.setattr(buckets, "ensure_bucket", lambda name, **k: called.append("ensure_bucket"))
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "Not_A_Valid_Bucket!", "bucket_versioned": "1"})
+    assert r.status_code == 200
+    assert "Not saved" in r.get_data(as_text=True)
+    assert _jobs(app) == []
+    assert called == []                   # invalid name never touches AWS
+
+
+def test_dedicated_save_off_prefix_grants_extra_bucket_access(client, app, monkeypatch):
+    made = {}
+    monkeypatch.setattr(provision, "assume_role", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "ASIA"})
+    monkeypatch.setattr(buckets, "ensure_bucket", lambda name, **k: made.setdefault("name", name))
+    monkeypatch.setattr(buckets, "grant_object_access",
+                        lambda policy_arn, name, **k: made.setdefault("granted", (policy_arn, name)))
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "off-prefix-bucket", "bucket_versioned": "1"})
+    assert r.status_code in (302, 303)
+    assert made["name"] == "off-prefix-bucket"
+    assert made["granted"] == (
+        "arn:aws:iam::111111111111:policy/backup-engine-runtime-extra-buckets", "off-prefix-bucket")
+
+
+def test_new_form_exposes_base_bucket_for_js_suggestion(client):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert 'data-base-bucket="bw-backups"' in body
+    assert 'name="dedicated"' in body
+    assert 'name="bucket"' in body
+    assert 'name="bucket_versioned"' in body
+
+
+def test_post_clean_form_no_dedicated_bucket_saves_without_aws_calls(client, app, monkeypatch):
+    # Regression: the non-dedicated path (the overwhelming majority of jobs) must
+    # never touch provision/buckets at all.
+    def fail(*a, **k):
+        raise AssertionError("should not be called for a non-dedicated job")
+    monkeypatch.setattr(provision, "assume_role", fail)
+    monkeypatch.setattr(buckets, "ensure_bucket", fail)
+    monkeypatch.setattr(buckets, "grant_object_access", fail)
+    t = _csrf(client)
+    r = client.post("/jobs", data={
+        "csrf": t, "name": "regular", "type": "archive", "source": "media/movies",
+        "schedule": "0 4 * * 0", "storage_class": "STANDARD", "enabled": "1",
+        "retention_type": "days", "retention_days": "180"})
+    assert r.status_code in (302, 303)
+    jobs = _jobs(app)
+    assert jobs[0]["name"] == "regular" and jobs[0].get("dedicated") is False
 
 
 # --- no hidden number field can silently block the whole form (regression) --
