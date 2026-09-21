@@ -27,7 +27,7 @@ def valid_bucket_name(name: str) -> bool:
 class BucketError(RuntimeError):
     def __init__(self, kind: str, detail: str = ""):
         self.kind = kind
-        super().__init__(f"{kind}: {detail}".rstrip(": "))
+        super().__init__(kind if not detail else f"{kind}: {detail}")
 
 def _env(creds: dict) -> dict:
     e = os.environ.copy()
@@ -74,20 +74,47 @@ def ensure_bucket(name, *, region, versioned, creds, runner=subprocess.run) -> N
     _aws(runner, ["s3api", "put-bucket-tagging", "--bucket", name,
                   "--tagging", "TagSet=[{Key=managed-by,Value=backup-engine}]"], creds)
 
-def grant_object_access(policy_arn, bucket_name, account_id, *, region, creds, runner=subprocess.run) -> None:
-    # Read the current default version, append this bucket's ARNs, publish a new default.
-    cur = _aws(runner, ["iam", "get-policy", "--policy-arn", policy_arn, "--output", "json"], creds)
+_GRANT_ACTIONS = ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketVersions",
+                  "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                  "s3:DeleteObjectVersion", "s3:AbortMultipartUpload",
+                  "s3:ListMultipartUploadParts", "s3:RestoreObject"]
+
+def _grants_bucket(document: dict, arn: str) -> bool:
+    for stmt in document.get("Statement", []):
+        res = stmt.get("Resource", [])
+        if isinstance(res, str):
+            res = [res]
+        if arn in res:
+            return True
+    return False
+
+def grant_object_access(policy_arn, bucket_name, *, region, creds, runner=subprocess.run) -> None:
+    # Read the current default version; append this bucket's ARNs (idempotently); publish a new default.
+    cur = _aws(runner, ["iam", "get-policy", "--policy-arn", policy_arn,
+                        "--region", region, "--output", "json"], creds)
     ver = json.loads(cur.stdout)["Policy"]["DefaultVersionId"]
     doc = _aws(runner, ["iam", "get-policy-version", "--policy-arn", policy_arn,
-                        "--version-id", ver, "--output", "json"], creds)
+                        "--version-id", ver, "--region", region, "--output", "json"], creds)
     document = json.loads(doc.stdout)["PolicyVersion"]["Document"]
     arn = f"arn:aws:s3:::{bucket_name}"
+    if _grants_bucket(document, arn):
+        return  # already granted; idempotent no-op
+
     stmts = document.setdefault("Statement", [])
-    stmts.append({"Sid": f"be{slugify(bucket_name).replace('-','')}", "Effect": "Allow",
-                  "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketVersions",
-                             "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
-                             "s3:DeleteObjectVersion", "s3:AbortMultipartUpload",
-                             "s3:ListMultipartUploadParts", "s3:RestoreObject"],
+    sid = "grant" + re.sub(r"[^A-Za-z0-9]", "", bucket_name)
+    stmts.append({"Sid": sid, "Effect": "Allow",
+                  "Action": _GRANT_ACTIONS,
                   "Resource": [arn, arn + "/*"]})
+
+    versions = _aws(runner, ["iam", "list-policy-versions", "--policy-arn", policy_arn,
+                             "--region", region, "--output", "json"], creds)
+    vlist = json.loads(versions.stdout).get("Versions", [])
+    if len(vlist) >= 5:
+        non_default = [v for v in vlist if not v.get("IsDefaultVersion")]
+        oldest = sorted(non_default, key=lambda v: v.get("CreateDate", ""))[0]
+        _aws(runner, ["iam", "delete-policy-version", "--policy-arn", policy_arn,
+                      "--version-id", oldest["VersionId"], "--region", region], creds)
+
     _aws(runner, ["iam", "create-policy-version", "--policy-arn", policy_arn,
-                  "--policy-document", json.dumps(document), "--set-as-default"], creds)
+                  "--policy-document", json.dumps(document), "--set-as-default",
+                  "--region", region], creds)
