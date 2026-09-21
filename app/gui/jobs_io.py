@@ -240,6 +240,10 @@ def validate(job: dict, source_root, *, require_exists: bool = True) -> dict:
         raise ValueError(f"unknown storage class {cls!r}")
     out = {"name": name, "type": typ, "source": source, "schedule": sched,
            "enabled": bool(job.get("enabled", True)), "storage_class": cls}
+    # --- Task 5: dedicated-bucket fields (multi-bucket) ---
+    out["dedicated"] = bool(job.get("dedicated"))
+    out["bucket"] = str(job.get("bucket", "")).strip() if out["dedicated"] else ""
+    out["bucket_versioned"] = bool(job.get("bucket_versioned", True))
     if typ == "archive":
         out["mirror"] = bool(job.get("mirror", False))
     # Compute retention first, then derive legacy fields from it (single source of truth)
@@ -379,10 +383,16 @@ def render_crontab(config_dir, cache_dir, scripts_dir, *, dry_run=False, source_
         _signal_supercronic(cache_dir)
     return text
 
-def emit_shell(job: dict) -> str:
+def job_env_text(job: dict) -> str:
     q = shlex.quote
     lines = [f"JOB_NAME={q(job['name'])}", f"JOB_TYPE={q(job['type'])}",
              f"JOB_SOURCE={q(job['source'])}", f"JOB_STORAGE_CLASS={q(job.get('storage_class','STANDARD'))}"]
+    if job.get("dedicated") and job.get("bucket"):
+        # Always single-quoted (unlike q() above, which only quotes when needed) so a
+        # dedicated bucket name — always safe S3-bucket-name chars, never shell metachars —
+        # is unambiguous in the emitted env text. Escaped defensively in case that ever changes.
+        bucket = str(job["bucket"]).replace("'", "'\"'\"'")
+        lines.append(f"JOB_BUCKET='{bucket}'")
     r = job.get("retention") or {"type": "days", "days": 180}
     lines.append(f"JOB_RETENTION_TYPE={q(r['type'])}")
     if r["type"] == "days":
@@ -395,6 +405,11 @@ def emit_shell(job: dict) -> str:
     if job["type"] == "archive":
         lines.append(f"JOB_MIRROR={'true' if job.get('mirror') else 'false'}")
     return "\n".join(lines) + "\n"
+
+def emit_shell(job: dict) -> str:
+    # Back-compat alias: emit_shell was job_env_text's original name (pre-Task-5); kept so
+    # existing callers/tests that spell it emit_shell keep working unchanged.
+    return job_env_text(job)
 
 def _main(argv: list[str]) -> int:
     # config/jobs.json lives on the writable /config mount and is UNTRUSTED at read
@@ -427,7 +442,7 @@ def _main(argv: list[str]) -> int:
         job = validate(job, source_root, require_exists=False)
     except ValueError as e:
         print(f"invalid job {argv[0]!r}: {e}", file=sys.stderr); return 4
-    sys.stdout.write(emit_shell(job)); return 0
+    sys.stdout.write(job_env_text(job)); return 0
 
 if __name__ == "__main__":
     raise SystemExit(_main(sys.argv[1:]))

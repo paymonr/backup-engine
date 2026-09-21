@@ -592,3 +592,29 @@ def test_delete_removes_cache_files(tmp_path):
     assert not (state / "movies.points.json").exists()
     assert not logdir.exists()
     assert (state / "other.runs.jsonl").exists()   # untouched
+
+# --- Task 5: dedicated-bucket fields + JOB_BUCKET export ---
+
+def test_validate_keeps_dedicated_bucket_fields(tmp_path):
+    (tmp_path / "appdata").mkdir()
+    out = jobs_io.validate({"name":"photos","type":"archive","source":"appdata",
+        "schedule":"0 5 * * *","storage_class":"STANDARD","enabled":True,
+        "dedicated":True,"bucket":"be-1-photos","bucket_versioned":True},
+        str(tmp_path))
+    assert out["dedicated"] is True and out["bucket"] == "be-1-photos"
+    assert out["bucket_versioned"] is True
+
+def test_validate_defaults_to_base_bucket(tmp_path):
+    (tmp_path / "appdata").mkdir()
+    out = jobs_io.validate({"name":"a","type":"archive","source":"appdata",
+        "schedule":"0 5 * * *","storage_class":"STANDARD","enabled":True}, str(tmp_path))
+    assert out.get("dedicated", False) is False and out.get("bucket", "") == ""
+
+def test_job_env_emits_JOB_BUCKET_only_when_dedicated(capsys):
+    job = {"name":"photos","type":"archive","source":"appdata","schedule":"0 5 * * *",
+           "storage_class":"STANDARD","dedicated":True,"bucket":"be-1-photos",
+           "retention":{"type":"keep_all"}}
+    text = jobs_io.job_env_text(job)          # see note in Step 3 re: helper name
+    assert "JOB_BUCKET='be-1-photos'" in text
+    base = dict(job); base.update(dedicated=False, bucket="")
+    assert "JOB_BUCKET" not in jobs_io.job_env_text(base)
