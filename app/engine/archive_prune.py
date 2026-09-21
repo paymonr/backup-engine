@@ -55,9 +55,9 @@ def main(argv=None) -> int:
     ap.add_argument("--days", type=int, default=0); ap.add_argument("--count", type=int, default=1)
     ap.add_argument("--bucket", default=None)
     a = ap.parse_args(argv)
-    bucket = a.bucket or os.environ.get("S3_BUCKET")
+    bucket = a.bucket or os.environ.get("JOB_BUCKET") or os.environ.get("S3_BUCKET")
     if not bucket:
-        print("archive_prune: no bucket configured (pass --bucket or set S3_BUCKET)", file=sys.stderr)
+        print("archive_prune: no bucket configured (pass --bucket or set JOB_BUCKET/S3_BUCKET)", file=sys.stderr)
         return 2
     if a.type not in _KNOWN_TYPES:
         print(f"archive_prune: unknown --type {a.type!r} (expected one of {', '.join(_KNOWN_TYPES)})",

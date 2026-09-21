@@ -407,7 +407,9 @@ def _main(argv: list[str]) -> int:
     JOB_* vars without re-validating them; jobs_io's own `_main` is the
     re-validation gate (name charset + source confinement) that already ran
     to produce them. It additionally reads the wiring backup-job.sh sets up:
-    SOURCE_ROOT, CACHE_DIR, S3_BUCKET -- and derives the rclone config path
+    SOURCE_ROOT, CACHE_DIR, S3_BUCKET (and, for dedicated-bucket jobs,
+    JOB_BUCKET, which wins over S3_BUCKET -- mirrors the bash runner's
+    ${JOB_BUCKET:-$S3_BUCKET}) -- and derives the rclone config path
     scripts/lib/rclone-conf.sh always renders to: $CACHE_DIR/rclone.conf.
     """
     parser = argparse.ArgumentParser(prog="python3 -m app.engine.vfiles")
@@ -452,7 +454,11 @@ def _main(argv: list[str]) -> int:
         return val
 
     cache_dir = _require_env("CACHE_DIR")
-    bucket = _require_env("S3_BUCKET")
+    # JOB_BUCKET (dedicated-bucket jobs) wins over S3_BUCKET (the base bucket,
+    # still required as a fallback) -- mirrors the bash runner's
+    # ${JOB_BUCKET:-$S3_BUCKET} so a dedicated-bucket job's catalog/versions
+    # never land in (or get pruned from) the base bucket.
+    bucket = os.environ.get("JOB_BUCKET") or _require_env("S3_BUCKET")
     rclone_config = str(Path(cache_dir) / "rclone.conf")
 
     # JOB_RETENTION_TYPE selects the policy shape; JOB_RETENTION_DAYS defaults to

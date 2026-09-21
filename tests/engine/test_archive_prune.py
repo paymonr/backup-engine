@@ -92,6 +92,7 @@ def test_prune_omits_endpoint_when_none():
 
 def test_main_missing_bucket_errors_cleanly(monkeypatch, capsys):
     monkeypatch.delenv("S3_BUCKET", raising=False)
+    monkeypatch.delenv("JOB_BUCKET", raising=False)
     rc = ap.main(["myjob", "--type", "keep_all"])
     assert rc != 0
     assert capsys.readouterr().err.strip()
@@ -127,3 +128,43 @@ def test_main_reads_s3_endpoint_env_and_threads_to_prune(monkeypatch):
     monkeypatch.setenv("S3_ENDPOINT", "minio.local:9000")
     ap.main(["myjob", "--type", "keep_all"])
     assert captured["endpoint"] == "minio.local:9000"
+
+
+# --- JOB_BUCKET fallback (dedicated-bucket jobs): mirrors the bash runner's
+# ${JOB_BUCKET:-$S3_BUCKET}, so a dedicated-bucket archive job's prune step
+# targets its own bucket, not the base one.
+
+def test_main_prefers_job_bucket_over_s3_bucket(monkeypatch):
+    captured = {}
+    def fake_prune(job, policy, *, bucket, endpoint=None, **kw):
+        captured["bucket"] = bucket
+        return 0
+    monkeypatch.setattr(ap, "prune", fake_prune)
+    monkeypatch.setenv("S3_BUCKET", "base-bucket")
+    monkeypatch.setenv("JOB_BUCKET", "dedicated-bucket")
+    ap.main(["myjob", "--type", "keep_all"])
+    assert captured["bucket"] == "dedicated-bucket"
+
+
+def test_main_falls_back_to_s3_bucket_when_no_job_bucket(monkeypatch):
+    captured = {}
+    def fake_prune(job, policy, *, bucket, endpoint=None, **kw):
+        captured["bucket"] = bucket
+        return 0
+    monkeypatch.setattr(ap, "prune", fake_prune)
+    monkeypatch.delenv("JOB_BUCKET", raising=False)
+    monkeypatch.setenv("S3_BUCKET", "base-bucket")
+    ap.main(["myjob", "--type", "keep_all"])
+    assert captured["bucket"] == "base-bucket"
+
+
+def test_main_explicit_bucket_flag_wins_over_job_and_s3_bucket(monkeypatch):
+    captured = {}
+    def fake_prune(job, policy, *, bucket, endpoint=None, **kw):
+        captured["bucket"] = bucket
+        return 0
+    monkeypatch.setattr(ap, "prune", fake_prune)
+    monkeypatch.setenv("S3_BUCKET", "base-bucket")
+    monkeypatch.setenv("JOB_BUCKET", "dedicated-bucket")
+    ap.main(["myjob", "--type", "keep_all", "--bucket", "explicit-bucket"])
+    assert captured["bucket"] == "explicit-bucket"

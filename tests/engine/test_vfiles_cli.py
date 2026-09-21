@@ -66,7 +66,7 @@ def test_backup_default_retention_days_when_env_missing(monkeypatch):
 
 
 def test_backup_missing_env_exits_2(monkeypatch):
-    for name in ("CACHE_DIR", "S3_BUCKET", "SOURCE_ROOT", "JOB_STORAGE_CLASS",
+    for name in ("CACHE_DIR", "S3_BUCKET", "JOB_BUCKET", "SOURCE_ROOT", "JOB_STORAGE_CLASS",
                  "JOB_SOURCE", "JOB_RETENTION_DAYS"):
         monkeypatch.delenv(name, raising=False)
 
@@ -258,3 +258,57 @@ def test_restore_list_with_extra_target_exits_2(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         vfiles._main(["restore", "vf", "list", "/out"])
     assert exc.value.code == 2
+
+
+# --- JOB_BUCKET fallback (dedicated-bucket jobs): mirrors the bash runner's
+# ${JOB_BUCKET:-$S3_BUCKET}, so a dedicated-bucket versioned-files job's
+# backup/restore/thaw all target its own bucket, not the base one. vfiles'
+# CLI has no --bucket flag, so only the env precedence applies here.
+
+def test_backup_prefers_job_bucket_over_s3_bucket(monkeypatch):
+    _set_common_env(monkeypatch, JOB_BUCKET="dedicated-bucket")
+    captured = {}
+
+    def fake_backup(job, **kwargs):
+        captured["kwargs"] = kwargs
+        return {"uploaded": 0, "deleted": 0, "pruned": 0}
+
+    monkeypatch.setattr(vfiles, "backup", fake_backup)
+
+    rc = vfiles._main(["backup", "vf"])
+
+    assert rc == 0
+    assert captured["kwargs"]["bucket"] == "dedicated-bucket"
+
+
+def test_backup_falls_back_to_s3_bucket_when_no_job_bucket(monkeypatch):
+    _set_common_env(monkeypatch)
+    monkeypatch.delenv("JOB_BUCKET", raising=False)
+    captured = {}
+
+    def fake_backup(job, **kwargs):
+        captured["kwargs"] = kwargs
+        return {"uploaded": 0, "deleted": 0, "pruned": 0}
+
+    monkeypatch.setattr(vfiles, "backup", fake_backup)
+
+    rc = vfiles._main(["backup", "vf"])
+
+    assert rc == 0
+    assert captured["kwargs"]["bucket"] == "my-bucket"  # S3_BUCKET from _set_common_env
+
+
+def test_restore_prefers_job_bucket_over_s3_bucket(monkeypatch):
+    _set_common_env(monkeypatch, JOB_BUCKET="dedicated-bucket")
+    captured = {}
+
+    def fake_restore(job, **kwargs):
+        captured["kwargs"] = kwargs
+        return []
+
+    monkeypatch.setattr(vfiles, "restore", fake_restore)
+
+    rc = vfiles._main(["restore", "vf", "list"])
+
+    assert rc == 0
+    assert captured["kwargs"]["bucket"] == "dedicated-bucket"
