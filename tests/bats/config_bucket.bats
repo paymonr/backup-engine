@@ -51,6 +51,55 @@ load test_helper
   [ "$output" = "s3:custom.example.com/manual-bucket/appdata" ]
 }
 
+# --- Fix round 1: scripts/lib/points.sh's archive restore-point listing was still
+# hardcoded to $S3_BUCKET (missed in the original sweep, which only grepped
+# backup-job.sh/restore.sh, not the libs they source). points_refresh (called by
+# backup-job.sh) and points_render (called by restore.sh's archive `list --json`)
+# both funnel through _points_render_archive's single rclone lsf call.
+
+_points_bucket_setup() {
+  export CACHE_DIR="$BATS_TEST_TMPDIR/cache"; mkdir -p "$CACHE_DIR/state"
+  export RCLONE_CONFIG="$CACHE_DIR/rclone.conf"; : >"$RCLONE_CONFIG"
+  export S3_BUCKET=base-bucket
+  local b="$BATS_TEST_TMPDIR/bin"; mkdir -p "$b"
+  export RCLONE_LOG="$BATS_TEST_TMPDIR/rclone.log"; : >"$RCLONE_LOG"
+  cat >"$b/rclone" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RCLONE_LOG"
+case "$*" in *--dirs-only*) printf '%s\n' "2020/" ;; esac
+exit 0
+STUB
+  chmod +x "$b/rclone"
+  export PATH="$b:$PATH"
+  source "$BATS_TEST_DIRNAME/../../scripts/lib/points.sh"
+}
+
+@test "points_refresh archive targets JOB_BUCKET (dedicated bucket), not the base S3_BUCKET" {
+  _points_bucket_setup
+  export JOB_BUCKET=be-1-photos
+  points_refresh movies archive
+  grep -q -- "lsf --dirs-only s3:be-1-photos/media/movies/" "$RCLONE_LOG"
+  ! grep -q -- "s3:base-bucket" "$RCLONE_LOG"
+  local f="$CACHE_DIR/state/movies.points.json"
+  [ -f "$f" ]
+  grep -q '"folders":\["2020"\]' "$f"
+}
+
+@test "points_render archive (restore.sh list --json path) targets JOB_BUCKET, not the base S3_BUCKET" {
+  _points_bucket_setup
+  export JOB_BUCKET=be-1-photos
+  run points_render movies archive
+  [ "$status" -eq 0 ]
+  grep -q -- "lsf --dirs-only s3:be-1-photos/media/movies/" "$RCLONE_LOG"
+  ! grep -q -- "s3:base-bucket" "$RCLONE_LOG"
+}
+
+@test "points_refresh archive falls back to S3_BUCKET when JOB_BUCKET is unset (base job, regression guard)" {
+  _points_bucket_setup
+  points_refresh movies archive
+  grep -q -- "lsf --dirs-only s3:base-bucket/media/movies/" "$RCLONE_LOG"
+}
+
 @test "load_config (source-time, no JOB_BUCKET yet) still derives from S3_BUCKET" {
   # Sanity check that the pre-existing load_config path (config.bats already covers this in
   # depth) keeps working once its inline derivation was replaced by a call to

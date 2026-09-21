@@ -40,7 +40,7 @@ _points_render_archive() {
     [ -n "$f" ] || continue
     if [ "$first" -eq 1 ]; then first=0; else folders+=","; fi
     folders+="\"$(_points_esc "$f")\""
-  done < <(rclone --config "$RCLONE_CONFIG" lsf --dirs-only "s3:$S3_BUCKET/media/$job/" 2>/dev/null)
+  done < <(rclone --config "$RCLONE_CONFIG" lsf --dirs-only "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/" 2>/dev/null)
   printf '{"kind":"current-copy","folders":[%s],"as_of":"%s"}\n' "$folders" "$(_points_now)"
 }
 
