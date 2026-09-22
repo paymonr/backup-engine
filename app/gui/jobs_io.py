@@ -292,7 +292,8 @@ def upsert(config_dir, job: dict, *, source_root, now=None) -> None:
 # but the log dir lives under state/; the log dir is logs/runs/<job>/.
 _CACHE_STATE_SUFFIXES = (".runs.jsonl", ".json", "-last.jsonl", "-rclone.log", "-prune.log",
                          "-vfiles.log", ".points.json", ".thaw.json", ".tested.json",
-                         ".test-thaw.json")
+                         ".test-thaw.json", ".control", ".resumes", ".resuming", ".attempt",
+                         "-retry.log")
 
 def _remove_job_caches(cache_dir, name) -> None:
     import shutil

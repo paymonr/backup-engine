@@ -593,6 +593,19 @@ def test_delete_removes_cache_files(tmp_path):
     assert not logdir.exists()
     assert (state / "other.runs.jsonl").exists()   # untouched
 
+def test_delete_removes_resilience_markers(tmp_path):
+    """A deleted job's stale control/resume markers must not survive to confuse
+    a job later recreated with the same name (7.1.9 fix)."""
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="movies"), source_root=root)
+    cache = tmp_path / "cache"
+    state = cache / "state"; state.mkdir(parents=True)
+    (state / "movies.control").write_text("pause")
+    (state / "movies.resumes").write_text("1")
+    jobs_io.delete(cfg, "movies", str(cache))
+    assert not (state / "movies.control").exists()
+    assert not (state / "movies.resumes").exists()
+
 # --- Task 5: dedicated-bucket fields + JOB_BUCKET export ---
 
 def test_validate_keeps_dedicated_bucket_fields(tmp_path):

@@ -292,24 +292,28 @@ def _set_paused(name, paused):
 
 @bp.post("/jobs/<name>/stop")
 def job_stop(name):
-    """Stop a RUNNING backup gracefully (Task 8): write the control flag the bash
-    runner (Task 4) polls between phases, and additionally nudge it along with
-    SIGTERM if we can see an active run's pid. Works fine with no active run —
-    the flag alone is enough to keep the run paused once it (re)starts."""
+    """Pause a RUNNING backup (Task 8): write the control flag the bash runner
+    (Task 4) polls between phases, then nudge it along with SIGTERM to the
+    active run's pid. If nothing is running, this is a no-op — the flag is
+    signal-driven (only re-checked after a failed attempt), so writing it with
+    no run to signal would just sit there and silently turn the job's next
+    FAILED attempt into a `paused` one."""
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
     cfg = current_app.config
     if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
         abort(404, description=f"There is no job called {name}")
+    run = runs.active_run(cfg["CACHE_DIR"], name)
+    if not run or not run.pid:
+        flash(f"Nothing is running for {name} to pause.")
+        return redirect(url_for("gui.job_page", name=name))
     flag = Path(cfg["CACHE_DIR"], "state", f"{name}.control")
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text("pause")
-    run = runs.active_run(cfg["CACHE_DIR"], name)
-    if run and run.pid:
-        try:
-            os.kill(run.pid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            pass
+    try:
+        os.kill(run.pid, signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
     flash(f"Pausing {name}…")
     return redirect(url_for("gui.job_page", name=name))
 

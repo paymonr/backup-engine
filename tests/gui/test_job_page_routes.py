@@ -314,7 +314,7 @@ def test_stop_writes_control_flag_and_signals_active_pid(client, example, monkey
     assert killed == [(4242, routes.signal.SIGTERM)]
 
 
-def test_stop_with_no_active_run_just_writes_flag(client, example, monkeypatch):
+def test_stop_with_no_active_run_writes_no_flag(client, example, monkeypatch):
     monkeypatch.setattr(routes.runs, "active_run", lambda c, j: None)
     killed = []
     monkeypatch.setattr(routes.os, "kill", lambda pid, sig: killed.append((pid, sig)))
@@ -322,7 +322,7 @@ def test_stop_with_no_active_run_just_writes_flag(client, example, monkeypatch):
     r = client.post("/jobs/appdata/stop", data={"csrf": t})
     assert r.status_code in (302, 303)
     flag = Path(client.application.config["CACHE_DIR"], "state", "appdata.control")
-    assert flag.read_text().strip() == "pause"
+    assert not flag.exists()
     assert killed == []
 
 
