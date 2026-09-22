@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import shlex
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -482,3 +483,123 @@ def converge(principal: Principal, *, bucket: str, region: str, admin: AdminCred
     write_stamp(config_dir, template_path, principal)
     record(cache_dir, mode=mode, lines=[s.summary for s in steps])
     return Outcome(ok=True, applied=True, steps=steps)
+
+
+# --- the commands fallback: a convergent script + runtime-key Verify ---------------------
+
+_ACCOUNT_RE = re.compile(r"^\d{12}$")
+_IAM_USER_RE = re.compile(r"^[\w+=,.@-]{1,64}$")
+_REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d$")
+
+
+def script(principal: Principal, *, bucket: str, region: str) -> str:
+    """A bash script that converges IAM with only idempotent commands (for CloudShell).
+    Every interpolated value is shape-checked first, and the policy JSON goes in
+    quoted heredocs, so nothing in it can reach the shell."""
+    if not (_ACCOUNT_RE.match(principal.account) and _IAM_USER_RE.match(principal.user)
+            and buckets.valid_bucket_name(bucket) and _REGION_RE.match(region or "")):
+        raise PermissionsError("script", "the account, user, bucket or region has an unexpected shape")
+    docs = required_docs(principal, bucket)
+    user, extra = principal.user, extra_policy_arn(principal.account)
+
+    def heredoc(name: str, doc: dict) -> list[str]:
+        return [f"cat > \"$d/{name}.json\" <<'EOF'", json.dumps(doc, indent=2), "EOF"]
+
+    lines = [
+        "#!/usr/bin/env bash",
+        f"# backup-engine — AWS permissions update to level {required_level()}.",
+        "# Safe to run more than once: it creates what's missing and resets the rest to",
+        "# exactly what this version of backup-engine needs. It never touches your",
+        "# bucket, your data or the backup user's access key.",
+        "# Run it in AWS CloudShell (or any shell signed in as an admin), then click",
+        "# Verify in backup-engine.",
+        "set -euo pipefail",
+        f"export AWS_DEFAULT_REGION={region}",
+        'd="$(mktemp -d)"',
+        *heredoc("extra-buckets", docs["extra"]),
+        *heredoc("trust", docs["trust"]),
+        *heredoc("bucket-admin", docs["role"]),
+        *heredoc("runtime", docs["runtime"]),
+        "# 1. The extra-buckets policy (created once; backup-engine adds grants to it later)",
+        f"aws iam get-policy --policy-arn {extra} >/dev/null 2>&1 || "
+        f"aws iam create-policy --policy-name {EXTRA_POLICY_NAME} "
+        f"--policy-document \"file://$d/extra-buckets.json\" >/dev/null",
+        "# 2. Attach it to the backup user",
+        f"aws iam attach-user-policy --user-name {user} --policy-arn {extra}",
+        "# 3. The bucket-admin role, which only the backup user may assume",
+        f"aws iam get-role --role-name {ROLE_NAME} >/dev/null 2>&1 || "
+        f"aws iam create-role --role-name {ROLE_NAME} "
+        f"--assume-role-policy-document \"file://$d/trust.json\" >/dev/null",
+        f"aws iam update-assume-role-policy --role-name {ROLE_NAME} "
+        f"--policy-document \"file://$d/trust.json\"",
+        "# 4. The bucket-admin role's policy",
+        f"aws iam put-role-policy --role-name {ROLE_NAME} --policy-name {ROLE_POLICY_NAME} "
+        f"--policy-document \"file://$d/bucket-admin.json\"",
+        "# 5. The backup user's own policy",
+        f"aws iam put-user-policy --user-name {user} --policy-name {RUNTIME_POLICY_NAME} "
+        f"--policy-document \"file://$d/runtime.json\"",
+        "# Older guided installs only: if the managed policy below is attached to the backup",
+        "# user, it is now redundant and can be detached (optional):",
+        f"#   aws iam detach-user-policy --user-name {user} "
+        f"--policy-arn {runtime_managed_arn(principal.account)}",
+        'rm -rf "$d"',
+        'echo "Done. Go back to backup-engine and click Verify."',
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@dataclass
+class Probe:
+    name: str
+    ok: bool
+    hint: str = ""
+    detail: str = ""
+
+
+def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> list[Probe]:
+    role_probe = f"Can assume the role {ROLE_NAME}"
+    grant_probe = f"The role can manage {EXTRA_POLICY_NAME}"
+    attach_probe = f"{EXTRA_POLICY_NAME} is attached to {principal.user}"
+    out = []
+    cp = run(["s3api", "list-object-versions", "--bucket", bucket, "--max-items", "1",
+              "--output", "json"], region=region, key=key, secret=secret)
+    ok = cp.returncode == 0
+    out.append(Probe("Can list old versions in the backup bucket", ok,
+                     "" if ok else "Set by step 5 of the script — did it run?",
+                     "" if ok else provision._scrub(cp.stderr or "", key, secret).strip()))
+    try:
+        creds = provision.assume_role(role_arn(principal.account), region=region, key=key,
+                                      secret=secret, run=run)
+    except provision.AssumeRoleError as e:
+        out.append(Probe(role_probe, False, "Steps 3 and 5 of the script set this up — did step 3 run?",
+                         provision._scrub(str(e), key, secret)))
+        out.append(Probe(grant_probe, False, "Needs the role first (step 3)."))
+        out.append(Probe(attach_probe, False, "Needs the role first (step 3)."))
+        return out
+    out.append(Probe(role_probe, True))
+    rk, rs, rt = creds["AWS_ACCESS_KEY_ID"], creds["AWS_SECRET_ACCESS_KEY"], creds["AWS_SESSION_TOKEN"]
+    cp = run(["iam", "get-policy", "--policy-arn", extra_policy_arn(principal.account), "--output", "json"],
+             region=region, key=rk, secret=rs, session_token=rt)
+    if cp.returncode != 0:
+        out.append(Probe(grant_probe, False, "Steps 1 and 4 of the script set this up — did step 4 run?",
+                         provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
+        out.append(Probe(attach_probe, False, "Needs the step above first."))
+        return out
+    out.append(Probe(grant_probe, True))
+    count = json.loads(cp.stdout or "{}").get("Policy", {}).get("AttachmentCount", 0)
+    out.append(Probe(attach_probe, count >= 1, "" if count else "Attached by step 2 of the script — did it run?"))
+    return out
+
+
+def verify(principal: Principal, *, bucket: str, region: str, key: str, secret: str,
+           run=provision._run_aws, sleep=time.sleep, tries: int = 3,
+           wait_s: float = 5.0) -> list[Probe]:
+    """Functional checks with ONLY the runtime key, retried briefly because IAM
+    changes take a few seconds to reach every AWS endpoint."""
+    probes: list[Probe] = []
+    for attempt in range(tries):
+        probes = _probe_once(principal, bucket=bucket, region=region, key=key, secret=secret, run=run)
+        if all(p.ok for p in probes) or attempt == tries - 1:
+            break
+        sleep(wait_s)
+    return probes
