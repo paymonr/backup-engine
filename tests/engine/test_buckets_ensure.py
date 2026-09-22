@@ -149,3 +149,10 @@ def test_grant_object_access_prunes_oldest_version_at_limit():
     assert "create-policy-version" in ordered[1]
     vid = ordered[0][ordered[0].index("--version-id") + 1]
     assert vid == "v1"  # oldest non-default
+
+def test_oldest_non_default_version_only_at_the_limit():
+    from app.engine.buckets import oldest_non_default_version
+    four = [{"VersionId": f"v{i}", "IsDefaultVersion": i == 4, "CreateDate": f"2026-01-0{i}"} for i in range(1, 5)]
+    assert oldest_non_default_version(four) is None
+    five = four + [{"VersionId": "v5", "IsDefaultVersion": False, "CreateDate": "2026-01-05"}]
+    assert oldest_non_default_version(five) == "v1"

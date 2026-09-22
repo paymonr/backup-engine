@@ -12,10 +12,12 @@ import json
 import re
 import shlex
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
 from . import config_io, provision
+from ..engine import buckets, runs
 
 MANIFEST = provision.PROVISIONING_DIR / "permissions.json"
 STAMP_KEY = "PERMISSIONS_VERSION"
@@ -186,6 +188,9 @@ def normalize(doc: dict | None) -> dict:
                 s[k] = _as_sorted_list(s[k])
         if isinstance(s.get("Principal"), dict):
             s["Principal"] = {k: _as_sorted_list(v) for k, v in s["Principal"].items()}
+        # A live trust policy can also hold the string form ("Principal": "*")
+        # instead of the {"AWS": [...]} dict form -- leave it as-is; comparisons
+        # stay stable since both sides normalize the same way.
         out[s.get("Sid") or json.dumps(s, sort_keys=True)] = s
     return out
 
@@ -197,7 +202,10 @@ def same_policy(a: dict | None, b: dict | None) -> bool:
 def _describe(s: dict) -> str:
     sid = s.get("Sid") or "(unnamed)"
     acts = ", ".join(s.get("Action") or s.get("NotAction") or [])
-    targets = s.get("Resource") or [v for vs in (s.get("Principal") or {}).values() for v in vs]
+    principal = s.get("Principal")
+    principal_targets = [principal] if isinstance(principal, str) else \
+        [v for vs in (principal or {}).values() for v in vs]
+    targets = s.get("Resource") or principal_targets
     return f"{sid}: {acts} on {', '.join(targets)}" if targets else f"{sid}: {acts}"
 
 
@@ -288,3 +296,189 @@ def plan(live: Live, principal: Principal, bucket: str) -> list[Step]:
                            "--policy-name", RUNTIME_POLICY_NAME, "--policy-document", _j(want["runtime"])],
                           diff=diff_statements(live.runtime_inline, want["runtime"])))
     return steps
+
+
+# --- discover / apply / converge (I/O; admin creds are transient) --------------------------
+
+@dataclass(frozen=True)
+class AdminCreds:
+    key: str
+    secret: str
+    token: str | None = None
+
+
+def _scrub(admin: AdminCreds, text: str) -> str:
+    return provision._scrub(text or "", admin.key, admin.secret, admin.token or "").strip()
+
+
+def _denied_action(stderr: str) -> str | None:
+    m = re.search(r"when calling the (\w+) operation", stderr or "")
+    return f"iam:{m.group(1)}" if m else None
+
+
+def _caller(admin: AdminCreds, region: str, run):
+    def call(argv):
+        return run(argv, region=region, key=admin.key, secret=admin.secret, session_token=admin.token)
+    return call
+
+
+def runtime_principal(region: str, key: str, secret: str, *, run=provision._run_aws) -> Principal:
+    """Who the stored runtime key is (any key may call sts get-caller-identity)."""
+    cp = run(["sts", "get-caller-identity", "--output", "json"], region=region, key=key, secret=secret)
+    if cp.returncode != 0:
+        raise PermissionsError("runtime_key", provision._scrub(cp.stderr or "", key, secret).strip())
+    try:
+        arn = json.loads(cp.stdout)["Arn"]
+    except (ValueError, KeyError):
+        raise PermissionsError("runtime_key", "unreadable sts get-caller-identity response")
+    return parse_principal(arn)
+
+
+def discover(principal: Principal, *, region: str, admin: AdminCreds, run=provision._run_aws) -> Live:
+    call = _caller(admin, region, run)
+
+    def get(argv, *, missing_ok=True):
+        cp = call([*argv, "--output", "json"])
+        if cp.returncode == 0:
+            return json.loads(cp.stdout or "{}")
+        if missing_ok and "NoSuchEntity" in (cp.stderr or ""):
+            return None
+        raise PermissionsError("read", _scrub(admin, cp.stderr), action=_denied_action(cp.stderr))
+
+    user = principal.user
+    inline = get(["iam", "list-user-policies", "--user-name", user])
+    if inline is None:
+        raise PermissionsError("user_missing", f"IAM user {user} no longer exists")
+    live = Live()
+    if RUNTIME_POLICY_NAME in inline.get("PolicyNames", []):
+        live.runtime_inline = _doc(get(["iam", "get-user-policy", "--user-name", user,
+                                        "--policy-name", RUNTIME_POLICY_NAME],
+                                       missing_ok=False)["PolicyDocument"])
+    attached = {p["PolicyArn"]: p["PolicyName"] for p in
+                (get(["iam", "list-attached-user-policies", "--user-name", user]) or {})
+                .get("AttachedPolicies", [])}
+    for arn, name in attached.items():
+        if name == RUNTIME_POLICY_NAME:
+            pol = get(["iam", "get-policy", "--policy-arn", arn], missing_ok=False)["Policy"]
+            ver = get(["iam", "get-policy-version", "--policy-arn", arn,
+                       "--version-id", pol["DefaultVersionId"]], missing_ok=False)
+            live.runtime_managed_arn = arn
+            live.runtime_managed_doc = _doc(ver["PolicyVersion"]["Document"])
+    extra = extra_policy_arn(principal.account)
+    live.extra_exists = get(["iam", "get-policy", "--policy-arn", extra]) is not None
+    live.extra_attached = extra in attached
+    role = get(["iam", "get-role", "--role-name", ROLE_NAME])
+    if role is not None:
+        live.role_exists = True
+        live.role_trust = _doc(role["Role"].get("AssumeRolePolicyDocument"))
+        rp = get(["iam", "get-role-policy", "--role-name", ROLE_NAME, "--policy-name", ROLE_POLICY_NAME])
+        live.role_policy = _doc(rp["PolicyDocument"]) if rp else None
+    return live
+
+
+def _make_room(call, admin: AdminCreds, policy_arn: str) -> None:
+    cp = call(["iam", "list-policy-versions", "--policy-arn", policy_arn, "--output", "json"])
+    if cp.returncode != 0:
+        raise PermissionsError("apply", _scrub(admin, cp.stderr), action=_denied_action(cp.stderr))
+    victim = buckets.oldest_non_default_version(json.loads(cp.stdout or "{}").get("Versions", []))
+    if victim:
+        cp = call(["iam", "delete-policy-version", "--policy-arn", policy_arn, "--version-id", victim])
+        if cp.returncode != 0:
+            raise PermissionsError("apply", _scrub(admin, cp.stderr), action=_denied_action(cp.stderr))
+
+
+def apply(steps: list[Step], *, region: str, admin: AdminCreds, run=provision._run_aws) -> list[Step]:
+    """Run the steps in order; stop at the first failure (the rest become not-run).
+    Every step is idempotent, so a re-run after fixing the cause is safe."""
+    call = _caller(admin, region, run)
+    halted = False
+    for s in steps:
+        if halted:
+            s.status = "not-run"
+            continue
+        try:
+            if s.action == "new-version":
+                _make_room(call, admin, s.argv[s.argv.index("--policy-arn") + 1])
+            cp = call(s.argv)
+        except PermissionsError as e:
+            s.status, s.error, halted = "failed", e.detail, True
+            continue
+        raced = s.action in ("create-policy", "create-role") and "EntityAlreadyExists" in (cp.stderr or "")
+        if cp.returncode == 0 or raced:
+            s.status = "done"
+        else:
+            s.status, s.error, halted = "failed", _scrub(admin, cp.stderr), True
+    return steps
+
+
+def _now_iso(now=None) -> str:
+    return (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_stamp(config_dir: str, template_path: str, principal: Principal, *, now=None) -> None:
+    """Record that this install matches this build: the two ARNs + level + time."""
+    env = config_io.read_backup_env(config_dir)
+    env.update({"BUCKET_ADMIN_ROLE_ARN": role_arn(principal.account),
+                "RUNTIME_EXTRA_BUCKETS_POLICY_ARN": extra_policy_arn(principal.account),
+                STAMP_KEY: str(required_level()), CHECKED_KEY: _now_iso(now)})
+    config_io.write_backup_env(template_path, config_dir, env)
+
+
+def record(cache_dir: str, *, mode: str, lines: list[str]) -> str:
+    """Append a `permissions` run record so Activity shows it (the same start+end
+    shape provision.record_setup writes)."""
+    run_id = runs.new_run_id()
+    ts = _now_iso()
+    log_rel = f"logs/runs/{runs.SYSTEM_JOB}/{run_id}.log"
+    log_path = Path(cache_dir, log_rel)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    body = [f"{ts} AWS permissions ({mode}): level {required_level()} · OK"]
+    body += [f"{ts} {line}" for line in lines]
+    log_path.write_text("\n".join(body) + "\n")
+    runs.append_event(cache_dir, None, {
+        "v": 1, "id": run_id, "job": None, "kind": "permissions", "event": "start",
+        "trigger": "manual", "started_at": ts, "log": log_rel})
+    runs.append_event(cache_dir, None, {
+        "v": 1, "id": run_id, "job": None, "kind": "permissions", "event": "end",
+        "outcome": "ok", "finished_at": ts, "duration_s": 0, "exit_code": 0, "error": None})
+    return run_id
+
+
+@dataclass
+class Outcome:
+    ok: bool
+    applied: bool
+    steps: list[Step]
+    remaining: list[Step] = field(default_factory=list)
+
+
+def converge(principal: Principal, *, bucket: str, region: str, admin: AdminCreds,
+             config_dir: str, template_path: str, cache_dir: str,
+             apply_changes: bool = True, mode: str = "update",
+             run=provision._run_aws) -> Outcome:
+    """Discover -> plan -> (apply -> re-discover -> re-plan must be empty) -> stamp.
+    Raises provision.AdminCapabilityError / provision.AccountLookupError /
+    PermissionsError before any change; step failures come back in the Outcome."""
+    provision.verify_admin_can_provision(region, admin.key, admin.secret, admin.token, run=run)
+    account = provision.aws_account_id(region, admin.key, admin.secret, admin.token, run=run)
+    if account != principal.account:
+        raise PermissionsError(
+            "account_mismatch",
+            f"The admin credentials are for AWS account {account}, but the backup key "
+            f"belongs to account {principal.account}.")
+    steps = plan(discover(principal, region=region, admin=admin, run=run), principal, bucket)
+    if not steps:
+        write_stamp(config_dir, template_path, principal)
+        record(cache_dir, mode=mode, lines=["Everything was already in place."])
+        return Outcome(ok=True, applied=False, steps=[])
+    if not apply_changes:
+        return Outcome(ok=True, applied=False, steps=steps)
+    apply(steps, region=region, admin=admin, run=run)
+    if any(s.status == "failed" for s in steps):
+        return Outcome(ok=False, applied=True, steps=steps)
+    remaining = plan(discover(principal, region=region, admin=admin, run=run), principal, bucket)
+    if remaining:
+        return Outcome(ok=False, applied=True, steps=steps, remaining=remaining)
+    write_stamp(config_dir, template_path, principal)
+    record(cache_dir, mode=mode, lines=[s.summary for s in steps])
+    return Outcome(ok=True, applied=True, steps=steps)

@@ -97,6 +97,15 @@ def test_url_encoded_documents_are_decoded():
     assert permissions._doc(None) is None
 
 
+def test_string_principal_is_handled_by_diff_and_same_policy():
+    # A live AWS trust policy can hold a string form ("Principal": "*"), not just
+    # a dict -- normalize()/_describe() must not assume dict and blow up with
+    # AttributeError once discover() feeds live docs in.
+    doc = {"Statement": [{"Sid": "X", "Effect": "Allow", "Principal": "*", "Action": "sts:AssumeRole"}]}
+    assert permissions.diff_statements(None, doc) == ["+ X: sts:AssumeRole on *"]
+    assert permissions.same_policy(doc, json.loads(json.dumps(doc)))
+
+
 # --- the planner ----------------------------------------------------------------
 
 def test_current_install_plans_nothing():

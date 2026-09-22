@@ -1,6 +1,7 @@
 # app/gui/provision.py — renders the canonical IAM policy, runs the Test & Validate
 # S3 round-trip with a runtime key, and drives a one-shot OpenTofu apply for automated
-# provisioning. The ONLY module that renders the policy / calls aws / invokes tofu.
+# provisioning. Together with permissions.py (the converge engine), the only GUI
+# modules that render the policy / call aws / invoke tofu.
 # It never writes secrets itself — it returns discovered values to the route, which
 # calls config_io.write_secrets (the single secret writer).
 from __future__ import annotations

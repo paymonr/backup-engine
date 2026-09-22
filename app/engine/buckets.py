@@ -89,6 +89,17 @@ def _grants_bucket(document: dict, arn: str) -> bool:
             return True
     return False
 
+def oldest_non_default_version(versions: list[dict], limit: int = 5) -> str | None:
+    """IAM keeps at most `limit` versions of a managed policy. At the limit, the
+    oldest non-default version is the one to delete before publishing another."""
+    if len(versions) < limit:
+        return None
+    non_default = [v for v in versions if not v.get("IsDefaultVersion")]
+    if not non_default:
+        return None
+    return sorted(non_default, key=lambda v: v.get("CreateDate", ""))[0]["VersionId"]
+
+
 def grant_object_access(policy_arn, bucket_name, *, region, creds, runner=subprocess.run) -> None:
     # Read the current default version; append this bucket's ARNs (idempotently); publish a new default.
     cur = _aws(runner, ["iam", "get-policy", "--policy-arn", policy_arn,
@@ -110,11 +121,10 @@ def grant_object_access(policy_arn, bucket_name, *, region, creds, runner=subpro
     versions = _aws(runner, ["iam", "list-policy-versions", "--policy-arn", policy_arn,
                              "--region", region, "--output", "json"], creds)
     vlist = json.loads(versions.stdout).get("Versions", [])
-    if len(vlist) >= 5:
-        non_default = [v for v in vlist if not v.get("IsDefaultVersion")]
-        oldest = sorted(non_default, key=lambda v: v.get("CreateDate", ""))[0]
+    oldest = oldest_non_default_version(vlist)
+    if oldest:
         _aws(runner, ["iam", "delete-policy-version", "--policy-arn", policy_arn,
-                      "--version-id", oldest["VersionId"], "--region", region], creds)
+                      "--version-id", oldest, "--region", region], creds)
 
     _aws(runner, ["iam", "create-policy-version", "--policy-arn", policy_arn,
                   "--policy-document", json.dumps(document), "--set-as-default",
