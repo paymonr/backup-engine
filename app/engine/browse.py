@@ -6,13 +6,6 @@ import json, sys
 def _norm(p: str) -> str:
     return p.strip("/")
 
-def _parent(p: str) -> str:
-    p = _norm(p)
-    return p.rsplit("/", 1)[0] if "/" in p else ""
-
-def _name(p: str) -> str:
-    return _norm(p).rsplit("/", 1)[-1]
-
 def fold_level(records: list[dict], cur_dir: str) -> dict:
     cur = _norm(cur_dir)
     prefix = (cur + "/") if cur else ""
@@ -25,8 +18,11 @@ def fold_level(records: list[dict], cur_dir: str) -> dict:
         rest = path[len(prefix):]
         if "/" in rest:                       # something deeper -> a subdir at this level
             dirs.setdefault(rest.split("/", 1)[0], True)
-        elif rest and r.get("type") != "dir":  # a file directly at this level
-            files.append({**r, "name": rest})
+        elif rest:
+            if r.get("type") == "dir":        # an (possibly empty) directory AT this level
+                dirs.setdefault(rest, True)
+            else:                             # a file directly at this level
+                files.append({**r, "name": rest})
     return {"dirs": sorted(dirs), "files": sorted(files, key=lambda f: f["name"])}
 
 def _entries(level: dict, cur: str) -> dict:
@@ -48,6 +44,8 @@ def level_from_restic_ls(ls_json_path: str, cur_dir: str) -> dict:
             try:
                 o = json.loads(line)
             except ValueError:
+                continue
+            if not isinstance(o, dict):
                 continue
             if o.get("struct_type") == "node" or ("path" in o and "message_type" not in o and o.get("struct_type") != "snapshot"):
                 if "path" in o:
