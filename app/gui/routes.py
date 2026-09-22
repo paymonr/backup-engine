@@ -956,19 +956,24 @@ def explore_get(name):
     path = "" if typ == "archive" else rel
 
     # A versioned-files per-file version pick (Explore's version affordance) names
-    # the exact catalog version by its `version_id` (the S3 key
-    # `media/<job>/<relpath>@<epoch>-<uuid>`, app/engine/catalog.py:browse) rather
-    # than a job-level restore-point id -- `_vfiles_asof` cannot resolve that
-    # namespace. Parse the epoch straight out of the key and pass it through
-    # explicitly; a missing/malformed version_id leaves `asof` None, so
-    # `_restore_argv` falls back to its normal `_vfiles_asof(cfg, job, point)`
-    # resolution (restores the current/latest version).
+    # the exact catalog version by its EXACT `uploaded_at` float (the catalog's
+    # own full-precision timestamp, app/engine/catalog.py:browse) rather than a
+    # job-level restore-point id -- `_vfiles_asof` cannot resolve that namespace,
+    # and the S3 key's embedded epoch is truncated to whole seconds (vfiles.py's
+    # `@{int(now)}-<uuid>`) so parsing it back out would silently pick the WRONG
+    # version whenever `uploaded_at` had a fractional part. Read `asof` straight
+    # from the form and pass it through explicitly; a missing/malformed value
+    # leaves `asof` None, so `_restore_argv` falls back to its normal
+    # `_vfiles_asof(cfg, job, point)` resolution (restores the current/latest
+    # version).
     asof = None
     if typ == "versioned-files":
-        vid = (f.get("version_id") or "").strip()
-        m = re.search(r"@(\d+)-", vid)
-        if m:
-            asof = float(m.group(1))
+        asof_str = (f.get("asof") or "").strip()
+        if asof_str:
+            try:
+                asof = float(asof_str)
+            except ValueError:
+                asof = None
 
     try:
         ops.ensure_free(cfg, name)

@@ -142,6 +142,32 @@ def test_restore_asof_picks_version_current_at_that_time(tmp_path):
     assert not any(new_key in " ".join(c) for c in r.calls)
 
 
+def test_select_version_picks_exact_fractional_uploaded_at(tmp_path):
+    # FINAL-REVIEW regression guard: production `uploaded_at` is a full
+    # fractional `time.time()` float (vfiles.backup passes `now` straight into
+    # catalog.record_version), while the S3 key truncates it to whole seconds
+    # (`@{int(now)}-<uuid>`). `_select_version`'s asof MUST be matched against
+    # the exact float -- an asof truncated to the key's integer epoch (the old,
+    # buggy behavior) would fail the `uploaded_at <= asof` check for the very
+    # version it names and silently fall back to the PREVIOUS one instead.
+    cache = tmp_path / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    conn = catalog.open_catalog(str(cache / "j.sqlite"))
+    catalog.record_version(conn, "a.txt", "media/j/a.txt@100-aaaaaaaa", 1, 100.1, "STANDARD", 100.1)
+    catalog.record_version(conn, "a.txt", "media/j/a.txt@200-bbbbbbbb", 2, 200.2, "STANDARD", 200.2)
+    catalog.record_version(conn, "a.txt", "media/j/a.txt@300-cccccccc", 3, 300.3, "STANDARD", 300.3)
+
+    row = vfiles._select_version(conn, "a.txt", asof=200.2)
+    conn.close()
+
+    assert row is not None
+    assert row["uploaded_at"] == 200.2
+    assert row["key"] == "media/j/a.txt@200-bbbbbbbb"
+    # The truncation bug would have computed asof=200.0 (int(200.2)) and, since
+    # 200.2 <= 200.0 is False, excluded the 200.2 version -> returned 100.1.
+    assert row["uploaded_at"] != 100.1
+
+
 def test_restore_asof_exact_boundary_is_inclusive(tmp_path):
     # asof == the older version's own uploaded_at -> that version is "current"
     # at that instant (>=, not >).

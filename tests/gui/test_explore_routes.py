@@ -374,13 +374,14 @@ def test_versioned_job_with_no_points_cache_is_empty_not_crashed(client, app, so
     assert "Nothing here" in body
 
 
-def test_explore_get_vfiles_version_id_pins_exact_version(client, example, app, source_root,
-                                                            monkeypatch):
-    # Fix for the Task 8 review's Important gap: a per-file version pick sends
-    # the catalog's own `version_id` (the S3 key embeds the version's epoch,
-    # e.g. `media/filesjob/a.txt@1700000000-abcd1234`) rather than the
-    # job-level restore-point id `_vfiles_asof` resolves against — so
-    # explore_get must derive `--asof` straight from the version_id.
+def test_explore_get_vfiles_asof_pins_exact_version(client, example, app, source_root,
+                                                      monkeypatch):
+    # Regression coverage for the FINAL-REVIEW critical fix: the version
+    # picker submits the catalog's own EXACT `uploaded_at` float (`asof`),
+    # not a truncated epoch parsed out of the S3 key. explore_get must pass
+    # that fractional value straight through to `--asof` with no truncation
+    # -- a truncated `1700000000.0` would select the WRONG (previous, or
+    # nonexistent) catalog version.
     jobs_io.upsert(app.config["CONFIG_DIR"],
                    {"name": "filesjob", "type": "versioned-files", "source": "appdata",
                     "schedule": "0 6 * * *", "enabled": True, "storage_class": "STANDARD",
@@ -395,17 +396,18 @@ def test_explore_get_vfiles_version_id_pins_exact_version(client, example, app, 
     t = _csrf(client, "/explore/filesjob")
     r = client.post("/explore/filesjob/get",
                     data={"csrf": t, "path": "a.txt", "target": "out",
-                          "version_id": "media/filesjob/a.txt@1700000000-abcd1234"})
+                          "asof": "1700000000.7"})
     assert r.status_code in (302, 303)
     argv = launched["argv"]
     assert "--asof" in argv
-    assert argv[argv.index("--asof") + 1] in ("1700000000", "1700000000.0")
+    assert argv[argv.index("--asof") + 1] == "1700000000.7"
 
 
-def test_explore_get_vfiles_no_version_id_keeps_latest(client, example, app, source_root,
-                                                        monkeypatch):
-    # No version_id (the common case — no version picked) must behave exactly
-    # as before: no --asof (there is no job-level point either), latest wins.
+def test_explore_get_vfiles_no_asof_keeps_latest(client, example, app, source_root,
+                                                  monkeypatch):
+    # No asof (the common case — no version picked, or the "Latest" default
+    # option, which submits an empty value) must behave exactly as before: no
+    # --asof (there is no job-level point either), latest wins.
     jobs_io.upsert(app.config["CONFIG_DIR"],
                    {"name": "filesjob2", "type": "versioned-files", "source": "appdata",
                     "schedule": "0 6 * * *", "enabled": True, "storage_class": "STANDARD",
@@ -420,6 +422,28 @@ def test_explore_get_vfiles_no_version_id_keeps_latest(client, example, app, sou
     t = _csrf(client, "/explore/filesjob2")
     r = client.post("/explore/filesjob2/get",
                     data={"csrf": t, "path": "a.txt", "target": "out"})
+    assert r.status_code in (302, 303)
+    assert "--asof" not in launched["argv"]
+
+
+def test_explore_get_vfiles_malformed_asof_falls_back_to_latest(client, example, app, source_root,
+                                                                  monkeypatch):
+    # A hand-crafted/garbled `asof` must not 500 -- it fails safe to None
+    # (latest), exactly like a missing one.
+    jobs_io.upsert(app.config["CONFIG_DIR"],
+                   {"name": "filesjob3", "type": "versioned-files", "source": "appdata",
+                    "schedule": "0 6 * * *", "enabled": True, "storage_class": "STANDARD",
+                    "created_at": "2026-09-01T00:00:00Z"},
+                   source_root=str(source_root))
+    launched = {}
+    monkeypatch.setattr(routes.ops, "ensure_free", lambda *a, **k: None)
+    monkeypatch.setattr(routes.ops, "validate_target",
+                        lambda *a, **k: {"ok": True, "container_path": "/restore/out"})
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/filesjob3")
+    r = client.post("/explore/filesjob3/get",
+                    data={"csrf": t, "path": "a.txt", "target": "out", "asof": "not-a-number"})
     assert r.status_code in (302, 303)
     assert "--asof" not in launched["argv"]
 

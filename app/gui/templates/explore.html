@@ -5,9 +5,9 @@
     action forms; Task 9 adds in-place lazy loading against list.json.)
 
     Field names in the per-row action form MUST match app/gui/routes.py's
-    `explore_get` exactly: `path`, `snapshot` (versioned), `version_id`
-    (versioned-files — the exact catalog version, resolved server-side into
-    `--asof`), `target`, and the CSRF `csrf` field. `tier`/`thawed` are left
+    `explore_get` exactly: `path`, `snapshot` (versioned), `asof`
+    (versioned-files — the version's exact `uploaded_at` float, passed
+    straight through to `--asof`), `target`, and the CSRF `csrf` field. `tier`/`thawed` are left
     to explore_get's own defaults in this v1 (no client-side polling yet —
     that is Task 9). `cold_classes` comes from `points.COLD_CLASSES`
     (routes.py's `explore_job`) — never duplicate that list here. #}
@@ -90,10 +90,10 @@
           {% endif %}
           {% if job.type == 'versioned-files' and e.versions %}
           <label class="hint" for="version-{{ loop.index }}">Version</label>
-          <select id="version-{{ loop.index }}" name="version_id" class="mono" style="max-width:20rem">
+          <select id="version-{{ loop.index }}" name="asof" class="mono" style="max-width:20rem">
             <option value="">Latest</option>
             {% for v in e.versions %}
-            <option value="{{ v.version_id }}">{{ v.uploaded_at }} · {{ v.storage_class }}</option>
+            <option value="{{ v.uploaded_at }}">{{ v.uploaded_at }} · {{ v.storage_class }}</option>
             {% endfor %}
           </select>
           {% endif %}
