@@ -86,6 +86,11 @@ _run_versioned() {
     case "$JOB_STORAGE_CLASS" in
       GLACIER|DEEP_ARCHIVE|GLACIER_IR) log_warn "job '$JOB' class $JOB_STORAGE_CLASS is cold; deferring prune" ;;
       *) local plog="$CACHE_DIR/state/$JOB-prune.log" rc=0; : >"$plog"
+         # A stale lock (e.g. left by a process killed on a container restart) is
+         # non-exclusive, so it lets nightly backups through but blocks the EXCLUSIVE
+         # prune lock forever. Clear stale locks first; restic `unlock` never removes a
+         # live process's lock, so a concurrent backup is unaffected.
+         restic -r "$RESTIC_REPOSITORY" unlock 2>&1 | tee -a "$plog" >/dev/null || true
          restic -r "$RESTIC_REPOSITORY" "${class_opt[@]}" forget --prune --tag "$JOB" "${forget_args[@]}" 2>&1 | tee -a "$plog" >/dev/null || rc=$?
          [ "$rc" -eq 0 ] || _fail_phase prune "prune failed: $(_first_error_line "$plog")" ;;
     esac

@@ -380,3 +380,38 @@ assert e["copied"] is False, e.get("copied")' <"$CACHE_DIR/state/manga.runs.json
   [ -s "$NOTIFY_MARKER" ] && grep -q "notify" "$NOTIFY_MARKER"
   [ -s "$HC_MARKER" ] && grep -q "/fail" "$HC_MARKER"
 }
+
+@test "versioned prune clears stale locks first (restic unlock before forget)" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=days; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  grep -q -- "unlock" "$RESTIC_LOG"
+  # unlock must be issued BEFORE forget --prune (else a stale lock blocks the prune)
+  ul=$(grep -n -- "unlock" "$RESTIC_LOG" | head -1 | cut -d: -f1)
+  fg=$(grep -n -- "forget --prune" "$RESTIC_LOG" | head -1 | cut -d: -f1)
+  [ -n "$ul" ] && [ -n "$fg" ] && [ "$ul" -lt "$fg" ]
+}
+
+@test "keep_all versioned job does not unlock or forget" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  ! grep -q -- "unlock" "$RESTIC_LOG"
+}
+
+@test "_first_error_line surfaces a restic lock message via fallback (no 'error' word)" {
+  source "$BATS_TEST_DIRNAME/../../scripts/lib/runs.sh"
+  log="$BATS_TEST_TMPDIR/plog"
+  printf 'repository is already locked by PID 398\nthe unlock command can be used to remove stale locks\n' >"$log"
+  run _first_error_line "$log"
+  [ -n "$output" ]
+  [[ "$output" == *"locked"* || "$output" == *"unlock"* ]]
+}
+
+@test "_first_error_line still prefers an explicit error line" {
+  source "$BATS_TEST_DIRNAME/../../scripts/lib/runs.sh"
+  log="$BATS_TEST_TMPDIR/plog"
+  printf 'some info line\nFatal: AccessDenied for that key\ntrailing\n' >"$log"
+  run _first_error_line "$log"
+  [[ "$output" == *"AccessDenied"* ]]
+}

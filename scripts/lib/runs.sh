@@ -68,4 +68,13 @@ _rclone_stat_bytes()  { grep -E '^Transferred:[[:space:]]+[0-9.]+ [KMGTPE]?i?B /
 _rclone_stat_files()  { grep -E '^Transferred:[[:space:]]+[0-9]+ / [0-9]+,' "$1" 2>/dev/null | tail -n1 | awk '{print $2}'; }
 _rclone_stat_errors() { grep -E '^Errors:[[:space:]]+[0-9]+' "$1" 2>/dev/null | tail -n1 | awk '{print $2}'; }
 _vfiles_stat() { grep -o "$2=[0-9]*" "$1" 2>/dev/null | tail -n1 | cut -d= -f2; }
-_first_error_line() { grep -m1 -E 'AccessDenied|Error|error|denied|failed' "$1" 2>/dev/null | cut -c1-300; }
+_first_error_line() {
+  # Prefer a line that looks like an error; restic's lock message ("unable to create
+  # lock … repository is already locked") carries none of the usual words, so match
+  # those too — and if nothing matches, fall back to the last non-empty line so the
+  # recorded error is never empty (a bare "prune failed:" tells the owner nothing).
+  local line
+  line="$(grep -m1 -E 'AccessDenied|Error|error|denied|failed|unable|locked|Fatal|fatal' "$1" 2>/dev/null | cut -c1-300)"
+  [ -z "$line" ] && line="$(grep -v '^[[:space:]]*$' "$1" 2>/dev/null | tail -n1 | cut -c1-300)"
+  printf '%s' "$line"
+}
