@@ -304,6 +304,7 @@ def _remove_job_caches(cache_dir, name) -> None:
         except (FileNotFoundError, OSError):
             pass
     shutil.rmtree(Path(cache_dir, "logs", "runs", name), ignore_errors=True)
+    shutil.rmtree(Path(cache_dir, "state", f"{name}.browse"), ignore_errors=True)
 
 def delete(config_dir, name, cache_dir=None) -> None:
     jobs = [j for j in _load_strict(config_dir) if j.get("name") != name]

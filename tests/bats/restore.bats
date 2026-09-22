@@ -472,6 +472,47 @@ STUB
   [ ! -e "$CACHE_DIR/state/vf.runs.jsonl" ]
 }
 
+# --- Task 5: versioned (restic) browse — per-snapshot cache ---
+
+@test "versioned browse caches restic ls per snapshot (restic ls runs once)" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/restic" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RESTIC_LOG"
+case "$*" in
+  *" ls "*) printf '%s\n' '{"struct_type":"snapshot"}' '{"struct_type":"node","type":"file","path":"/a.txt","size":3}' ;;
+esac
+exit 0
+STUB
+  chmod +x "$b/restic"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD\n' >"$JOBS_IO_STUB"
+  run_restore cfg browse --snapshot deadbeef "" --json
+  [ "$status" -eq 0 ]
+  "$REAL_PY" -c 'import json,sys
+d=json.loads(sys.argv[1])
+assert any(e.get("name") == "a.txt" for e in d["entries"]), d' "$output"
+  [ -s "$CACHE_DIR/state/cfg.browse/deadbeef.json" ]
+  run_restore cfg browse --snapshot deadbeef "" --json
+  [ "$status" -eq 0 ]
+  [ "$(grep -c ' ls ' "$RESTIC_LOG")" -eq 1 ]   # cached: restic ls ran only once
+  [ ! -e "$CACHE_DIR/state/cfg.runs.jsonl" ]     # read-only: no run record
+}
+
+@test "versioned browse rejects a bad snapshot id (path escape), no cache written" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD\n' >"$JOBS_IO_STUB"
+  run_restore cfg browse --snapshot ../x "" --json
+  [ "$status" -ne 0 ]
+  [ ! -e "$CACHE_DIR/state/cfg.browse" ]
+  [ ! -e "$CACHE_DIR/state/cfg.runs.jsonl" ]
+}
+
+@test "versioned browse requires --snapshot" {
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD\n' >"$JOBS_IO_STUB"
+  run_restore cfg browse "" --json
+  [ "$status" -ne 0 ]
+  [ ! -e "$CACHE_DIR/state/cfg.runs.jsonl" ]
+}
+
 @test "versioned-files test -> restores first catalog file, tested.json, record kind test-restore" {
   local b="$BATS_TEST_TMPDIR/bin"
   export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"

@@ -251,6 +251,33 @@ _restore_versioned() {
       runs_end ok 0 "" "\"files_restored\":$(_runs_num "$n"),\"bytes_restored\":$(_runs_num "$b"),\"target\":$(_runs_str "$target")" \
         || log_warn "could not record run"
       ;;
+    browse)  # read-only: no lock, no record (dispatched from main's list|thaw-status|browse case)
+      shift  # drop "browse"; remaining: --snapshot <snap> [<relpath>] [--json]
+      local snap="" rel=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --snapshot) snap="${2:-}"; shift 2;;
+          --json) shift;;
+          *) rel="$1"; shift;;
+        esac
+      done
+      [ -n "$snap" ] || { echo "explore: --snapshot required" >&2; exit 2; }
+      # SECURITY: snap feeds the cache filename state/$job.browse/<snap>.json — a '/' or
+      # '..' would escape. restic snapshot ids are hex; also allow the literal "latest".
+      case "$snap" in latest|[0-9a-fA-F]*) : ;; *) echo "explore: bad snapshot" >&2; exit 2 ;; esac
+      case "$snap" in *[!0-9a-fA-F]*) [ "$snap" = latest ] || { echo "explore: bad snapshot" >&2; exit 2; } ;; esac
+      rel="$(_safe_rel "$rel")" || { echo "explore: bad path" >&2; exit 2; }
+      local bdir="$CACHE_DIR/state/$job.browse"; mkdir -p "$bdir"
+      local cache="$bdir/$snap.json"
+      if [ ! -s "$cache" ]; then
+        if restic -r "$RESTIC_REPOSITORY" ls --json "$snap" --tag "$job" >"$cache.tmp" 2>/dev/null; then
+          mv -f "$cache.tmp" "$cache"
+        else
+          rm -f "$cache.tmp"; echo "explore: restic ls failed" >&2; exit 1
+        fi
+      fi
+      python3 -m app.engine.browse "$cache" "$rel"
+      ;;
     thaw)        _thaw_versioned "$job" "$@" ;;
     # No versioned thaw-status: the spec limits thaw-status to archive/versioned-files
     # (§7.5.5/§7.5.6). Falls through to usage/exit 2 below.

@@ -593,6 +593,15 @@ def test_delete_removes_cache_files(tmp_path):
     assert not logdir.exists()
     assert (state / "other.runs.jsonl").exists()   # untouched
 
+def test_delete_removes_browse_cache_dir(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="movies"), source_root=root)
+    cache = tmp_path / "cache"
+    d = Path(cache, "state", "movies.browse"); d.mkdir(parents=True)
+    (d / "deadbeef.json").write_text("[]")
+    jobs_io.delete(cfg, "movies", str(cache))
+    assert not d.exists()
+
 def test_delete_removes_resilience_markers(tmp_path):
     """A deleted job's stale control/resume markers must not survive to confuse
     a job later recreated with the same name (7.1.9 fix)."""
