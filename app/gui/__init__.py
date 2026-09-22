@@ -107,6 +107,7 @@ def create_app(config: dict | None = None) -> Flask:
         return {"tz": os.environ.get("TZ", "UTC")}
 
     from .routes import bp
+    from . import permissions_routes  # noqa: F401 — registers /setup/permissions on bp
     app.register_blueprint(bp)
     register_error_handlers(app)
     return app

@@ -1,0 +1,100 @@
+{% extends "base.html" %}{% block title %}AWS permissions — backup-engine{% endblock %}
+{% block body %}
+{# AWS permissions (spec 2026-09-22 §3): the stamp vs this build, the admin-creds
+   Update / Preview path, and the commands fallback. Nothing here calls AWS on GET. #}
+<section class="screen read" aria-label="AWS permissions">
+  <p class="eyebrow">Setup · AWS permissions</p>
+  <h1>AWS permissions</h1>
+  <p class="lead">What backup-engine may do in your AWS account — and a way to bring that up
+     to date for this version without touching your bucket, your data or your backup key.</p>
+
+  <div class="sig sig-{{ 'success' if perm.state == 'current' else 'warning' }}" style="margin-top:var(--sp-5)">
+    <span class="glyph" aria-hidden="true"></span>
+    <div class="body" data-perm-state="{{ perm.state }}">
+      {% if perm.state == 'current' %}Up to date for this version{% if checked_human %} · checked <span class="stamp">{{ checked_human }}</span>{% endif %}.
+      {% elif perm.state == 'behind' %}An update is available. It adds:
+        <ul style="margin:var(--sp-2) 0 0">{% for h in perm.missing %}<li>{{ h.adds }}</li>{% endfor %}</ul>
+      {% else %}Not checked for this version of backup-engine yet. Checking is read-only —
+        nothing changes unless you choose Update.{% endif %}
+    </div>
+  </div>
+
+  {% if not provisioned %}
+  <p class="hint" style="margin-top:var(--sp-5)">Set up the destination first —
+     <a class="linklike" href="/setup/destination">Where backups go →</a></p>
+  {% else %}
+
+  {% if error %}
+  <div class="sig sig-failure" data-flash="failure" style="margin-top:var(--sp-4)">
+    <span class="glyph" aria-hidden="true"></span><div class="body">{{ error }}</div>
+  </div>
+  {% endif %}
+  {% if error_detail %}
+  <details class="error-detail" open style="margin-top:var(--sp-3)">
+    <summary>What AWS reported</summary>
+    <div class="errline" style="margin-top:var(--sp-2)">{{ error_detail }}</div>
+  </details>
+  {% endif %}
+
+  {% if outcome %}
+  <p class="slabel" style="margin-top:var(--sp-6)">{% if preview %}Preview — nothing was changed{% else %}What happened{% endif %}</p>
+  {% if outcome.remaining %}
+  <div class="sig sig-failure" style="margin-top:var(--sp-3)">
+    <span class="glyph" aria-hidden="true"></span>
+    <div class="body">Every step ran, but a fresh check still found differences. Run the update
+      again; if it keeps happening, something else is changing these IAM settings.</div>
+  </div>
+  {% endif %}
+  <table class="classes" style="margin-top:var(--sp-3)">
+    <thead><tr><th style="width:1.4rem" aria-label="Status"></th><th style="text-align:left">Step</th><th style="text-align:left">Status</th></tr></thead>
+    <tbody>
+      {% for s in outcome.steps %}
+      {%- set dot = 'dot-ok' if s.status == 'done' else ('dot-danger' if s.status == 'failed' else 'dot-warn') -%}
+      <tr data-step="{{ s.id }}" data-status="{{ s.status }}">
+        <td style="text-align:left"><span class="dot {{ dot }}" aria-hidden="true"></span></td>
+        <td style="text-align:left">{{ s.summary }}
+          <details class="tooldetail" style="margin-top:var(--sp-2)">
+            <summary>Command{% if s.diff %} and policy changes{% endif %}</summary>
+            <div class="cmd" style="margin-top:var(--sp-2)"><pre>{{ s.command() }}</pre></div>
+            {% if s.diff %}<div class="cmd" style="margin-top:var(--sp-2)"><pre>{{ s.diff | join('\n') }}</pre></div>{% endif %}
+          </details>
+          {% if s.error %}<div class="errline" style="margin-top:var(--sp-2)">{{ s.error }}</div>{% endif %}
+        </td>
+        <td style="text-align:left">{{ {'pending': ('Would do' if preview else 'Pending'), 'done': 'Done', 'failed': 'Failed', 'not-run': 'Not run'}[s.status] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if outcome.steps | selectattr('status', 'equalto', 'failed') | list %}
+  <p class="hint" style="margin-top:var(--sp-3)">Stopped at the first failure. Every step is safe
+     to repeat — fix the cause and run the update again.</p>
+  {% endif %}
+  {% endif %}
+
+  <p class="slabel" style="margin-top:var(--sp-6)">Use admin credentials</p>
+  <div class="sig sig-warning" style="margin-top:var(--sp-3)">
+    <span class="glyph" aria-hidden="true"></span>
+    <div class="body">These admin credentials are <strong>transient</strong>: used for this one
+      request, never written to disk or logs, and never shown again. Use a short-lived key and
+      delete it afterwards.</div>
+  </div>
+  <form method="post" action="{{ url_for('gui.permissions_update') }}" class="form" style="margin-top:var(--sp-4)">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="field"><label for="ak">Admin access key <code class="hint">ADMIN_ACCESS_KEY_ID</code></label>
+      <input id="ak" name="ADMIN_ACCESS_KEY_ID" autocomplete="off" required></div>
+    <div class="field"><label for="sk">Admin secret key <code class="hint">ADMIN_SECRET_ACCESS_KEY</code></label>
+      <input id="sk" name="ADMIN_SECRET_ACCESS_KEY" type="password" autocomplete="off" required></div>
+    <div class="field"><label for="st">Session token <code class="hint">ADMIN_SESSION_TOKEN</code> <small>(optional)</small></label>
+      <input id="st" name="ADMIN_SESSION_TOKEN" type="password" autocomplete="off"></div>
+    <div class="formfoot" data-progress="Working…">
+      <button type="submit" class="btn btn-primary">Update permissions</button>
+      <button type="submit" class="btn" formaction="{{ url_for('gui.permissions_preview') }}">Preview only</button>
+    </div>
+  </form>
+
+  <p class="slabel" id="commands" style="margin-top:var(--sp-6)">Run the commands yourself</p>
+  <p class="hint">Rather not paste admin credentials here? Generate a script, run it in AWS
+     CloudShell (or any shell signed in as an admin), then Verify.</p>
+  {% endif %}
+</section>
+{% endblock %}

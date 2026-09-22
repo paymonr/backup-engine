@@ -306,6 +306,7 @@ ALL_PAGES = [
     "/setup/destination",             # Destination
     "/setup/keys",                    # Keys & secrets
     "/setup/about",                   # About / glossary
+    "/setup/permissions",             # AWS permissions
     "/jobs/new",                      # Create job
     "/jobs/appdata/edit",             # Edit job
     "/jobs/appdata/restore",          # restore-confirm — warm (5.4)
