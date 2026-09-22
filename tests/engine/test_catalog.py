@@ -59,6 +59,66 @@ def test_prunable_beyond_count_per_path_independent(tmp_path):
     assert [r["key"] for r in got] == ["a1"]  # b.txt has only 1 version -> nothing beyond keep_n=1
 
 
+def _seed_browse(conn):
+    # two versions of a/b.txt (newest current), one top.txt, one deeper a/sub/d.txt
+    conn.executescript("""
+      INSERT INTO versions(path,key,size,mtime,storage_class,uploaded_at,is_current,deleted) VALUES
+        ('a/b.txt','media/j/a/b.txt@1-aa',3,0,'STANDARD','2026-09-01T00:00:00Z',0,0),
+        ('a/b.txt','media/j/a/b.txt@2-bb',5,0,'STANDARD','2026-09-02T00:00:00Z',1,0),
+        ('top.txt','media/j/top.txt@1-cc',1,0,'DEEP_ARCHIVE','2026-09-01T00:00:00Z',1,0),
+        ('a/sub/d.txt','media/j/a/sub/d.txt@1-dd',9,0,'STANDARD','2026-09-01T00:00:00Z',1,0);
+    """)
+    conn.commit()
+
+
+def test_catalog_browse_root():
+    conn = catalog.open_catalog(":memory:")
+    _seed_browse(conn)
+    out = catalog.browse(conn, "")
+    assert [e["name"] for e in out["entries"] if e["kind"] == "dir"] == ["a"]
+    top = next(e for e in out["entries"] if e["name"] == "top.txt")
+    assert top["kind"] == "file" and top["storage_class"] == "DEEP_ARCHIVE"
+    # dirs precede files
+    assert [e["name"] for e in out["entries"]] == ["a", "top.txt"]
+
+
+def test_catalog_browse_subdir_has_version_history():
+    conn = catalog.open_catalog(":memory:")
+    _seed_browse(conn)
+    out = catalog.browse(conn, "a")
+    b = next(e for e in out["entries"] if e["name"] == "b.txt")
+    assert b["size"] == 5  # current version
+    assert [v["uploaded_at"] for v in b["versions"]] == ["2026-09-02T00:00:00Z", "2026-09-01T00:00:00Z"]
+    newest, oldest = b["versions"]
+    assert newest["version_id"] == "media/j/a/b.txt@2-bb"
+    assert newest["storage_class"] == "STANDARD"
+    assert newest["size"] == 5
+    assert newest["deleted"] is False
+    assert oldest["version_id"] == "media/j/a/b.txt@1-aa"
+    # deeper subdir shows up as a dir at this level, not a file
+    assert [e["name"] for e in out["entries"] if e["kind"] == "dir"] == ["sub"]
+
+
+def test_catalog_browse_deeper_subdir():
+    conn = catalog.open_catalog(":memory:")
+    _seed_browse(conn)
+    out = catalog.browse(conn, "a/sub")
+    assert [e["name"] for e in out["entries"]] == ["d.txt"]
+    d = out["entries"][0]
+    assert d["kind"] == "file" and d["size"] == 9
+    assert len(d["versions"]) == 1
+
+
+def test_catalog_browse_is_read_only():
+    conn = catalog.open_catalog(":memory:")
+    _seed_browse(conn)
+    before = conn.execute("SELECT COUNT(*) FROM versions").fetchone()[0]
+    catalog.browse(conn, "")
+    catalog.browse(conn, "a")
+    after = conn.execute("SELECT COUNT(*) FROM versions").fetchone()[0]
+    assert before == after
+
+
 def test_prunable_beyond_count_excludes_tombstone_rows(tmp_path):
     c = catalog.open_catalog(str(tmp_path / "cat.sqlite"))
     catalog.record_version(c, "a.txt", "a1", 5, 100.0, "STANDARD", 100.0)

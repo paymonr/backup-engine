@@ -15,6 +15,7 @@ import os
 import sqlite3
 from pathlib import Path
 from app.gui import fsbrowse
+from . import browse as _browse
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS versions (
@@ -191,6 +192,30 @@ def is_current_key(conn: sqlite3.Connection, key) -> bool:
     return conn.execute(
         "SELECT 1 FROM versions WHERE key = ? AND is_current = 1 LIMIT 1", (key,)
     ).fetchone() is not None
+
+
+def browse(conn: sqlite3.Connection, cur_dir: str) -> dict:
+    """Read-only: fold current (is_current=1, deleted=0) paths into one directory
+    level (via browse.fold_level); attach per-file version history from
+    versions(). Never writes -- only SELECT statements are executed."""
+    rows = conn.execute(
+        "SELECT path, size, storage_class, uploaded_at FROM versions "
+        "WHERE is_current=1 AND deleted=0"
+    ).fetchall()
+    records = [{"path": r["path"], "type": "file", "size": r["size"],
+                "storage_class": r["storage_class"], "modified": r["uploaded_at"]}
+               for r in rows]
+    level = _browse.fold_level(records, cur_dir)
+    for f in level["files"]:
+        f["versions"] = [
+            {"version_id": v["key"],
+             "uploaded_at": v["uploaded_at"],
+             "storage_class": v["storage_class"],
+             "size": v["size"],
+             "deleted": bool(v["deleted"])}
+            for v in versions(conn, f["path"])
+        ]
+    return _browse._entries(level, cur_dir)
 
 
 def delete_version(conn: sqlite3.Connection, id) -> None:
