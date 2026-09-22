@@ -354,6 +354,7 @@
         create a new job.</div></dd></dl>
     {% endif %}
     {% else %}
+    {% if dedicated_ok %}
     <label class="radio" for="dedicated"><input type="checkbox" id="dedicated" name="dedicated" value="1" {{ 'checked' if fv.dedicated == '1' }}>
       <span>Give this job its own bucket</span></label>
     <p class="sm faint measure" style="margin-top:4px">Optional. By default every job shares
@@ -368,6 +369,13 @@
       <label class="radio" for="bucket_versioned" style="margin-top:10px"><input type="checkbox" id="bucket_versioned" name="bucket_versioned" value="1" {{ 'checked' if fv.bucket_versioned == '1' }}>
         <span>Keep old versions in this bucket too</span></label>
     </div>
+    {% else %}
+    <label class="radio" for="dedicated"><input type="checkbox" id="dedicated" disabled>
+      <span>Give this job its own bucket</span></label>
+    <p class="sm faint measure" style="margin-top:4px">Needs a one-time AWS permissions update —
+      <a class="linklike" href="/setup/permissions">update permissions →</a>. Until then every job
+      shares <span class="mono">s3://{{ bucket }}</span>.</p>
+    {% endif %}
     {% endif %}
   </section>
 

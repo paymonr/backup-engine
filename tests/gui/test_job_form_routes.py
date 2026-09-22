@@ -6,7 +6,7 @@
 import json
 import pathlib
 import pytest
-from app.gui import config_io, create_app, jobs_io
+from app.gui import config_io, create_app, jobs_io, permissions
 import app.engine.buckets as buckets
 import app.gui.provision as provision
 
@@ -26,7 +26,8 @@ def app(tmp_path, source_root, template_path):
     (cfg / "backup.env").write_text(
         "S3_BUCKET=bw-backups\nAWS_REGION=us-east-1\n"
         "BUCKET_ADMIN_ROLE_ARN=arn:aws:iam::111111111111:role/backup-engine-bucket-admin\n"
-        "RUNTIME_EXTRA_BUCKETS_POLICY_ARN=arn:aws:iam::111111111111:policy/backup-engine-runtime-extra-buckets\n")
+        "RUNTIME_EXTRA_BUCKETS_POLICY_ARN=arn:aws:iam::111111111111:policy/backup-engine-runtime-extra-buckets\n"
+        f"PERMISSIONS_VERSION={permissions.required_level()}\n")
     return create_app({"CONFIG_DIR": str(cfg), "CACHE_DIR": str(tmp_path / "cache"),
                        "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
                        "SOURCE_ROOT": str(source_root), "SECRET_KEY": "test", "TESTING": True,
@@ -519,3 +520,42 @@ def test_new_name_hint_names_the_destination(client):
     body = client.get("/jobs/new").get_data(as_text=True)
     assert "s3://bw-backups/appdata/" in body          # Snapshot backup hint
     assert "s3://bw-backups/media/" in body            # the others' hint
+
+
+# --- dedicated buckets need the permissions update (spec 2026-09-22 §3) -----
+
+@pytest.fixture
+def unstamped_client(tmp_path, source_root, template_path):
+    cfg = tmp_path / "config2"; cfg.mkdir()
+    config_io.write_secrets(str(cfg), {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    (cfg / "backup.env").write_text("S3_BUCKET=bw-backups\nAWS_REGION=us-east-1\n")
+    app = create_app({"CONFIG_DIR": str(cfg), "CACHE_DIR": str(tmp_path / "cache2"),
+                      "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
+                      "SOURCE_ROOT": str(source_root), "SECRET_KEY": "test", "TESTING": True,
+                      "PRICES_LIVE": False})
+    return app.test_client()
+
+
+def test_toggle_disabled_until_permissions_are_updated(unstamped_client):
+    body = unstamped_client.get("/jobs/new").get_data(as_text=True)
+    assert 'name="dedicated"' not in body
+    assert "Needs a one-time AWS permissions update" in body
+    assert 'href="/setup/permissions"' in body
+
+
+def test_toggle_enabled_when_current(client):
+    assert 'name="dedicated"' in client.get("/jobs/new").get_data(as_text=True)
+
+
+def test_dedicated_post_without_permissions_is_refused_without_aws(unstamped_client, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("must not reach AWS")
+    monkeypatch.setattr(provision, "assume_role", boom)
+    unstamped_client.get("/jobs/new")
+    with unstamped_client.session_transaction() as s:
+        token = s["_csrf"]
+    r = unstamped_client.post("/jobs", data={"csrf": token, "name": "photos", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
+    assert "one-time AWS permissions update" in r.get_data(as_text=True)

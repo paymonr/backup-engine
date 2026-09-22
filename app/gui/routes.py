@@ -1842,6 +1842,16 @@ def jobs_page():
 _RETENTION_DEFAULT_BY_TYPE = {"versioned": "tiered", "versioned-files": "days",
                               "archive": "days"}
 
+DEDICATED_NEEDS_UPDATE = ("Dedicated buckets need a one-time AWS permissions update first — "
+                          "open Setup → AWS permissions.")
+
+
+def _dedicated_ok(cfg) -> bool:
+    """Dedicated buckets are usable once the permissions stamp reaches the level that
+    introduced them AND the bucket-admin role is known (spec 2026-09-22 §3)."""
+    return (permissions.feature_available(cfg["CONFIG_DIR"], "dedicated-buckets")
+            and bool(config_io.bucket_admin_role_arn(cfg["CONFIG_DIR"])))
+
 # `was:` idioms for the diff-aware edit screen (spec 5.9). Each renders a saved value
 # in the SAME idiom the control shows it in, so a changed row reads e.g.
 # `was: Instant · STANDARD` / `was: A little — rare replacements (~1%)`.
@@ -2047,6 +2057,7 @@ def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
         price_stamp=price_stamp, errors=errors or {}, jobsfile_error=jobsfile_error,
         blockers=blockers, unacked=unacked, acknowledged=sorted(ack),
         diff=diff, saved_typical=saved_typical, saved_cmp=saved_cmp, bucket=bucket,
+        dedicated_ok=_dedicated_ok(cfg),
         csrf=security.issue_csrf()), status_code
 
 
@@ -2232,6 +2243,8 @@ def job_save():
     # jobs_io.validate does not charset-check `bucket` -- valid_bucket_name is the only
     # S3-name gate.
     elif f.get("dedicated"):
+        if not _dedicated_ok(cfg):
+            return _render_job_form(cfg, job=existing, fv=fv, errors={"form": DEDICATED_NEEDS_UPDATE})
         bucket = f.get("bucket", "").strip()
         if not buckets.valid_bucket_name(bucket):
             return _render_job_form(cfg, job=existing, fv=fv,
