@@ -101,3 +101,28 @@ merged to master or deployed.
   store a copy safely.
 - **Job-delete data:** deleting a job leaves its S3 data (by design; a note now warns
   for dedicated-bucket jobs). A separate "delete this job's data" action is still open.
+
+## Backup resilience — parked minors (from the 2026-09-21 final whole-branch review)
+The feature (bounded retry-with-resume, auto-resume-on-boot toggle, pause/resume a
+running run, run states) shipped on `ui-redesign-nightshift` (0bc5557..HEAD). Final
+review = SHIP-WITH-NITS; the one Important finding was fixed. These four Minors were
+parked (each is cosmetic/low-likelihood or a spec-acknowledged tuning item):
+- **No dedicated status arm for a run-`paused` job** (`app/gui/status.py:191-202`): a
+  paused latest run (lock released, schedule still enabled) shows as `NOT_RUN_YET`
+  (or `OVERDUE` later). Cosmetic only — `paused` is excluded from `failed_14`, never
+  routed to `errors.classify`, and the job-page Resume button keys off
+  `s.last.outcome=='paused'` so resume still works. The label just misreads. Add a
+  PAUSED-run state arm + board/job-page label when polishing the state machine.
+- **Pause descendant-sweep also kills the run-log tee** (`scripts/backup-job.sh:287-289`):
+  `_be_kill_descendants "$$"` signals the `tee` writing `$BE_RUN_LOG` too, tearing
+  logging down a beat early on pause. Harmless (records go to files via `runs_end`,
+  notify skipped on pause). Optionally exclude `_BE_TEE_PID` from the sweep.
+- **`resume-run` doesn't wait for the paused run's lock** (`app/gui/routes.py:317-323`):
+  a very fast Resume right after Pause can race the exiting run's `flock`; the resumed
+  run then dies silently in `acquire_lock`. Low likelihood (lock held by `$$`, released
+  on script exit). Consider a brief retry/backoff or a user-facing "still stopping" note.
+- **Transient classifier matches bare substrings** (`scripts/lib/common.sh` `_is_transient_error`):
+  `timeout`/`Throttl` match unanchored over the combined log, so a permanent failure
+  whose verbose output merely contains "timeout" burns up to BE_MAX_ATTEMPTS retries
+  (bounded — never an infinite loop). Already a spec open-question: tune the class list
+  against real AWS error text once observed in the wild.
