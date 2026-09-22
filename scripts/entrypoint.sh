@@ -24,6 +24,10 @@ prepare() {
   # GUI can observe them (spec §7.1.7/§7.2). Never fatal; exits 0 always.
   CONFIG_DIR="${CONFIG_DIR:-/config}" python3 -m app.engine.runs boot \
     || log_warn "run reconcile at boot failed (non-fatal)"
+  # After reconciling dangling runs, auto-resume any interrupted (aborted) run whose
+  # job opts in (toggle default on) — best-effort, never fatal to container start.
+  CONFIG_DIR="${CONFIG_DIR:-/config}" python3 -m app.engine.resume \
+    || log_warn "auto-resume on boot failed (non-fatal)"
 }
 
 emit_crontab() {

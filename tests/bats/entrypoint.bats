@@ -115,3 +115,31 @@ EOF
   grep -q '"event":"end"' "$CACHE_DIR/state/appdata.runs.jsonl"
   grep -q '"outcome":"aborted"' "$CACHE_DIR/state/appdata.runs.jsonl"
 }
+
+# Task 7: entrypoint calls auto-resume after boot reconcile — both modules invoked,
+# app.engine.resume AFTER app.engine.runs boot (order matters for correctness).
+@test "entrypoint calls auto-resume after boot reconcile (with ordered python3 stub)" {
+  # Create a stubbed python3 that logs module args in order
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat >"$BATS_TEST_TMPDIR/bin/python3" <<'PYSTUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$PYLOG"
+exit 0
+PYSTUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/python3"
+  export PYLOG="$BATS_TEST_TMPDIR/pylog"
+  : >"$PYLOG"
+
+  # Run entrypoint with stubbed python3
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
+  [ "$status" -eq 0 ]
+
+  # Both modules must be invoked
+  grep -q "app.engine.runs boot" "$PYLOG"
+  grep -q "app.engine.resume" "$PYLOG"
+
+  # app.engine.resume must appear AFTER app.engine.runs boot (ordering assertion)
+  local boot_line=$(grep -n "app.engine.runs boot" "$PYLOG" | cut -d: -f1)
+  local resume_line=$(grep -n "app.engine.resume" "$PYLOG" | cut -d: -f1)
+  [ "$boot_line" -lt "$resume_line" ]
+}
