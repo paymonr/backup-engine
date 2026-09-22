@@ -437,6 +437,11 @@ def _main(argv: list[str]) -> int:
     thaw_p.add_argument("--tier", default="Bulk", choices=["Bulk", "Standard", "Expedited"],
                          help="Glacier/Deep Archive thaw tier")
 
+    browse_p = sub.add_parser("browse", help="list one directory level of the catalog")
+    browse_p.add_argument("job")
+    browse_p.add_argument("relpath", nargs="?", default="")
+    browse_p.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
 
     # Defense-in-depth: the job name feeds the S3 key prefix (media/<job>/), the
@@ -460,6 +465,25 @@ def _main(argv: list[str]) -> int:
     # never land in (or get pruned from) the base bucket.
     bucket = os.environ.get("JOB_BUCKET") or _require_env("S3_BUCKET")
     rclone_config = str(Path(cache_dir) / "rclone.conf")
+
+    # browse is read-only and dispatches HERE -- before the retention/
+    # JOB_STORAGE_CLASS block below -- so listing a job's catalog never
+    # requires the JOB_* env vars that only backup/restore/thaw need.
+    if args.cmd == "browse":
+        from . import catalog
+        import json as _json
+        conn = _open_or_fetch_catalog(args.job, cache_dir, bucket=bucket,
+                                      rclone_config=rclone_config, runner=subprocess.run)
+        try:
+            level = catalog.browse(conn, args.relpath or "")
+        finally:
+            conn.close()
+        if args.json:
+            print(_json.dumps(level))
+        else:
+            for e in level["entries"]:
+                print(f"{e['kind']}\t{e['name']}\t{e.get('storage_class') or ''}")
+        return 0
 
     # JOB_RETENTION_TYPE selects the policy shape; JOB_RETENTION_DAYS defaults to
     # 90 when unset (backward compat with jobs.json's own versioned-files
