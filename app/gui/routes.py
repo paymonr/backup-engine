@@ -1358,6 +1358,12 @@ def setup_versioning_confirmed():
 # (spec 5.6 band 5 / 5.12): POST /costs/billing was deleted in Task 12.
 _KEY_SECRET_FIELDS = tuple(config_io.SECRET_KEYS) + tuple(config_io.COST_EXPLORER_KEYS)
 
+# Template keys that get a dedicated, hand-built control on the Keys screen instead
+# of the generic "extra" text-field fallback (Task 11): AUTO_RESUME_ON_BOOT renders
+# as its own checkbox in config.html, so it must be excluded here or it would also
+# render as a raw text <input> with the same name (Task 1 side effect).
+_UI_HANDLED_KEYS = {"AUTO_RESUME_ON_BOOT"}
+
 
 def _keys_groups(cfg):
     """The four grouped rows for /setup/keys (spec 5.12). Group membership is
@@ -1380,7 +1386,8 @@ def _keys_groups(cfg):
             seen.add(k)
             rows.append(row(k))
         groups.append({"name": gname, "id": gname.lower().replace(" ", "-"), "rows": rows})
-    extra = [k for k in template if k not in seen and k not in secret_all]
+    extra = [k for k in template
+             if k not in seen and k not in secret_all and k not in _UI_HANDLED_KEYS]
     if extra:
         tm = next(g for g in groups if g["name"] == "This machine")
         tm["rows"].extend(row(k) for k in extra)
@@ -1397,6 +1404,7 @@ def config_page():
     groups, restic_repo = _keys_groups(cfg)
     return render_template("config.html", groups=groups, restic_repo=restic_repo,
                            secret_mode=config_io.secrets_mode(cfg["CONFIG_DIR"]),
+                           auto_resume_on_boot=config_io.auto_resume_on_boot(cfg["CONFIG_DIR"]),
                            csrf=security.issue_csrf())
 
 
@@ -1424,6 +1432,10 @@ def config_save():
     before_ce = config_io.read_cost_explorer_creds(cfg["CONFIG_DIR"])
     values = {k: f.get(k, "") for k in env_keys}
     values["S3_BUCKET"] = new_bucket
+    # Checkbox (Task 11): an unchecked checkbox submits no field at all, so
+    # f.get("AUTO_RESUME_ON_BOOT", "") above would write "" — and auto_resume_on_boot()
+    # treats anything other than the literal string "false" as True. Override explicitly.
+    values["AUTO_RESUME_ON_BOOT"] = "true" if f.get("AUTO_RESUME_ON_BOOT") else "false"
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"], values)
     # Write the runtime key AND the Cost Explorer billing credential in one pass —
     # write_secrets rebuilds secrets.env from the managed UNION, so writing one group

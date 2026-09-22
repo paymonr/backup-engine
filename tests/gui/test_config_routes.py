@@ -4,6 +4,7 @@
 # Cost Explorer billing credential (§5.6 band 5 / §5.12 Billing anchor): the
 # COST_EXPLORER_* write path + its coverage moved here from the deleted
 # POST /costs/billing (§10.2), so the CE round-trip is pinned below.
+import re
 import pytest
 from pathlib import Path
 from app.gui import create_app, config_io
@@ -174,3 +175,45 @@ def test_keys_save_rejects_blank_base_bucket(client, dirs, template_path):
                     follow_redirects=True)
     assert r.status_code == 200
     assert config_io.read_backup_env(dirs["config"])["S3_BUCKET"] == "keep-me"
+
+
+# --- auto-resume-on-boot toggle (Task 11) ------------------------------------
+
+_AUTO_RESUME_CHECKBOX_CHECKED = re.compile(
+    r'type="checkbox"\s+name="AUTO_RESUME_ON_BOOT"\s+value="true"\s+checked')
+
+
+def test_keys_get_shows_auto_resume_checked_by_default(client):
+    # Fresh env: config_io.auto_resume_on_boot() defaults True.
+    body = client.get("/setup/keys").get_data(as_text=True)
+    assert 'name="AUTO_RESUME_ON_BOOT"' in body
+    assert _AUTO_RESUME_CHECKBOX_CHECKED.search(body)
+
+
+def test_keys_get_shows_auto_resume_unchecked_when_disabled(client, dirs, template_path):
+    config_io.write_backup_env(template_path, dirs["config"],
+                               {"S3_BUCKET": "b", "AUTO_RESUME_ON_BOOT": "false"})
+    body = client.get("/setup/keys").get_data(as_text=True)
+    assert not _AUTO_RESUME_CHECKBOX_CHECKED.search(body)
+
+
+def test_keys_save_checked_persists_true(client, dirs):
+    token = _csrf(client)
+    client.post("/setup/keys", data={"csrf": token, "S3_BUCKET": "b",
+                                     "AUTO_RESUME_ON_BOOT": "true"})
+    assert config_io.read_backup_env(dirs["config"])["AUTO_RESUME_ON_BOOT"] == "true"
+
+
+def test_keys_save_unchecked_persists_false(client, dirs):
+    # An unchecked checkbox submits nothing at all — must still persist "false",
+    # not fall back to a blank value (which would wrongly read as True).
+    token = _csrf(client)
+    client.post("/setup/keys", data={"csrf": token, "S3_BUCKET": "b"})
+    assert config_io.read_backup_env(dirs["config"])["AUTO_RESUME_ON_BOOT"] == "false"
+
+
+def test_keys_auto_resume_not_rendered_as_raw_text_input(client):
+    # Task 1 side effect: AUTO_RESUME_ON_BOOT must not ALSO render via the generic
+    # "extra" text-field path (would produce a duplicate <input name="AUTO_RESUME_ON_BOOT">).
+    body = client.get("/setup/keys").get_data(as_text=True)
+    assert 'id="AUTO_RESUME_ON_BOOT" name="AUTO_RESUME_ON_BOOT"' not in body

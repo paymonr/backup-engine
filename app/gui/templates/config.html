@@ -67,6 +67,14 @@
     {% endfor %}
     {% endfor %}
 
+    <h2 class="slabel" style="margin-top:var(--sp-6)">When a backup is interrupted</h2>
+    <div class="field" style="margin:var(--sp-3) 0">
+      <label><input type="checkbox" name="AUTO_RESUME_ON_BOOT" value="true"
+         {% if auto_resume_on_boot %}checked{% endif %}> Resume interrupted backups on restart
+         <code class="hint">AUTO_RESUME_ON_BOOT</code></label>
+      <p class="hint">Automatically resume a backup that was interrupted by a restart.</p>
+    </div>
+
     <p class="hint" style="margin-top:var(--sp-5)">
       File mode: {{ secret_mode or 'not present' }}{% if secret_mode and secret_mode != '600' %}
       — not 600 — fix with <code>chmod 600 /config/secrets.env</code>{% endif %}
