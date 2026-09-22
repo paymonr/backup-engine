@@ -16,7 +16,7 @@ LEGACY_ARN = f"arn:aws:iam::{ACCOUNT}:policy/backup-engine-runtime-object-only"
 
 
 def _current():
-    return permissions.Live(runtime_inline=WANT["runtime"], extra_exists=True, extra_attached=True,
+    return permissions.Live(runtime_inline=WANT["runtime"],
                             role_exists=True, role_trust=WANT["trust"], role_policy=WANT["role"])
 
 
@@ -61,18 +61,21 @@ def test_required_trust_lets_only_the_runtime_user_assume():
                                            "Action": "sts:AssumeRole"}]
 
 
-def test_required_role_policy_grant_targets_the_extra_buckets_policy():
+def test_required_role_policy_has_no_policy_grant_and_is_prefix_scoped():
+    # Addendum 2026-09-22 (prefix-only dedicated buckets): the role policy no
+    # longer grants any IAM action, and its S3 statements are scoped to <bucket>-*.
     stmts = {s["Sid"]: s for s in WANT["role"]["Statement"]}
-    assert stmts["PolicyGrant"]["Resource"] == permissions.extra_policy_arn(ACCOUNT)
+    assert "PolicyGrant" not in stmts
+    assert stmts["CreateAndConfig"]["Resource"] == f"arn:aws:s3:::{BUCKET}-*"
 
 
 def test_tofu_iam_resources_match_the_converge_table():
-    # Drift guard: every IAM resource main.tf creates is either converged (R1-R5) or
+    # Drift guard: every IAM resource main.tf creates is either converged (R1-R3) or
     # deliberately unmanaged (the user + its access key).
     main_tf = (provision.OPENTOFU_DIR / "main.tf").read_text()
     found = {f"{t}.{n}" for t, n in re.findall(r'^resource "(aws_iam_[a-z_]+)" "([a-z_]+)"', main_tf, re.M)}
     assert found == set(permissions.TOFU_RESOURCES) | permissions.TOFU_UNMANAGED
-    assert sorted(permissions.TOFU_RESOURCES.values()) == ["R1", "R2", "R3", "R4", "R5"]
+    assert sorted(permissions.TOFU_RESOURCES.values()) == ["R1", "R2", "R3"]
 
 
 # --- normalization -------------------------------------------------------------
@@ -112,16 +115,15 @@ def test_current_install_plans_nothing():
     assert permissions.plan(_current(), P, BUCKET) == []
 
 
-def test_owners_level2_box_plans_all_five_in_order():
+def test_owners_level2_box_plans_all_three_in_order():
     live = permissions.Live(runtime_inline=_level2_runtime())
     steps = permissions.plan(live, P, BUCKET)
-    assert [s.id for s in steps] == ["R1", "R2", "R3", "R4", "R5"]
-    assert [s.action for s in steps] == ["create-policy", "attach", "create-role",
-                                         "put-role-policy", "put-user-policy"]
-    r5 = steps[-1]
+    assert [s.id for s in steps] == ["R1", "R2", "R3"]
+    assert [s.action for s in steps] == ["create-role", "put-role-policy", "put-user-policy"]
+    r3 = steps[-1]
     assert any(line.startswith("+ AssumeBucketAdminRole: sts:AssumeRole on "
-                               f"{permissions.role_arn(ACCOUNT)}") for line in r5.diff)
-    assert not any(line.startswith("- ") for line in r5.diff)   # nothing removed
+                               f"{permissions.role_arn(ACCOUNT)}") for line in r3.diff)
+    assert not any(line.startswith("- ") for line in r3.diff)   # nothing removed
 
 
 def test_level1_runtime_policy_shows_a_changed_statement():
@@ -132,29 +134,15 @@ def test_level1_runtime_policy_shows_a_changed_statement():
     live = _current()
     live.runtime_inline = old
     steps = permissions.plan(live, P, BUCKET)
-    assert [s.id for s in steps] == ["R5"]
+    assert [s.id for s in steps] == ["R3"]
     assert any(line.startswith("~ ListBucketScoped") for line in steps[0].diff)
-
-
-def test_extra_policy_present_but_unattached_only_attaches():
-    live = _current()
-    live.extra_attached = False
-    steps = permissions.plan(live, P, BUCKET)
-    assert [(s.id, s.action) for s in steps] == [("R2", "attach")]
-    assert steps[0].argv == ["iam", "attach-user-policy", "--user-name", "backup-engine-runtime",
-                             "--policy-arn", permissions.extra_policy_arn(ACCOUNT)]
-
-
-def test_existing_extra_policy_contents_are_never_planned():
-    live = _current()   # extra_exists=True; its (runtime-granted) contents are unknown to us
-    assert not any(s.id == "R1" for s in permissions.plan(live, P, BUCKET))
 
 
 def test_drifted_trust_is_reset():
     live = _current()
     live.role_trust = permissions.trust_doc(f"arn:aws:iam::{ACCOUNT}:user/someone-else")
     steps = permissions.plan(live, P, BUCKET)
-    assert [(s.id, s.action) for s in steps] == [("R3", "update-trust")]
+    assert [(s.id, s.action) for s in steps] == [("R1", "update-trust")]
 
 
 def test_legacy_managed_runtime_policy_gets_a_new_version():
@@ -162,7 +150,7 @@ def test_legacy_managed_runtime_policy_gets_a_new_version():
     live.runtime_inline = None
     live.runtime_managed_arn, live.runtime_managed_doc = LEGACY_ARN, _level2_runtime()
     steps = permissions.plan(live, P, BUCKET)
-    assert [(s.id, s.action) for s in steps] == [("R5", "new-version")]
+    assert [(s.id, s.action) for s in steps] == [("R3", "new-version")]
     assert steps[0].argv[:4] == ["iam", "create-policy-version", "--policy-arn", LEGACY_ARN]
     assert "--set-as-default" in steps[0].argv
 

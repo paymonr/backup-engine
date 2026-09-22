@@ -6,14 +6,15 @@
                  "s3:PutBucketOwnershipControls","s3:PutEncryptionConfiguration",
                  "s3:PutLifecycleConfiguration","s3:PutBucketTagging",
                  "s3:GetBucketLocation","s3:GetBucketVersioning"],
+      "Resource": "arn:aws:s3:::${bucket}-*" },
+    { "Sid": "TeardownList", "Effect": "Allow",
+      "Action": ["s3:ListAllMyBuckets"],
       "Resource": "*" },
     { "Sid": "Teardown", "Effect": "Allow",
-      "Action": ["s3:ListAllMyBuckets","s3:GetBucketTagging","s3:ListBucketVersions",
-                 "s3:DeleteObject","s3:DeleteObjectVersion","s3:DeleteBucket"],
-      "Resource": "*" },
-    { "Sid": "PolicyGrant", "Effect": "Allow",
-      "Action": ["iam:GetPolicy","iam:GetPolicyVersion","iam:ListPolicyVersions",
-                 "iam:CreatePolicyVersion","iam:DeletePolicyVersion"],
-      "Resource": "${extra_buckets_policy_arn}" }
+      "Action": ["s3:GetBucketTagging","s3:ListBucketVersions","s3:DeleteBucket"],
+      "Resource": "arn:aws:s3:::${bucket}-*" },
+    { "Sid": "TeardownObjects", "Effect": "Allow",
+      "Action": ["s3:DeleteObject","s3:DeleteObjectVersion"],
+      "Resource": "arn:aws:s3:::${bucket}-*/*" }
   ]
 }

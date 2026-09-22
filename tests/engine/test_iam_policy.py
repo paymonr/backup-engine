@@ -3,8 +3,6 @@ from pathlib import Path
 
 from app.gui import provision
 
-EXTRA_ARN = "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets"
-
 
 def test_iam_policy_has_required_version_actions():
     """Verify the IAM policy template includes required actions for archive version management."""
@@ -56,7 +54,7 @@ def test_automated_policy_has_scoped_sts_and_wildcard():
 
 
 def test_bucket_admin_policy_has_create_and_config():
-    doc = provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN)
+    doc = provision.render_bucket_admin_policy("unraid-backup-123")
     parsed = json.loads(doc)
     stmts = {s["Sid"]: s for s in parsed["Statement"]}
     for a in ("s3:CreateBucket", "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
@@ -66,56 +64,58 @@ def test_bucket_admin_policy_has_create_and_config():
     assert "s3:DeleteBucket" not in stmts["CreateAndConfig"]["Action"]
 
 
-def test_bucket_admin_policy_has_teardown_statement():
+def test_bucket_admin_policy_has_teardown_statements():
     # Task 11: enumerate-by-tag + empty + delete for just-in-time buckets (created
     # outside tofu, so `tofu destroy` can't remove them). Stays on this role only.
-    doc = provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN)
+    # ListAllMyBuckets can't be resource-scoped (TeardownList, on "*"); the rest
+    # of teardown is scoped to <bucket>-* (Teardown + TeardownObjects).
+    doc = provision.render_bucket_admin_policy("unraid-backup-123")
     parsed = json.loads(doc)
     stmts = {s["Sid"]: s for s in parsed["Statement"]}
-    for a in ("s3:ListAllMyBuckets", "s3:GetBucketTagging", "s3:ListBucketVersions",
-              "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:DeleteBucket"):
+    assert stmts["TeardownList"]["Action"] == ["s3:ListAllMyBuckets"]
+    assert stmts["TeardownList"]["Resource"] == "*"
+    for a in ("s3:GetBucketTagging", "s3:ListBucketVersions", "s3:DeleteBucket"):
         assert a in stmts["Teardown"]["Action"]
-    assert stmts["Teardown"]["Resource"] == "*"
+    for a in ("s3:DeleteObject", "s3:DeleteObjectVersion"):
+        assert a in stmts["TeardownObjects"]["Action"]
 
 
-def test_bucket_admin_policy_config_actions_are_not_bucket_prefix_scoped():
-    # The role is reachable only after AssumeRole, so Resource:"*" here is
-    # contained -- and required, since the feature allows OFF-PREFIX bucket
-    # names (a dedicated bucket need not be named "<base>-*"), so scoping
-    # create/config/teardown actions to "<bucket>-*" would deny configuring or
-    # tearing down an off-prefix bucket.
-    doc = provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN)
-    assert "unraid-backup-123-*" not in doc
+def test_bucket_admin_policy_is_scoped_to_the_base_prefix():
+    # Addendum 2026-09-22 (prefix-only dedicated buckets): every S3 statement
+    # except the un-scopable TeardownList is confined to <base>-*, and the base
+    # bucket itself (no suffix) never matches, so the role can never touch it.
+    bucket = "unraid-backup-123"
+    doc = provision.render_bucket_admin_policy(bucket)
     parsed = json.loads(doc)
     stmts = {s["Sid"]: s for s in parsed["Statement"]}
-    assert set(stmts) == {"CreateAndConfig", "Teardown", "PolicyGrant"}
-    for sid in ("CreateAndConfig", "Teardown"):          # the S3 statements stay "*"
-        assert stmts[sid]["Resource"] == "*"
+    assert set(stmts) == {"CreateAndConfig", "TeardownList", "Teardown", "TeardownObjects"}
+    for sid, stmt in stmts.items():
+        if sid == "TeardownList":
+            continue
+        resources = stmt["Resource"] if isinstance(stmt["Resource"], list) else [stmt["Resource"]]
+        for r in resources:
+            assert r.startswith(f"arn:aws:s3:::{bucket}-"), (sid, r)
+    assert f"arn:aws:s3:::{bucket}\"" not in doc   # the base bucket itself, exact, never appears
 
 
-def test_bucket_admin_policy_grant_is_scoped_to_the_one_extra_buckets_policy():
-    # Spec 2026-09-22 §1 (the latent bug): the role versions the extra-buckets managed
-    # policy when a job's bucket is off-prefix -- IAM-write, so exactly ONE policy ARN.
-    stmts = {s["Sid"]: s for s in json.loads(
-        provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN))["Statement"]}
-    grant = stmts["PolicyGrant"]
-    assert grant["Effect"] == "Allow"
-    assert grant["Resource"] == EXTRA_ARN
-    assert sorted(grant["Action"]) == sorted([
-        "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions",
-        "iam:CreatePolicyVersion", "iam:DeletePolicyVersion"])
-
-
-def test_bucket_admin_policy_never_grants_user_or_attach_writes():
-    doc = provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN)
+def test_bucket_admin_policy_has_no_iam_actions():
+    # The privilege-escalation fix: the role can no longer touch IAM at all.
+    doc = provision.render_bucket_admin_policy("unraid-backup-123")
+    assert '"iam:' not in doc
     for bad in ("iam:PutUserPolicy", "iam:AttachUserPolicy", "iam:CreatePolicy\"",
-                "iam:*", "iam:PassRole"):
+                "iam:*", "iam:PassRole", "iam:CreatePolicyVersion"):
         assert bad not in doc
 
 
-def test_tofu_passes_the_extra_buckets_arn_to_the_role_policy():
+def test_main_tf_has_no_extra_buckets_resources():
     main_tf = (provision.OPENTOFU_DIR / "main.tf").read_text()
-    assert "extra_buckets_policy_arn = aws_iam_policy.runtime_extra_buckets.arn" in main_tf
+    assert "runtime_extra_buckets" not in main_tf
+    assert "extra_buckets_policy_arn" not in main_tf
+
+
+def test_outputs_tf_has_no_extra_buckets_policy_arn():
+    outputs = (provision.OPENTOFU_DIR / "outputs.tf").read_text()
+    assert "runtime_extra_buckets_policy_arn" not in outputs
 
 
 def test_tofu_outputs_the_runtime_user_arn():

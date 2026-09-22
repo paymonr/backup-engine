@@ -149,11 +149,10 @@ def _level2_box(**kw):
     return FakeIAM(inline={permissions.RUNTIME_POLICY_NAME: json.loads(provision.render_policy(BUCKET))}, **kw)
 
 
-def _current_box():
+def _current_box(**kw):
     return FakeIAM(inline={permissions.RUNTIME_POLICY_NAME: WANT["runtime"]},
-                   managed={EXTRA_ARN: (permissions.EXTRA_POLICY_NAME, [WANT["extra"]])},
-                   attached={EXTRA_ARN},
-                   role={"trust": WANT["trust"], "policies": {permissions.ROLE_POLICY_NAME: WANT["role"]}})
+                   role={"trust": WANT["trust"], "policies": {permissions.ROLE_POLICY_NAME: WANT["role"]}},
+                   **kw)
 
 
 def _converge(fake, dirs, template_path, **kw):
@@ -167,8 +166,8 @@ def _system_records(dirs):
     return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
 
 
-_WRITE_OPS = {"create-policy", "attach-user-policy", "create-role", "update-assume-role-policy",
-              "put-role-policy", "put-user-policy", "create-policy-version", "delete-policy-version"}
+_WRITE_OPS = {"create-role", "update-assume-role-policy", "put-role-policy", "put-user-policy",
+              "create-policy-version", "delete-policy-version"}
 _NEVER = {"create-access-key", "delete-access-key", "update-access-key", "delete-user",
           "delete-role", "delete-policy", "delete-user-policy", "delete-role-policy",
           "detach-user-policy", "detach-role-policy"}
@@ -203,16 +202,16 @@ def test_update_brings_the_level2_box_up_and_stamps(dirs, template_path):
     fake = _level2_box()
     out = _converge(fake, dirs, template_path)
     assert out.ok and out.applied and out.remaining == []
-    assert [(s.id, s.status) for s in out.steps] == [("R1", "done"), ("R2", "done"), ("R3", "done"),
-                                                      ("R4", "done"), ("R5", "done")]
+    assert [(s.id, s.status) for s in out.steps] == [("R1", "done"), ("R2", "done"), ("R3", "done")]
     assert fake.inline[permissions.RUNTIME_POLICY_NAME] == WANT["runtime"]
     assert fake.role["policies"][permissions.ROLE_POLICY_NAME] == WANT["role"]
-    assert EXTRA_ARN in fake.attached
     env = config_io.read_backup_env(dirs["config"])
     assert env["PERMISSIONS_VERSION"] == str(permissions.required_level())
     assert env["PERMISSIONS_CHECKED_AT"].endswith("Z")
     assert env["BUCKET_ADMIN_ROLE_ARN"] == permissions.role_arn(ACCOUNT)
-    assert env["RUNTIME_EXTRA_BUCKETS_POLICY_ARN"] == EXTRA_ARN
+    # write_stamp no longer sets this key at all (Addendum 2026-09-22) -- a fresh
+    # install never gets it, and an existing value would be left exactly as-is.
+    assert env.get("RUNTIME_EXTRA_BUCKETS_POLICY_ARN", "") == ""
     kinds = [(r["kind"], r["event"]) for r in _system_records(dirs)]
     assert ("permissions", "start") in kinds and ("permissions", "end") in kinds
     _assert_never_touch(fake)
@@ -238,7 +237,7 @@ def test_already_current_install_is_just_stamped(dirs, template_path):
 def test_preview_changes_nothing_and_does_not_stamp(dirs, template_path):
     fake = _level2_box()
     out = _converge(fake, dirs, template_path, apply_changes=False, mode="check")
-    assert out.ok and not out.applied and len(out.steps) == 5
+    assert out.ok and not out.applied and len(out.steps) == 3
     assert all(s.status == "pending" for s in out.steps)
     assert not any(c[1] in _WRITE_OPS for c in fake.calls)
     assert "PERMISSIONS_VERSION" not in config_io.read_backup_env(dirs["config"])
@@ -248,9 +247,8 @@ def test_denied_step_stops_the_run_and_is_scrubbed(dirs, template_path):
     fake = _level2_box(deny={"PutRolePolicy"})
     out = _converge(fake, dirs, template_path)
     assert not out.ok and out.applied
-    assert [(s.id, s.status) for s in out.steps] == [("R1", "done"), ("R2", "done"), ("R3", "done"),
-                                                      ("R4", "failed"), ("R5", "not-run")]
-    err = out.steps[3].error
+    assert [(s.id, s.status) for s in out.steps] == [("R1", "done"), ("R2", "failed"), ("R3", "not-run")]
+    err = out.steps[1].error
     assert "PutRolePolicy" in err
     assert ADMIN.key not in err and ADMIN.secret not in err
     assert "PERMISSIONS_VERSION" not in config_io.read_backup_env(dirs["config"])
@@ -261,7 +259,7 @@ def test_rerun_after_a_failure_finishes_the_job(dirs, template_path):
     _converge(fake, dirs, template_path)
     fake.deny.clear()
     out = _converge(fake, dirs, template_path)
-    assert out.ok and [s.id for s in out.steps] == ["R4", "R5"]
+    assert out.ok and [s.id for s in out.steps] == ["R2", "R3"]
 
 
 def test_account_mismatch_refuses_before_reading_iam(dirs, template_path):
@@ -292,15 +290,68 @@ def test_admin_without_iam_reach_raises_the_setup_preflight_error(dirs, template
 
 def test_legacy_managed_policy_at_the_version_limit_makes_room(dirs, template_path):
     old = json.loads(provision.render_policy(BUCKET))
-    fake = FakeIAM(managed={LEGACY_ARN: (permissions.RUNTIME_POLICY_NAME, [old] * 5),
-                            EXTRA_ARN: (permissions.EXTRA_POLICY_NAME, [WANT["extra"]])},
-                   attached={LEGACY_ARN, EXTRA_ARN},
+    fake = FakeIAM(managed={LEGACY_ARN: (permissions.RUNTIME_POLICY_NAME, [old] * 5)},
+                   attached={LEGACY_ARN},
                    role={"trust": WANT["trust"], "policies": {permissions.ROLE_POLICY_NAME: WANT["role"]}})
     out = _converge(fake, dirs, template_path)
-    assert out.ok and [(s.id, s.action) for s in out.steps] == [("R5", "new-version")]
+    assert out.ok and [(s.id, s.action) for s in out.steps] == [("R3", "new-version")]
     deleted = [c for c in fake.calls if c[1] == "delete-policy-version"]
     assert deleted and deleted[0][deleted[0].index("--version-id") + 1] == "v1"
     assert fake._default(LEGACY_ARN)["Document"] == WANT["runtime"]
+    _assert_never_touch(fake)
+
+
+# --- prefix-only dedicated buckets: narrowing + obsolete leftovers ---------------
+
+OLD_UNSCOPED_ROLE_POLICY = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {"Sid": "CreateAndConfig", "Effect": "Allow",
+         "Action": ["s3:CreateBucket", "s3:PutBucketVersioning", "s3:PutBucketPublicAccessBlock",
+                    "s3:PutBucketOwnershipControls", "s3:PutEncryptionConfiguration",
+                    "s3:PutLifecycleConfiguration", "s3:PutBucketTagging",
+                    "s3:GetBucketLocation", "s3:GetBucketVersioning"],
+         "Resource": "*"},
+        {"Sid": "Teardown", "Effect": "Allow",
+         "Action": ["s3:ListAllMyBuckets", "s3:GetBucketTagging", "s3:ListBucketVersions",
+                    "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:DeleteBucket"],
+         "Resource": "*"},
+        {"Sid": "PolicyGrant", "Effect": "Allow",
+         "Action": ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions",
+                    "iam:CreatePolicyVersion", "iam:DeletePolicyVersion"],
+         "Resource": EXTRA_ARN},
+    ],
+}
+
+
+def test_old_unscoped_role_policy_is_narrowed_by_converge(dirs, template_path):
+    # An install from before the addendum: the role policy is unscoped ("*")
+    # and still has the IAM-write PolicyGrant statement. Converge must reset it
+    # to the new prefix-scoped, IAM-free doc.
+    fake = FakeIAM(inline={permissions.RUNTIME_POLICY_NAME: WANT["runtime"]},
+                   role={"trust": WANT["trust"],
+                         "policies": {permissions.ROLE_POLICY_NAME: OLD_UNSCOPED_ROLE_POLICY}})
+    out = _converge(fake, dirs, template_path)
+    assert out.ok and out.applied
+    assert [(s.id, s.action) for s in out.steps] == [("R2", "put-role-policy")]
+    assert out.steps[0].summary.startswith("Update")
+    assert fake.role["policies"][permissions.ROLE_POLICY_NAME] == WANT["role"]
+    _assert_never_touch(fake)
+
+
+def test_obsolete_extra_buckets_policy_is_left_untouched_and_still_converges_to_empty(dirs, template_path):
+    # An install that still has the old extra-buckets managed policy attached
+    # (now inert -- nothing can version it any more). Converge must not touch
+    # it at all, and a fully-current install still plans nothing.
+    fake = _current_box(
+        managed={EXTRA_ARN: ("backup-engine-runtime-extra-buckets",
+                             [{"Version": "2012-10-17", "Statement": [
+                                 {"Sid": "NoExtraBucketsYet", "Effect": "Deny", "Action": "s3:*",
+                                  "Resource": "arn:aws:s3:::__no-extra-buckets-configured__"}]}])},
+        attached={EXTRA_ARN})
+    out = _converge(fake, dirs, template_path)
+    assert out.ok and not out.applied and out.steps == []
+    assert not any(EXTRA_ARN in c for c in fake.calls)
     _assert_never_touch(fake)
 
 

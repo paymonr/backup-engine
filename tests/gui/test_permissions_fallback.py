@@ -28,7 +28,7 @@ def test_script_embeds_exactly_the_required_documents():
     s = _script()
     docs = dict(re.findall(r"cat > \"\$d/([\w-]+)\.json\" <<'EOF'\n(.*?)\nEOF", s, re.S))
     want = permissions.required_docs(P, BUCKET)
-    assert json.loads(docs["extra-buckets"]) == want["extra"]
+    assert set(docs) == {"trust", "bucket-admin", "runtime"}
     assert json.loads(docs["trust"]) == want["trust"]
     assert json.loads(docs["bucket-admin"]) == want["role"]
     assert json.loads(docs["runtime"]) == want["runtime"]
@@ -36,10 +36,18 @@ def test_script_embeds_exactly_the_required_documents():
 
 def test_script_only_creates_what_is_missing_and_never_touches_keys_or_data():
     s = _script()
-    assert f"aws iam get-policy --policy-arn {permissions.extra_policy_arn(ACCOUNT)} >/dev/null 2>&1 || aws iam create-policy" in s
     assert "aws iam get-role --role-name backup-engine-bucket-admin >/dev/null 2>&1 || aws iam create-role" in s
-    for bad in ("access-key", "s3api", "aws s3 ", "delete-", "create-policy-version"):
+    for bad in ("access-key", "s3api", "aws s3 ", "delete-", "create-policy-version", "create-policy ",
+                "attach-user-policy "):
         assert bad not in s
+
+
+def test_script_extra_buckets_detach_line_is_a_comment_only():
+    s = _script()
+    lines = s.splitlines()
+    detach_lines = [l for l in lines if "backup-engine-runtime-extra-buckets" in l]
+    assert detach_lines
+    assert all(l.lstrip().startswith("#") for l in detach_lines)
 
 
 def test_script_runs_in_order_against_a_stub_aws(tmp_path):
@@ -49,14 +57,13 @@ def test_script_runs_in_order_against_a_stub_aws(tmp_path):
         "#!/usr/bin/env bash\n"
         f"echo \"$1 $2\" >> {log}\n"
         "for a in \"$@\"; do case \"$a\" in file://*) test -s \"${a#file://}\" || exit 9;; esac; done\n"
-        "case \"$1 $2\" in 'iam get-policy'|'iam get-role') exit 1;; esac\n"
+        "case \"$1 $2\" in 'iam get-role') exit 1;; esac\n"
         "exit 0\n")
     (stub / "aws").chmod(0o755)
     env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"}
     r = subprocess.run(["bash", "-c", _script()], env=env, text=True, capture_output=True)
     assert r.returncode == 0, r.stderr
     assert log.read_text().splitlines() == [
-        "iam get-policy", "iam create-policy", "iam attach-user-policy",
         "iam get-role", "iam create-role", "iam update-assume-role-policy",
         "iam put-role-policy", "iam put-user-policy"]
 
@@ -75,7 +82,7 @@ def test_script_refuses_unexpected_values(principal, bucket, region):
 
 # --- verify ------------------------------------------------------------------------
 
-def _fake(*, list_ok=True, assume_ok=True, get_ok=True, attached=1, flaky=0):
+def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, flaky=0):
     state = {"flaky": flaky}
 
     def run(args, *, region, key, secret, session_token=None):
@@ -90,12 +97,11 @@ def _fake(*, list_ok=True, assume_ok=True, get_ok=True, attached=1, flaky=0):
                 return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied sts:AssumeRole")
             return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Credentials": {
                 "AccessKeyId": "ASIATMP", "SecretAccessKey": "tmpsek", "SessionToken": "tok"}}))
-        if args[:2] == ["iam", "get-policy"]:
+        if args[:2] == ["s3api", "list-buckets"]:
             assert session_token == "tok" and key == "ASIATMP"     # runs as the ROLE
-            if not get_ok:
-                return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied iam:GetPolicy")
-            return SimpleNamespace(returncode=0, stderr="",
-                                   stdout=json.dumps({"Policy": {"AttachmentCount": attached}}))
+            if not policy_ok:
+                return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:ListAllMyBuckets")
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Buckets": []}))
         raise AssertionError(args)
     return run
 
@@ -107,25 +113,19 @@ def _verify(run, **kw):
 
 def test_verify_all_good():
     probes = _verify(_fake())
-    assert len(probes) == 4 and all(p.ok for p in probes)
+    assert len(probes) == 3 and all(p.ok for p in probes)
 
 
 def test_verify_names_the_script_step_when_the_role_is_missing():
     probes = _verify(_fake(assume_ok=False))
-    assert [p.ok for p in probes] == [True, False, False, False]
-    assert "step 3" in probes[1].hint
+    assert [p.ok for p in probes] == [True, False, False]
+    assert "step 1" in probes[1].hint
 
 
-def test_verify_detects_a_missing_policy_grant():
-    probes = _verify(_fake(get_ok=False))
-    assert [p.ok for p in probes] == [True, True, False, False]
-    assert "step 4" in probes[2].hint
-
-
-def test_verify_detects_an_unattached_extra_policy():
-    probes = _verify(_fake(attached=0))
-    assert [p.ok for p in probes] == [True, True, True, False]
-    assert "step 2" in probes[3].hint
+def test_verify_detects_the_role_policy_is_missing():
+    probes = _verify(_fake(policy_ok=False))
+    assert [p.ok for p in probes] == [True, True, False]
+    assert "step 2" in probes[2].hint
 
 
 def test_verify_retries_for_iam_propagation():

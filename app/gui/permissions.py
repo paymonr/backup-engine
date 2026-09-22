@@ -1,8 +1,9 @@
 # app/gui/permissions.py — "Check & update AWS permissions" (spec
-# docs/superpowers/specs/2026-09-22-permissions-converge-design.md). Three layers:
+# docs/superpowers/specs/2026-09-22-permissions-converge-design.md, and the
+# addendum at its end -- prefix-only dedicated buckets). Three layers:
 #   levels   — provisioning/permissions.json (the required level + history) and the
 #              PERMISSIONS_VERSION stamp in backup.env. Pure reads, safe at render.
-#   engine   — the required IAM set (R1-R5), a pure planner, and discover/apply over
+#   engine   — the required IAM set (R1-R3), a pure planner, and discover/apply over
 #              the aws CLI with TRANSIENT admin creds (never stored, always scrubbed).
 #   fallback — a re-runnable bash script + runtime-key-only Verify probes.
 from __future__ import annotations
@@ -102,23 +103,19 @@ def needs_you_row(config_dir: str) -> dict | None:
             "fix": {"label": "Update permissions", "href": "/setup/permissions"}}
 
 
-# --- the required IAM set (spec §1: R1-R5, fixed names) ------------------------------
+# --- the required IAM set (spec §1 as narrowed by the addendum: R1-R3, fixed names) --
 
 PREFIX = "backup-engine"
 RUNTIME_POLICY_NAME = f"{PREFIX}-runtime-object-only"
 ROLE_NAME = f"{PREFIX}-bucket-admin"
 ROLE_POLICY_NAME = f"{PREFIX}-bucket-admin-create-config"
-EXTRA_POLICY_NAME = f"{PREFIX}-runtime-extra-buckets"
-EXTRA_POLICY_TEMPLATE = provision.PROVISIONING_DIR / "extra-buckets-policy.json.tmpl"
 
 # opentofu/main.tf resource -> required-set id. The drift-guard test pins main.tf's
 # IAM resources to exactly these plus TOFU_UNMANAGED.
 TOFU_RESOURCES = {
-    "aws_iam_policy.runtime_extra_buckets": "R1",
-    "aws_iam_user_policy_attachment.runtime_extra_buckets": "R2",
-    "aws_iam_role.bucket_admin": "R3",
-    "aws_iam_role_policy.bucket_admin": "R4",
-    "aws_iam_user_policy.runtime": "R5",
+    "aws_iam_role.bucket_admin": "R1",
+    "aws_iam_role_policy.bucket_admin": "R2",
+    "aws_iam_user_policy.runtime": "R3",
 }
 # Created once by setup and deliberately never converged (spec non-goals).
 TOFU_UNMANAGED = {"aws_iam_user.runtime", "aws_iam_access_key.runtime"}
@@ -156,10 +153,6 @@ def role_arn(account: str) -> str:
     return f"arn:aws:iam::{account}:role/{ROLE_NAME}"
 
 
-def extra_policy_arn(account: str) -> str:
-    return f"arn:aws:iam::{account}:policy/{EXTRA_POLICY_NAME}"
-
-
 def runtime_managed_arn(account: str) -> str:
     return f"arn:aws:iam::{account}:policy/{RUNTIME_POLICY_NAME}"
 
@@ -172,10 +165,8 @@ def trust_doc(user_arn: str) -> dict:
 
 def required_docs(principal: Principal, bucket: str) -> dict:
     return {
-        "extra": json.loads(EXTRA_POLICY_TEMPLATE.read_text()),
         "trust": trust_doc(principal.arn),
-        "role": json.loads(provision.render_bucket_admin_policy(
-            bucket, extra_policy_arn(principal.account))),
+        "role": json.loads(provision.render_bucket_admin_policy(bucket)),
         "runtime": json.loads(provision.render_policy(bucket, role_arn(principal.account))),
     }
 
@@ -244,8 +235,6 @@ class Live:
     runtime_inline: dict | None = None
     runtime_managed_arn: str | None = None     # legacy guided shape (managed + attached)
     runtime_managed_doc: dict | None = None
-    extra_exists: bool = False
-    extra_attached: bool = False
     role_exists: bool = False
     role_trust: dict | None = None
     role_policy: dict | None = None
@@ -253,8 +242,8 @@ class Live:
 
 @dataclass
 class Step:
-    id: str                      # R1..R5
-    action: str                  # create-policy | attach | create-role | update-trust |
+    id: str                      # R1..R3
+    action: str                  # create-role | update-trust |
                                  # put-role-policy | put-user-policy | new-version
     summary: str
     argv: list[str]              # aws argv without the leading "aws"
@@ -273,44 +262,37 @@ def _j(doc: dict) -> str:
 
 
 def plan(live: Live, principal: Principal, bucket: str) -> list[Step]:
-    """The steps (in dependency order R1..R5) that bring `live` to the required set."""
+    """The steps (in dependency order R1..R3) that bring `live` to the required set."""
     want = required_docs(principal, bucket)
-    user, extra = principal.user, extra_policy_arn(principal.account)
+    user = principal.user
     steps: list[Step] = []
-    if not live.extra_exists:
-        steps.append(Step("R1", "create-policy", f"Create the extra-buckets policy {EXTRA_POLICY_NAME}",
-                          ["iam", "create-policy", "--policy-name", EXTRA_POLICY_NAME,
-                           "--policy-document", _j(want["extra"])]))
-    if not live.extra_attached:
-        steps.append(Step("R2", "attach", f"Attach {EXTRA_POLICY_NAME} to {user}",
-                          ["iam", "attach-user-policy", "--user-name", user, "--policy-arn", extra]))
     if not live.role_exists:
-        steps.append(Step("R3", "create-role",
+        steps.append(Step("R1", "create-role",
                           f"Create the role {ROLE_NAME} (only {user} may assume it)",
                           ["iam", "create-role", "--role-name", ROLE_NAME,
                            "--assume-role-policy-document", _j(want["trust"])],
                           diff=diff_statements(None, want["trust"])))
     elif not same_policy(live.role_trust, want["trust"]):
-        steps.append(Step("R3", "update-trust", f"Reset who may assume {ROLE_NAME} to {user} only",
+        steps.append(Step("R1", "update-trust", f"Reset who may assume {ROLE_NAME} to {user} only",
                           ["iam", "update-assume-role-policy", "--role-name", ROLE_NAME,
                            "--policy-document", _j(want["trust"])],
                           diff=diff_statements(live.role_trust, want["trust"])))
     if live.role_policy is None or not same_policy(live.role_policy, want["role"]):
         verb = "Add" if live.role_policy is None else "Update"
-        steps.append(Step("R4", "put-role-policy", f"{verb} the role's policy {ROLE_POLICY_NAME}",
+        steps.append(Step("R2", "put-role-policy", f"{verb} the role's policy {ROLE_POLICY_NAME}",
                           ["iam", "put-role-policy", "--role-name", ROLE_NAME,
                            "--policy-name", ROLE_POLICY_NAME, "--policy-document", _j(want["role"])],
                           diff=diff_statements(live.role_policy, want["role"])))
     if live.runtime_inline is None and live.runtime_managed_arn:
         if not same_policy(live.runtime_managed_doc, want["runtime"]):
-            steps.append(Step("R5", "new-version",
+            steps.append(Step("R3", "new-version",
                               f"Publish a new version of {user}'s policy {RUNTIME_POLICY_NAME}",
                               ["iam", "create-policy-version", "--policy-arn", live.runtime_managed_arn,
                                "--policy-document", _j(want["runtime"]), "--set-as-default"],
                               diff=diff_statements(live.runtime_managed_doc, want["runtime"])))
     elif live.runtime_inline is None or not same_policy(live.runtime_inline, want["runtime"]):
         verb = "Add" if live.runtime_inline is None else "Update"
-        steps.append(Step("R5", "put-user-policy", f"{verb} {user}'s policy {RUNTIME_POLICY_NAME}",
+        steps.append(Step("R3", "put-user-policy", f"{verb} {user}'s policy {RUNTIME_POLICY_NAME}",
                           ["iam", "put-user-policy", "--user-name", user,
                            "--policy-name", RUNTIME_POLICY_NAME, "--policy-document", _j(want["runtime"])],
                           diff=diff_statements(live.runtime_inline, want["runtime"])))
@@ -383,9 +365,6 @@ def discover(principal: Principal, *, region: str, admin: AdminCreds, run=provis
                        "--version-id", pol["DefaultVersionId"]], missing_ok=False)
             live.runtime_managed_arn = arn
             live.runtime_managed_doc = _doc(ver["PolicyVersion"]["Document"])
-    extra = extra_policy_arn(principal.account)
-    live.extra_exists = get(["iam", "get-policy", "--policy-arn", extra]) is not None
-    live.extra_attached = extra in attached
     role = get(["iam", "get-role", "--role-name", ROLE_NAME])
     if role is not None:
         live.role_exists = True
@@ -422,7 +401,7 @@ def apply(steps: list[Step], *, region: str, admin: AdminCreds, run=provision._r
         except PermissionsError as e:
             s.status, s.error, halted = "failed", e.detail, True
             continue
-        raced = s.action in ("create-policy", "create-role") and "EntityAlreadyExists" in (cp.stderr or "")
+        raced = s.action == "create-role" and "EntityAlreadyExists" in (cp.stderr or "")
         if cp.returncode == 0 or raced:
             s.status = "done"
         else:
@@ -438,7 +417,6 @@ def write_stamp(config_dir: str, template_path: str, principal: Principal, *, no
     """Record that this install matches this build: the two ARNs + level + time."""
     env = config_io.read_backup_env(config_dir)
     env.update({"BUCKET_ADMIN_ROLE_ARN": role_arn(principal.account),
-                "RUNTIME_EXTRA_BUCKETS_POLICY_ARN": extra_policy_arn(principal.account),
                 STAMP_KEY: str(required_level()), CHECKED_KEY: _now_iso(now)})
     config_io.write_backup_env(template_path, config_dir, env)
 
@@ -518,7 +496,8 @@ def script(principal: Principal, *, bucket: str, region: str) -> str:
             and buckets.valid_bucket_name(bucket) and _REGION_RE.match(region or "")):
         raise PermissionsError("script", "the account, user, bucket or region has an unexpected shape")
     docs = required_docs(principal, bucket)
-    user, extra = principal.user, extra_policy_arn(principal.account)
+    user = principal.user
+    obsolete_extra_arn = f"arn:aws:iam::{principal.account}:policy/{PREFIX}-runtime-extra-buckets"
 
     def heredoc(name: str, doc: dict) -> list[str]:
         return [f"cat > \"$d/{name}.json\" <<'EOF'", json.dumps(doc, indent=2), "EOF"]
@@ -534,32 +513,27 @@ def script(principal: Principal, *, bucket: str, region: str) -> str:
         "set -euo pipefail",
         f"export AWS_DEFAULT_REGION={region}",
         'd="$(mktemp -d)"',
-        *heredoc("extra-buckets", docs["extra"]),
         *heredoc("trust", docs["trust"]),
         *heredoc("bucket-admin", docs["role"]),
         *heredoc("runtime", docs["runtime"]),
-        "# 1. The extra-buckets policy (created once; backup-engine adds grants to it later)",
-        f"aws iam get-policy --policy-arn {extra} >/dev/null 2>&1 || "
-        f"aws iam create-policy --policy-name {EXTRA_POLICY_NAME} "
-        f"--policy-document \"file://$d/extra-buckets.json\" >/dev/null",
-        "# 2. Attach it to the backup user",
-        f"aws iam attach-user-policy --user-name {user} --policy-arn {extra}",
-        "# 3. The bucket-admin role, which only the backup user may assume",
+        "# 1. The bucket-admin role, which only the backup user may assume",
         f"aws iam get-role --role-name {ROLE_NAME} >/dev/null 2>&1 || "
         f"aws iam create-role --role-name {ROLE_NAME} "
         f"--assume-role-policy-document \"file://$d/trust.json\" >/dev/null",
         f"aws iam update-assume-role-policy --role-name {ROLE_NAME} "
         f"--policy-document \"file://$d/trust.json\"",
-        "# 4. The bucket-admin role's policy",
+        "# 2. The bucket-admin role's policy",
         f"aws iam put-role-policy --role-name {ROLE_NAME} --policy-name {ROLE_POLICY_NAME} "
         f"--policy-document \"file://$d/bucket-admin.json\"",
-        "# 5. The backup user's own policy",
+        "# 3. The backup user's own policy",
         f"aws iam put-user-policy --user-name {user} --policy-name {RUNTIME_POLICY_NAME} "
         f"--policy-document \"file://$d/runtime.json\"",
         "# Older guided installs only: if the managed policy below is attached to the backup",
         "# user, it is now redundant and can be detached (optional):",
         f"#   aws iam detach-user-policy --user-name {user} "
         f"--policy-arn {runtime_managed_arn(principal.account)}",
+        "# Older installs only: backup-engine-runtime-extra-buckets is no longer used; you may detach it (optional):",
+        f"#   aws iam detach-user-policy --user-name {user} --policy-arn {obsolete_extra_arn}",
         'rm -rf "$d"',
         'echo "Done. Go back to backup-engine and click Verify."',
     ]
@@ -576,36 +550,29 @@ class Probe:
 
 def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> list[Probe]:
     role_probe = f"Can assume the role {ROLE_NAME}"
-    grant_probe = f"The role can manage {EXTRA_POLICY_NAME}"
-    attach_probe = f"{EXTRA_POLICY_NAME} is attached to {principal.user}"
+    policy_probe = f"The role {ROLE_NAME} has its policy"
     out = []
     cp = run(["s3api", "list-object-versions", "--bucket", bucket, "--max-items", "1",
               "--output", "json"], region=region, key=key, secret=secret)
     ok = cp.returncode == 0
     out.append(Probe("Can list old versions in the backup bucket", ok,
-                     "" if ok else "Set by step 5 of the script — did it run?",
+                     "" if ok else "Set by step 3 of the script — did it run?",
                      "" if ok else provision._scrub(cp.stderr or "", key, secret).strip()))
     try:
         creds = provision.assume_role(role_arn(principal.account), region=region, key=key,
                                       secret=secret, run=run)
     except provision.AssumeRoleError as e:
-        out.append(Probe(role_probe, False, "Steps 3 and 5 of the script set this up — did step 3 run?",
+        out.append(Probe(role_probe, False, "Steps 1 and 3 of the script set this up — did step 1 run?",
                          provision._scrub(str(e), key, secret)))
-        out.append(Probe(grant_probe, False, "Needs the role first (step 3)."))
-        out.append(Probe(attach_probe, False, "Needs the role first (step 3)."))
+        out.append(Probe(policy_probe, False, "Needs the role first (step 1)."))
         return out
     out.append(Probe(role_probe, True))
     rk, rs, rt = creds["AWS_ACCESS_KEY_ID"], creds["AWS_SECRET_ACCESS_KEY"], creds["AWS_SESSION_TOKEN"]
-    cp = run(["iam", "get-policy", "--policy-arn", extra_policy_arn(principal.account), "--output", "json"],
-             region=region, key=rk, secret=rs, session_token=rt)
-    if cp.returncode != 0:
-        out.append(Probe(grant_probe, False, "Steps 1 and 4 of the script set this up — did step 4 run?",
-                         provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
-        out.append(Probe(attach_probe, False, "Needs the step above first."))
-        return out
-    out.append(Probe(grant_probe, True))
-    count = json.loads(cp.stdout or "{}").get("Policy", {}).get("AttachmentCount", 0)
-    out.append(Probe(attach_probe, count >= 1, "" if count else "Attached by step 2 of the script — did it run?"))
+    cp = run(["s3api", "list-buckets", "--output", "json"], region=region, key=rk, secret=rs, session_token=rt)
+    ok2 = cp.returncode == 0
+    out.append(Probe(policy_probe, ok2,
+                     "" if ok2 else "Set by step 2 of the script — did it run?",
+                     "" if ok2 else provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
     return out
 
 

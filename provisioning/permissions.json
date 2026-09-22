@@ -1,6 +1,6 @@
 {
   "level": 3,
-  "templates_sha256": "e521ef2e73ed47bf925f87caacea2035833d1b23468733060097b49fb1c98be4",
+  "templates_sha256": "950d16fb5b48f3c16e3743e820ffb164cca5d033d75e591f5885c99226033c08",
   "history": [
     {"level": 1, "adds": "Back up to and restore from your bucket", "features": []},
     {"level": 2, "adds": "Clean up old versions of archived files", "features": ["archive-cleanup"]},

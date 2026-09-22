@@ -173,12 +173,10 @@ TOFU_OUTPUT_WITH_MULTI_BUCKET = _json.dumps({
     "bucket_name": {"value": "acme-backups"},
     "region": {"value": "us-east-1"},
     "bucket_admin_role_arn": {"value": "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"},
-    "runtime_extra_buckets_policy_arn":
-        {"value": "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets"},
 })
 
 
-def test_apply_captures_bucket_admin_role_and_extra_buckets_policy_arns():
+def test_apply_captures_bucket_admin_role_arn():
     def run(args, *, cwd, env):
         class CP:
             returncode = 0
@@ -188,8 +186,7 @@ def test_apply_captures_bucket_admin_role_and_extra_buckets_policy_arns():
 
     out = provision.run_tofu_apply("acme-backups", "us-east-1", "K", "S", run=run)
     assert out["bucket_admin_role_arn"] == "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"
-    assert out["runtime_extra_buckets_policy_arn"] == \
-        "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets"
+    assert "runtime_extra_buckets_policy_arn" not in out
 
 
 def test_apply_tolerates_tofu_output_missing_multi_bucket_keys():
@@ -197,7 +194,6 @@ def test_apply_tolerates_tofu_output_missing_multi_bucket_keys():
     # raise -- run_tofu_apply reads them defensively.
     out = provision.run_tofu_apply("b", "us-east-1", "K", "S", run=_fake_tofu({}))
     assert out["bucket_admin_role_arn"] == ""
-    assert out["runtime_extra_buckets_policy_arn"] == ""
 
 
 class _CP:

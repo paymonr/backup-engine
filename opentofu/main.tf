@@ -83,20 +83,6 @@ resource "aws_iam_role_policy" "bucket_admin" {
   name = "${var.name_prefix}-bucket-admin-create-config"
   role = aws_iam_role.bucket_admin.name
   policy = templatefile("${path.module}/../provisioning/bucket-admin-policy.json.tmpl", {
-    bucket                   = var.bucket_name
-    extra_buckets_policy_arn = aws_iam_policy.runtime_extra_buckets.arn
+    bucket = var.bucket_name
   })
-}
-
-# --- Extra-buckets managed policy: attached to the runtime user so it can
-# reach dedicated per-job buckets (<base>-*). Starts as an inert placeholder;
-# populated with real bucket grants as dedicated-bucket jobs are created.
-resource "aws_iam_policy" "runtime_extra_buckets" {
-  name   = "${var.name_prefix}-runtime-extra-buckets"
-  policy = file("${path.module}/../provisioning/extra-buckets-policy.json.tmpl")
-}
-
-resource "aws_iam_user_policy_attachment" "runtime_extra_buckets" {
-  user       = aws_iam_user.runtime.name
-  policy_arn = aws_iam_policy.runtime_extra_buckets.arn
 }
