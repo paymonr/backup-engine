@@ -408,6 +408,115 @@ assert e["copied"] is False, e.get("copied")' <"$CACHE_DIR/state/manga.runs.json
   [[ "$output" == *"locked"* || "$output" == *"unlock"* ]]
 }
 
+# --- Task 3: bounded retry-with-resume on transient failures ---------------------------------
+
+@test "versioned backup retries a transient failure then succeeds (resumes, same command)" {
+  # restic backup fails once with a 503, then succeeds; cat->init as usual
+  cat >"$BATS_TEST_TMPDIR/bin/restic" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" "$*" >>"$RESTIC_LOG"
+[ "$1" = "cat" ] && exit 1
+if [[ "$*" == *"backup"* ]]; then
+  n=$(grep -c backup "$RESTIC_LOG")
+  if [ "$n" -eq 1 ]; then echo "http status 503 SlowDown" ; exit 1; fi
+fi
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/restic"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  BE_RETRY_BASE_SECONDS=0 BE_SLEEP_CMD=true run_job cfg
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'backup .*--tag cfg' "$RESTIC_LOG")" -ge 2 ]   # retried
+  grep -q '"outcome":"success"' "$CACHE_DIR/state/cfg.json"
+}
+
+@test "versioned backup does NOT retry a permanent (AccessDenied) failure" {
+  cat >"$BATS_TEST_TMPDIR/bin/restic" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" "$*" >>"$RESTIC_LOG"
+[ "$1" = "cat" ] && exit 1
+[[ "$*" == *"backup"* ]] && { echo "AccessDenied: not authorized"; exit 1; }
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/restic"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  BE_RETRY_BASE_SECONDS=0 BE_SLEEP_CMD=true run_job cfg
+  [ "$status" -ne 0 ]
+  [ "$(grep -c 'backup .*--tag cfg' "$RESTIC_LOG")" -eq 1 ]   # NOT retried
+  grep -q '"outcome":"failed"' "$CACHE_DIR/state/cfg.runs.jsonl"
+}
+
+# RULING P1: restic's --json stdout must keep landing in <job>-last.jsonl on every attempt (the
+# live progress monitor tails it), while the transient classifier reads a SEPARATE log fed from
+# restic's real stderr -- not the bulk --json status stream. This test uses a true stderr error
+# (unlike the stdout-based fake error above) and checks -last.jsonl still carries the final
+# successful attempt's summary after the retry.
+@test "versioned backup: stderr transient error retries, and -last.jsonl still carries the final --json summary (dual sink)" {
+  cat >"$BATS_TEST_TMPDIR/bin/restic" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" "$*" >>"$RESTIC_LOG"
+[ "$1" = "cat" ] && exit 1
+if [[ "$*" == *"backup"* ]]; then
+  n=$(grep -c backup "$RESTIC_LOG")
+  if [ "$n" -eq 1 ]; then echo "connection reset by peer" >&2; exit 1; fi
+  echo '{"message_type":"summary","snapshot_id":"deadbeefsnap0102"}'
+fi
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/restic"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  BE_RETRY_BASE_SECONDS=0 BE_SLEEP_CMD=true run_job cfg
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'backup .*--tag cfg' "$RESTIC_LOG")" -ge 2 ]
+  grep -q '"snapshot_id":"deadbeefsnap0102"' "$CACHE_DIR/state/cfg-last.jsonl"
+  grep -q '"outcome":"success"' "$CACHE_DIR/state/cfg.json"
+}
+
+# RULING P2: the live attempt marker. Written at the start of each attempt, visible to a RUNNING
+# run (a later progress-UI task reads it), and removed once retrying stops -- here via exhaustion
+# (BE_MAX_ATTEMPTS=2), the "final failure" removal path.
+@test "retry writes the live attempt number to <job>.attempt and removes it once retries are exhausted" {
+  cat >"$BATS_TEST_TMPDIR/bin/restic" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" "$*" >>"$RESTIC_LOG"
+[ "$1" = "cat" ] && exit 1
+if [[ "$*" == *"backup"* ]]; then
+  { cat "$CACHE_DIR/state/cfg.attempt" 2>/dev/null || echo MISSING; } >>"$ATTEMPTS_SEEN"
+  printf '\n' >>"$ATTEMPTS_SEEN"
+  echo "http status 503 SlowDown"
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/restic"
+  export ATTEMPTS_SEEN="$BATS_TEST_TMPDIR/attempts_seen.log"; : >"$ATTEMPTS_SEEN"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  BE_MAX_ATTEMPTS=2 BE_RETRY_BASE_SECONDS=0 BE_SLEEP_CMD=true run_job cfg
+  [ "$status" -ne 0 ]
+  [ "$(grep -c 'backup .*--tag cfg' "$RESTIC_LOG")" -eq 2 ]
+  [ "$(sed -n '1p' "$ATTEMPTS_SEEN")" = "1" ]
+  [ "$(sed -n '2p' "$ATTEMPTS_SEEN")" = "2" ]
+  [ ! -e "$CACHE_DIR/state/cfg.attempt" ]
+}
+
+@test "archive job: rclone copy retries a transient failure then succeeds" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/rclone" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" "$*" >>"$RCLONE_LOG"
+case "$1" in check|version) exit 0 ;; esac
+n=$(grep -c '^copy ' "$RCLONE_LOG")
+if [ "$n" -eq 1 ]; then echo "RequestTimeout: your socket connection was not read from"; exit 1; fi
+exit 0
+EOF
+  chmod +x "$b/rclone"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  BE_RETRY_BASE_SECONDS=0 BE_SLEEP_CMD=true run_job movies
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^copy ' "$RCLONE_LOG")" -ge 2 ]
+  grep -q '"outcome":"success"' "$CACHE_DIR/state/movies.json"
+}
+
 @test "_first_error_line still prefers an explicit error line" {
   source "$BATS_TEST_DIRNAME/../../scripts/lib/runs.sh"
   log="$BATS_TEST_TMPDIR/plog"

@@ -22,6 +22,31 @@ JOB="${1:?usage: backup-job.sh <job-name>}"
 # from load_config and again after the JOB_* eval) honors this verbatim when non-empty.
 _RESTIC_REPO_OVERRIDE="${RESTIC_REPOSITORY:-}"
 
+: "${BE_MAX_ATTEMPTS:=3}"; : "${BE_RETRY_BASE_SECONDS:=30}"; : "${BE_SLEEP_CMD:=sleep}"
+# _retry LOG CMD... — runs CMD; on failure, if LOG looks transient (per _is_transient_error)
+# and attempts remain, backs off (base * 2^(n-1) seconds) and re-runs CMD -- the engine's own
+# incremental/resume behavior means a re-run picks up where the failed attempt left off, not
+# from scratch. Sets BE_ATTEMPTS to the number of attempts actually made (the run record reads
+# it). Also exposes the in-progress attempt number at $CACHE_DIR/state/$JOB.attempt for the live
+# progress UI -- a RUNNING run has no other way to surface a retry in progress, since the run
+# record only carries `attempts` on its terminal "end" event -- removing it once this stops
+# retrying (success or final failure).
+_retry() {
+  local log="$1"; shift
+  local n=0 rc=0
+  local attempt_marker="$CACHE_DIR/state/$JOB.attempt"
+  while :; do
+    n=$((n+1)); BE_ATTEMPTS="$n"
+    printf '%s' "$n" >"$attempt_marker"
+    : >"$log"
+    "$@" 2>&1 | tee -a "$log" >/dev/null; rc=${PIPESTATUS[0]}
+    if [ "$rc" -eq 0 ]; then rm -f "$attempt_marker"; return 0; fi
+    if [ "$n" -ge "$BE_MAX_ATTEMPTS" ] || ! _is_transient_error "$log"; then rm -f "$attempt_marker"; return "$rc"; fi
+    log_warn "job '$JOB' attempt $n failed (transient); retrying (resumes where it left off)"
+    "$BE_SLEEP_CMD" "$(( BE_RETRY_BASE_SECONDS * (1 << (n-1)) ))"
+  done
+}
+
 main() {
   trap '_usb_exit_trap "$?"' EXIT; trap 'exit 143' TERM; trap 'exit 130' INT
   [ -f "${CONFIG_DIR:-/config}/backup.env" ] && load_config "${CONFIG_DIR:-/config}"
@@ -62,8 +87,20 @@ _run_versioned() {
   log_info "restic backup $src (tag=$JOB)"
   runs_set_command "restic -r $RESTIC_REPOSITORY backup $src --tag $JOB"
   local f="$CACHE_DIR/state/$JOB-last.jsonl"
-  if restic -r "$RESTIC_REPOSITORY" "${class_opt[@]}" backup "$src" --tag "$JOB" --json \
-       | tee "$f" >/dev/null; then
+  local rlog="$CACHE_DIR/state/$JOB-retry.log"
+  # restic's --json stream must keep landing in $f on EVERY attempt (retries included) -- the
+  # live progress monitor tails it -- but the transient classifier must not be fed that (huge,
+  # per-status-line) stream. So this wrapper sends restic's stderr, plus only the non-"status"
+  # lines of its --json stdout (the summary, and any plain-text error restic prints), to $rlog
+  # for _retry to classify; the full raw --json stream still goes to $f untouched, as before.
+  _restic_backup_attempt() {
+    restic -r "$RESTIC_REPOSITORY" "${class_opt[@]}" backup "$src" --tag "$JOB" --json \
+        2>>"$rlog" | tee "$f" >/dev/null
+    local rc=${PIPESTATUS[0]}
+    grep -vE '"message_type":[[:space:]]*"status"' "$f" >>"$rlog" 2>/dev/null || true
+    return "$rc"
+  }
+  if _retry "$rlog" _restic_backup_attempt; then
     SNAP_ID="$(_restic_snapshot_id "$f")" || true; COPIED=1
     local fn fc da ftp btp fa=null
     fn="$(_restic_summary_field "$f" files_new)" || true
@@ -107,8 +144,10 @@ _run_archive() {
   [ -n "$RCLONE_BWLIMIT" ] && args+=(--bwlimit "$RCLONE_BWLIMIT")
   log_info "rclone $verb $src -> s3:${JOB_BUCKET:-$S3_BUCKET}/media/$JOB (class=$JOB_STORAGE_CLASS)"
   runs_set_command "rclone $verb $src s3:${JOB_BUCKET:-$S3_BUCKET}/media/$JOB --s3-storage-class $JOB_STORAGE_CLASS"
-  local rlog="$CACHE_DIR/state/$JOB-rclone.log" rc=0; : >"$rlog"
-  rclone "${args[@]}" 2>&1 | tee -a "$rlog" || rc=$?
+  local rlog="$CACHE_DIR/state/$JOB-rclone.log" rc=0
+  # rclone has no separate progress stream to protect (unlike restic's --json -> -last.jsonl);
+  # its combined output can go straight into the one log _retry both writes to and classifies on.
+  _retry "$rlog" rclone "${args[@]}" || rc=$?
   # The stats block is written even on a partial failure, so build RUN_STATS BEFORE inspecting rc —
   # the record still says how far it got.
   local fa ba re
