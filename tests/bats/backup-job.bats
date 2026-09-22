@@ -545,3 +545,50 @@ EOF
   ! grep -q '"outcome":"failed"' "$CACHE_DIR/state/cfg.runs.jsonl"
   [ ! -f "$CACHE_DIR/state/cfg.control" ]   # flag cleared
 }
+
+# --- Task 6: auto-resume markers (app.engine.resume re-triggers with BE_RESUME=1) --------------
+
+@test "BE_RESUME=1 run creates .resuming at start and removes it when the run ends" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  export RESUMING_SEEN="$BATS_TEST_TMPDIR/resuming_seen.log"; : >"$RESUMING_SEEN"
+  cat >"$b/restic" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" "$*" >>"$RESTIC_LOG"
+[ "$1" = "cat" ] && exit 1
+if [[ "$*" == *"backup"* ]]; then
+  { [ -f "$CACHE_DIR/state/cfg.resuming" ] && echo PRESENT || echo MISSING; } >>"$RESUMING_SEEN"
+  printf '%s\n' '{"message_type":"summary","snapshot_id":"deadbeefsnap0102"}'
+fi
+exit 0
+EOF
+  chmod +x "$b/restic"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  BE_RESUME=1 run_job cfg
+  [ "$status" -eq 0 ]
+  [ "$(cat "$RESUMING_SEEN")" = "PRESENT" ]     # present while the run was in progress
+  [ ! -f "$CACHE_DIR/state/cfg.resuming" ]      # removed once the run ended
+}
+
+@test "BE_RESUME=1 run still removes .resuming on a failed run (not just success)" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/restic" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" "$*" >>"$RESTIC_LOG"
+[ "$1" = "cat" ] && exit 1
+[[ "$*" == *"backup"* ]] && { echo "AccessDenied: not authorized"; exit 1; }
+exit 0
+EOF
+  chmod +x "$b/restic"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  BE_RETRY_BASE_SECONDS=0 BE_SLEEP_CMD=true BE_RESUME=1 run_job cfg
+  [ "$status" -ne 0 ]
+  [ ! -f "$CACHE_DIR/state/cfg.resuming" ]
+}
+
+@test "a successful run clears the job's resume-cap counter (state/<job>.resumes)" {
+  mkdir -p "$CACHE_DIR/state"; printf '2' >"$CACHE_DIR/state/cfg.resumes"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job cfg
+  [ "$status" -eq 0 ]
+  [ ! -f "$CACHE_DIR/state/cfg.resumes" ]
+}

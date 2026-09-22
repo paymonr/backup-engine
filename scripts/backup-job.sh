@@ -111,6 +111,12 @@ main() {
   # per-job env existed and could only ever see the base S3_BUCKET.
   derive_restic_repo
   acquire_lock "$JOB"                                                                          # (1)
+  # RULING P2: a resume-triggered run (BE_RESUME=1, set by app.engine.resume) marks itself with
+  # a live `.resuming` flag so the progress UI can show "resuming" instead of a plain "running".
+  # Removed unconditionally in _usb_exit_trap, so it clears on every exit path (success, failure,
+  # or paused) -- never left stale by a crash mid-run (the next boot's reconcile only touches the
+  # run record, not this flag, so leaving cleanup to a single unconditional trap point is simplest).
+  if [ "${BE_RESUME:-0}" = "1" ]; then mkdir -p "$CACHE_DIR/state"; : >"$CACHE_DIR/state/$JOB.resuming"; fi
   runs_start "$JOB" backup "\"type\":\"$JOB_TYPE\",\"storage_class\":\"$JOB_STORAGE_CLASS\""   # (2)
   exec > >(tee -a "$CACHE_DIR/$BE_RUN_LOG") 2>&1; _BE_TEE_PID=$!                              # (3)
   version_banner
@@ -126,6 +132,7 @@ main() {
   local dur=$(( $(date +%s) - BE_RUN_START_EPOCH ))
   runs_end ok 0 "" "\"snapshot_id\":$(_runs_str "${SNAP_ID:-}")${RUN_STATS:+,$RUN_STATS},\"attempts\":${BE_ATTEMPTS:-1}" || log_warn "could not record run"   # (5)
   _write_state success "" 0                                                                    # (6)
+  rm -f "$CACHE_DIR/state/$JOB.resumes"   # a clean run resets the auto-resume cap (app.engine.resume)
   points_refresh "$JOB" "$JOB_TYPE" || log_warn "restore-point cache refresh failed for '$JOB' (non-fatal)"   # (7)
   log_info "job '$JOB' complete ($JOB_TYPE, ${dur}s)"
   notify success "backup '$JOB' OK" "$JOB_TYPE finished in ${dur}s"; healthcheck success
@@ -289,5 +296,8 @@ _usb_exit_trap() { local rc="$1"
   elif [ "$rc" -ne 0 ] && [ "$_BE_FAIL_HANDLED" -eq 0 ]; then
     _record_failure "${_BE_LAST_ERR:-job exited with status $rc}" "$rc"
   fi
+  # RULING P2: clear the resume marker on every exit path (success, failure, or paused) -- a
+  # plain `rm -f` is a no-op when BE_RESUME never set it, so this is safe unconditionally.
+  rm -f "$CACHE_DIR/state/$JOB.resuming"
   [ -n "${_BE_TEE_PID:-}" ] && { exec 1>&- 2>&-; wait "$_BE_TEE_PID" 2>/dev/null || true; }; }
 main "$@"
