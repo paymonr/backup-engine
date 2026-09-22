@@ -262,11 +262,9 @@ def render_console_steps(bucket: str, region: str) -> dict:
         f"aws s3api put-public-access-block --bucket {bucket} "
         f"--public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,"
         f"BlockPublicPolicy=true,RestrictPublicBuckets=true",
-        "aws iam create-policy --policy-name backup-engine-runtime-object-only "
-        "--policy-document file://iam-policy.json",
         "aws iam create-user --user-name backup-engine-runtime",
-        "aws iam attach-user-policy --user-name backup-engine-runtime "
-        "--policy-arn <policy-arn-from-create-policy>",
+        "aws iam put-user-policy --user-name backup-engine-runtime "
+        "--policy-name backup-engine-runtime-object-only --policy-document file://iam-policy.json",
         "aws iam create-access-key --user-name backup-engine-runtime",
     ]
     steps = [
@@ -278,9 +276,12 @@ def render_console_steps(bucket: str, region: str) -> dict:
         "Click Create bucket. Then open it → Management → Create lifecycle rule. "
         "Turn on versioning, and expire old versions after 180 days; "
         "abort incomplete multipart uploads after 7 days.",
-        "In IAM, save the policy above as iam-policy.json and create a customer-managed policy from it.",
-        "Create an IAM user, attach that policy, and create an access key — that pair is your runtime key/secret.",
-        "Paste the runtime key/secret below and click Test & Validate.",
+        "In IAM, create a user named backup-engine-runtime (no console access).",
+        "Open that user → Permissions → Add permissions → Create inline policy → JSON, paste the "
+        "policy above, and name it backup-engine-runtime-object-only.",
+        "On the same user → Security credentials → Create access key — that pair is your runtime key/secret.",
+        "Paste the runtime key/secret below and click Test & Validate. Setup then finishes on AWS "
+        "permissions, which adds what dedicated per-job buckets need.",
     ]
     return {"cli": cli, "steps": steps}
 

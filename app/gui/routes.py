@@ -1730,9 +1730,9 @@ def provision_validate():
     # Refresh the destination probe on the NEW key so /setup reflects it, not a stale
     # pre-provision result (the running process still holds the old startup env key).
     _launch_destination_probe(cfg)
-    flash(f"Destination set: {bucket} in {region}. Next: the recovery passphrase, "
-          f"then the first job.", "success")
-    return redirect(url_for("gui.setup_page"))
+    flash(f"Destination set: {bucket} in {region}. One more step: AWS permissions — then the "
+          f"recovery passphrase and the first job.", "success")
+    return redirect(url_for("gui.permissions_page", mode="commands", _anchor="commands"))
 
 # Fixed, developer-authored copy only -- never interpolated with admin/AWS output -- so
 # it is safe to mark non-escaping the same way permissions_routes._ADMIN_MESSAGES does:

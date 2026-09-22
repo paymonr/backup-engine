@@ -359,3 +359,19 @@ def test_run_tofu_apply_tolerates_missing_runtime_user_arn():
                                stdout=_json.dumps(out) if args[0] == "output" else "")
 
     assert provision.run_tofu_apply("b", "us-east-1", "AK", "SK", run=fake)["runtime_user_arn"] == ""
+
+
+def test_guided_cli_uses_an_inline_user_policy():
+    # Spec 2026-09-22 §4: the full policy later lands on the same inline name via
+    # put-user-policy, so guided setup no longer creates a managed policy.
+    cli = "\n".join(provision.render_console_steps("acme", "us-east-1")["cli"])
+    assert ("aws iam put-user-policy --user-name backup-engine-runtime "
+            "--policy-name backup-engine-runtime-object-only --policy-document file://iam-policy.json") in cli
+    assert "create-policy" not in cli and "attach-user-policy" not in cli
+    assert cli.index("create-user") < cli.index("put-user-policy") < cli.index("create-access-key")
+
+
+def test_guided_console_steps_create_an_inline_policy():
+    steps = " ".join(provision.render_console_steps("acme", "us-east-1")["steps"]).lower()
+    assert "create inline policy" in steps
+    assert "backup-engine-runtime-object-only" in steps

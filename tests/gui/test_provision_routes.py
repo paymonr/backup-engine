@@ -133,7 +133,7 @@ def test_scripted_panel_shows_setup_command(client):
 
 # --- validate (guided-manual key) -------------------------------------------
 
-def test_validate_success_writes_secrets_and_lands_on_setup(client, dirs, monkeypatch):
+def test_validate_success_writes_secrets_and_lands_on_permissions(client, dirs, monkeypatch):
     from app.gui import provision
     monkeypatch.setattr(provision, "validate_runtime_key", lambda *a, **k: None)
     token = _csrf(client, "/setup/destination/manual")
@@ -141,7 +141,7 @@ def test_validate_success_writes_secrets_and_lands_on_setup(client, dirs, monkey
                     data={"csrf": token, "bucket": "acme", "region": "eu-west-1",
                           "AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
     assert r.status_code in (302, 303)
-    assert r.headers["Location"].endswith("/setup")
+    assert "/setup/permissions?mode=commands" in r.headers["Location"]
     sec = Path(dirs["config"], "secrets.env").read_text()
     assert "AWS_ACCESS_KEY_ID=AKIA" in sec and "AWS_SECRET_ACCESS_KEY=sek" in sec
     be = Path(dirs["config"], "backup.env").read_text()
@@ -158,7 +158,7 @@ def test_validate_success_flashes_destination_set(client, dirs, monkeypatch):
                     follow_redirects=True)
     assert r.status_code == 200
     assert b"Destination set: acme in eu-west-1" in r.data
-    assert b"the recovery passphrase, then the first job" in r.data
+    assert b"One more step: AWS permissions" in r.data
 
 
 def test_validate_failure_saves_nothing_and_hides_secret(client, dirs, monkeypatch):

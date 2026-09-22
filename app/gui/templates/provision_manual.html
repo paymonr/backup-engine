@@ -33,7 +33,7 @@
   <p class="slabel" style="margin-top:var(--sp-6)">1 · Copy the least-privilege IAM policy</p>
   <p class="hint">Object read/write only under <code>appdata/*</code> and <code>media/*</code> —
      plus reading bucket versioning — never bucket configuration. Paste it in step 2
-     (IAM → Policies → Create policy → JSON tab).</p>
+     (IAM → your backup user → Add permissions → Create inline policy → JSON tab).</p>
   <div class="cmd" style="margin-top:var(--sp-2)">
     <pre>{{ policy }}</pre>
     <button type="button" class="btn btn-sm copy" data-copy="{{ policy }}">Copy</button>
