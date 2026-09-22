@@ -32,6 +32,7 @@ usage() {
   cat <<EOF
 usage:
   restore.sh <job> list [--json]
+  restore.sh <job> browse [<relpath>] [--json]                                  (read-only; archive, versioned-files)
   restore.sh <job> restore <snapshot-id|latest> <target-dir> [--include <path>]   (versioned only)
   restore.sh <job> thaw <prefix|.> [--tier Bulk|Standard|Expedited] [--dry-run]   (archive: any prefix; versioned-files: "." only, via vfiles thaw; versioned: whole store)
   restore.sh <job> thaw-status <prefix|.>                                          (archive, versioned-files)
@@ -45,6 +46,16 @@ EOF
 _load() { [ -f "${CONFIG_DIR:-/config}/backup.env" ] && load_config "${CONFIG_DIR:-/config}" || true; }
 
 _is_cold() { case "$1" in GLACIER|DEEP_ARCHIVE|GLACIER_IR) return 0 ;; *) return 1 ;; esac; }
+
+# Path guard for `browse`: strip a leading '/', reject any '..' path segment
+# (bare "..", "../x", "x/..", "x/../y" -- wrapping in slashes catches all of
+# these as a "/../"  substring). Prints the cleaned relpath and returns 0, or
+# returns 1 with nothing printed on a bad path.
+_safe_rel() {
+  local p="${1#/}"
+  case "/$p/" in *"/../"*) return 1 ;; esac
+  printf '%s' "$p"
+}
 
 # Failure path for a MUTATING restore action (spec 7.5.3 §2): a run record + a restore
 # notification — no state file, no healthcheck. RESTORE_EXTRA carries any stats already
@@ -301,6 +312,14 @@ _restore_archive() {
       if [ "${2:-}" = "--json" ]; then points_render "$job" archive
       else rclone --config "$RCLONE_CONFIG" lsf --dirs-only "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/"; fi
       ;;
+    browse)  # read-only: no lock, no record (dispatched from main's list|thaw-status|browse case)
+      shift  # drop "browse"; remaining: [relpath] [--json]
+      local rel=""
+      while [ $# -gt 0 ]; do case "$1" in --json) ;; *) rel="$1";; esac; shift; done
+      rel="$(_safe_rel "$rel")" || { echo "explore: bad path" >&2; exit 2; }
+      rclone --config "$RCLONE_CONFIG" lsjson "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$job/${rel:+$rel/}" 2>/dev/null \
+        | python3 -m app.engine.browse --rclone "$rel"
+      ;;
     thaw)
       local prefix="${2:?prefix}" tier="Bulk" dry=""; shift 2
       while [ $# -gt 0 ]; do case "$1" in --tier) tier="${2:-Bulk}"; shift 2;; --dry-run) dry=1; shift;; *) shift;; esac; done
@@ -395,6 +414,13 @@ _restore_vfiles() {
     list)  # read-only: no lock, no record; catalog listing (optionally --json)
       python3 -m app.engine.vfiles restore "$job" "$@"
       ;;
+    browse)  # read-only: no lock, no record (dispatched from main's list|thaw-status|browse case)
+      shift  # drop "browse"; remaining: [relpath] [--json]
+      local rel=""
+      while [ $# -gt 0 ]; do case "$1" in --json) ;; *) rel="$1";; esac; shift; done
+      rel="$(_safe_rel "$rel")" || { echo "explore: bad path" >&2; exit 2; }
+      python3 -m app.engine.vfiles browse "$job" "$rel" --json
+      ;;
     thaw)
       shift  # drop "thaw"; remaining: <scope|.> [--tier T] [--asof TS]
       local tier="Bulk" a prev=""
@@ -486,7 +512,7 @@ main() {
 
   # Read-only actions: no lock, no run record, no EXIT trap (spec 7.5.3 §2).
   case "$sub" in
-    list|thaw-status) _dispatch "$job" "$@"; exit $? ;;
+    list|thaw-status|browse) _dispatch "$job" "$@"; exit $? ;;
   esac
 
   # Mutating actions: kind, then lock -> record -> tee -> dispatch. HONORS a

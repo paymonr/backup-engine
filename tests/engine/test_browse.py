@@ -78,3 +78,45 @@ def test_file_versions_preserved():
     assert entries[0]["kind"] == "file"
     assert "versions" in entries[0]
     assert entries[0]["versions"] == [{"id": "v1"}, {"id": "v2"}]
+
+# --- Task 4: level_from_rclone_lsjson (rclone lsjson -> one browse level) ---
+
+def test_level_from_rclone_lsjson_dir_and_file():
+    """rclone lsjson is already one level: map + sort, dirs before files."""
+    js = json.dumps([
+        {"Name": "sub", "IsDir": True},
+        {"Name": "a.txt", "IsDir": False, "Size": 12, "Tier": "STANDARD", "ModTime": "2026-09-01T00:00:00Z"},
+    ])
+    out = browse.level_from_rclone_lsjson(js, "")
+    assert out["path"] == ""
+    names = [e["name"] for e in out["entries"]]
+    assert names == ["sub", "a.txt"]  # dirs first
+    d, f = out["entries"]
+    assert d == {"name": "sub", "kind": "dir", "size": None, "storage_class": None, "modified": None}
+    assert f["kind"] == "file"
+    assert f["size"] == 12
+    assert f["storage_class"] == "STANDARD"
+    assert f["modified"] == "2026-09-01T00:00:00Z"
+
+def test_level_from_rclone_lsjson_sorts_within_kind():
+    js = json.dumps([
+        {"Name": "z_dir", "IsDir": True},
+        {"Name": "a_dir", "IsDir": True},
+        {"Name": "z.txt", "IsDir": False, "Size": 1},
+        {"Name": "a.txt", "IsDir": False, "Size": 1},
+    ])
+    out = browse.level_from_rclone_lsjson(js, "")
+    assert [e["name"] for e in out["entries"]] == ["a_dir", "z_dir", "a.txt", "z.txt"]
+
+def test_level_from_rclone_lsjson_missing_tier_is_none():
+    js = json.dumps([{"Name": "a.txt", "IsDir": False, "Size": 1}])
+    out = browse.level_from_rclone_lsjson(js, "")
+    assert out["entries"][0]["storage_class"] is None
+
+def test_level_from_rclone_lsjson_empty_input():
+    assert browse.level_from_rclone_lsjson("", "sub/dir") == {"path": "sub/dir", "entries": []}
+    assert browse.level_from_rclone_lsjson("   ", "") == {"path": "", "entries": []}
+
+def test_level_from_rclone_lsjson_normalizes_cur_dir():
+    out = browse.level_from_rclone_lsjson("[]", "/2020/")
+    assert out["path"] == "2020"

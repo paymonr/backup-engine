@@ -52,5 +52,44 @@ def level_from_restic_ls(ls_json_path: str, cur_dir: str) -> dict:
                     records.append({"path": o["path"], "type": o.get("type"), "size": o.get("size")})
     return _entries(fold_level(records, cur_dir), cur_dir)
 
-if __name__ == "__main__":                      # python3 -m app.engine.browse <ls_json> <cur_dir>
-    print(json.dumps(level_from_restic_ls(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "")))
+def level_from_rclone_lsjson(json_text: str, cur_dir: str) -> dict:
+    """One browse level from an `rclone lsjson` array (already one directory
+    deep -- no folding needed, just map + sort). Tolerates empty/blank stdin
+    and any non-array/malformed JSON by returning an empty level."""
+    cur = _norm(cur_dir)
+    text = (json_text or "").strip()
+    items = []
+    if text:
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = []
+        if isinstance(parsed, list):
+            items = parsed
+    dirs = []
+    files = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = it.get("Name")
+        if not name:
+            continue
+        if it.get("IsDir"):
+            dirs.append({"name": name, "kind": "dir", "size": None,
+                         "storage_class": None, "modified": None})
+        else:
+            files.append({"name": name, "kind": "file", "size": it.get("Size"),
+                          "storage_class": it.get("Tier") or None, "modified": it.get("ModTime")})
+    dirs.sort(key=lambda e: e["name"])
+    files.sort(key=lambda e: e["name"])
+    return {"path": cur, "entries": dirs + files}
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--rclone":
+        # python3 -m app.engine.browse --rclone <cur_dir>  (reads rclone lsjson from stdin)
+        # Compact separators (no spaces) to match the bash-side grep/string checks
+        # that scan this CLI's stdout for shape (e.g. restore.sh's browse arm callers).
+        _cur = sys.argv[2] if len(sys.argv) > 2 else ""
+        print(json.dumps(level_from_rclone_lsjson(sys.stdin.read(), _cur), separators=(",", ":")))
+    else:                                        # python3 -m app.engine.browse <ls_json> <cur_dir>
+        print(json.dumps(level_from_restic_ls(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "")))

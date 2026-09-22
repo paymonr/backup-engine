@@ -411,6 +411,67 @@ assert e["tested_path"]=="/appdata/x.conf", e.get("tested_path")
 assert e["tested_bytes"]==6, e.get("tested_bytes")' <"$CACHE_DIR/state/cfg.runs.jsonl"
 }
 
+# --- Task 4: browse (read-only, archive + versioned-files) ---
+
+@test "archive browse lists one level as entry JSON (dirs-first, kind mapped)" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/rclone" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RCLONE_LOG"
+case "$*" in *lsjson*) printf '%s\n' '[{"Name":"sub","IsDir":true},{"Name":"a.txt","IsDir":false,"Size":12,"Tier":"STANDARD","ModTime":"2026-09-01T00:00:00Z"}]' ;; esac
+exit 0
+STUB
+  chmod +x "$b/rclone"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE\n' >"$JOBS_IO_STUB"
+  run_restore movies browse "" --json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"kind":"dir"'* ]]
+  [[ "$output" == *'"name":"a.txt"'* ]]
+  grep -q -- "lsjson s3:my-bucket/media/movies/" "$RCLONE_LOG"
+  [ ! -e "$CACHE_DIR/state/movies.runs.jsonl" ]
+}
+
+@test "archive browse into a subdir uses the subdir prefix" {
+  local b="$BATS_TEST_TMPDIR/bin"
+  cat >"$b/rclone" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RCLONE_LOG"
+case "$*" in *lsjson*) printf '%s\n' '[{"Name":"b.txt","IsDir":false,"Size":1}]' ;; esac
+exit 0
+STUB
+  chmod +x "$b/rclone"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE\n' >"$JOBS_IO_STUB"
+  run_restore movies browse "2020" --json
+  [ "$status" -eq 0 ]
+  grep -q -- "lsjson s3:my-bucket/media/movies/2020/" "$RCLONE_LOG"
+}
+
+@test "archive browse rejects a path escape (exit 2, no run record)" {
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE\n' >"$JOBS_IO_STUB"
+  run_restore movies browse "../secret" --json
+  [ "$status" -ne 0 ]
+  [ ! -e "$CACHE_DIR/state/movies.runs.jsonl" ]
+}
+
+@test "versioned-files browse dispatches to app.engine.vfiles browse, no run record" {
+  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
+  local b="$BATS_TEST_TMPDIR/bin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nprintf "{\\"path\\":\\"docs\\",\\"entries\\":[]}\\n"\nexit 0\n' >"$b/python3"
+  chmod +x "$b/python3"
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_restore vf browse "docs" --json
+  [ "$status" -eq 0 ]
+  grep -q -- "-m app.engine.vfiles browse vf docs --json" "$PYTHON_LOG"
+  [ ! -e "$CACHE_DIR/state/vf.runs.jsonl" ]
+}
+
+@test "versioned-files browse rejects a path escape (exit 2, no run record)" {
+  printf 'echo JOB_NAME=vf; echo JOB_TYPE=versioned-files; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_restore vf browse "../secret" --json
+  [ "$status" -ne 0 ]
+  [ ! -e "$CACHE_DIR/state/vf.runs.jsonl" ]
+}
+
 @test "versioned-files test -> restores first catalog file, tested.json, record kind test-restore" {
   local b="$BATS_TEST_TMPDIR/bin"
   export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
