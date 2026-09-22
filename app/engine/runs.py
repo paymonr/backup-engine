@@ -36,7 +36,7 @@ class RunRecord:
     job: str | None
     kind: str
     trigger: str
-    outcome: str                      # running | ok | failed | aborted
+    outcome: str                      # running | ok | failed | aborted | paused
     started_at: datetime              # tz-aware UTC
     finished_at: datetime | None
     duration_s: int | None
@@ -62,6 +62,7 @@ class RunRecord:
     storage_class: str | None = None
     params: dict = dataclasses.field(default_factory=dict)
     pid: int | None = None
+    attempts: int | None = None
     backfilled: bool = False
 
 
@@ -140,7 +141,7 @@ def is_locked(cache_dir, job) -> bool:
 
 _NUM_FIELDS = ("duration_s", "exit_code", "files_new", "files_changed", "files_added",
                "bytes_added", "files_total", "bytes_total", "rclone_errors",
-               "files_restored", "bytes_restored", "objects_requested", "thaw_requested", "pid")
+               "files_restored", "bytes_restored", "objects_requested", "thaw_requested", "pid", "attempts")
 _STR_FIELDS = ("kind", "trigger", "error", "phase", "snapshot_id", "log", "command",
                "type", "storage_class")
 
@@ -205,6 +206,7 @@ def _fold_group(grp: dict) -> tuple[RunRecord, bool]:
         storage_class=s("storage_class"),
         params=merged.get("params") if isinstance(merged.get("params"), dict) else {},
         pid=num("pid"),
+        attempts=num("attempts"),
         backfilled=bool(merged.get("backfilled")),
     )
     return rec, truncated

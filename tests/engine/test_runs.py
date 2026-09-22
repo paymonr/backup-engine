@@ -376,3 +376,14 @@ def test_read_log_refuses_paths_outside_logs_runs(tmp_path):
     rec = dataclasses.replace(_rr(), log="../../etc/passwd")
     text, off, eof = runs.read_log(c, rec)
     assert text == "" and eof is True
+
+
+# --- paused outcome + attempts ---------------------------------------------
+
+def test_paused_outcome_and_attempts_fold(tmp_path):
+    from app.engine import runs
+    c = str(tmp_path)
+    runs.append_event(c, "cfg", {"v":1,"id":"20260921T050000Z-aaaa","job":"cfg","kind":"backup","event":"start","started_at":"2026-09-21T05:00:00Z"})
+    runs.append_event(c, "cfg", {"v":1,"id":"20260921T050000Z-aaaa","job":"cfg","kind":"backup","event":"end","outcome":"paused","finished_at":"2026-09-21T05:01:00Z","attempts":2})
+    rec = runs.read_runs(c, "cfg", reconcile=False).records[0]
+    assert rec.outcome == "paused" and rec.attempts == 2
