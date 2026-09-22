@@ -116,14 +116,30 @@
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button type="submit" class="btn" id="run-now"{% if s.state == 'RUNNING' %} disabled{% endif %}>{{ 'Running…' if s.state == 'RUNNING' else 'Run now' }}</button>
       </form>
+      {# ---- Pause/Resume for a RUNNING/paused RUN (Task 9) — a primary, visible
+             control next to Run now, distinct from the ···-menu's schedule toggle
+             below (which is labeled "Pause schedule"/"Resume schedule"). A paused
+             run is detected via s.last.outcome, never s.state (s.state == PAUSED
+             means the schedule is disabled, not that a run is paused). #}
+      {% if s.state == 'RUNNING' %}
+      <form method="post" action="/jobs/{{ s.name }}/stop" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="btn btn-ghost" id="run-pause">Pause</button>
+      </form>
+      {% elif s.last and s.last.outcome == 'paused' %}
+      <form method="post" action="/jobs/{{ s.name }}/resume-run" style="display:inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="btn btn-primary" id="run-resume">Resume</button>
+      </form>
+      {% endif %}
       <a class="btn btn-primary" href="#restore-band" data-scroll="restore-band">Get data back</a>
       <details class="menu" style="display:inline-block;position:relative">
         <summary class="btn btn-ghost" aria-label="More actions" style="list-style:none">···</summary>
         <div class="menu-pop" style="position:absolute;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.4rem;min-width:160px;display:grid;gap:.2rem">
           {% if s.enabled %}
-          <form method="post" action="/jobs/{{ s.name }}/pause"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Pause</button></form>
+          <form method="post" action="/jobs/{{ s.name }}/pause"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Pause schedule</button></form>
           {% else %}
-          <form method="post" action="/jobs/{{ s.name }}/resume"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Resume</button></form>
+          <form method="post" action="/jobs/{{ s.name }}/resume"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Resume schedule</button></form>
           {% endif %}
           <a class="btn btn-sm btn-ghost" href="/jobs/{{ s.name }}/edit" style="text-align:left">Edit →</a>
           {# The typed-name confirm-to-act dialog is client-side (spec 5.15); the POST

@@ -356,6 +356,46 @@ def test_resume_run_unknown_job_is_404(client, example):
     assert client.post("/jobs/nope/resume-run", data={"csrf": t}).status_code == 404
 
 
+# --- job-page Pause/Resume RUN control (Task 9), distinct from the schedule
+# toggle's Pause schedule / Resume schedule labels -----------------------------
+
+def test_running_job_shows_pause_run_control(client, example, monkeypatch):
+    # Reuse the same mechanism test_status.py uses to force RUNNING: a held lock.
+    monkeypatch.setattr(runs, "is_locked", lambda cache_dir, job: job == "appdata")
+    body = client.get("/jobs/appdata").get_data(as_text=True)
+    assert 'action="/jobs/appdata/stop"' in body
+    assert ">Pause</button>" in body
+    assert 'action="/jobs/appdata/resume-run"' not in body
+
+
+def test_paused_run_shows_resume_run_control(client, example):
+    cache = client.application.config["CACHE_DIR"]
+    # A completed run whose outcome is "paused" becomes the latest run.
+    _end(cache, "appdata", "20260915T060000Z-pause", outcome="paused",
+         started="2026-09-15T06:00:00Z", finished="2026-09-15T06:01:00Z", duration=60)
+    body = client.get("/jobs/appdata").get_data(as_text=True)
+    assert 'action="/jobs/appdata/resume-run"' in body
+    assert ">Resume</button>" in body
+    assert 'action="/jobs/appdata/stop"' not in body
+
+
+def test_schedule_toggle_is_labeled_pause_schedule_and_resume_schedule(client, example):
+    body = client.get("/jobs/appdata").get_data(as_text=True)
+    assert "Pause schedule" in body
+    assert "Resume schedule" not in body
+    t = _csrf(client, "/jobs/appdata")
+    client.post("/jobs/appdata/pause", data={"csrf": t})
+    body = client.get("/jobs/appdata").get_data(as_text=True)
+    assert "Resume schedule" in body
+    assert "Pause schedule" not in body
+
+
+def test_idle_ok_job_shows_neither_stop_nor_resume_run_control(client, example):
+    body = client.get("/jobs/appdata").get_data(as_text=True)
+    assert 'action="/jobs/appdata/stop"' not in body
+    assert 'action="/jobs/appdata/resume-run"' not in body
+
+
 # --- delete: removes the job AND its caches ---------------------------------
 
 def test_delete_removes_job_and_its_caches(client, example):
