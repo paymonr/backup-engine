@@ -90,6 +90,7 @@ def test_preview_changes_nothing(client, monkeypatch):
                        data={"csrf": _csrf(client), **CREDS}).get_data(as_text=True)
     assert seen["apply_changes"] is False and seen["mode"] == "check"
     assert "Preview — nothing was changed" in body and "Would do" in body
+    assert "delete that access key in AWS now" not in body
 
 
 def test_already_current_redirects_with_a_flash(client, monkeypatch):
@@ -97,7 +98,9 @@ def test_already_current_redirects_with_a_flash(client, monkeypatch):
                         lambda p, **kw: permissions.Outcome(ok=True, applied=False, steps=[]))
     r = client.post("/setup/permissions/update", data={"csrf": _csrf(client), **CREDS},
                     follow_redirects=True)
-    assert "already in place" in r.get_data(as_text=True)
+    body = r.get_data(as_text=True)
+    assert "already in place" in body
+    assert "delete that access key in AWS now" in body
 
 
 def test_failed_step_explains_rerun(client, monkeypatch):

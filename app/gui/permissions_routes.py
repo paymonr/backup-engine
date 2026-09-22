@@ -102,13 +102,18 @@ def _run_admin(apply_changes: bool):
                      error_detail=e.detail if e.kind not in ("account_mismatch", "script") else None)
     finally:
         admin = None   # discard transient admin creds from this frame regardless of outcome
+    # converge() sends the admin creds to AWS (verify_admin_can_provision, the account
+    # lookup, discover()) on EVERY Update request that gets this far, even when the
+    # plan turns out empty -- so the delete-the-key reminder applies to every Update
+    # outcome, not just one that actually applied a step. It never applies to Preview:
+    # the owner is about to paste the same key again to apply for real.
+    if apply_changes:
+        flash("We never stored your admin key — delete that access key in AWS now.", "warning")
     if outcome.ok and not outcome.steps:
         flash("Everything's already in place — AWS permissions are up to date.", "success")
         return redirect(url_for("gui.permissions_page"))
     if outcome.ok and outcome.applied:
         flash("AWS permissions updated.", "success")
-    if outcome.applied:
-        flash("We never stored your admin key — delete that access key in AWS now.", "warning")
     return _page(outcome=outcome, preview=not apply_changes)
 
 
