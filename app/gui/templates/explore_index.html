@@ -1,5 +1,8 @@
 {% extends "base.html" %}
-{#- explore_index.html — Explore job list (Task 6 skeleton; Task 8 enriches). #}
+{#- explore_index.html — Explore job list (Task 6 skeleton; Task 8 enriches).
+    The type label reads the single vocabulary source (vocab.TYPE_NAMES,
+    app/gui/vocab.py) rather than hand-rolled strings, matching how job.html
+    renders the same concept (vocab.TYPE_LINES/TYPE_NAMES). #}
 {% block title %}Explore · backup-engine{% endblock %}
 {% block body %}
 <section class="screen dense" aria-label="Explore">
@@ -10,7 +13,7 @@
     {% for j in jobs %}
     <li>
       <a href="{{ url_for('gui.explore_job', name=j.name) }}">{{ j.name }}</a>
-      <span class="hint">{% if j.type == 'versioned' %}Versioned{% elif j.type == 'versioned-files' %}Versioned files{% else %}Archive{% endif %}</span>
+      <span class="hint">{{ vocab.TYPE_NAMES.get(j.type, j.type) }}</span>
     </li>
     {% endfor %}
   </ul>

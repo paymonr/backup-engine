@@ -374,6 +374,80 @@ def test_versioned_job_with_no_points_cache_is_empty_not_crashed(client, app, so
     assert "Nothing here" in body
 
 
+def test_explore_get_vfiles_version_id_pins_exact_version(client, example, app, source_root,
+                                                            monkeypatch):
+    # Fix for the Task 8 review's Important gap: a per-file version pick sends
+    # the catalog's own `version_id` (the S3 key embeds the version's epoch,
+    # e.g. `media/filesjob/a.txt@1700000000-abcd1234`) rather than the
+    # job-level restore-point id `_vfiles_asof` resolves against — so
+    # explore_get must derive `--asof` straight from the version_id.
+    jobs_io.upsert(app.config["CONFIG_DIR"],
+                   {"name": "filesjob", "type": "versioned-files", "source": "appdata",
+                    "schedule": "0 6 * * *", "enabled": True, "storage_class": "STANDARD",
+                    "created_at": "2026-09-01T00:00:00Z"},
+                   source_root=str(source_root))
+    launched = {}
+    monkeypatch.setattr(routes.ops, "ensure_free", lambda *a, **k: None)
+    monkeypatch.setattr(routes.ops, "validate_target",
+                        lambda *a, **k: {"ok": True, "container_path": "/restore/out"})
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/filesjob")
+    r = client.post("/explore/filesjob/get",
+                    data={"csrf": t, "path": "a.txt", "target": "out",
+                          "version_id": "media/filesjob/a.txt@1700000000-abcd1234"})
+    assert r.status_code in (302, 303)
+    argv = launched["argv"]
+    assert "--asof" in argv
+    assert argv[argv.index("--asof") + 1] in ("1700000000", "1700000000.0")
+
+
+def test_explore_get_vfiles_no_version_id_keeps_latest(client, example, app, source_root,
+                                                        monkeypatch):
+    # No version_id (the common case — no version picked) must behave exactly
+    # as before: no --asof (there is no job-level point either), latest wins.
+    jobs_io.upsert(app.config["CONFIG_DIR"],
+                   {"name": "filesjob2", "type": "versioned-files", "source": "appdata",
+                    "schedule": "0 6 * * *", "enabled": True, "storage_class": "STANDARD",
+                    "created_at": "2026-09-01T00:00:00Z"},
+                   source_root=str(source_root))
+    launched = {}
+    monkeypatch.setattr(routes.ops, "ensure_free", lambda *a, **k: None)
+    monkeypatch.setattr(routes.ops, "validate_target",
+                        lambda *a, **k: {"ok": True, "container_path": "/restore/out"})
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/filesjob2")
+    r = client.post("/explore/filesjob2/get",
+                    data={"csrf": t, "path": "a.txt", "target": "out"})
+    assert r.status_code in (302, 303)
+    assert "--asof" not in launched["argv"]
+
+
+def test_explore_job_uses_points_cold_classes_for_badge(client, example, monkeypatch):
+    # Fix for the cheap Minor: the cold badge must come from
+    # routes.explore_job's `cold_classes` (points.COLD_CLASSES) context value,
+    # not a duplicated template-local literal. Proof: emptying COLD_CLASSES
+    # makes a DEEP_ARCHIVE entry stop showing the badge — a hardcoded
+    # ['GLACIER','DEEP_ARCHIVE'] literal in the template would still show it.
+    monkeypatch.setattr(routes.points, "COLD_CLASSES", ())
+    monkeypatch.setattr(routes, "_browse_level",
+        lambda cfg, name, jt, path, snapshot=None: {"path": path, "entries": [
+            {"name": "frozen.bin", "kind": "file", "size": 5, "modified": None,
+             "storage_class": "DEEP_ARCHIVE"}]})
+    body = client.get("/explore/manga").get_data(as_text=True)
+    assert "Cold" not in body
+
+
+def test_explore_index_type_label_matches_vocab(client, example):
+    # Fix for the cheap Minor: the type label reads vocab.TYPE_NAMES (the
+    # single vocabulary source), not the hand-rolled "Archive"/"Versioned".
+    from app.gui import vocab
+    body = client.get("/explore").get_data(as_text=True)
+    assert vocab.TYPE_NAMES["versioned"] in body       # appdata
+    assert vocab.TYPE_NAMES["archive"] in body         # manga
+
+
 def test_explore_get_busy_flashes_and_redirects(client, example, monkeypatch):
     monkeypatch.setattr(routes.ops, "validate_target",
                         lambda *a, **k: {"ok": True, "container_path": "/restore/out"})

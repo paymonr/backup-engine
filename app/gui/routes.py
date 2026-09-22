@@ -514,8 +514,16 @@ def _vfiles_asof(cfg, job, point):
     return None
 
 
-def _restore_argv(cfg, job, intent, container, point, scope, path, tier) -> list[str]:
-    """The exact restore.sh invocation for this action (spec 7.5.6)."""
+def _restore_argv(cfg, job, intent, container, point, scope, path, tier, *, asof=None) -> list[str]:
+    """The exact restore.sh invocation for this action (spec 7.5.6).
+
+    `asof` (keyword-only, default None) lets a caller pin the versioned-files
+    `--asof` epoch explicitly — e.g. Explore's per-file version picker, which
+    resolves an exact catalog version (its own `version_id` epoch) rather than
+    a job-level restore-point id. When omitted, behavior is unchanged: the
+    versioned-files branch falls back to `_vfiles_asof(cfg, job, point)`, so
+    every existing caller (the job-page restore band, which never passes
+    `asof`) is byte-for-byte unaffected."""
     sh = _restore_sh(cfg)
     name = job["name"]
     typ = job.get("type")
@@ -536,9 +544,9 @@ def _restore_argv(cfg, job, intent, container, point, scope, path, tier) -> list
     if typ == "versioned-files":
         first = path if (scope == "file" and path) else "."
         argv = [sh, name, first, container]
-        asof = _vfiles_asof(cfg, job, point)
-        if asof is not None:
-            argv += ["--asof", str(asof)]
+        eff_asof = asof if asof is not None else _vfiles_asof(cfg, job, point)
+        if eff_asof is not None:
+            argv += ["--asof", str(eff_asof)]
         if tier:
             argv += ["--tier", tier]
         return argv
@@ -885,7 +893,7 @@ def explore_job(name):
         level = _browse_level(cfg, name, job.get("type"), path, snapshot=snapshot)
     return render_template("explore.html", job=job, name=name, path=path,
                            snapshot=snapshot, snapshots=snapshots, level=level,
-                           csrf=security.issue_csrf())
+                           cold_classes=points.COLD_CLASSES, csrf=security.issue_csrf())
 
 
 @bp.get("/explore/<name>/list.json")
@@ -947,6 +955,21 @@ def explore_get(name):
     point = (f.get("snapshot") or f.get("point") or "").strip()
     path = "" if typ == "archive" else rel
 
+    # A versioned-files per-file version pick (Explore's version affordance) names
+    # the exact catalog version by its `version_id` (the S3 key
+    # `media/<job>/<relpath>@<epoch>-<uuid>`, app/engine/catalog.py:browse) rather
+    # than a job-level restore-point id -- `_vfiles_asof` cannot resolve that
+    # namespace. Parse the epoch straight out of the key and pass it through
+    # explicitly; a missing/malformed version_id leaves `asof` None, so
+    # `_restore_argv` falls back to its normal `_vfiles_asof(cfg, job, point)`
+    # resolution (restores the current/latest version).
+    asof = None
+    if typ == "versioned-files":
+        vid = (f.get("version_id") or "").strip()
+        m = re.search(r"@(\d+)-", vid)
+        if m:
+            asof = float(m.group(1))
+
     try:
         ops.ensure_free(cfg, name)
     except ops.OpsLocked:
@@ -954,7 +977,7 @@ def explore_get(name):
         return redirect(url_for("gui.explore_job", name=name))
 
     kind = {"thaw": "thaw", "download": "download", "restore": "restore"}[intent]
-    argv = _restore_argv(cfg, job, intent, container, point, scope, path, tier)
+    argv = _restore_argv(cfg, job, intent, container, point, scope, path, tier, asof=asof)
     run_id = ops.launch(cfg, argv, job=name, kind=kind, trigger="manual")
     return redirect(url_for("gui.run_record", name=name, run_id=run_id))
 

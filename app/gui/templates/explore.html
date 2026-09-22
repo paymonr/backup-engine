@@ -5,13 +5,14 @@
     action forms; Task 9 adds in-place lazy loading against list.json.)
 
     Field names in the per-row action form MUST match app/gui/routes.py's
-    `explore_get` exactly: `path`, `snapshot` (versioned), `point`
-    (versioned-files), `target`, and the CSRF `csrf` field. `tier`/`thawed`
-    are left to explore_get's own defaults in this v1 (no client-side polling
-    yet — that is Task 9). #}
+    `explore_get` exactly: `path`, `snapshot` (versioned), `version_id`
+    (versioned-files — the exact catalog version, resolved server-side into
+    `--asof`), `target`, and the CSRF `csrf` field. `tier`/`thawed` are left
+    to explore_get's own defaults in this v1 (no client-side polling yet —
+    that is Task 9). `cold_classes` comes from `points.COLD_CLASSES`
+    (routes.py's `explore_job`) — never duplicate that list here. #}
 {% block title %}{{ name }} · Explore · backup-engine{% endblock %}
 {% block body %}
-{% set COLD = ['GLACIER', 'DEEP_ARCHIVE'] %}
 {% set segments = path.split('/') if path else [] %}
 <section class="screen dense" aria-label="Explore {{ name }}">
   <p class="slabel"><a href="{{ url_for('gui.explore_index') }}">Explore</a></p>
@@ -57,7 +58,7 @@
     <tr>
       <td>{{ e.name }}</td>
       <td class="mono">{% if e.size is not none %}{{ e.size }} B{% endif %}</td>
-      <td>{% if e.storage_class %}<span class="mono">{{ e.storage_class }}</span>{% endif %}{% if e.storage_class in COLD %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
+      <td>{% if e.storage_class %}<span class="mono">{{ e.storage_class }}</span>{% endif %}{% if e.storage_class in cold_classes %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
       <td class="hint">{{ e.modified or '' }}</td>
       <td>
         {% if job.type == 'versioned-files' and e.versions %}
@@ -67,7 +68,7 @@
             {% for v in e.versions %}
             <tr>
               <td class="mono">{{ v.uploaded_at }}</td>
-              <td class="hint">{{ v.storage_class }}{% if v.storage_class in COLD %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
+              <td class="hint">{{ v.storage_class }}{% if v.storage_class in cold_classes %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
               <td class="hint">{% if v.size is not none %}{{ v.size }} B{% endif %}</td>
               <td class="hint">{% if v.deleted %}deleted{% endif %}</td>
             </tr>
@@ -83,18 +84,18 @@
           <input type="hidden" name="snapshot" value="{{ snapshot }}">
           {% endif %}
           {% if job.type == 'versioned-files' and e.versions %}
-          <label class="hint" for="point-{{ loop.index }}">Version</label>
-          <select id="point-{{ loop.index }}" name="point" class="mono" style="max-width:16rem">
+          <label class="hint" for="version-{{ loop.index }}">Version</label>
+          <select id="version-{{ loop.index }}" name="version_id" class="mono" style="max-width:20rem">
             <option value="">Latest</option>
             {% for v in e.versions %}
-            <option value="{{ v.uploaded_at }}">{{ v.uploaded_at }} · {{ v.storage_class }}</option>
+            <option value="{{ v.version_id }}">{{ v.uploaded_at }} · {{ v.storage_class }}</option>
             {% endfor %}
           </select>
           {% endif %}
           <label class="hint" for="target-{{ loop.index }}">Write to</label>
           <input type="text" id="target-{{ loop.index }}" name="target" class="mono"
                  placeholder="{{ name }}/{{ e.name }}" style="max-width:16rem">
-          <button type="submit" class="btn btn-sm">{% if e.storage_class in COLD %}Warm up{% elif job.type == 'archive' %}Download{% else %}Restore{% endif %}</button>
+          <button type="submit" class="btn btn-sm">{% if e.storage_class in cold_classes %}Warm up{% elif job.type == 'archive' %}Download{% else %}Restore{% endif %}</button>
         </form>
       </td>
     </tr>
