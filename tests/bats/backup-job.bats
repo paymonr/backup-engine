@@ -524,3 +524,24 @@ EOF
   run _first_error_line "$log"
   [[ "$output" == *"AccessDenied"* ]]
 }
+
+# --- Task 4: paused outcome — runner honours a stop flag --------------------------------------
+
+@test "a stop flag + SIGTERM records outcome paused, not failed, and does not retry" {
+  # restic backup blocks until signalled; the control flag is pre-set to 'pause'
+  cat >"$BATS_TEST_TMPDIR/bin/restic" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" "$*" >>"$RESTIC_LOG"
+[ "$1" = "cat" ] && exit 1
+[[ "$*" == *"backup"* ]] && { trap 'exit 130' TERM INT; while :; do sleep 0.2; done; }
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/restic"
+  printf 'echo JOB_NAME=cfg; echo JOB_TYPE=versioned; echo JOB_SOURCE=appdata; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  mkdir -p "$CACHE_DIR/state"; echo pause >"$CACHE_DIR/state/cfg.control"
+  ( sleep 1; pkill -TERM -f "backup-job.sh cfg" ) &
+  BE_SLEEP_CMD=true run_job cfg
+  grep -q '"outcome":"paused"' "$CACHE_DIR/state/cfg.runs.jsonl"
+  ! grep -q '"outcome":"failed"' "$CACHE_DIR/state/cfg.runs.jsonl"
+  [ ! -f "$CACHE_DIR/state/cfg.control" ]   # flag cleared
+}

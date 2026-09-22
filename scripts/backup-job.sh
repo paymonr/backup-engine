@@ -16,6 +16,10 @@ source "$HERE/lib/runs.sh"
 [ -f "$HERE/lib/points.sh" ] && source "$HERE/lib/points.sh"
 _BE_FAIL_HANDLED=0
 JOB="${1:?usage: backup-job.sh <job-name>}"
+# Control flag for a graceful stop-with-resume: $CACHE_DIR/state/$JOB.control containing the
+# literal string "pause". Checked by the TERM/INT traps (_be_stop_trap) and by _retry, so a
+# pause request is terminal whether it's caught mid-attempt (via signal) or between attempts.
+BE_CONTROL="$CACHE_DIR/state/$JOB.control"
 # Capture any RESTIC_REPOSITORY already in the ambient environment (an explicit external
 # override — some tests/operators set this) BEFORE config.sh's own derivation, and before the
 # per-job env (JOB_BUCKET) is loaded, can touch it. derive_restic_repo() (called below, both
@@ -23,6 +27,28 @@ JOB="${1:?usage: backup-job.sh <job-name>}"
 _RESTIC_REPO_OVERRIDE="${RESTIC_REPOSITORY:-}"
 
 : "${BE_MAX_ATTEMPTS:=3}"; : "${BE_RETRY_BASE_SECONDS:=30}"; : "${BE_SLEEP_CMD:=sleep}"
+
+# _be_pause_requested — true when a graceful stop-with-resume has been requested via the
+# control flag (set by the GUI/ops side; cleared by us once we've honored it).
+_be_pause_requested() { [ -f "$BE_CONTROL" ] && [ "$(cat "$BE_CONTROL" 2>/dev/null)" = "pause" ]; }
+# _be_kill_descendants PID SIG — send SIG to every LIVE descendant of PID (not PID itself),
+# deepest first. Bash defers a trapped TERM/INT until the current foreground command finishes
+# (a well-known gotcha), so the engine process actually blocking the run (restic/rclone/python3,
+# several fork levels down from the script's own PID) never sees the signal unless something
+# forwards it explicitly -- this does, walking /proc via pgrep -P.
+_be_kill_descendants() {
+  local pid="$1" sig="$2" c kids
+  # pgrep exits 1 (no match) for every leaf in the tree -- completely normal, but this function
+  # is called directly from a trap (not from an if/||-guarded context that would suspend
+  # errexit), so without `|| true` that ordinary "no children" result would trip `set -e` and
+  # kill the whole script the instant recursion reaches its first leaf, before a single `kill`
+  # runs.
+  kids="$(pgrep -P "$pid" 2>/dev/null)" || true
+  for c in $kids; do
+    _be_kill_descendants "$c" "$sig"
+    kill -s "$sig" "$c" 2>/dev/null || true
+  done
+}
 # _retry LOG CMD... — runs CMD; on failure, if LOG looks transient (per _is_transient_error)
 # and attempts remain, backs off (base * 2^(n-1) seconds) and re-runs CMD -- the engine's own
 # incremental/resume behavior means a re-run picks up where the failed attempt left off, not
@@ -31,16 +57,39 @@ _RESTIC_REPO_OVERRIDE="${RESTIC_REPOSITORY:-}"
 # progress UI -- a RUNNING run has no other way to surface a retry in progress, since the run
 # record only carries `attempts` on its terminal "end" event -- removing it once this stops
 # retrying (success or final failure).
+#
+# CMD runs in a backgrounded subshell that we explicitly `wait` on (rather than a plain
+# foreground pipe) so a trapped TERM/INT interrupts the wait immediately instead of being
+# deferred until CMD finishes -- see _be_kill_descendants above and _be_stop_trap below. The
+# subshell captures PIPESTATUS[0] itself and re-exits with it, so `wait`'s $? is exactly CMD's
+# own exit code (tee's exit status is deliberately ignored, same as before).
+#
+# `trap : TERM INT` as the subshell's OWN first statement matters: bash resets a forked
+# subshell's inherited traps back to no-trap before running its body (this happens again for
+# EACH further subshell forked for a pipe component, e.g. CMD itself when it's a function like
+# _restic_backup_attempt -- which re-arms the same no-op trap as ITS OWN first statement, for
+# the same reason). Without it, a broad `pkill -f "backup-job.sh $JOB"` (which matches these
+# forked-but-not-exec'd subshells too, since fork doesn't touch /proc/pid/cmdline) kills them
+# via bash's default TERM disposition -- INSTANTLY, since no trap means no deferral -- often
+# faster than $$'s own reaction, orphaning the real engine process before $$'s descendant sweep
+# ever reaches it. A real (non-ignore) handler, even a no-op one, defers that the same way any
+# trap does, keeping the subshell alive until $$ explicitly kills its way down to it -- and
+# because it's a real handler rather than SIG_IGN, it doesn't survive CMD's own exec (only
+# SIG_IGN does), so the actual engine binary (restic/rclone/python3) starts with an untouched
+# default disposition, free to install its own signal handling same as if none of this existed.
 _retry() {
   local log="$1"; shift
-  local n=0 rc=0
+  local n=0 rc=0 pid
   local attempt_marker="$CACHE_DIR/state/$JOB.attempt"
   while :; do
     n=$((n+1)); BE_ATTEMPTS="$n"
     printf '%s' "$n" >"$attempt_marker"
     : >"$log"
-    "$@" 2>&1 | tee -a "$log" >/dev/null; rc=${PIPESTATUS[0]}
+    { trap : TERM INT; "$@" 2>&1 | tee -a "$log" >/dev/null; exit "${PIPESTATUS[0]}"; } &
+    pid=$!
+    wait "$pid"; rc=$?
     if [ "$rc" -eq 0 ]; then rm -f "$attempt_marker"; return 0; fi
+    if _be_pause_requested; then rm -f "$attempt_marker"; _BE_PAUSE_REQUESTED=1; exit 0; fi
     if [ "$n" -ge "$BE_MAX_ATTEMPTS" ] || ! _is_transient_error "$log"; then rm -f "$attempt_marker"; return "$rc"; fi
     log_warn "job '$JOB' attempt $n failed (transient); retrying (resumes where it left off)"
     "$BE_SLEEP_CMD" "$(( BE_RETRY_BASE_SECONDS * (1 << (n-1)) ))"
@@ -48,7 +97,9 @@ _retry() {
 }
 
 main() {
-  trap '_usb_exit_trap "$?"' EXIT; trap 'exit 143' TERM; trap 'exit 130' INT
+  trap '_usb_exit_trap "$?"' EXIT
+  trap '_be_stop_trap TERM 143' TERM
+  trap '_be_stop_trap INT 130' INT
   [ -f "${CONFIG_DIR:-/config}/backup.env" ] && load_config "${CONFIG_DIR:-/config}"
   local jobsio="${JOBS_IO_CMD:-python3 -m app.gui.jobs_io}"
   local def; if ! def="$(CONFIG_DIR="${CONFIG_DIR:-/config}" $jobsio "$JOB")"; then _fail "job '$JOB' not found"; fi
@@ -73,7 +124,7 @@ main() {
     *) _fail "job '$JOB' has unknown type '$JOB_TYPE'" ;;
   esac
   local dur=$(( $(date +%s) - BE_RUN_START_EPOCH ))
-  runs_end ok 0 "" "\"snapshot_id\":$(_runs_str "${SNAP_ID:-}")${RUN_STATS:+,$RUN_STATS}" || log_warn "could not record run"   # (5)
+  runs_end ok 0 "" "\"snapshot_id\":$(_runs_str "${SNAP_ID:-}")${RUN_STATS:+,$RUN_STATS},\"attempts\":${BE_ATTEMPTS:-1}" || log_warn "could not record run"   # (5)
   _write_state success "" 0                                                                    # (6)
   points_refresh "$JOB" "$JOB_TYPE" || log_warn "restore-point cache refresh failed for '$JOB' (non-fatal)"   # (7)
   log_info "job '$JOB' complete ($JOB_TYPE, ${dur}s)"
@@ -94,6 +145,7 @@ _run_versioned() {
   # lines of its --json stdout (the summary, and any plain-text error restic prints), to $rlog
   # for _retry to classify; the full raw --json stream still goes to $f untouched, as before.
   _restic_backup_attempt() {
+    trap : TERM INT   # see _retry's comment: re-armed per forked subshell, not inherited
     restic -r "$RESTIC_REPOSITORY" "${class_opt[@]}" backup "$src" --tag "$JOB" --json \
         2>>"$rlog" | tee "$f" >/dev/null
     local rc=${PIPESTATUS[0]}
@@ -189,7 +241,7 @@ _write_state() { local outcome="$1" msg="$2" rc="$3"; mkdir -p "$CACHE_DIR/state
     "$(_runs_esc "${msg:0:1000}")" "$rc" "${BE_RUN_ID:-}" "$(date -u -d "@${BE_RUN_START_EPOCH:-$(date +%s)}" '+%Y-%m-%dT%H:%M:%SZ')" "$(_runs_now)" \
     >"$CACHE_DIR/state/$JOB.json"; }
 _record_failure() { local msg="$1" rc="${2:-1}" phase="${3:-copy}"; _BE_FAIL_HANDLED=1
-  runs_end failed "$rc" "$msg" "\"phase\":\"$phase\",\"copied\":$([ "${COPIED:-0}" -eq 1 ] && echo true || echo false),\"snapshot_id\":$(_runs_str "${SNAP_ID:-}")${RUN_STATS:+,$RUN_STATS}" || true
+  runs_end failed "$rc" "$msg" "\"phase\":\"$phase\",\"copied\":$([ "${COPIED:-0}" -eq 1 ] && echo true || echo false),\"snapshot_id\":$(_runs_str "${SNAP_ID:-}")${RUN_STATS:+,$RUN_STATS},\"attempts\":${BE_ATTEMPTS:-1}" || true
   # Same guard as runs_end, and for the same reason: only a run that actually started owns the legacy
   # state file AND its failure alerting. A lock collision (BE_RUN_ID pre-set by the GUI, runs_start
   # never reached) must leave state/<job>.json exactly as the last real run wrote it and send NO
@@ -202,7 +254,40 @@ _record_failure() { local msg="$1" rc="${2:-1}" phase="${3:-copy}"; _BE_FAIL_HAN
   fi; }
 _fail()       { _record_failure "$1" 1 copy; die "$1"; }
 _fail_phase() { _record_failure "$2" 1 "$1"; die "$2"; }
+# _record_paused — the graceful-stop counterpart to _record_failure: a `paused` end record is a
+# clean terminal state, not a failure, so it skips _write_state/notify/healthcheck entirely and
+# removes the control flag (the request has now been honored).
+_record_paused() { _BE_FAIL_HANDLED=1
+  runs_end paused 0 "paused by request" "\"attempts\":${BE_ATTEMPTS:-1}" || true
+  rm -f "$BE_CONTROL"
+}
+# _be_stop_trap SIG RC — installed for TERM/INT. A plain stop keeps today's behavior: exit
+# immediately with RC, which _usb_exit_trap records as a failure same as always. A stop
+# requested via the control flag is a graceful pause instead: forward SIG into every descendant
+# so the blocked engine call (restic/rclone/python3) actually exits -- see _be_kill_descendants
+# -- then exit RC ourselves; _usb_exit_trap sees _BE_PAUSE_REQUESTED and records "paused".
+_be_stop_trap() {
+  local sig="$1" rc="$2"
+  # $$ always reports the TOP-LEVEL script's PID, even inside a forked-but-not-exec'd subshell
+  # (a pipeline component of _retry's own pipe, say) -- and such a subshell, having been forked
+  # AFTER these traps were installed, inherits them too. Since it still carries the top-level
+  # script's argv (fork doesn't touch /proc/pid/cmdline, only exec does), a broad `pkill -f
+  # "backup-job.sh $JOB"` can match it directly and it would ALSO run this trap. $BASHPID is the
+  # process's own real PID, so this guard makes sure only the genuine top-level process performs
+  # the descendant sweep -- letting several matched processes each independently walk and kill
+  # the same tree is a pure race (one can kill a node the other is mid-`pgrep -P` into, dropping
+  # its subtree from the sweep entirely). Any other matched process still just exits on the signal.
+  if [ "$BASHPID" = "$$" ] && _be_pause_requested; then
+    _BE_PAUSE_REQUESTED=1
+    _be_kill_descendants "$$" "$sig"
+  fi
+  exit "$rc"
+}
 _usb_exit_trap() { local rc="$1"
-  if [ "$rc" -ne 0 ] && [ "$_BE_FAIL_HANDLED" -eq 0 ]; then _record_failure "${_BE_LAST_ERR:-job exited with status $rc}" "$rc"; fi
+  if [ "${_BE_PAUSE_REQUESTED:-0}" -eq 1 ]; then
+    _record_paused
+  elif [ "$rc" -ne 0 ] && [ "$_BE_FAIL_HANDLED" -eq 0 ]; then
+    _record_failure "${_BE_LAST_ERR:-job exited with status $rc}" "$rc"
+  fi
   [ -n "${_BE_TEE_PID:-}" ] && { exec 1>&- 2>&-; wait "$_BE_TEE_PID" 2>/dev/null || true; }; }
 main "$@"

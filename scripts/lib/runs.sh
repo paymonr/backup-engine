@@ -52,8 +52,14 @@ _runs_rotate() { local f="$1" job="$2" n; n="$(wc -l <"$f" 2>/dev/null || echo 0
 # runs_fail MSG [RC] [EXTRA] — record-only: no state file, no notify, no healthcheck.
 runs_fail() { runs_end failed "${2:-1}" "$1" "${3:-}" || true; }
 # runs_exit_trap RC — install as: trap 'runs_exit_trap "$?"' EXIT
+# A graceful pause (caller sets _BE_PAUSE_REQUESTED=1, e.g. via backup-job.sh's _be_stop_trap)
+# is a clean terminal state, not a failure -- record it as such instead of falling into runs_fail.
 runs_exit_trap() { local rc="$1"
-  if [ "$rc" -ne 0 ] && [ "${_BE_FAIL_HANDLED:-0}" -eq 0 ]; then runs_fail "${_BE_LAST_ERR:-exited with status $rc}" "$rc"; fi
+  if [ "${_BE_PAUSE_REQUESTED:-0}" -eq 1 ]; then
+    runs_end paused 0 "paused by request" "\"attempts\":${BE_ATTEMPTS:-1}" || true
+  elif [ "$rc" -ne 0 ] && [ "${_BE_FAIL_HANDLED:-0}" -eq 0 ]; then
+    runs_fail "${_BE_LAST_ERR:-exited with status $rc}" "$rc"
+  fi
   [ -n "${_BE_TEE_PID:-}" ] && { exec 1>&- 2>&-; wait "$_BE_TEE_PID" 2>/dev/null || true; }; }
 # tool-stat parsers (end-of-run, from files the run wrote)
 _restic_summary_field() { grep '"message_type":"summary"' "$1" 2>/dev/null | tail -n1 | grep -o "\"$2\":[0-9]*" | head -n1 | cut -d: -f2; }
