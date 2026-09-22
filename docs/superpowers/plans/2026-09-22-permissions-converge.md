@@ -3065,3 +3065,118 @@ Run by the controller, not a subagent. Deploying and touching the real AWS accou
 - [ ] **Step 2:** Whole-branch review (superpowers:requesting-code-review) against the spec; fix wave for Critical/Important findings.
 - [ ] **Step 3:** `docs/superpowers/BACKLOG.md`: mark data explorer / resilience / multi-bucket headings with their true shipped status; add this feature's parked minors; `git add -f docs/superpowers/BACKLOG.md` + commit.
 - [ ] **Step 4:** With the owner: deploy per the Unraid deploy procedure; open `/setup/permissions`; **Preview** with the `opentofu-admin` credentials — expected plan R1 create-policy, R2 attach, R3 create-role, R4 put-role-policy, R5 put-user-policy; then **Update**; confirm the Board warning clears and the Setup row is OK; save a dedicated-bucket job and tear it down afterwards.
+
+---
+
+## Addendum — security fix + review fix wave (after the final review)
+
+Spec: the "Addendum (2026-09-22, after the final review) — prefix-only dedicated buckets" section at the end of the spec is binding for Tasks 13–15. Global Constraints above still apply. Task 12 (controller) runs after these.
+
+### Task 13: Prefix-only dedicated buckets — narrow the role, drop the extra-buckets machinery (engine side)
+
+**Files:**
+- Modify: `provisioning/bucket-admin-policy.json.tmpl` (full rewrite below)
+- Delete: `provisioning/extra-buckets-policy.json.tmpl`
+- Modify: `provisioning/permissions.json` (recompute `templates_sha256`; level stays 3)
+- Modify: `opentofu/main.tf` (delete `aws_iam_policy.runtime_extra_buckets` + `aws_iam_user_policy_attachment.runtime_extra_buckets` and their comment block; the role-policy `templatefile` passes only `bucket`), `opentofu/outputs.tf` (delete `output "runtime_extra_buckets_policy_arn"`)
+- Modify: `app/gui/provision.py` (`render_bucket_admin_policy(bucket, tmpl_path=...)` — back to one required arg; `run_tofu_apply` no longer returns `runtime_extra_buckets_policy_arn`)
+- Modify: `app/gui/permissions.py` (required set R1–R3; see below)
+- Test: `tests/engine/test_iam_policy.py`, `tests/gui/test_provision.py`, `tests/gui/test_permissions_plan.py`, `tests/gui/test_permissions_engine.py`, `tests/gui/test_permissions_fallback.py`, `tests/gui/test_permissions_levels.py` (only if it needs the new sha message), any other test the suite shows referencing the removed names
+
+**Interfaces:**
+- Produces: `provision.render_bucket_admin_policy(bucket: str, tmpl_path=...) -> str`; in `permissions`: names `RUNTIME_POLICY_NAME`, `ROLE_NAME`, `ROLE_POLICY_NAME` (EXTRA_* constants, `extra_policy_arn`, `EXTRA_POLICY_TEMPLATE` removed); `TOFU_RESOURCES = {"aws_iam_role.bucket_admin": "R1", "aws_iam_role_policy.bucket_admin": "R2", "aws_iam_user_policy.runtime": "R3"}`; `TOFU_UNMANAGED` unchanged; `required_docs(principal, bucket)` keys `trust`, `role`, `runtime`; `Live` without `extra_exists` / `extra_attached`; `plan()` emits ids R1 (create-role / update-trust), R2 (put-role-policy), R3 (put-user-policy / new-version); `write_stamp` writes `BUCKET_ADMIN_ROLE_ARN`, `PERMISSIONS_VERSION`, `PERMISSIONS_CHECKED_AT` only; `script()` has 3 numbered steps; `verify()` returns exactly 3 probes.
+
+`provisioning/bucket-admin-policy.json.tmpl` — full new content:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "CreateAndConfig", "Effect": "Allow",
+      "Action": ["s3:CreateBucket","s3:PutBucketVersioning","s3:PutBucketPublicAccessBlock",
+                 "s3:PutBucketOwnershipControls","s3:PutEncryptionConfiguration",
+                 "s3:PutLifecycleConfiguration","s3:PutBucketTagging",
+                 "s3:GetBucketLocation","s3:GetBucketVersioning"],
+      "Resource": "arn:aws:s3:::${bucket}-*" },
+    { "Sid": "TeardownList", "Effect": "Allow",
+      "Action": ["s3:ListAllMyBuckets"],
+      "Resource": "*" },
+    { "Sid": "Teardown", "Effect": "Allow",
+      "Action": ["s3:GetBucketTagging","s3:ListBucketVersions","s3:DeleteBucket"],
+      "Resource": "arn:aws:s3:::${bucket}-*" },
+    { "Sid": "TeardownObjects", "Effect": "Allow",
+      "Action": ["s3:DeleteObject","s3:DeleteObjectVersion"],
+      "Resource": "arn:aws:s3:::${bucket}-*/*" }
+  ]
+}
+```
+
+`permissions.py` changes (keep everything else):
+- `plan()`: drop the R1/R2 extra-policy branches; renumber the role step to `R1` (actions `create-role` / `update-trust`), the role policy to `R2` (`put-role-policy`), the runtime policy to `R3` (`put-user-policy` / `new-version`). Order stays role → role policy → runtime policy.
+- `discover()`: drop the extra-policy `get-policy` read and `extra_attached`; attached managed policies are still listed (for the legacy `RUNTIME_POLICY_NAME` managed shape).
+- `required_docs()`: drop `"extra"`; `"role"` = `json.loads(provision.render_bucket_admin_policy(bucket))`.
+- `write_stamp()`: drop `RUNTIME_EXTRA_BUCKETS_POLICY_ARN`.
+- `script()`: drop the extra-buckets heredoc and steps 1–2; steps become `# 1. The bucket-admin role, which only the backup user may assume` (get-role || create-role, then update-assume-role-policy), `# 2. The bucket-admin role's policy` (put-role-policy), `# 3. The backup user's own policy` (put-user-policy). Keep the legacy managed-policy detach comment, and add another optional comment for installs that have the obsolete extra-buckets policy attached:
+  `# Older installs only: backup-engine-runtime-extra-buckets is no longer used; you may detach it (optional):` / `#   aws iam detach-user-policy --user-name <user> --policy-arn arn:aws:iam::<acct>:policy/backup-engine-runtime-extra-buckets`
+  (build the ARN from the principal's account; it's a comment line only).
+- `verify()`/`_probe_once()`: three probes —
+  1. `"Can list old versions in the backup bucket"` (unchanged call), failing hint `"Set by step 3 of the script — did it run?"`;
+  2. `f"Can assume the role {ROLE_NAME}"`, failing hint `"Steps 1 and 3 of the script set this up — did step 1 run?"` (if it fails, probe 3 is `False` with hint `"Needs the role first (step 1)."`);
+  3. `f"The role {ROLE_NAME} has its policy"` — with the assumed creds run `["s3api", "list-buckets", "--output", "json"]`; ok iff returncode 0; failing hint `"Set by step 2 of the script — did it run?"`; detail scrubbed of the assumed key/secret/token.
+
+Tests to update (behaviour, not just renames):
+- `tests/engine/test_iam_policy.py`: `render_bucket_admin_policy("unraid-backup-123")` (one arg). Replace the PolicyGrant tests and `test_bucket_admin_policy_config_actions_are_not_bucket_prefix_scoped` with: every statement except `TeardownList` has a Resource starting `arn:aws:s3:::unraid-backup-123-` (and objects `…-*/*`); `TeardownList` is exactly `["s3:ListAllMyBuckets"]` on `"*"`; the doc contains no `iam:` action at all; the base bucket ARN `arn:aws:s3:::unraid-backup-123"` (exact, no suffix) appears nowhere; `main.tf` has no `runtime_extra_buckets` and no `extra_buckets_policy_arn`; `outputs.tf` has no `runtime_extra_buckets_policy_arn`; keep `test_tofu_outputs_the_runtime_user_arn`.
+- `tests/gui/test_provision.py`: drop `runtime_extra_buckets_policy_arn` expectations from `run_tofu_apply` tests.
+- `tests/gui/test_permissions_plan.py`: owner's level-2 box plans `[("R1","create-role"),("R2","put-role-policy"),("R3","put-user-policy")]`; drift guard expects `sorted(values) == ["R1","R2","R3"]`; drop the extra-policy tests (unattached / never-planned); keep trust drift (`R1 update-trust`), legacy managed (`R3 new-version`), level-1 (`R3` `~ ListBucketScoped`); required role doc has no `PolicyGrant` and its CreateAndConfig resource is `arn:aws:s3:::<BUCKET>-*`.
+- `tests/gui/test_permissions_engine.py`: FakeIAM stays; fixtures drop the extra policy; level-2 update → 3 steps done R1..R3; a new test: a box that already has the OLD unscoped role policy (build it from the old template text inline in the test) gets `R2` "Update" and afterwards the role policy equals the new scoped doc; a box that still has the obsolete extra-buckets policy attached is left untouched (no call mentions its ARN) and still converges to empty; `_assert_never_touch` keeps its rules.
+- `tests/gui/test_permissions_fallback.py`: script has 3 steps in order `iam get-role, iam create-role, iam update-assume-role-policy, iam put-role-policy, iam put-user-policy` (stub-aws order test); embedded docs are exactly `trust`, `bucket-admin`, `runtime`; the extra-buckets detach line appears only as a comment; verify returns 3 probes with the new hints (assert lowercase `"step 1"`, `"step 2"`, `"step 3"` substrings); the list-buckets probe runs with the assumed creds.
+- Recompute the manifest fingerprint with `python3 -c "from app.gui import permissions; print(permissions.templates_sha256())"` after the template edits and paste it into `provisioning/permissions.json`.
+
+Verify: `python3 -m pytest -q`, `(cd opentofu && tofu fmt -check)`. Commit: `fix(security): prefix-only dedicated buckets — role scoped to <base>-*, no IAM write, extra-buckets policy dropped from the required set`.
+
+### Task 14: Prefix-only dedicated buckets (app side)
+
+**Files:**
+- Modify: `app/gui/routes.py` (`job_save` dedicated branch; `provision_automated_run` backup.env write)
+- Modify: `app/engine/buckets.py` (delete `grant_object_access` and `_grants_bucket`/`_GRANT_ACTIONS` if only it used them; keep `oldest_non_default_version`, `is_prefixed`, `suggest`, `valid_bucket_name`)
+- Modify: `app/gui/config_io.py` (delete `extra_buckets_policy_arn`)
+- Modify: `config/backup.env.example` (delete the `RUNTIME_EXTRA_BUCKETS_POLICY_ARN=` line; keep `BUCKET_ADMIN_ROLE_ARN=` and the section comment)
+- Modify: `setup.sh` (delete the `RUNTIME_EXTRA_BUCKETS_POLICY_ARN=` echo)
+- Modify: `app/gui/templates/job_form.html` + `app/gui/static/app.js` (prefix hint copy)
+- Test: `tests/gui/test_job_form_routes.py`, `tests/engine/test_buckets_ensure.py`, `tests/gui/test_config_io.py`, `tests/gui/test_provision_routes.py`, `tests/bats/setup_sh.bats`
+
+**Interfaces:**
+- Produces: `routes.DEDICATED_NAME_RULE` message constant; helper `routes._dedicated_name_ok(base: str, bucket: str) -> bool` = `bucket.startswith(base + "-") and len(bucket) > len(base) + 1`.
+
+Changes:
+- `job_save`, dedicated create branch: after `valid_bucket_name`, refuse `not _dedicated_name_ok(base, bucket)` with `errors={"form": DEDICATED_NAME_RULE}` where
+  `DEDICATED_NAME_RULE = "A dedicated bucket's name must start with the shared bucket's name followed by a dash (for example {base}-photos) — backup-engine can only reach buckets named that way."` rendered with `.format(base=base)`. This check runs BEFORE `assume_role` (no AWS on refusal). Delete the `if not buckets.is_prefixed(...): buckets.grant_object_access(...)` block.
+- `provision_automated_run`: stop writing `RUNTIME_EXTRA_BUCKETS_POLICY_ARN`.
+- `job_form.html` `#bucket-prefix-hint` copy: `This name must start with <span class="mono">{{ bucket }}-</span> — backup-engine can only reach buckets named that way.` app.js `updateHint` shows it when the value is non-empty and does NOT start with `base + "-"` (a value equal to `base` must now SHOW the hint too). Update the app.js comment ("off-prefix hint" → "prefix rule hint").
+- Tests: replace the off-prefix-grant tests in `test_job_form_routes.py` with: off-prefix name → guided refusal, `assume_role` never called (monkeypatch it to raise), nothing saved; name equal to the base → refused; `<base>-photos` still creates (existing test). Remove `grant_object_access` tests from `test_buckets_ensure.py` (keep the `oldest_non_default_version` test). Update `test_config_io.py` / `test_provision_routes.py` / `setup_sh.bats` for the removed key/line (the bats test now asserts `RUNTIME_EXTRA_BUCKETS_POLICY_ARN` is NOT printed). Run `tests/gui/test_static_app_js.py` and `tests/gui/test_vocabulary.py`.
+
+Verify: `python3 -m pytest -q`, `bats tests/bats/`, `shellcheck setup.sh scripts/*.sh scripts/lib/*.sh`. Commit: `fix(security): dedicated buckets must be named <base>-…; off-prefix grant path removed`.
+
+### Task 15: Review fix wave — stale stamp, IAM settle retry, hardening, tfstate hygiene
+
+**Files:** `app/gui/permissions.py`, `app/gui/permissions_routes.py`, `app/gui/routes.py`, `app/gui/provision.py`, `app/engine/buckets.py`, `.dockerignore`, tests (`tests/gui/test_permissions_*.py`, `tests/gui/test_provision_routes.py`, `tests/gui/test_provision.py`, `tests/engine/test_buckets_naming.py`, `tests/gui/test_permissions_levels.py`).
+
+**Interfaces:** Produces `permissions.clear_stamp(config_dir: str, template_path: str) -> None` (writes `""` for `PERMISSIONS_VERSION`, `PERMISSIONS_CHECKED_AT`, `BUCKET_ADMIN_ROLE_ARN`); `converge(..., sleep=time.sleep, settle_tries=3, settle_s=3.0)`.
+
+1. **Stale stamp (review Important 2).** Call `permissions.clear_stamp(...)`:
+   - in `provision_validate` after it writes the new bucket/region (guided re-setup = new destination; the permissions page then verifies);
+   - in `_finish_setup_permissions` whenever it returns the warning (exception or `not outcome.ok`), before returning;
+   - in `config_save` instead of carrying the stamp when `new_bucket != before S3_BUCKET` or a non-blank submitted `AWS_ACCESS_KEY_ID` differs from the stored one (`sysop._runtime_key(cfg["CONFIG_DIR"])[0]`). Here set `values[STAMP_KEY] = values[CHECKED_KEY] = ""` (the role ARN is a visible Keys field — leave it as submitted).
+   Tests: guided re-validate on a stamped install → stamp + role ARN gone, `/jobs/new` shows the disabled toggle; Keys save with a changed bucket → stamp gone; Keys save with the same bucket and blank key → stamp kept (existing test); Keys POST that smuggles `PERMISSIONS_VERSION=99` is ignored; automated setup whose converge fails on a previously stamped install → stamp gone.
+2. **IAM settle retry (Minor 4).** After `apply()` succeeds, re-discover + re-plan up to `settle_tries` times, calling `sleep(settle_s)` between tries, until the plan is empty; only then stamp. Test with a FakeIAM subclass whose first post-apply `get-role-policy` returns the old doc (stale read once) → outcome ok, stamped, `sleep` called once. Existing converge tests must not sleep (plan empties on the first re-check).
+3. **Delete-key reminder (Minor 5).** In `_run_admin`, flash the warning when `apply_changes or not outcome.steps` (a Preview that found nothing is terminal). Test it.
+4. **Shape checks (Minor 6).** `_USER_ARN_RE.fullmatch`; the script guards use `re.fullmatch` with `re.ASCII` on compiled patterns; `buckets.valid_bucket_name` uses `_BUCKET_RE.fullmatch` and `re.ASCII`. Tests: `"us-east-1\n"`, an account `"12345678901２"` (full-width digit), a user with a trailing `"\n"`, and a bucket `"good-name\n"` are all refused.
+5. **`current_level` (Minor 7).** Use `raw.isdecimal()` (and `.isascii()`); `"²"` → `None`. Test.
+6. **Unparseable AWS JSON (Minor 8).** `discover`'s `get` and `_make_room` wrap `json.loads` → `PermissionsError("read" / "apply", "unreadable AWS response")`. Test with a runner returning rc 0 + `"not json"`.
+7. **Drop `Markup` (Minor 9).** `_ADMIN_MESSAGES`, the default message and `SETUP_PERMISSIONS_WARNING` become plain `str`; remove the `markupsafe` imports; tests that assert apostrophe copy compare against `html.unescape(response_text)`.
+8. **`_run_admin` reuses `_guard` (Minor 10).**
+9. **Log the swallowed automated-setup error (T10 minor).** `current_app.logger.warning("automated setup: AWS permissions check failed (%s)", type(e).__name__ + (f" {e.kind}" if getattr(e, "kind", None) else ""))` — class and kind only, never the message.
+10. **tfstate hygiene.** `.dockerignore` gains `**/*.tfstate`, `**/*.tfstate.*`, `**/.terraform/`. `run_tofu_apply` copies the module with `shutil.copytree(module_src, tf_dir, ignore=shutil.ignore_patterns("*.tfstate", "*.tfstate.*", ".terraform"))` (the lock file stays). Test: a `module_src` temp dir containing `terraform.tfstate`, `terraform.tfstate.backup` and `.terraform/` → the fake runner sees none of them in `cwd`, but sees `main.tf` and `.terraform.lock.hcl`.
+11. **No AWS on GET (T7 minor, Global Constraint).** One test: monkeypatch `app.gui.provision.subprocess.run` to raise, provision an install (no stamp), then GET `/`, `/status.json`, `/setup`, `/setup/destination`, `/setup/permissions`, `/jobs/new` → all 200.
+
+Verify: `python3 -m pytest -q`, `bats tests/bats/`, `shellcheck ...`, `(cd opentofu && tofu fmt -check)`. Commit (one or several): `fix(permissions): clear stale stamp on re-setup; IAM settle retry; hardening; keep tfstate out of the image`.

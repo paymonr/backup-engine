@@ -252,3 +252,44 @@ aws" header is updated to name `permissions.py` alongside it.
 Existing installs have no stamp → Setup row + Board notice; nothing breaks, gated features stay
 disabled with a link. New installs are stamped by whichever setup path they use. Future IAM
 changes follow the bump rule, and every install gets the same notice → Update path.
+
+## Addendum (2026-09-22, after the final review) — prefix-only dedicated buckets
+
+**Why.** The final whole-branch review found an account-level privilege escalation in the
+multi-bucket design this feature was converging to: the runtime key may `sts:AssumeRole` the
+bucket-admin role; the role (after the "PolicyGrant" fix in §1) may `iam:CreatePolicyVersion
+--set-as-default` on the extra-buckets policy; and that policy is attached to the runtime user.
+A leaked `secrets.env` → publish `{"Action":"*","Resource":"*"}` → full admin. Separately, the
+role's S3 statements were on `"*"`, so a leaked key could (via the role) empty/delete or
+re-lifecycle ANY bucket in the account. Owner decision: **prefix-only dedicated buckets.**
+
+**Changes (supersede §1's R1/R2 and the PolicyGrant fix):**
+- A dedicated bucket's name MUST be `<base>-<suffix>` (non-empty suffix). The runtime policy's
+  existing `<base>-*` wildcard statements already grant it — no IAM write is ever needed at runtime.
+  `job_save` refuses any other name with a guided message; the off-prefix grant path
+  (`buckets.grant_object_access`) is deleted.
+- The extra-buckets managed policy and its attachment are **removed from the required set**, from
+  OpenTofu, from the script, from `backup.env` (`RUNTIME_EXTRA_BUCKETS_POLICY_ARN`), from
+  `setup.sh` output, and from Verify. Installs that already have them keep them (inert: placeholder
+  Deny, and nothing can version it any more); the script prints an optional detach command.
+- The bucket-admin role's S3 statements are scoped to `arn:aws:s3:::<base>-*` (bucket) and
+  `arn:aws:s3:::<base>-*/*` (objects); only `s3:ListAllMyBuckets` stays on `"*"` (list-only;
+  AWS doesn't support scoping it). No IAM actions at all. The base bucket itself does not match
+  `<base>-*`, so the role can never touch it.
+- **Required set is now R1 role + trust, R2 role inline policy, R3 runtime user policy.** On the
+  owner's box the expected plan is R1 create-role, R2 put-role-policy, R3 put-user-policy.
+  Existing installs with the old unscoped role policy get R2 "Update" — converge narrows them.
+- Level 3 is unreleased (nothing is stamped at 3 anywhere), so it keeps its number and meaning
+  ("Dedicated per-job buckets"); only `templates_sha256` changes.
+- Verify probes: (1) runtime key lists object versions in the base bucket; (2) runtime key
+  assumes the role; (3) the assumed role can `s3api list-buckets` (proves the role policy is on).
+
+**Also folded in (review Important 2, Minors 4–10, deploy hygiene):** a new provision/re-setup
+clears the stamp + role ARN (guided Validate; Keys save that changes the bucket or submits a new
+runtime key; automated setup whose final converge fails); converge's post-apply re-check retries
+briefly for IAM eventual consistency; the delete-admin-key reminder also follows a Preview that
+found nothing to do; shape checks use `re.fullmatch` + `re.ASCII`; `current_level` uses
+`isdecimal`; unparseable AWS JSON becomes a clean error; the static messages drop `Markup` (tests
+compare unescaped text); `_run_admin` reuses `_guard`; `*.tfstate*` / `.terraform/` never reach
+the image (`.dockerignore`) or the automated-setup temp copy; a regression test proves no GET
+calls AWS.
