@@ -3,6 +3,8 @@ from pathlib import Path
 
 from app.gui import provision
 
+EXTRA_ARN = "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets"
+
 
 def test_iam_policy_has_required_version_actions():
     """Verify the IAM policy template includes required actions for archive version management."""
@@ -54,7 +56,7 @@ def test_automated_policy_has_scoped_sts_and_wildcard():
 
 
 def test_bucket_admin_policy_has_create_and_config():
-    doc = provision.render_bucket_admin_policy("unraid-backup-123")
+    doc = provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN)
     parsed = json.loads(doc)
     stmts = {s["Sid"]: s for s in parsed["Statement"]}
     for a in ("s3:CreateBucket", "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
@@ -67,7 +69,7 @@ def test_bucket_admin_policy_has_create_and_config():
 def test_bucket_admin_policy_has_teardown_statement():
     # Task 11: enumerate-by-tag + empty + delete for just-in-time buckets (created
     # outside tofu, so `tofu destroy` can't remove them). Stays on this role only.
-    doc = provision.render_bucket_admin_policy("unraid-backup-123")
+    doc = provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN)
     parsed = json.loads(doc)
     stmts = {s["Sid"]: s for s in parsed["Statement"]}
     for a in ("s3:ListAllMyBuckets", "s3:GetBucketTagging", "s3:ListBucketVersions",
@@ -82,9 +84,41 @@ def test_bucket_admin_policy_config_actions_are_not_bucket_prefix_scoped():
     # names (a dedicated bucket need not be named "<base>-*"), so scoping
     # create/config/teardown actions to "<bucket>-*" would deny configuring or
     # tearing down an off-prefix bucket.
-    doc = provision.render_bucket_admin_policy("unraid-backup-123")
+    doc = provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN)
     assert "unraid-backup-123-*" not in doc
     parsed = json.loads(doc)
-    assert len(parsed["Statement"]) == 2   # CreateAndConfig + Teardown
-    for stmt in parsed["Statement"]:
-        assert stmt["Resource"] == "*"
+    stmts = {s["Sid"]: s for s in parsed["Statement"]}
+    assert set(stmts) == {"CreateAndConfig", "Teardown", "PolicyGrant"}
+    for sid in ("CreateAndConfig", "Teardown"):          # the S3 statements stay "*"
+        assert stmts[sid]["Resource"] == "*"
+
+
+def test_bucket_admin_policy_grant_is_scoped_to_the_one_extra_buckets_policy():
+    # Spec 2026-09-22 §1 (the latent bug): the role versions the extra-buckets managed
+    # policy when a job's bucket is off-prefix -- IAM-write, so exactly ONE policy ARN.
+    stmts = {s["Sid"]: s for s in json.loads(
+        provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN))["Statement"]}
+    grant = stmts["PolicyGrant"]
+    assert grant["Effect"] == "Allow"
+    assert grant["Resource"] == EXTRA_ARN
+    assert sorted(grant["Action"]) == sorted([
+        "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions",
+        "iam:CreatePolicyVersion", "iam:DeletePolicyVersion"])
+
+
+def test_bucket_admin_policy_never_grants_user_or_attach_writes():
+    doc = provision.render_bucket_admin_policy("unraid-backup-123", EXTRA_ARN)
+    for bad in ("iam:PutUserPolicy", "iam:AttachUserPolicy", "iam:CreatePolicy\"",
+                "iam:*", "iam:PassRole"):
+        assert bad not in doc
+
+
+def test_tofu_passes_the_extra_buckets_arn_to_the_role_policy():
+    main_tf = (provision.OPENTOFU_DIR / "main.tf").read_text()
+    assert "extra_buckets_policy_arn = aws_iam_policy.runtime_extra_buckets.arn" in main_tf
+
+
+def test_tofu_outputs_the_runtime_user_arn():
+    outputs = (provision.OPENTOFU_DIR / "outputs.tf").read_text()
+    assert 'output "runtime_user_arn"' in outputs
+    assert "aws_iam_user.runtime.arn" in outputs

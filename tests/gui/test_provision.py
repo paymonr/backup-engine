@@ -330,3 +330,32 @@ def test_verify_admin_can_provision_scrubs_key_secret_and_token_from_detail():
     assert "sek" not in ei.value.detail
     assert "tok123" not in ei.value.detail
     assert "***" in ei.value.detail
+
+
+def test_run_tofu_apply_returns_runtime_user_arn():
+    import json as _json
+    from types import SimpleNamespace
+    out = {"runtime_access_key_id": {"value": "AKIARUN"},
+           "runtime_secret_access_key": {"value": "runsek"},
+           "bucket_name": {"value": "acme"}, "region": {"value": "us-east-1"},
+           "runtime_user_arn": {"value": "arn:aws:iam::123456789012:user/backup-engine-runtime"}}
+
+    def fake(args, *, cwd, env):
+        return SimpleNamespace(returncode=0, stderr="",
+                               stdout=_json.dumps(out) if args[0] == "output" else "")
+
+    r = provision.run_tofu_apply("acme", "us-east-1", "AK", "SK", run=fake)
+    assert r["runtime_user_arn"] == "arn:aws:iam::123456789012:user/backup-engine-runtime"
+
+
+def test_run_tofu_apply_tolerates_missing_runtime_user_arn():
+    import json as _json
+    from types import SimpleNamespace
+    out = {"runtime_access_key_id": {"value": "A"}, "runtime_secret_access_key": {"value": "S"},
+           "bucket_name": {"value": "b"}, "region": {"value": "us-east-1"}}
+
+    def fake(args, *, cwd, env):
+        return SimpleNamespace(returncode=0, stderr="",
+                               stdout=_json.dumps(out) if args[0] == "output" else "")
+
+    assert provision.run_tofu_apply("b", "us-east-1", "AK", "SK", run=fake)["runtime_user_arn"] == ""

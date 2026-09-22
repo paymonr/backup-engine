@@ -83,7 +83,8 @@ resource "aws_iam_role_policy" "bucket_admin" {
   name = "${var.name_prefix}-bucket-admin-create-config"
   role = aws_iam_role.bucket_admin.name
   policy = templatefile("${path.module}/../provisioning/bucket-admin-policy.json.tmpl", {
-    bucket = var.bucket_name
+    bucket                   = var.bucket_name
+    extra_buckets_policy_arn = aws_iam_policy.runtime_extra_buckets.arn
   })
 }
 

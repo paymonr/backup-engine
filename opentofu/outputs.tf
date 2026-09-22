@@ -18,6 +18,9 @@ output "bucket_admin_role_arn" {
 output "runtime_extra_buckets_policy_arn" {
   value = aws_iam_policy.runtime_extra_buckets.arn
 }
+output "runtime_user_arn" {
+  value = aws_iam_user.runtime.arn
+}
 output "rclone_remote" {
   value = {
     type          = "s3"

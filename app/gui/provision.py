@@ -59,9 +59,14 @@ def render_policy(bucket: str, bucket_admin_role_arn: str = "*",
     return rendered
 
 
-def render_bucket_admin_policy(bucket: str, tmpl_path: str | Path = BUCKET_ADMIN_POLICY_TEMPLATE) -> str:
+def render_bucket_admin_policy(bucket: str, extra_buckets_policy_arn: str,
+                               tmpl_path: str | Path = BUCKET_ADMIN_POLICY_TEMPLATE) -> str:
+    """The bucket-admin role's inline policy. `extra_buckets_policy_arn` scopes the
+    PolicyGrant statement -- the role's only IAM-write -- to that ONE managed policy
+    (spec 2026-09-22 §1). opentofu/main.tf renders the same template."""
     tmpl = Path(tmpl_path).read_text()
-    return Template(tmpl).substitute(bucket=bucket)
+    return Template(tmpl).substitute(bucket=bucket,
+                                     extra_buckets_policy_arn=extra_buckets_policy_arn)
 
 
 # Probe object lives under an ALLOWED prefix (appdata/*) — the least-privilege
@@ -316,6 +321,7 @@ def run_tofu_apply(bucket, region, admin_key, admin_secret, session_token=None,
             "bucket_admin_role_arn": data.get("bucket_admin_role_arn", {}).get("value", ""),
             "runtime_extra_buckets_policy_arn":
                 data.get("runtime_extra_buckets_policy_arn", {}).get("value", ""),
+            "runtime_user_arn": data.get("runtime_user_arn", {}).get("value", ""),
         }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
