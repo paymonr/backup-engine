@@ -203,3 +203,123 @@ def test_explore_list_json_needs_no_csrf(client, example, monkeypatch):
     monkeypatch.setattr(routes, "_browse_level",
         lambda cfg, name, jt, path, snapshot=None: {"path": path, "entries": []})
     assert client.get("/explore/appdata/list.json?path=").status_code == 200
+
+
+# --- /explore/<job>/get: the one mutating Explore action (Task 7) -----------
+
+def test_explore_get_requires_csrf(client, example):
+    r = client.post("/explore/manga/get", data={"path": "a.txt", "target": "x"})
+    assert r.status_code == 400
+
+
+def test_explore_get_rejects_path_escape(client, example):
+    t = _csrf(client, "/explore/manga")
+    r = client.post("/explore/manga/get", data={"csrf": t, "path": "../x", "target": "y"})
+    assert r.status_code == 404
+
+
+def test_explore_get_unknown_job_404(client, example):
+    t = _csrf(client, "/explore/manga")
+    r = client.post("/explore/nope/get", data={"csrf": t, "path": "a.txt", "target": "y"})
+    assert r.status_code == 404
+
+
+def test_explore_get_launches_targeted_restore(client, example, monkeypatch):
+    # `manga` is a cold (DEEP_ARCHIVE) archive job: without `thawed=1` this exercises
+    # the thaw branch, whose argv still carries the selected path as the scope —
+    # exactly the acceptance shape from the dispatch notes (path present, 302/303).
+    launched = {}
+    monkeypatch.setattr(routes.ops, "ensure_free", lambda *a, **k: None)
+    monkeypatch.setattr(routes.ops, "validate_target",
+                        lambda *a, **k: {"ok": True, "container_path": "/restore/out"})
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/manga")
+    r = client.post("/explore/manga/get", data={"csrf": t, "path": "docs/a.txt", "target": "out"})
+    assert r.status_code in (302, 303)
+    assert "docs/a.txt" in " ".join(launched["argv"])
+
+
+def test_explore_get_cold_job_routes_to_thaw(client, example, monkeypatch):
+    # Cold + not-yet-thawed -> the thaw pipeline, never an instant fetch. No
+    # `validate_target` is needed on this branch (nothing is written to a target).
+    launched = {}
+    monkeypatch.setattr(routes.ops, "ensure_free", lambda *a, **k: None)
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/manga")
+    r = client.post("/explore/manga/get", data={"csrf": t, "path": "docs/a.txt"})
+    assert r.status_code in (302, 303)
+    assert "thaw" in launched["argv"]
+    assert "docs/a.txt" in launched["argv"]
+
+
+def test_explore_get_cold_job_already_thawed_downloads(client, example, monkeypatch):
+    # Once the client marks the node `thawed=1`, the same cold job downloads to
+    # the validated target instead of thawing again.
+    launched = {}
+    monkeypatch.setattr(routes.ops, "ensure_free", lambda *a, **k: None)
+    monkeypatch.setattr(routes.ops, "validate_target",
+                        lambda *a, **k: {"ok": True, "container_path": "/restore/out"})
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/manga")
+    r = client.post("/explore/manga/get",
+                    data={"csrf": t, "path": "docs/a.txt", "target": "out", "thawed": "1"})
+    assert r.status_code in (302, 303)
+    assert "download" in launched["argv"]
+    assert "docs/a.txt" in launched["argv"]
+    assert "/restore/out" in launched["argv"]
+
+
+def test_explore_get_versioned_restore_includes_path(client, example, monkeypatch):
+    # `appdata` is a warm (STANDARD) versioned job: a targeted restore for one path
+    # goes through `--include`, carrying the chosen snapshot as the restore point.
+    launched = {}
+    monkeypatch.setattr(routes.ops, "ensure_free", lambda *a, **k: None)
+    monkeypatch.setattr(routes.ops, "validate_target",
+                        lambda *a, **k: {"ok": True, "container_path": "/restore/out"})
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/appdata")
+    r = client.post("/explore/appdata/get",
+                    data={"csrf": t, "path": "docs/a.txt", "target": "out",
+                          "snapshot": "a81f3c2e"})
+    assert r.status_code in (302, 303)
+    argv = launched["argv"]
+    assert "--include" in argv
+    assert "docs/a.txt" in argv
+    assert "a81f3c2e" in argv
+
+
+def test_explore_get_validate_target_failure_flashes_and_redirects(client, example, monkeypatch):
+    monkeypatch.setattr(routes.ops, "ensure_free", lambda *a, **k: None)
+    monkeypatch.setattr(routes.ops, "validate_target",
+                        lambda *a, **k: {"ok": False, "message": "bad target"})
+    launched = {}
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/appdata")
+    r = client.post("/explore/appdata/get",
+                    data={"csrf": t, "path": "docs/a.txt", "target": "out"})
+    assert r.status_code in (302, 303)
+    assert r.headers["Location"].endswith("/explore/appdata")
+    assert "argv" not in launched
+
+
+def test_explore_get_busy_flashes_and_redirects(client, example, monkeypatch):
+    monkeypatch.setattr(routes.ops, "validate_target",
+                        lambda *a, **k: {"ok": True, "container_path": "/restore/out"})
+
+    def _locked(*a, **k):
+        raise routes.ops.OpsLocked()
+    monkeypatch.setattr(routes.ops, "ensure_free", _locked)
+    launched = {}
+    monkeypatch.setattr(routes.ops, "launch",
+                        lambda cfg, argv, **k: launched.setdefault("argv", argv) or "RUNID")
+    t = _csrf(client, "/explore/appdata")
+    r = client.post("/explore/appdata/get",
+                    data={"csrf": t, "path": "docs/a.txt", "target": "out"})
+    assert r.status_code in (302, 303)
+    assert r.headers["Location"].endswith("/explore/appdata")
+    assert "argv" not in launched

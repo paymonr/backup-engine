@@ -845,6 +845,17 @@ def _browse_level(cfg, name, job_type, path, snapshot=None) -> dict:
         return {"error": str(e)[:300]}
 
 
+def _safe_rel_py(path) -> str:
+    """Python mirror of bash `_safe_rel` (scripts/restore.sh): strip a leading '/',
+    reject any '..' path segment (bare "..", "../x", "x/..", "x/../y" — wrapping in
+    slashes catches all of these as a "/../" substring). Raises ValueError on an
+    escape attempt instead of the bash function's return-1."""
+    p = (path or "").lstrip("/")
+    if "/../" in f"/{p}/":
+        raise ValueError("bad path")
+    return p
+
+
 @bp.get("/explore")
 def explore_index():
     cfg = current_app.config
@@ -889,6 +900,63 @@ def explore_list(name):
     path = request.args.get("path", "")
     snapshot = request.args.get("snapshot")
     return jsonify(_browse_level(cfg, name, job.get("type"), path, snapshot=snapshot))
+
+
+@bp.post("/explore/<name>/get")
+def explore_get(name):
+    """The ONE mutating Explore action (Task 7): a CSRF-only launch of a targeted
+    restore/download of the selected node, reusing the full-job restore pipeline
+    (`_restore_argv` / `ops.validate_target` / `ops.ensure_free` / `ops.launch`).
+
+    Deliberately no typed-name confirm — that gate belongs to the full-job restore
+    flow (`_mutate_restore`); here the explicit node selection IS the safety
+    boundary. A cold, not-yet-thawed node routes to the same thaw pipeline instead
+    of implying an instant fetch (never a confirm re-render — there is no confirm
+    page for the explorer, so a failure just flashes and bounces back to the
+    browser)."""
+    cfg = current_app.config
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job is None:
+        abort(404, description=f"There is no job called {name}")
+    f = request.form
+    typ = job.get("type")
+    cls = job.get("storage_class", "STANDARD")
+    try:
+        rel = _safe_rel_py(f.get("path", ""))
+    except ValueError:
+        abort(404, description="bad path")
+    tier = f.get("tier") if f.get("tier") in estimate_io.RETRIEVAL_TIERS else _default_tier(cls)
+
+    # Cold + not-yet-thawed -> the existing thaw flow (never imply an instant
+    # fetch); the client sets `thawed=1` once a warm-up for this node has finished.
+    if cls in points.COLD_CLASSES and f.get("thawed") != "1":
+        intent = "thaw"
+        scope = rel if typ == "archive" else "."
+        container = None
+    else:
+        intent = "download" if typ == "archive" else "restore"
+        v = ops.validate_target(cfg, job, (f.get("target") or "").strip())
+        if not v.get("ok"):
+            flash(v["message"], "failure")
+            return redirect(url_for("gui.explore_job", name=name))
+        container = v["container_path"]
+        scope = rel if typ == "archive" else ("file" if typ == "versioned-files" else "")
+
+    point = (f.get("snapshot") or f.get("point") or "").strip()
+    path = "" if typ == "archive" else rel
+
+    try:
+        ops.ensure_free(cfg, name)
+    except ops.OpsLocked:
+        flash(f"{name} is busy — a backup or restore is already running.", "failure")
+        return redirect(url_for("gui.explore_job", name=name))
+
+    kind = {"thaw": "thaw", "download": "download", "restore": "restore"}[intent]
+    argv = _restore_argv(cfg, job, intent, container, point, scope, path, tier)
+    run_id = ops.launch(cfg, argv, job=name, kind=kind, trigger="manual")
+    return redirect(url_for("gui.run_record", name=name, run_id=run_id))
 
 
 # --- run record + Activity (spec 5.3, 5.5, 8.3, 8.4) -----------------------
