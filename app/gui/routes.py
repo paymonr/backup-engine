@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import signal
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -286,6 +287,45 @@ def _set_paused(name, paused):
     jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
                            source_root=cfg["SOURCE_ROOT"])
     flash(f"{'Paused' if paused else 'Resumed'} {name}.")
+    return redirect(url_for("gui.job_page", name=name))
+
+
+@bp.post("/jobs/<name>/stop")
+def job_stop(name):
+    """Stop a RUNNING backup gracefully (Task 8): write the control flag the bash
+    runner (Task 4) polls between phases, and additionally nudge it along with
+    SIGTERM if we can see an active run's pid. Works fine with no active run —
+    the flag alone is enough to keep the run paused once it (re)starts."""
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    cfg = current_app.config
+    if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
+        abort(404, description=f"There is no job called {name}")
+    flag = Path(cfg["CACHE_DIR"], "state", f"{name}.control")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("pause")
+    run = runs.active_run(cfg["CACHE_DIR"], name)
+    if run and run.pid:
+        try:
+            os.kill(run.pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+    flash(f"Pausing {name}…")
+    return redirect(url_for("gui.job_page", name=name))
+
+
+@bp.post("/jobs/<name>/resume-run")
+def job_resume_run(name):
+    """Clear the control flag and re-trigger the job so a paused run picks back up."""
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    cfg = current_app.config
+    if jobs_io.get(cfg["CONFIG_DIR"], name) is None:
+        abort(404, description=f"There is no job called {name}")
+    flag = Path(cfg["CACHE_DIR"], "state", f"{name}.control")
+    flag.unlink(missing_ok=True)
+    runner.trigger_job(cfg["SCRIPTS_DIR"], name)
+    flash(f"Resuming {name}…")
     return redirect(url_for("gui.job_page", name=name))
 
 

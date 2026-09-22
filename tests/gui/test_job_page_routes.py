@@ -297,6 +297,65 @@ def test_pause_unknown_job_is_404(client, example):
     assert client.post("/jobs/nope/pause", data={"csrf": t}).status_code == 404
 
 
+# --- stop / resume-run: a running backup's control flag (Task 8) -----------
+
+def test_stop_writes_control_flag_and_signals_active_pid(client, example, monkeypatch):
+    monkeypatch.setattr(routes.runs, "active_run", lambda c, j: runs.RunRecord(
+        id="x", job="appdata", kind="backup", trigger="manual", outcome="running",
+        started_at=None, finished_at=None, duration_s=None, exit_code=None, error=None,
+        pid=4242))
+    killed = []
+    monkeypatch.setattr(routes.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    t = _csrf(client, "/jobs/appdata")
+    r = client.post("/jobs/appdata/stop", data={"csrf": t})
+    assert r.status_code in (302, 303)
+    flag = Path(client.application.config["CACHE_DIR"], "state", "appdata.control")
+    assert flag.read_text().strip() == "pause"
+    assert killed == [(4242, routes.signal.SIGTERM)]
+
+
+def test_stop_with_no_active_run_just_writes_flag(client, example, monkeypatch):
+    monkeypatch.setattr(routes.runs, "active_run", lambda c, j: None)
+    killed = []
+    monkeypatch.setattr(routes.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    t = _csrf(client, "/jobs/appdata")
+    r = client.post("/jobs/appdata/stop", data={"csrf": t})
+    assert r.status_code in (302, 303)
+    flag = Path(client.application.config["CACHE_DIR"], "state", "appdata.control")
+    assert flag.read_text().strip() == "pause"
+    assert killed == []
+
+
+def test_resume_run_clears_flag_and_triggers(client, example, monkeypatch):
+    cache = client.application.config["CACHE_DIR"]
+    state = Path(cache, "state")
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "appdata.control").write_text("pause")
+    fired = []
+    monkeypatch.setattr(routes.runner, "trigger_job",
+                        lambda sd, name, env=None: fired.append(name))
+    t = _csrf(client, "/jobs/appdata")
+    r = client.post("/jobs/appdata/resume-run", data={"csrf": t})
+    assert r.status_code in (302, 303)
+    assert fired == ["appdata"]
+    assert not (state / "appdata.control").exists()
+
+
+def test_stop_and_resume_run_require_csrf(client, example):
+    assert client.post("/jobs/appdata/stop", data={}).status_code == 400
+    assert client.post("/jobs/appdata/resume-run", data={}).status_code == 400
+
+
+def test_stop_unknown_job_is_404(client, example):
+    t = _csrf(client, "/jobs/appdata")
+    assert client.post("/jobs/nope/stop", data={"csrf": t}).status_code == 404
+
+
+def test_resume_run_unknown_job_is_404(client, example):
+    t = _csrf(client, "/jobs/appdata")
+    assert client.post("/jobs/nope/resume-run", data={"csrf": t}).status_code == 404
+
+
 # --- delete: removes the job AND its caches ---------------------------------
 
 def test_delete_removes_job_and_its_caches(client, example):
