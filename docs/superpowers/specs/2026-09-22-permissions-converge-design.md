@@ -101,8 +101,8 @@ pass it — no dependency cycle, R1 doesn't reference the role).
 from the stored runtime key via `sts get-caller-identity` (callable by any key). If that ARN is
 not `arn:aws:iam::<acct>:user/<name>` (role, assumed-role, root) → refuse. A guided owner who
 named their user differently still works, and the action can't be aimed at another user.
-Automated setup is the exception: it takes the user name from a new tofu output
-(`runtime_user_name`), because a brand-new key can fail STS for a few seconds (propagation).
+Automated setup is the exception: it takes the user's ARN from a new tofu output
+(`runtime_user_arn`), because a brand-new key can fail STS for a few seconds (propagation).
 
 ### 2. Engine — `app/gui/permissions.py`
 
@@ -124,11 +124,11 @@ Split so the logic is testable without AWS:
   `Result` marks each step done / failed / not-run and carries the scrubbed error. The
   managed-version path deletes the oldest non-default version at the 5-version limit
   (factor the existing logic out of `buckets.grant_object_access` into a shared helper).
-- **`update(...)`** = discover → plan → apply → **re-discover + re-plan must be empty** → only then
+- **`converge(..., apply_changes=True)`** (Update) = discover → plan → apply → **re-discover + re-plan must be empty** → only then
   write `BUCKET_ADMIN_ROLE_ARN`, `RUNTIME_EXTRA_BUCKETS_POLICY_ARN`, `PERMISSIONS_VERSION`,
   `PERMISSIONS_CHECKED_AT` to `backup.env` and append a `permissions` record to Activity
   (`_system.runs.jsonl`, same shape as `provision.record_setup`) with the step summaries.
-- **`check(...)`** = discover → plan, no AWS writes. An empty plan writes the two ARNs + the
+- **`converge(..., apply_changes=False)`** (Preview / Check) = discover → plan, no AWS writes. An empty plan writes the two ARNs + the
   stamp to `backup.env` (local file only) and records Activity — that's how an install that's
   already correct gets marked current.
 
@@ -188,7 +188,7 @@ Routes (all POSTs CSRF-checked): `GET /setup/permissions`, `POST /setup/permissi
 
 ### 4. Initial setup paths
 
-- **Automated:** after `run_tofu_apply` succeeds, call `permissions.update(...)` with the same
+- **Automated:** after `run_tofu_apply` succeeds, call `permissions.converge(...)` with the same
   in-frame admin creds and the tofu-output runtime user name. Normally the plan is empty → stamp
   only; a non-empty plan is repaired and recorded. **If this step fails, setup still succeeds**
   (the bucket + key are real and tofu's state is already gone — failing would strand a half-saved
