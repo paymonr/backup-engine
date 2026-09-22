@@ -815,13 +815,20 @@
     if (s < 3600) return "~" + Math.round(s / 60) + "m left";
     return "~" + Math.floor(s / 3600) + "h " + Math.round((s % 3600) / 60) + "m left";
   }
+  function statePrefix(d) {
+    try {
+      if (d.state === "resuming") return "resuming… ";
+      if (d.state === "retrying") return "retry " + d.attempt + " · ";
+    } catch (e) {}
+    return "";
+  }
   function text(d) {
     var parts = [];
     if (d.percent != null) parts.push(Math.round(d.percent) + "%");
     if (d.bytes_done != null && d.bytes_total != null) parts.push(fmtBytes(d.bytes_done) + " / " + fmtBytes(d.bytes_total));
     else if (d.files_done != null && d.files_total != null) parts.push(d.files_done + " / " + d.files_total + " files");
     var eta = fmtEta(d.eta_seconds); if (eta) parts.push(eta);
-    return parts.join(" · ") || "working…";
+    return statePrefix(d) + (parts.join(" · ") || "working…");
   }
   els.forEach(function (el) {
     var job = el.getAttribute("data-progress-job");

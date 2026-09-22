@@ -105,3 +105,38 @@ def test_read_progress_vfiles_is_indeterminate(tmp_path, monkeypatch):
     monkeypatch.setattr(runs, "active_run", lambda c, j: _fake_running(kind="backup"))
     out = progress.read_progress(str(tmp_path), "docs", "versioned-files")
     assert out["running"] is True and out["engine"] == "vfiles" and out["percent"] is None
+
+
+# --- retrying / resuming state (Task 10) ------------------------------------
+
+def test_progress_reports_retrying(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        runs, "active_run",
+        lambda c, j: runs.RunRecord(id="x", job="cfg", kind="backup", trigger="manual",
+                                     outcome="running", started_at=None, finished_at=None,
+                                     duration_s=None, exit_code=None, error=None, attempts=2))
+    out = progress.read_progress(str(tmp_path), "cfg", "versioned")
+    assert out["running"] is True and out.get("attempt") == 2 and out.get("state") == "retrying"
+
+
+def test_progress_retrying_from_marker_file(tmp_path, monkeypatch):
+    # Production truth: a RUNNING run's RunRecord.attempts is None; the live attempt
+    # count lives in state/<job>.attempt, written by backup-job.sh's _retry.
+    monkeypatch.setattr(runs, "active_run", lambda c, j: _fake_running())
+    _write_state(tmp_path, "appdata_backup.attempt", "3")
+    out = progress.read_progress(str(tmp_path), "appdata_backup", "versioned")
+    assert out.get("attempt") == 3 and out.get("state") == "retrying"
+
+
+def test_progress_resuming_marker_wins_over_retrying(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs, "active_run", lambda c, j: _fake_running())
+    _write_state(tmp_path, "appdata_backup.attempt", "3")
+    _write_state(tmp_path, "appdata_backup.resuming", "1")
+    out = progress.read_progress(str(tmp_path), "appdata_backup", "versioned")
+    assert out.get("state") == "resuming"
+
+
+def test_progress_plain_running_has_no_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs, "active_run", lambda c, j: _fake_running())
+    out = progress.read_progress(str(tmp_path), "appdata_backup", "versioned")
+    assert out.get("state") == "running" and out.get("attempt") is None

@@ -151,4 +151,17 @@ def read_progress(cache_dir, job, job_type) -> dict:
         out["engine"] = "vfiles"
     if parsed:
         out.update(parsed)
+    # Retry/resume state: marker files are the live production truth (a RUNNING
+    # run's RunRecord.attempts is None -- `attempts` is only written on run END),
+    # so read them first and fall back to rec.attempts for callers/tests that
+    # only have the RunRecord.
+    attempt = None
+    try:
+        attempt = int((state / f"{job}.attempt").read_text().strip())
+    except (OSError, ValueError):
+        attempt = rec.attempts
+    resuming = (state / f"{job}.resuming").exists()
+    out["state"] = "resuming" if resuming else ("retrying" if (attempt and attempt > 1) else "running")
+    if attempt is not None:
+        out["attempt"] = attempt
     return out
