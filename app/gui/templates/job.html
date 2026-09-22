@@ -263,6 +263,7 @@
       <div class="band" id="restore-band">
         <p class="slabel">Get data back</p>
         <p class="lead" style="margin-bottom:var(--sp-4)">Pick the date you want back. Files are written into a new folder — the live <span class="mono">{{ ident.source_display or job.source }}</span> is never touched or overwritten.</p>
+        <p style="margin-bottom:var(--sp-4)"><a class="linklike" href="/explore/{{ s.name }}">Browse contents →</a></p>
 
         {% if is_archive %}
         {# Plain copy — no restore points (ruling R8): what is there now. #}

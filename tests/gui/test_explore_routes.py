@@ -307,6 +307,73 @@ def test_explore_get_validate_target_failure_flashes_and_redirects(client, examp
     assert "argv" not in launched
 
 
+# --- Task 8: template enrichment (nav item, job-page link, snapshot select,
+# cold badge, CSRF action forms) ----------------------------------------------
+
+def test_explore_index_has_nav_item_and_job_link(client, example):
+    body = client.get("/explore").get_data(as_text=True)
+    assert 'href="/explore"' in body          # the new top-level nav item
+    assert "/explore/appdata" in body
+
+
+def test_explore_job_has_get_form_matching_field_names(client, example, monkeypatch):
+    monkeypatch.setattr(routes, "_browse_level",
+        lambda cfg, name, jt, path, snapshot=None: {"path": path, "entries": [
+            {"name": "a.txt", "kind": "file", "size": 1, "storage_class": "DEEP_ARCHIVE",
+             "modified": None}]})
+    body = client.get("/explore/manga").get_data(as_text=True)
+    assert '/explore/manga/get' in body
+    assert 'name="csrf"' in body
+    assert 'name="path"' in body
+    assert 'name="target"' in body
+
+
+def test_job_page_links_to_explore(client, example):
+    assert '/explore/appdata' in client.get("/jobs/appdata").get_data(as_text=True)
+
+
+def test_versioned_job_shows_snapshot_select(client, example, monkeypatch):
+    # `example` seeds two restore points in appdata.points.json -> the snapshot
+    # picker should render with both, defaulting to the newest.
+    monkeypatch.setattr(routes, "_browse_level",
+        lambda cfg, name, jt, path, snapshot=None: {"path": path, "entries": []})
+    body = client.get("/explore/appdata").get_data(as_text=True)
+    assert "<select" in body
+    assert 'name="snapshot"' in body
+    assert "a81f3c2e" in body and "7c41e9b0" in body
+
+
+def test_cold_node_shows_cold_badge(client, example, monkeypatch):
+    monkeypatch.setattr(routes, "_browse_level",
+        lambda cfg, name, jt, path, snapshot=None: {"path": path, "entries": [
+            {"name": "frozen.bin", "kind": "file", "size": 5, "modified": None,
+             "storage_class": "DEEP_ARCHIVE"}]})
+    body = client.get("/explore/manga").get_data(as_text=True)
+    assert "Cold" in body
+
+
+def test_versioned_job_with_no_points_cache_is_empty_not_crashed(client, app, source_root,
+                                                                  monkeypatch):
+    # The deferred Task-6 test: a versioned job with no cached restore points at
+    # all (no state/<job>.points.json) must render an empty level, 200, and must
+    # NEVER shell out to restore.sh (it requires --snapshot for a versioned job).
+    jobs_io.upsert(app.config["CONFIG_DIR"],
+                   {"name": "freshjob", "type": "versioned", "source": "appdata",
+                    "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                    "created_at": "2026-09-01T00:00:00Z",
+                    "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}},
+                   source_root=str(source_root))
+
+    def _boom(*a, **k):
+        raise AssertionError("restore.sh must not be invoked with no points cache")
+    monkeypatch.setattr(routes, "_browse_level", _boom)
+
+    r = app.test_client().get("/explore/freshjob")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "Nothing here" in body
+
+
 def test_explore_get_busy_flashes_and_redirects(client, example, monkeypatch):
     monkeypatch.setattr(routes.ops, "validate_target",
                         lambda *a, **k: {"ok": True, "container_path": "/restore/out"})
