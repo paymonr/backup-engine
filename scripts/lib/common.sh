@@ -108,3 +108,7 @@ version_banner() {
   log_info "rclone:      $(_tool_version rclone version)"
   log_info "supercronic: $(_tool_version supercronic -version)"
 }
+
+_is_transient_error() {  # exit 0 = retryable
+  grep -qiE '(^|[^a-z])(50[0-9]|SlowDown|RequestTimeout|RequestTimeTooSkewed|Throttl|connection reset|connection refused|broken pipe|unexpected EOF|TLS handshake timeout|i/o timeout|timeout|temporarily unavailable|ServiceUnavailable|InternalError)([^a-z]|$)' "$1" 2>/dev/null
+}
