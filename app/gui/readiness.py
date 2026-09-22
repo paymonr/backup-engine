@@ -12,7 +12,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config_io, jobs_io, points, vocab, estimate_io
+from . import config_io, jobs_io, points, vocab, estimate_io, permissions
 from ..engine import runs
 
 COLD_CLASSES = ("GLACIER", "DEEP_ARCHIVE")   # thaw-first to read
@@ -283,6 +283,9 @@ def setup_checks(cfg, *, now=None, crontab_stale=False) -> list[dict]:
         _check_jobs_scheduled(jobs),
         _check_restore_tested(cache, jobs),
     ]
+    perm = _check_permissions(config_dir)
+    if perm:
+        rows.append(perm)
     if crontab_stale:
         rows.append({"code": "scheduler", "state": "warn",
                      "sentence": "The schedule file on disk does not match your jobs; "
@@ -375,3 +378,21 @@ def _check_restore_tested(cache, jobs) -> dict:
     return {"code": "restore_tested", "state": "warn", "sentence": "Never",
             "verified_at": None, "fix_label": None,
             "fix_url": f"/jobs/{newest}" if newest else None}
+
+
+def _check_permissions(config_dir) -> dict | None:
+    """The permissions stamp vs this build (spec 2026-09-22 §3). Only once the
+    destination is set -- before that, the setup wizard owns the story."""
+    if not config_io.is_provisioned(config_dir):
+        return None
+    st = permissions.level_status(config_dir)
+    row = {"code": "permissions", "verified_at": st["checked_at"], "fix_label": None,
+           "fix_url": "/setup/permissions"}
+    if st["state"] == "current":
+        row.update(state="ok", sentence="Everything this version needs")
+    elif st["state"] == "behind":
+        row.update(state="warn", sentence="Update needed for: "
+                   + "; ".join(h["adds"] for h in st["missing"]))
+    else:
+        row.update(state="warn", sentence="Not checked for this version of backup-engine")
+    return row

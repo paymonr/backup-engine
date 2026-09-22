@@ -12,7 +12,7 @@ from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
-               dirsize, attributions, status, vocab, points, readiness, ops)
+               dirsize, attributions, status, vocab, points, readiness, ops, permissions)
 from ..estimator.prices import load_prices
 from ..estimator import usage
 from ..engine import cron, runs, errors, progress, buckets, sysop
@@ -50,10 +50,14 @@ def status_json():
 
 def _board_payload(cfg) -> dict:
     """`status.board()` (Task 4) with the cost object merged in (spec 8.1). The
-    board dict was deliberately shaped so the route attaches cost here."""
+    board dict was deliberately shaped so the route attaches cost here -- and the
+    permissions needs-you row (spec 2026-09-22 §3), which reads backup.env only."""
     board = status.board(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
                          source_root=cfg["SOURCE_ROOT"])
     board["cost"] = _board_cost(cfg)
+    row = permissions.needs_you_row(cfg["CONFIG_DIR"])
+    if row:
+        board["needs_you"].append(row)
     return board
 
 
@@ -995,14 +999,14 @@ _WHAT_LABELS = {
     "restore": "restore", "download": "download", "thaw": "warm-up",
     "test-restore": "test restore", "usage-refresh": "usage refresh",
     "billing-check": "billing check", "probe": "destination probe",
-    "provision": "destination setup",
+    "provision": "destination setup", "permissions": "permissions update",
 }
 _OUTCOME_LABELS = {"ok": "OK", "failed": "Failed", "running": "Running", "aborted": "Stopped"}
 # The record kinds each Activity `kind` filter selects (spec 8.4).
 _KIND_GROUPS = {
     "runs": set(runs.BACKUP_KINDS),
     "restores": set(runs.OP_KINDS),
-    "setup": {"usage-refresh", "billing-check", "probe", "provision"},
+    "setup": {"usage-refresh", "billing-check", "probe", "provision", "permissions"},
 }
 # The outcomes each Activity `outcome` filter selects (spec 5.5).
 _OUTCOME_GROUPS = {"ok": {"ok"}, "failed": {"failed", "aborted"}, "running": {"running"}}
@@ -1450,6 +1454,7 @@ _SETUP_CHECK_NAMES = {
     "versioning": "Old versions protected",
     "jobs_scheduled": "At least one job scheduled",
     "restore_tested": "Restore ever tested",
+    "permissions": "AWS permissions up to date",
     "scheduler": "Scheduler up to date",
 }
 
@@ -1538,7 +1543,7 @@ _KEY_SECRET_FIELDS = tuple(config_io.SECRET_KEYS) + tuple(config_io.COST_EXPLORE
 # render as a raw text <input> with the same name (Task 1 side effect).
 # Template keys the Keys page never renders as plain inputs. AUTO_RESUME_ON_BOOT is
 # a checkbox; the permissions stamp is written only by Setup → AWS permissions.
-_STAMP_KEYS = ("PERMISSIONS_VERSION", "PERMISSIONS_CHECKED_AT")
+_STAMP_KEYS = (permissions.STAMP_KEY, permissions.CHECKED_KEY)
 _UI_HANDLED_KEYS = {"AUTO_RESUME_ON_BOOT", *_STAMP_KEYS}
 
 
@@ -1657,7 +1662,9 @@ def provision_home():
     env = config_io.read_backup_env(cfg["CONFIG_DIR"])
     return render_template("provision_home.html", csrf=security.issue_csrf(),
                            provisioned=config_io.is_provisioned(cfg["CONFIG_DIR"]),
-                           bucket=env.get("S3_BUCKET", ""), region=env.get("AWS_REGION", ""))
+                           bucket=env.get("S3_BUCKET", ""), region=env.get("AWS_REGION", ""),
+                           perm=permissions.level_status(cfg["CONFIG_DIR"]),
+                           perm_checked=_fmt_verified(permissions.checked_at(cfg["CONFIG_DIR"])))
 
 @bp.get("/provision")
 def provision_redirect():

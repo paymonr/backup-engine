@@ -6,7 +6,7 @@
 <section class="screen read" aria-label="Setup readiness">
   <p class="eyebrow">Setup</p>
   <h1>Can this machine back up — and get it back?</h1>
-  <p class="lead">Five real checks. The list always shows what remains; there is no
+  <p class="lead">Real checks. The list always shows what remains; there is no
      step counter to lose your place in.</p>
 
   <table class="classes" style="margin-top:var(--sp-5)">
@@ -54,6 +54,8 @@
             <a class="linklike" href="/jobs/new">Create a job →</a>
           {% elif c.code == 'restore_tested' and c.state != 'ok' and c.fix_url %}
             <a class="linklike" href="{{ c.fix_url }}">Test a restore →</a>
+          {% elif c.code == 'permissions' and c.state != 'ok' %}
+            <a class="linklike" href="/setup/permissions">Update permissions →</a>
           {% endif %}
         </td>
       </tr>

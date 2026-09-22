@@ -84,6 +84,24 @@ def level_status(config_dir: str) -> dict:
             "checked_at": checked_at(config_dir)}
 
 
+def needs_you_row(config_dir: str) -> dict | None:
+    """The Board's needs-you warning while the stamp is behind or missing."""
+    if not config_io.is_provisioned(config_dir):
+        return None
+    st = level_status(config_dir)
+    if st["state"] == "current":
+        return None
+    if st["state"] == "behind":
+        text = ("This version of backup-engine needs an AWS permissions update for: "
+                + "; ".join(h["adds"] for h in st["missing"]) + ".")
+    else:
+        text = ("They haven't been checked for this version of backup-engine. Features that "
+                "need newer permissions, like dedicated per-job buckets, stay off until they are.")
+    return {"level": "warning", "code": "permissions-update", "job": None,
+            "strong": "AWS permissions need an update.", "text": text,
+            "fix": {"label": "Update permissions", "href": "/setup/permissions"}}
+
+
 # --- the required IAM set (spec §1: R1-R5, fixed names) ------------------------------
 
 PREFIX = "backup-engine"

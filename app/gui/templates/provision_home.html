@@ -13,6 +13,9 @@
     <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6" cy="6" r="5"/><path d="M3.6 6.2 5.3 7.9 8.5 4.4"/></svg></span>
     <div class="body">Destination set — bucket <span class="mono">{{ bucket }}</span>{% if region %} in <span class="mono">{{ region }}</span>{% endif %}. Re-provision below to change it.</div>
   </div>
+  <p class="hint" style="margin-top:var(--sp-3)" data-perm-line="{{ perm.state }}">AWS permissions:
+    {% if perm.state == 'current' %}up to date{% elif perm.state == 'behind' %}an update is available{% else %}not checked for this version{% endif %}{% if perm_checked %} · checked <span class="stamp">{{ perm_checked }}</span>{% endif %}
+    · <a class="linklike" href="/setup/permissions">Check &amp; update →</a></p>
   {% endif %}
 
   <div class="steps" style="margin-top:var(--sp-5)">
