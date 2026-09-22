@@ -1536,7 +1536,10 @@ _KEY_SECRET_FIELDS = tuple(config_io.SECRET_KEYS) + tuple(config_io.COST_EXPLORE
 # of the generic "extra" text-field fallback (Task 11): AUTO_RESUME_ON_BOOT renders
 # as its own checkbox in config.html, so it must be excluded here or it would also
 # render as a raw text <input> with the same name (Task 1 side effect).
-_UI_HANDLED_KEYS = {"AUTO_RESUME_ON_BOOT"}
+# Template keys the Keys page never renders as plain inputs. AUTO_RESUME_ON_BOOT is
+# a checkbox; the permissions stamp is written only by Setup → AWS permissions.
+_STAMP_KEYS = ("PERMISSIONS_VERSION", "PERMISSIONS_CHECKED_AT")
+_UI_HANDLED_KEYS = {"AUTO_RESUME_ON_BOOT", *_STAMP_KEYS}
 
 
 def _keys_groups(cfg):
@@ -1610,6 +1613,10 @@ def config_save():
     # f.get("AUTO_RESUME_ON_BOOT", "") above would write "" — and auto_resume_on_boot()
     # treats anything other than the literal string "false" as True. Override explicitly.
     values["AUTO_RESUME_ON_BOOT"] = "true" if f.get("AUTO_RESUME_ON_BOOT") else "false"
+    # The stamp is never on this form; carry the saved values through, or
+    # write_backup_env would reset them to the template's blank.
+    for k in _STAMP_KEYS:
+        values[k] = before.get(k, "")
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"], values)
     # Write the runtime key AND the Cost Explorer billing credential in one pass —
     # write_secrets rebuilds secrets.env from the managed UNION, so writing one group

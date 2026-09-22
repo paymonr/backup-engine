@@ -1,0 +1,9 @@
+{
+  "level": 3,
+  "templates_sha256": "e521ef2e73ed47bf925f87caacea2035833d1b23468733060097b49fb1c98be4",
+  "history": [
+    {"level": 1, "adds": "Back up to and restore from your bucket", "features": []},
+    {"level": 2, "adds": "Clean up old versions of archived files", "features": ["archive-cleanup"]},
+    {"level": 3, "adds": "Dedicated per-job buckets", "features": ["dedicated-buckets"]}
+  ]
+}

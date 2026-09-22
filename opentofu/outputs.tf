@@ -30,3 +30,6 @@ output "rclone_remote" {
     bucket        = aws_s3_bucket.backup.id
   }
 }
+output "permissions_level" {
+  value = jsondecode(file("${path.module}/../provisioning/permissions.json")).level
+}
