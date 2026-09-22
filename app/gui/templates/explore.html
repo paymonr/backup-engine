@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{#- explore.html — the per-job browser (Task 6 skeleton: the no-JS fallback,
+    plain full-page `?path=`/`?snapshot=` links. Task 8 enriches with a
+    breadcrumb, snapshot picker, per-file versions, the cold badge and CSRF
+    action forms; Task 9 adds in-place lazy loading against list.json.) #}
+{% block title %}{{ name }} · Explore · backup-engine{% endblock %}
+{% block body %}
+<section class="screen dense" aria-label="Explore {{ name }}">
+  <p class="slabel"><a href="{{ url_for('gui.explore_index') }}">Explore</a></p>
+  <h1>{{ name }} <span class="hint mono">/{{ path }}</span></h1>
+
+  {% if level.error %}
+  <p class="sig sig-failure">{{ level.error }}</p>
+  {% else %}
+  <ul class="list">
+    {% for e in level.entries if e.kind == 'dir' %}
+    <li><a href="/explore/{{ name }}?path={{ (path ~ '/' ~ e.name if path else e.name) | urlencode }}{% if snapshot %}&amp;snapshot={{ snapshot | urlencode }}{% endif %}">{{ e.name }}/</a></li>
+    {% endfor %}
+    {% for e in level.entries if e.kind != 'dir' %}
+    <li>{{ e.name }} <span class="hint">{% if e.size is not none %}{{ e.size }} B{% endif %}{% if e.storage_class %} · {{ e.storage_class }}{% endif %}{% if e.modified %} · {{ e.modified }}{% endif %}</span></li>
+    {% endfor %}
+    {% if not level.entries %}<li class="hint">Nothing here.</li>{% endif %}
+  </ul>
+  {% endif %}
+</section>
+{% endblock %}

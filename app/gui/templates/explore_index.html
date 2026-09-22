@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{#- explore_index.html — Explore job list (Task 6 skeleton; Task 8 enriches). #}
+{% block title %}Explore · backup-engine{% endblock %}
+{% block body %}
+<section class="screen dense" aria-label="Explore">
+  <p class="slabel">Explore</p>
+  <h1>Browse your backups</h1>
+  {% if jobs %}
+  <ul class="list">
+    {% for j in jobs %}
+    <li>
+      <a href="{{ url_for('gui.explore_job', name=j.name) }}">{{ j.name }}</a>
+      <span class="hint">{% if j.type == 'versioned' %}Versioned{% elif j.type == 'versioned-files' %}Versioned files{% else %}Archive{% endif %}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="lead">No jobs yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

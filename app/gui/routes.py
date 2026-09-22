@@ -5,6 +5,7 @@ import math
 import os
 import re
 import signal
+import subprocess
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -815,6 +816,79 @@ def test_restore(name):
     run_id = ops.launch(cfg, [_restore_sh(cfg), name, "test"], job=name,
                         kind="test-restore", trigger="manual")
     return redirect(url_for("gui.run_record", name=name, run_id=run_id))
+
+
+# --- Explore: read-only browse (job list, per-job browser, list.json) ------
+#
+# Entirely read-only: no route here mutates or launches anything. `explore_job`
+# server-renders the initial directory level (the no-JS fallback — full-page
+# `?path=`/`?snapshot=` navigation always works); Task 9 adds in-place lazy
+# loading against `list.json`. Task 8 enriches the skeleton templates
+# (breadcrumb, snapshot picker, versions, cold badge, CSRF action forms).
+
+def _browse_level(cfg, name, job_type, path, snapshot=None) -> dict:
+    """Shell `restore.sh <job> browse … --json` read-only and parse the level.
+    NEVER raises: a timeout, non-zero exit or bad JSON degrades to
+    `{"error": msg}` so a listing failure is an inline error, never a 500.
+    Module-level (not nested) so tests can monkeypatch `routes._browse_level`."""
+    argv = [f'{cfg["SCRIPTS_DIR"]}/restore.sh', name, "browse"]
+    if job_type == "versioned" and snapshot:
+        argv += ["--snapshot", snapshot]
+    argv += [path or "", "--json"]
+    env = {**os.environ, "CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}
+    try:
+        p = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
+        if p.returncode != 0:
+            return {"error": (p.stderr or "listing failed").strip()[:300]}
+        return json.loads(p.stdout)
+    except (subprocess.TimeoutExpired, ValueError, OSError) as e:
+        return {"error": str(e)[:300]}
+
+
+@bp.get("/explore")
+def explore_index():
+    cfg = current_app.config
+    jobs = jobs_io.load(cfg["CONFIG_DIR"])
+    return render_template("explore_index.html", jobs=jobs, csrf=security.issue_csrf())
+
+
+@bp.get("/explore/<name>")
+def explore_job(name):
+    cfg = current_app.config
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job is None:
+        abort(404, description=f"There is no job called {name}")
+    path = request.args.get("path", "")
+    snapshot = request.args.get("snapshot")
+    snapshots = []
+    if job.get("type") == "versioned":
+        # No JS yet to have picked a snapshot: default to the latest one from the
+        # restore-points cache. No snapshots at all -> an empty level, never a
+        # doomed restore.sh call (it requires --snapshot for a versioned job).
+        pv = points.view(cfg["CACHE_DIR"], job)
+        snapshots = pv.get("points") or []
+        snapshot = snapshot or pv.get("default_point")
+    if job.get("type") == "versioned" and snapshot is None:
+        level = {"path": path, "entries": []}
+    else:
+        level = _browse_level(cfg, name, job.get("type"), path, snapshot=snapshot)
+    return render_template("explore.html", job=job, name=name, path=path,
+                           snapshot=snapshot, snapshots=snapshots, level=level,
+                           csrf=security.issue_csrf())
+
+
+@bp.get("/explore/<name>/list.json")
+def explore_list(name):
+    # A plain GET like /jobs/<name>/progress.json: read-only, no CSRF. The
+    # client's in-place lazy loader (Task 9) polls this for each level instead
+    # of a full-page navigation.
+    cfg = current_app.config
+    job = jobs_io.get(cfg["CONFIG_DIR"], name)
+    if job is None:
+        return jsonify({"error": "no such job"}), 404
+    path = request.args.get("path", "")
+    snapshot = request.args.get("snapshot")
+    return jsonify(_browse_level(cfg, name, job.get("type"), path, snapshot=snapshot))
 
 
 # --- run record + Activity (spec 5.3, 5.5, 8.3, 8.4) -----------------------
