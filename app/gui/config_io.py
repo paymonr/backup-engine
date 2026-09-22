@@ -58,6 +58,18 @@ def extra_buckets_policy_arn(config_dir: str) -> str:
 def base_bucket_versioned(config_dir: str) -> bool:
     return read_backup_env(config_dir).get("BASE_BUCKET_VERSIONED", "true").strip().lower() != "false"
 
+def auto_resume_on_boot(config_dir: str) -> bool:
+    return read_backup_env(config_dir).get("AUTO_RESUME_ON_BOOT", "true").strip().lower() != "false"
+
+def _int_env(config_dir, key, default):
+    try: return int(read_backup_env(config_dir).get(key, "").strip() or default)
+    except ValueError: return default
+
+def retry_settings(config_dir: str) -> dict:
+    return {"max_attempts": _int_env(config_dir, "BE_MAX_ATTEMPTS", 3),
+            "base_seconds": _int_env(config_dir, "BE_RETRY_BASE_SECONDS", 30),
+            "max_resumes": _int_env(config_dir, "BE_MAX_RESUMES", 3)}
+
 def write_backup_env(template_path: str, config_dir: str, values: dict[str, str]) -> None:
     out: list[str] = []
     for line in Path(template_path).read_text().splitlines():

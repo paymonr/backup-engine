@@ -211,3 +211,14 @@ def test_role_and_policy_arns_read_back(tmp_path):
     assert cio.bucket_admin_role_arn(str(tmp_path)).endswith("be-bucket-admin")
     assert cio.extra_buckets_policy_arn(str(tmp_path)).endswith("be-extra")
     assert cio.base_bucket_versioned(str(tmp_path)) is False
+
+def test_auto_resume_defaults_true(tmp_path):
+    (tmp_path/"backup.env").write_text("S3_BUCKET=b\nAWS_REGION=us-east-1\n")
+    assert cio.auto_resume_on_boot(str(tmp_path)) is True
+    assert cio.retry_settings(str(tmp_path)) == {"max_attempts":3,"base_seconds":30,"max_resumes":3}
+
+def test_auto_resume_and_retry_overrides(tmp_path):
+    (tmp_path/"backup.env").write_text(
+        "S3_BUCKET=b\nAUTO_RESUME_ON_BOOT=false\nBE_MAX_ATTEMPTS=5\nBE_RETRY_BASE_SECONDS=10\nBE_MAX_RESUMES=2\n")
+    assert cio.auto_resume_on_boot(str(tmp_path)) is False
+    assert cio.retry_settings(str(tmp_path)) == {"max_attempts":5,"base_seconds":10,"max_resumes":2}
