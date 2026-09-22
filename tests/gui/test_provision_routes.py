@@ -221,7 +221,8 @@ def test_automated_success_writes_runtime_key_and_never_shows_secrets(client, di
     assert "S3_BUCKET=acme" in be and "AWS_REGION=us-east-1" in be
 
 
-def test_automated_success_captures_bucket_admin_and_extra_buckets_arns(client, dirs, monkeypatch):
+def test_automated_success_captures_bucket_admin_role_arn_and_drops_extra_buckets_policy(
+        client, dirs, monkeypatch):
     from app.gui import provision
     monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -230,8 +231,6 @@ def test_automated_success_captures_bucket_admin_and_extra_buckets_arns(client, 
             "AWS_ACCESS_KEY_ID": "AKIARUN", "AWS_SECRET_ACCESS_KEY": "runsek",
             "bucket": "acme", "region": "us-east-1",
             "bucket_admin_role_arn": "arn:aws:iam::123456789012:role/backup-engine-bucket-admin",
-            "runtime_extra_buckets_policy_arn":
-                "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets",
         })
     token = _csrf(client, "/setup/destination/automated")
     r = client.post("/setup/destination/automated",
@@ -241,8 +240,9 @@ def test_automated_success_captures_bucket_admin_and_extra_buckets_arns(client, 
     assert r.status_code == 200
     be = Path(dirs["config"], "backup.env").read_text()
     assert "BUCKET_ADMIN_ROLE_ARN=arn:aws:iam::123456789012:role/backup-engine-bucket-admin" in be
-    assert ("RUNTIME_EXTRA_BUCKETS_POLICY_ARN="
-            "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets") in be
+    # The extra-buckets managed policy is gone (Addendum 2026-09-22): the key is
+    # never written any more, not even blank.
+    assert "RUNTIME_EXTRA_BUCKETS_POLICY_ARN" not in be
 
 
 def test_automated_failure_saves_nothing(client, dirs, monkeypatch):
@@ -533,7 +533,6 @@ def test_validate_success_launches_destination_probe(client, dirs, monkeypatch, 
 _TOFU_OK = {"AWS_ACCESS_KEY_ID": "AKIARUN", "AWS_SECRET_ACCESS_KEY": "runsek",
             "bucket": "acme", "region": "us-east-1",
             "bucket_admin_role_arn": "arn:aws:iam::123456789012:role/backup-engine-bucket-admin",
-            "runtime_extra_buckets_policy_arn": "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets",
             "runtime_user_arn": "arn:aws:iam::123456789012:user/backup-engine-runtime"}
 
 

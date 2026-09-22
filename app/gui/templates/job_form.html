@@ -364,8 +364,8 @@
       <label class="sm faint" for="bucket" style="display:block;margin-bottom:6px">Bucket name</label>
       <input type="text" class="mono" id="bucket" name="bucket" value="{{ fv.bucket }}" maxlength="63">
       <p class="sm faint measure" id="bucket-prefix-hint" hidden style="margin-top:6px">
-        This name doesn't start with <span class="mono">{{ bucket }}-</span> — backup-engine will
-        grant this job access to it directly, outside the shared bucket policy.</p>
+        This name must start with <span class="mono">{{ bucket }}-</span> — backup-engine can only
+        reach buckets named that way.</p>
       <label class="radio" for="bucket_versioned" style="margin-top:10px"><input type="checkbox" id="bucket_versioned" name="bucket_versioned" value="1" {{ 'checked' if fv.bucket_versioned == '1' }}>
         <span>Keep old versions in this bucket too</span></label>
     </div>

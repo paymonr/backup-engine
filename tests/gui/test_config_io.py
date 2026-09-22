@@ -196,20 +196,17 @@ def test_key_groups_membership_and_order(dirs):
     assert "RESTORE_ROOT_HOST" in groups["This machine"]
 
 
-def test_role_and_policy_arns_default_empty(tmp_path):
+def test_role_arn_defaults_empty(tmp_path):
     (tmp_path / "backup.env").write_text("S3_BUCKET=b\nAWS_REGION=us-east-1\n")
     assert cio.bucket_admin_role_arn(str(tmp_path)) == ""
-    assert cio.extra_buckets_policy_arn(str(tmp_path)) == ""
     assert cio.base_bucket_versioned(str(tmp_path)) is True
 
-def test_role_and_policy_arns_read_back(tmp_path):
+def test_role_arn_read_back(tmp_path):
     (tmp_path / "backup.env").write_text(
         "S3_BUCKET=b\nAWS_REGION=us-east-1\n"
         "BUCKET_ADMIN_ROLE_ARN=arn:aws:iam::123:role/be-bucket-admin\n"
-        "RUNTIME_EXTRA_BUCKETS_POLICY_ARN=arn:aws:iam::123:policy/be-extra\n"
         "BASE_BUCKET_VERSIONED=false\n")
     assert cio.bucket_admin_role_arn(str(tmp_path)).endswith("be-bucket-admin")
-    assert cio.extra_buckets_policy_arn(str(tmp_path)).endswith("be-extra")
     assert cio.base_bucket_versioned(str(tmp_path)) is False
 
 def test_auto_resume_defaults_true(tmp_path):

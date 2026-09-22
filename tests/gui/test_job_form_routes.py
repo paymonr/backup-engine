@@ -26,7 +26,6 @@ def app(tmp_path, source_root, template_path):
     (cfg / "backup.env").write_text(
         "S3_BUCKET=bw-backups\nAWS_REGION=us-east-1\n"
         "BUCKET_ADMIN_ROLE_ARN=arn:aws:iam::111111111111:role/backup-engine-bucket-admin\n"
-        "RUNTIME_EXTRA_BUCKETS_POLICY_ARN=arn:aws:iam::111111111111:policy/backup-engine-runtime-extra-buckets\n"
         f"PERMISSIONS_VERSION={permissions.required_level()}\n")
     return create_app({"CONFIG_DIR": str(cfg), "CACHE_DIR": str(tmp_path / "cache"),
                        "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
@@ -208,21 +207,41 @@ def test_dedicated_save_rejects_invalid_bucket_name_without_touching_aws(client,
     assert called == []                   # invalid name never touches AWS
 
 
-def test_dedicated_save_off_prefix_grants_extra_bucket_access(client, app, monkeypatch):
-    made = {}
-    monkeypatch.setattr(provision, "assume_role", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "ASIA"})
-    monkeypatch.setattr(buckets, "ensure_bucket", lambda name, **k: made.setdefault("name", name))
-    monkeypatch.setattr(buckets, "grant_object_access",
-                        lambda policy_arn, name, **k: made.setdefault("granted", (policy_arn, name)))
+def test_dedicated_save_off_prefix_name_is_refused_before_any_aws_call(client, app, monkeypatch):
+    # Addendum 2026-09-22: a dedicated bucket's name MUST be <base>-<suffix> -- the
+    # runtime policy's <base>-* wildcard already grants it, so no IAM write is ever
+    # needed. An off-prefix name is refused server-side, guided, BEFORE assume_role.
+    def fail(*a, **k):
+        raise AssertionError("must not touch AWS before the name-rule refusal")
+    monkeypatch.setattr(provision, "assume_role", fail)
+    monkeypatch.setattr(buckets, "ensure_bucket", fail)
     t = _csrf(client)
     r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
         "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
         "enabled": "1", "retention_type": "days", "retention_days": "180",
         "dedicated": "1", "bucket": "off-prefix-bucket", "bucket_versioned": "1"})
-    assert r.status_code in (302, 303)
-    assert made["name"] == "off-prefix-bucket"
-    assert made["granted"] == (
-        "arn:aws:iam::111111111111:policy/backup-engine-runtime-extra-buckets", "off-prefix-bucket")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "Not saved" in body
+    assert "bw-backups-photos" in body           # the guided example names the rule
+    assert _jobs(app) == []
+
+
+def test_dedicated_save_bucket_name_equal_to_base_is_refused(client, app, monkeypatch):
+    # A value equal to the base bucket has no suffix at all -- still refused, and the
+    # rule check must run before any AWS call (same as the off-prefix case above).
+    def fail(*a, **k):
+        raise AssertionError("must not touch AWS before the name-rule refusal")
+    monkeypatch.setattr(provision, "assume_role", fail)
+    monkeypatch.setattr(buckets, "ensure_bucket", fail)
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "photos", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "bw-backups", "bucket_versioned": "1"})
+    assert r.status_code == 200
+    assert "Not saved" in r.get_data(as_text=True)
+    assert _jobs(app) == []
 
 
 def test_new_form_exposes_base_bucket_for_js_suggestion(client):
@@ -240,7 +259,6 @@ def test_post_clean_form_no_dedicated_bucket_saves_without_aws_calls(client, app
         raise AssertionError("should not be called for a non-dedicated job")
     monkeypatch.setattr(provision, "assume_role", fail)
     monkeypatch.setattr(buckets, "ensure_bucket", fail)
-    monkeypatch.setattr(buckets, "grant_object_access", fail)
     t = _csrf(client)
     r = client.post("/jobs", data={
         "csrf": t, "name": "regular", "type": "archive", "source": "media/movies",
@@ -365,7 +383,6 @@ def test_edit_dedicated_job_preserves_bucket_without_touching_aws(client, app, m
     called = []
     monkeypatch.setattr(provision, "assume_role", lambda *a, **k: called.append("assume_role"))
     monkeypatch.setattr(buckets, "ensure_bucket", lambda *a, **k: called.append("ensure_bucket"))
-    monkeypatch.setattr(buckets, "grant_object_access", lambda *a, **k: called.append("grant"))
     _seed(app, {"name": "photos", "type": "archive", "source": "media/movies",
                 "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
                 "dedicated": True, "bucket": "bw-backups-photos", "bucket_versioned": True,

@@ -75,20 +75,6 @@ def ensure_bucket(name, *, region, versioned, creds, runner=subprocess.run) -> N
     _aws(runner, ["s3api", "put-bucket-tagging", "--bucket", name,
                   "--tagging", "TagSet=[{Key=managed-by,Value=backup-engine}]"], creds)
 
-_GRANT_ACTIONS = ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketVersions",
-                  "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
-                  "s3:DeleteObjectVersion", "s3:AbortMultipartUpload",
-                  "s3:ListMultipartUploadParts", "s3:RestoreObject"]
-
-def _grants_bucket(document: dict, arn: str) -> bool:
-    for stmt in document.get("Statement", []):
-        res = stmt.get("Resource", [])
-        if isinstance(res, str):
-            res = [res]
-        if arn in res:
-            return True
-    return False
-
 def oldest_non_default_version(versions: list[dict], limit: int = 5) -> str | None:
     """IAM keeps at most `limit` versions of a managed policy. At the limit, the
     oldest non-default version is the one to delete before publishing another."""
@@ -98,37 +84,6 @@ def oldest_non_default_version(versions: list[dict], limit: int = 5) -> str | No
     if not non_default:
         return None
     return sorted(non_default, key=lambda v: v.get("CreateDate", ""))[0]["VersionId"]
-
-
-def grant_object_access(policy_arn, bucket_name, *, region, creds, runner=subprocess.run) -> None:
-    # Read the current default version; append this bucket's ARNs (idempotently); publish a new default.
-    cur = _aws(runner, ["iam", "get-policy", "--policy-arn", policy_arn,
-                        "--region", region, "--output", "json"], creds)
-    ver = json.loads(cur.stdout)["Policy"]["DefaultVersionId"]
-    doc = _aws(runner, ["iam", "get-policy-version", "--policy-arn", policy_arn,
-                        "--version-id", ver, "--region", region, "--output", "json"], creds)
-    document = json.loads(doc.stdout)["PolicyVersion"]["Document"]
-    arn = f"arn:aws:s3:::{bucket_name}"
-    if _grants_bucket(document, arn):
-        return  # already granted; idempotent no-op
-
-    stmts = document.setdefault("Statement", [])
-    sid = "grant" + re.sub(r"[^A-Za-z0-9]", "", bucket_name)
-    stmts.append({"Sid": sid, "Effect": "Allow",
-                  "Action": _GRANT_ACTIONS,
-                  "Resource": [arn, arn + "/*"]})
-
-    versions = _aws(runner, ["iam", "list-policy-versions", "--policy-arn", policy_arn,
-                             "--region", region, "--output", "json"], creds)
-    vlist = json.loads(versions.stdout).get("Versions", [])
-    oldest = oldest_non_default_version(vlist)
-    if oldest:
-        _aws(runner, ["iam", "delete-policy-version", "--policy-arn", policy_arn,
-                      "--version-id", oldest, "--region", region], creds)
-
-    _aws(runner, ["iam", "create-policy-version", "--policy-arn", policy_arn,
-                  "--policy-document", json.dumps(document), "--set-as-default",
-                  "--region", region], creds)
 
 # --- Teardown: enumerate + empty + delete just-in-time dedicated buckets. These
 # buckets are created OUTSIDE OpenTofu (see ensure_bucket above), so `tofu destroy`

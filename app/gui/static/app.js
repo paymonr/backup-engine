@@ -686,7 +686,7 @@
   applyVisibility();
 })();
 
-// Wizard: dedicated-bucket name suggestion + off-prefix hint (Task 8). Layers on
+// Wizard: dedicated-bucket name suggestion + prefix rule hint (Task 8). Layers on
 // top of the data-when-dedicated reveal above -- it never touches visibility,
 // only the bucket input's value and the hint text beside it. Mirrors
 // buckets.suggest/slugify (app/engine/buckets.py) so the JS guess matches what
@@ -712,7 +712,9 @@
   function updateHint() {
     if (!hint) return;
     var v = bucketInput.value || "";
-    hint.hidden = !v || v === base || v.indexOf(base + "-") === 0;
+    // A dedicated bucket's name must be <base>-<suffix> (Addendum 2026-09-22); a
+    // value equal to base has no suffix at all, so it must show the hint too.
+    hint.hidden = !v || v.indexOf(base + "-") === 0;
   }
   function prefill() {
     if (bucketTouched) return;

@@ -1832,9 +1832,7 @@ def provision_automated_run():
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": result["region"], "S3_BUCKET": result["bucket"],
-                                "BUCKET_ADMIN_ROLE_ARN": result.get("bucket_admin_role_arn", ""),
-                                "RUNTIME_EXTRA_BUCKETS_POLICY_ARN":
-                                    result.get("runtime_extra_buckets_policy_arn", "")})
+                                "BUCKET_ADMIN_ROLE_ARN": result.get("bucket_admin_role_arn", "")})
     # Record the successful automated provisioning so Activity shows it (spec 5.5).
     provision.record_setup(cfg["CACHE_DIR"], bucket=result["bucket"], region=result["region"],
                            mode="automated")
@@ -1874,6 +1872,18 @@ _RETENTION_DEFAULT_BY_TYPE = {"versioned": "tiered", "versioned-files": "days",
 
 DEDICATED_NEEDS_UPDATE = ("Dedicated buckets need a one-time AWS permissions update first — "
                           "open Setup → AWS permissions.")
+
+# Addendum 2026-09-22 (prefix-only dedicated buckets): the runtime policy's <base>-*
+# wildcard statements already grant a correctly-named dedicated bucket -- no IAM write
+# is ever needed. A name outside that shape is refused here, guided, BEFORE any AWS
+# call (no assume_role, no bucket create) rather than escalating via an IAM write.
+DEDICATED_NAME_RULE = ("A dedicated bucket's name must start with the shared bucket's "
+                       "name followed by a dash (for example {base}-photos) — "
+                       "backup-engine can only reach buckets named that way.")
+
+
+def _dedicated_name_ok(base: str, bucket: str) -> bool:
+    return bucket.startswith(base + "-") and len(bucket) > len(base) + 1
 
 
 def _dedicated_ok(cfg) -> bool:
@@ -2279,18 +2289,22 @@ def job_save():
         if not buckets.valid_bucket_name(bucket):
             return _render_job_form(cfg, job=existing, fv=fv,
                                     errors={"form": f"invalid bucket name {bucket!r}"})
-        role = config_io.bucket_admin_role_arn(cfg["CONFIG_DIR"])
         env = config_io.read_backup_env(cfg["CONFIG_DIR"])
         base = env.get("S3_BUCKET", "")
+        # Prefix-only dedicated buckets (Addendum 2026-09-22): refuse an off-prefix
+        # name here, BEFORE any AWS call -- no assume_role, no bucket create. The
+        # runtime policy's <base>-* wildcard already grants a correctly-named bucket,
+        # so nothing needs an IAM write at runtime.
+        if not _dedicated_name_ok(base, bucket):
+            return _render_job_form(cfg, job=existing, fv=fv,
+                                    errors={"form": DEDICATED_NAME_RULE.format(base=base)})
+        role = config_io.bucket_admin_role_arn(cfg["CONFIG_DIR"])
         region = env.get("AWS_REGION", "us-east-1")
         akey, asec = _runtime_creds(cfg)          # secrets.env, via the sysop reader
         try:
             creds = provision.assume_role(role, region=region, key=akey, secret=asec)
             buckets.ensure_bucket(bucket, region=region,
                                   versioned=bool(f.get("bucket_versioned")), creds=creds)
-            if not buckets.is_prefixed(base, bucket):
-                buckets.grant_object_access(config_io.extra_buckets_policy_arn(cfg["CONFIG_DIR"]),
-                                            bucket, region=region, creds=creds)
         except (provision.AssumeRoleError, buckets.BucketError) as e:
             return _render_job_form(cfg, job=existing, fv=fv, errors={"form": str(e)})
         job["dedicated"] = True
