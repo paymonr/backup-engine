@@ -21,5 +21,8 @@ main() {
   echo "# ---- paste into config/backup.env ----"
   echo "AWS_REGION=$(tofu output -raw region)"
   echo "S3_BUCKET=$(tofu output -raw bucket_name)"
+  echo "BUCKET_ADMIN_ROLE_ARN=$(tofu output -raw bucket_admin_role_arn)"
+  echo "RUNTIME_EXTRA_BUCKETS_POLICY_ARN=$(tofu output -raw runtime_extra_buckets_policy_arn)"
+  echo "PERMISSIONS_VERSION=$(tofu output -raw permissions_level)"
 }
 main "$@"

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
+from markupsafe import Markup
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
                dirsize, attributions, status, vocab, points, readiness, ops, permissions)
 from ..estimator.prices import load_prices
@@ -1733,6 +1734,30 @@ def provision_validate():
           f"then the first job.", "success")
     return redirect(url_for("gui.setup_page"))
 
+# Fixed, developer-authored copy only -- never interpolated with admin/AWS output -- so
+# it is safe to mark non-escaping the same way permissions_routes._ADMIN_MESSAGES does:
+# Jinja's autoescape would otherwise turn the apostrophe here into `&#39;`.
+SETUP_PERMISSIONS_WARNING = Markup(
+    "Destination is set, but backup-engine couldn't confirm its AWS "
+    "permissions. Open Setup → AWS permissions to finish — nothing is "
+    "broken meanwhile.")
+
+
+def _finish_setup_permissions(cfg, result, admin) -> str | None:
+    """Automated setup's last step (spec 2026-09-22 §4): converge + stamp with the SAME
+    in-frame admin creds. It never fails setup -- tofu already created the bucket and
+    key and its state is gone -- so any problem becomes a warning for the success page."""
+    try:
+        principal = permissions.parse_principal(result.get("runtime_user_arn", ""))
+        outcome = permissions.converge(
+            principal, bucket=result["bucket"], region=result["region"], admin=admin,
+            config_dir=cfg["CONFIG_DIR"], template_path=cfg["TEMPLATE_PATH"],
+            cache_dir=cfg["CACHE_DIR"], apply_changes=True, mode="setup")
+    except Exception:  # noqa: BLE001 -- setup already succeeded; never lose it here
+        return SETUP_PERMISSIONS_WARNING
+    return None if outcome.ok else SETUP_PERMISSIONS_WARNING
+
+
 @bp.get("/setup/destination/automated")
 def provision_automated():
     return render_template("provision_automated.html", csrf=security.issue_csrf(),
@@ -1753,6 +1778,7 @@ def provision_automated_run():
     admin_key = request.form.get("ADMIN_ACCESS_KEY_ID", "").strip()
     admin_secret = request.form.get("ADMIN_SECRET_ACCESS_KEY", "").strip()
     session_token = request.form.get("ADMIN_SESSION_TOKEN", "").strip() or None
+    perm_warning = None
     try:
         # No override -> auto-name unraid-backup-<account>, read from the admin creds.
         bucket = override or provision.derive_bucket_name(
@@ -1764,6 +1790,8 @@ def provision_automated_run():
         # leaving an orphaned half-provisioned bucket. Catch it here instead.
         provision.verify_admin_can_provision(region, admin_key, admin_secret, session_token)
         result = provision.run_tofu_apply(bucket, region, admin_key, admin_secret, session_token)
+        perm_warning = _finish_setup_permissions(
+            cfg, result, permissions.AdminCreds(admin_key, admin_secret, session_token))
     except provision.AccountLookupError as e:
         return render_template("provision_automated.html", csrf=security.issue_csrf(),
                                bucket=override, region=region,
@@ -1822,6 +1850,8 @@ def provision_automated_run():
     # persistent (warning) flash so it does NOT auto-dismiss like `success` does.
     flash("We never stored your admin key — delete that access key in AWS now.",
           "warning")
+    if perm_warning:
+        flash(perm_warning, "warning")
     return redirect(url_for("gui.setup_page"))
 
 @bp.get("/jobs")

@@ -9,3 +9,27 @@
     [ "$status" -ne 0 ]
     [[ "$output" == *"admin"* ]] )
 }
+
+@test "setup.sh prints the multi-bucket ARNs and the permissions level" {
+  stub="$(mktemp -d)"
+  cat > "$stub/tofu" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "output" ] && [ "$2" = "-raw" ]; then
+  case "$3" in
+    bucket_admin_role_arn) echo "arn:aws:iam::123456789012:role/backup-engine-bucket-admin" ;;
+    runtime_extra_buckets_policy_arn) echo "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets" ;;
+    permissions_level) echo "3" ;;
+    *) echo "val-$3" ;;
+  esac
+fi
+exit 0
+EOF
+  chmod +x "$stub/tofu"
+  export PATH="$stub:$PATH" AWS_PROFILE=stub
+  run bash "$BATS_TEST_DIRNAME/../../setup.sh" my-bucket us-east-1
+  rm -rf "$stub"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BUCKET_ADMIN_ROLE_ARN=arn:aws:iam::123456789012:role/backup-engine-bucket-admin"* ]]
+  [[ "$output" == *"RUNTIME_EXTRA_BUCKETS_POLICY_ARN=arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets"* ]]
+  [[ "$output" == *"PERMISSIONS_VERSION=3"* ]]
+}

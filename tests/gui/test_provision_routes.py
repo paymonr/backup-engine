@@ -39,6 +39,20 @@ def captured_probe(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def converge_calls(monkeypatch):
+    """Automated setup now ends with permissions.converge (spec 2026-09-22 §4).
+    Stub it for every test here; tests that care inspect the recorded calls."""
+    from app.gui import permissions
+    calls = []
+
+    def fake(principal, **kw):
+        calls.append((principal, kw))
+        return permissions.Outcome(ok=True, applied=False, steps=[])
+    monkeypatch.setattr(permissions, "converge", fake)
+    return calls
+
+
 # --- old /provision* paths 301 to the new /setup/destination* ---------------
 
 @pytest.mark.parametrize("old,new", [
@@ -512,3 +526,67 @@ def test_validate_success_launches_destination_probe(client, dirs, monkeypatch, 
                     follow_redirects=True)
     assert r.status_code == 200
     assert ("app.engine.sysop", ["probe"]) in captured_probe
+
+
+# --- automated setup finishes by converging (spec 2026-09-22 §4) ------------
+
+_TOFU_OK = {"AWS_ACCESS_KEY_ID": "AKIARUN", "AWS_SECRET_ACCESS_KEY": "runsek",
+            "bucket": "acme", "region": "us-east-1",
+            "bucket_admin_role_arn": "arn:aws:iam::123456789012:role/backup-engine-bucket-admin",
+            "runtime_extra_buckets_policy_arn": "arn:aws:iam::123456789012:policy/backup-engine-runtime-extra-buckets",
+            "runtime_user_arn": "arn:aws:iam::123456789012:user/backup-engine-runtime"}
+
+
+def _automated(client, monkeypatch, result):
+    from app.gui import provision
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
+    monkeypatch.setattr(provision, "run_tofu_apply", lambda *a, **k: dict(result))
+    token = _csrf(client, "/setup/destination/automated")
+    return client.post("/setup/destination/automated",
+                       data={"csrf": token, "bucket": "acme", "region": "us-east-1",
+                             "ADMIN_ACCESS_KEY_ID": "ADMINK", "ADMIN_SECRET_ACCESS_KEY": "ADMINS"},
+                       follow_redirects=True)
+
+
+def test_automated_setup_finishes_by_converging_with_the_same_admin_creds(client, monkeypatch, converge_calls):
+    from app.gui import permissions
+    r = _automated(client, monkeypatch, _TOFU_OK)
+    assert r.status_code == 200
+    (principal, kw), = converge_calls
+    assert principal.user == "backup-engine-runtime" and principal.account == "123456789012"
+    assert kw["admin"] == permissions.AdminCreds("ADMINK", "ADMINS", None)
+    assert kw["bucket"] == "acme" and kw["apply_changes"] is True and kw["mode"] == "setup"
+    assert b"couldn't confirm its AWS permissions" not in r.data
+
+
+def test_automated_setup_survives_a_converge_failure(client, dirs, monkeypatch):
+    from app.gui import permissions
+
+    def boom(principal, **kw):
+        raise RuntimeError("IAM hiccup ADMINS")
+    monkeypatch.setattr(permissions, "converge", boom)
+    r = _automated(client, monkeypatch, _TOFU_OK)
+    assert r.status_code == 200
+    assert b"Destination set: acme in us-east-1" in r.data
+    assert b"couldn't confirm its AWS permissions" in r.data
+    assert b"ADMINS" not in r.data
+    assert "AWS_ACCESS_KEY_ID=AKIARUN" in Path(dirs["config"], "secrets.env").read_text()
+
+
+def test_automated_setup_warns_when_tofu_gave_no_user_arn(client, monkeypatch, converge_calls):
+    r = _automated(client, monkeypatch, {k: v for k, v in _TOFU_OK.items() if k != "runtime_user_arn"})
+    assert r.status_code == 200 and converge_calls == []
+    assert b"couldn't confirm its AWS permissions" in r.data
+
+
+def test_automated_setup_keeps_the_stamp_converge_wrote(client, dirs, monkeypatch):
+    from app.gui import permissions
+
+    def stamping(principal, **kw):
+        permissions.write_stamp(kw["config_dir"], kw["template_path"], principal)
+        return permissions.Outcome(ok=True, applied=False, steps=[])
+    monkeypatch.setattr(permissions, "converge", stamping)
+    _automated(client, monkeypatch, _TOFU_OK)
+    be = Path(dirs["config"], "backup.env").read_text()
+    assert f"PERMISSIONS_VERSION={permissions.required_level()}" in be
+    assert "S3_BUCKET=acme" in be

@@ -19,12 +19,15 @@
     <button type="button" class="btn btn-sm copy" data-copy="./setup.sh <bucket-name> <region>">Copy</button>
   </div>
   <p class="hint" style="margin-top:var(--sp-3)">It wraps <code>tofu apply</code> — creating
-     the bucket and a least-privilege IAM user — and prints the runtime key/secret +
-     region/bucket.</p>
+     the bucket, a least-privilege IAM user and the bucket-admin role — and prints the runtime
+     key/secret plus the <code>backup.env</code> lines (region, bucket, the two role/policy ARNs
+     and <code>PERMISSIONS_VERSION</code>). Keep the checkout: re-running it later updates the
+     AWS permissions in place.</p>
 
   <p class="hint" style="margin-top:var(--sp-5)">Then paste the printed key/secret into
      <a class="linklike" href="{{ url_for('gui.provision_manual') }}">guided-manual → Test &amp; Validate</a>,
      or straight into <a class="linklike" href="{{ url_for('gui.config_page') }}">Keys &amp; secrets</a>.
-     Set the recovery passphrase, then create your first job.</p>
+     Test &amp; Validate finishes on AWS permissions, where Verify confirms the rest. Then set the
+     recovery passphrase and create your first job.</p>
 </section>
 {% endblock %}
