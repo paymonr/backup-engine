@@ -857,3 +857,79 @@
     tick();
   });
 })();
+
+// In-place directory browsing for Explore (Task 9): progressive enhancement
+// over the server-rendered no-JS `?path=` navigation (explore.html / Task 8).
+// On a dir/breadcrumb link click inside #explore-pane, fetch the SAME HTML
+// page the link already points to, pull its #explore-pane out with
+// DOMParser, and swap it in place -- reusing the server-rendered rows and
+// per-row CSRF restore/download forms verbatim (never rebuilt from JSON).
+// Falls back to a normal navigation on anything unexpected; never throws.
+(function () {
+  var pane = document.querySelector("#explore-pane[data-explore-job]");
+  if (!pane) return;
+  if (!window.fetch || !window.DOMParser || !window.history || !window.history.pushState) return;
+
+  var job = pane.getAttribute("data-explore-job");
+  var basePath = "/explore/" + job;
+
+  function isNavLink(a) {
+    if (!a || !pane.contains(a)) return false;
+    var href = a.getAttribute("href");
+    if (!href) return false;
+    try {
+      var url = new URL(href, window.location.href);
+      return url.origin === window.location.origin && url.pathname === basePath;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function setBusy(on) {
+    try {
+      if (on) pane.setAttribute("aria-busy", "true");
+      else pane.removeAttribute("aria-busy");
+    } catch (e) {}
+  }
+
+  function swap(href, push) {
+    setBusy(true);
+    fetch(href)
+      .then(function (r) {
+        if (!r.ok) throw new Error("bad status");
+        return r.text();
+      })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var next = doc.getElementById("explore-pane");
+        if (!next) throw new Error("no pane in response");
+        pane.innerHTML = next.innerHTML;
+        setBusy(false);
+        if (push) {
+          try { window.history.pushState({ explorePane: true }, "", href); } catch (e) {}
+        }
+      })
+      .catch(function () {
+        // Any failure (bad status, parse issue, missing pane, network error):
+        // fall back to a real navigation so the user is never stuck.
+        window.location = href;
+      });
+  }
+
+  document.addEventListener("click", function (ev) {
+    try {
+      if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      var a = ev.target && ev.target.closest && ev.target.closest("a");
+      if (!isNavLink(a)) return;
+      var href = a.getAttribute("href");
+      ev.preventDefault();
+      swap(href, true);
+    } catch (e) {} // never throw from a delegated click handler
+  });
+
+  window.addEventListener("popstate", function () {
+    try {
+      if (window.location.pathname === basePath) swap(window.location.href, false);
+    } catch (e) {}
+  });
+})();

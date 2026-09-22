@@ -18,6 +18,11 @@
   <p class="slabel"><a href="{{ url_for('gui.explore_index') }}">Explore</a></p>
   <h1>{{ name }}</h1>
 
+  {#- Task 9 hook: app.js finds this pane, swaps its innerHTML in place on
+      directory-link clicks (fetching the same ?path= HTML and reusing it
+      verbatim), and falls back to a normal navigation on any failure. The
+      no-JS ?path=/?snapshot= full-page navigation below is unchanged. #}
+  <div id="explore-pane" data-explore-job="{{ name }}">
   <nav class="hint mono" aria-label="Breadcrumb" style="margin-bottom:var(--sp-3)">
     {%- if segments -%}
     <a href="/explore/{{ name }}{% if snapshot %}?snapshot={{ snapshot | urlencode }}{% endif %}">{{ name }}</a>
@@ -106,5 +111,6 @@
     </tbody>
   </table>
   {% endif %}
+  </div>
 </section>
 {% endblock %}
