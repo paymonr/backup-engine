@@ -93,8 +93,40 @@
   </form>
 
   <p class="slabel" id="commands" style="margin-top:var(--sp-6)">Run the commands yourself</p>
-  <p class="hint">Rather not paste admin credentials here? Generate a script, run it in AWS
-     CloudShell (or any shell signed in as an admin), then Verify.</p>
+  {% if mode == 'commands' %}
+  <div class="sig sig-note" style="margin-top:var(--sp-3)">
+    <span class="glyph" aria-hidden="true"></span>
+    <div class="body">Last step of setup: give the backup user everything this version needs.
+      Generate the commands, run them, then Verify.</div>
+  </div>
+  {% endif %}
+  <p class="hint" style="margin-top:var(--sp-3)">Rather not paste admin credentials here? Generate
+     a script, run it in AWS CloudShell (or any shell signed in as an admin), then Verify. It only
+     creates what's missing and is safe to run more than once. Set up with <code>setup.sh</code>?
+     Re-running it from the same checkout does the same job.</p>
+  {% if script %}
+  <div class="cmd" style="margin-top:var(--sp-3)">
+    <pre id="perm-script">{{ script }}</pre>
+    <button type="button" class="btn btn-sm copy" data-copy-target="perm-script">Copy</button>
+  </div>
+  {% else %}
+  <form method="post" action="{{ url_for('gui.permissions_script') }}#commands" style="margin-top:var(--sp-3)">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="btn">Show the commands</button>
+  </form>
+  {% endif %}
+  {% if probes %}
+  <ul style="margin:var(--sp-4) 0 0;list-style:none;padding:0">
+    {% for p in probes %}
+    <li data-probe-ok="{{ 1 if p.ok else 0 }}" style="margin-top:var(--sp-2)">{{ '✓' if p.ok else '✗' }} {{ p.name }}{% if not p.ok and p.hint %} — {{ p.hint }}{% endif %}
+      {% if p.detail %}<div class="errline" style="margin-top:var(--sp-1)">{{ p.detail }}</div>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <form method="post" action="{{ url_for('gui.permissions_verify') }}#commands" style="margin-top:var(--sp-4)">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="btn btn-primary">Verify</button>
+  </form>
   {% endif %}
 </section>
 {% endblock %}

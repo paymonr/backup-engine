@@ -136,3 +136,49 @@ def test_runtime_key_problem_is_explained(client, monkeypatch):
     monkeypatch.setattr(permissions, "runtime_principal", boom)
     r = client.post("/setup/permissions/update", data={"csrf": _csrf(client), **CREDS})
     assert r.status_code == 400 and "saved backup key" in r.get_data(as_text=True)
+
+
+# --- the commands path -------------------------------------------------------------
+
+def test_show_commands_renders_the_script(client):
+    body = client.post("/setup/permissions/script", data={"csrf": _csrf(client)}).get_data(as_text=True)
+    assert 'id="perm-script"' in body
+    assert "put-user-policy" in body and 'data-copy-target="perm-script"' in body
+
+
+def test_show_commands_requires_csrf(client):
+    assert client.post("/setup/permissions/script").status_code == 400
+
+
+def test_show_commands_runtime_key_failure(client, monkeypatch):
+    def boom(*a, **k):
+        raise permissions.PermissionsError("runtime_key", "InvalidClientTokenId")
+    monkeypatch.setattr(permissions, "runtime_principal", boom)
+    r = client.post("/setup/permissions/script", data={"csrf": _csrf(client)})
+    assert r.status_code == 400 and "saved backup key" in r.get_data(as_text=True)
+
+
+def test_verify_all_good_stamps_and_records(client, dirs, monkeypatch):
+    monkeypatch.setattr(permissions, "verify",
+                        lambda p, **kw: [permissions.Probe("A", True), permissions.Probe("B", True)])
+    r = client.post("/setup/permissions/verify", data={"csrf": _csrf(client)}, follow_redirects=True)
+    assert "Verified" in r.get_data(as_text=True)
+    env = config_io.read_backup_env(dirs["config"])
+    assert env["PERMISSIONS_VERSION"] == str(permissions.required_level())
+    assert env["BUCKET_ADMIN_ROLE_ARN"] == permissions.role_arn(ACCOUNT)
+    assert "permissions" in Path(dirs["cache"], "state", "_system.runs.jsonl").read_text()
+
+
+def test_verify_failure_lists_probes_and_does_not_stamp(client, dirs, monkeypatch):
+    monkeypatch.setattr(permissions, "verify", lambda p, **kw: [
+        permissions.Probe("Can list old versions in the backup bucket", True),
+        permissions.Probe("Can assume the role backup-engine-bucket-admin", False,
+                          "Steps 3 and 5 of the script set this up — did step 3 run?")])
+    body = client.post("/setup/permissions/verify", data={"csrf": _csrf(client)}).get_data(as_text=True)
+    assert "✗" in body and "did step 3 run?" in body
+    assert "PERMISSIONS_VERSION" not in config_io.read_backup_env(dirs["config"])
+
+
+def test_commands_mode_explains_it_is_the_last_setup_step(client):
+    body = client.get("/setup/permissions?mode=commands").get_data(as_text=True)
+    assert "Last step of setup" in body

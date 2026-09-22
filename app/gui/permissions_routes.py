@@ -125,3 +125,44 @@ def permissions_update():
 @bp.post("/setup/permissions/preview")
 def permissions_preview():
     return _run_admin(apply_changes=False)
+
+
+def _guard():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    return config_io.is_provisioned(current_app.config["CONFIG_DIR"])
+
+
+@bp.post("/setup/permissions/script")
+def permissions_script():
+    if not _guard():
+        return redirect(url_for("gui.provision_home"))
+    cfg = current_app.config
+    bucket, region = _bucket_region(cfg)
+    try:
+        text = permissions.script(_principal_for(cfg, region), bucket=bucket, region=region)
+    except permissions.PermissionsError as e:
+        return _page(400, mode="commands", error=_perm_error_message(e),
+                     error_detail=e.detail or None)
+    return _page(mode="commands", script=text)
+
+
+@bp.post("/setup/permissions/verify")
+def permissions_verify():
+    if not _guard():
+        return redirect(url_for("gui.provision_home"))
+    cfg = current_app.config
+    bucket, region = _bucket_region(cfg)
+    key, secret = _runtime_creds(cfg)
+    try:
+        principal = permissions.runtime_principal(region, key, secret)
+    except permissions.PermissionsError as e:
+        return _page(400, mode="commands", error=_perm_error_message(e),
+                     error_detail=e.detail or None)
+    probes = permissions.verify(principal, bucket=bucket, region=region, key=key, secret=secret)
+    if all(p.ok for p in probes):
+        permissions.write_stamp(cfg["CONFIG_DIR"], cfg["TEMPLATE_PATH"], principal)
+        permissions.record(cfg["CACHE_DIR"], mode="verify", lines=[p.name for p in probes])
+        flash("Verified — AWS permissions are up to date.", "success")
+        return redirect(url_for("gui.permissions_page"))
+    return _page(mode="commands", probes=probes)
