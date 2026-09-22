@@ -5,6 +5,31 @@ resumed after a break. Design items follow the brainstorming → spec → plan f
 
 ---
 
+## Data explorer — parked minors (from the 2026-09-22 final whole-branch review)
+The data-explorer feature (browse + targeted restore across all 3 backup types; top-level
+Explore nav) shipped on branch `data-explorer` (fbc2638..HEAD). Final review = CHANGES-NEEDED;
+the one Critical (vfiles version-picker off-by-fractional-second → wrong version) was fixed in
+the final fix wave. These five Minors were parked:
+- **Cold routing keys off job-level storage class** (`app/gui/routes.py` `explore_get`): the per-row
+  `storage_class` form field is posted but never read; the cold decision uses `job.storage_class`.
+  Harmless today (storage class is uniform per job + the vfiles engine self-thaws a cold version),
+  but fragile if per-object lifecycle transitions are ever added. Read `f.get("storage_class")` then.
+- **Folder rows aren't recoverable from Explore** (`explore.html` dir loop): folders are navigable but
+  have no restore/download action — only file rows do. Spec's "restore a file/folder/version" is half-met.
+  v2: add a folder-scope action (archive→`download <prefix>`; versioned→`restore --include <dir>`;
+  vfiles→`restore_all` under the path).
+- **Cold thaw from Explore has no completion path**: `thawed=1` is documented as client-set after warm-up,
+  but nothing sets it (Task 9 ships HTML-swap navigation, not thaw polling). A cold "Warm up" re-thaws;
+  the actual fetch is done from the job page after warm-up. v1 deferral — add thaw-status polling to Explore.
+- **`list.json` is effectively dead**: the shipped app.js enhancement fetches the full `?path=` HTML and
+  swaps `#explore-pane` (reusing server forms), so it never calls `list.json`; the plan's `{"building":true}`
+  restic-warming state is unimplemented, and `GET /explore/<job>/list.json` for a versioned job with no
+  `snapshot` param returns an error. Unused by the UI — either wire it or remove it in a cleanup.
+- **T3 test file naming**: `tests/engine/test_vfiles.py` (browse CLI tests) vs the repo convention
+  `test_vfiles_cli.py` — cosmetic, fold in during a cleanup pass.
+
+---
+
 ## 1. In-app restic data explorer  — TODO (not started)
 
 **What:** an in-app way to *browse/inspect* what's actually stored in S3 for a
