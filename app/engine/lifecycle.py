@@ -225,8 +225,11 @@ def app_rules_of(rules: list[dict]) -> dict[str, dict]:
 
 
 def describe(rule: dict) -> str:
-    """One app rule in plain words (Activity lines, flashes)."""
+    """One app rule in plain words (Activity lines, flashes, tamper alarms -- so a rule
+    edited outside the app also names what it now does to current files)."""
     where = (rule.get("Filter") or {}).get("Prefix", "") or "whole bucket"
+    if rule.get("Status") == "Disabled":
+        return f"{where}: switched off"
     parts = []
     nce = rule.get("NoncurrentVersionExpiration") or {}
     if "NewerNoncurrentVersions" in nce:
@@ -239,7 +242,9 @@ def describe(rule: dict) -> str:
         parts.append(f"abandoned uploads cleared after {rule['AbortIncompleteMultipartUpload']['DaysAfterInitiation']} days")
     if (rule.get("Expiration") or {}).get("ExpiredObjectDeleteMarker"):
         parts.append("leftover delete markers cleared")
-    return f"{where}: " + "; ".join(parts)
+    # never created by the app -- only present when someone changed the rule outside it
+    parts += [w for w in destructive_actions(rule) if not w.startswith("removes old versions")]
+    return f"{where}: " + ("; ".join(parts) or "no actions")
 
 
 # --- console rules: anything not made by backup-engine -------------------------------------

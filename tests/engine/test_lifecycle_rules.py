@@ -206,3 +206,16 @@ def test_merge_alarms_keeps_the_most_severe_and_every_rule_id():
     assert m["kind"] == "console_rule" and m["rules"] == ["x"]
     m = lc.merge_alarms([console, not_restored, dict(console, rules=["y"])])
     assert m["kind"] == "not_restored" and m["rules"] == ["x", "y"]
+
+
+def test_describe_names_what_a_tampered_app_rule_now_does():
+    # Tamper lines are built with describe(): a hostile edit must read as what it does.
+    r = lc.plain_rule("media/m/", {"type": "days", "days": 180})
+    r["Expiration"] = {"Days": 1}
+    r["Transitions"] = [{"Days": 0, "StorageClass": "GLACIER"}]
+    words = lc.describe(r)
+    assert "expires current files 1 days after they're written" in words
+    assert "moves current files to GLACIER after 0 days" in words
+    assert lc.describe(dict(lc.plain_rule("media/m/", {"type": "days", "days": 180}), Status="Disabled")) == \
+        "media/m/: switched off"
+    assert lc.describe({"ID": "backup-engine:x", "Status": "Enabled", "Filter": {"Prefix": "x/"}}) == "x/: no actions"
