@@ -23,7 +23,7 @@ def test_render_policy_action_set_matches_least_privilege():
         "s3:GetBucketVersioning",
     ]
     assert stmts["ObjectRW"]["Action"] == [
-        "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
+        "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
         "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts", "s3:RestoreObject",
     ]
 

@@ -23,10 +23,28 @@ def test_iam_policy_has_required_version_actions():
     assert "s3:ListBucketVersions" in list_bucket_stmt["Action"], \
         f"ListBucketScoped statement missing s3:ListBucketVersions. Current actions: {list_bucket_stmt['Action']}"
 
-    # Verify ObjectRW statement has s3:DeleteObjectVersion
+    # Level 4 (spec 2026-09-23 §6): the backup key may no longer PERMANENTLY delete
+    # old versions — Plain copy history is S3's job now, so only soft deletes remain.
     object_rw_stmt = statements_by_sid["ObjectRW"]
-    assert "s3:DeleteObjectVersion" in object_rw_stmt["Action"], \
-        f"ObjectRW statement missing s3:DeleteObjectVersion. Current actions: {object_rw_stmt['Action']}"
+    assert "s3:DeleteObjectVersion" not in object_rw_stmt["Action"]
+
+
+def test_runtime_policy_never_permanently_deletes_versions():
+    role_arn = "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"
+    doc = provision.render_policy("unraid-backup-123", role_arn)
+    assert "s3:DeleteObjectVersion" not in doc
+    assert "s3:DeleteObject" in doc          # soft deletes (restic / File history) still work
+
+
+def test_role_manages_exactly_the_base_buckets_rules():
+    stmts = {s["Sid"]: s for s in json.loads(
+        provision.render_bucket_admin_policy("unraid-backup-123"))["Statement"]}
+    base = stmts["BaseBucketRules"]
+    assert base["Resource"] == "arn:aws:s3:::unraid-backup-123"
+    assert sorted(base["Action"]) == sorted([
+        "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration",
+        "s3:GetBucketVersioning", "s3:PutBucketVersioning"])
+    assert "s3:GetLifecycleConfiguration" in stmts["CreateAndConfig"]["Action"]
 
 
 def test_manual_policy_has_no_sts_or_wildcard():
@@ -81,21 +99,30 @@ def test_bucket_admin_policy_has_teardown_statements():
 
 
 def test_bucket_admin_policy_is_scoped_to_the_base_prefix():
-    # Addendum 2026-09-22 (prefix-only dedicated buckets): every S3 statement
-    # except the un-scopable TeardownList is confined to <base>-*, and the base
-    # bucket itself (no suffix) never matches, so the role can never touch it.
+    # Addendum 2026-09-22 (prefix-only dedicated buckets), narrowed further by
+    # level 4 (spec 2026-09-23 §6): every S3 statement except the un-scopable
+    # TeardownList and the new BaseBucketRules (the role's one deliberate,
+    # narrowly-scoped window onto the base bucket's lifecycle + versioning) is
+    # confined to <base>-*, so create/config/teardown can never touch the base
+    # bucket itself.
     bucket = "unraid-backup-123"
     doc = provision.render_bucket_admin_policy(bucket)
     parsed = json.loads(doc)
     stmts = {s["Sid"]: s for s in parsed["Statement"]}
-    assert set(stmts) == {"CreateAndConfig", "TeardownList", "Teardown", "TeardownObjects"}
+    assert set(stmts) == {"CreateAndConfig", "TeardownList", "Teardown", "TeardownObjects",
+                          "BaseBucketRules"}
     for sid, stmt in stmts.items():
-        if sid == "TeardownList":
+        if sid in ("TeardownList", "BaseBucketRules"):
             continue
         resources = stmt["Resource"] if isinstance(stmt["Resource"], list) else [stmt["Resource"]]
         for r in resources:
             assert r.startswith(f"arn:aws:s3:::{bucket}-"), (sid, r)
-    assert f"arn:aws:s3:::{bucket}\"" not in doc   # the base bucket itself, exact, never appears
+    # The base bucket itself, exact, appears nowhere EXCEPT BaseBucketRules.
+    for sid, stmt in stmts.items():
+        if sid == "BaseBucketRules":
+            continue
+        resources = stmt["Resource"] if isinstance(stmt["Resource"], list) else [stmt["Resource"]]
+        assert f"arn:aws:s3:::{bucket}" not in resources, (sid, resources)
 
 
 def test_bucket_admin_policy_has_no_iam_actions():

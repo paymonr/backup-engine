@@ -111,13 +111,14 @@ def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, base_denied=True, fla
             if not policy_ok:
                 return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:ListAllMyBuckets")
             return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Buckets": []}))
-        if args[:2] == ["s3api", "get-bucket-versioning"]:
+        if args[:2] == ["s3api", "get-bucket-tagging"]:
             assert session_token == "tok" and key == "ASIATMP"     # runs as the ROLE
-            # The narrowed role only grants GetBucketVersioning on <base>-* --
-            # the BASE bucket itself must come back AccessDenied.
+            # The narrowed role only grants GetBucketTagging on <base>-* -- the BASE
+            # bucket must come back AccessDenied. A wide role gets through (tags, or
+            # NoSuchTagSet when the bucket has none).
             if base_denied:
-                return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:GetBucketVersioning")
-            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Status": "Enabled"}))
+                return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:GetBucketTagging")
+            return SimpleNamespace(returncode=254, stdout="", stderr="An error occurred (NoSuchTagSet) when calling the GetBucketTagging operation")
         raise AssertionError(args)
     return run
 
@@ -157,11 +158,16 @@ def test_verify_detects_an_old_unscoped_role():
     assert "older, wider policy" in probes[3].hint
 
 
+def test_verify_counts_no_such_tag_set_as_a_wide_role():
+    probes = _verify(_fake(base_denied=False))
+    assert probes[3].ok is False and "older, wider policy" in probes[3].hint
+
+
 def test_verify_scoped_probe_runs_with_the_assumed_creds():
     seen = {}
 
     def run(args, *, region, key, secret, session_token=None):
-        if args[:2] == ["s3api", "get-bucket-versioning"]:
+        if args[:2] == ["s3api", "get-bucket-tagging"]:
             seen["key"], seen["secret"], seen["token"] = key, secret, session_token
             return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied")
         return _fake()(args, region=region, key=key, secret=secret, session_token=session_token)
@@ -180,7 +186,7 @@ def test_verify_scoped_probe_scrubs_a_non_access_denied_error():
                 "SessionToken": "tmpsessiontoken"}}))
         if args[:2] == ["s3api", "list-buckets"]:
             return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Buckets": []}))
-        if args[:2] == ["s3api", "get-bucket-versioning"]:
+        if args[:2] == ["s3api", "get-bucket-tagging"]:
             return SimpleNamespace(
                 returncode=254, stdout="",
                 stderr="SlowDown for key=ASIATMP secret=tmpsek session=tmpsessiontoken")
@@ -221,7 +227,7 @@ def test_verify_scrubs_the_assumed_role_creds_too():
             return SimpleNamespace(
                 returncode=254, stdout="",
                 stderr="AccessDenied for key=ASIATMP secret=tmpsek token=tmpsessiontoken")
-        if args[:2] == ["s3api", "get-bucket-versioning"]:
+        if args[:2] == ["s3api", "get-bucket-tagging"]:
             return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied")
         raise AssertionError(args)
     probes = _verify(run, tries=1)

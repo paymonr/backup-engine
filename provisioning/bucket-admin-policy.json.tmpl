@@ -5,7 +5,7 @@
       "Action": ["s3:CreateBucket","s3:PutBucketVersioning","s3:PutBucketPublicAccessBlock",
                  "s3:PutBucketOwnershipControls","s3:PutEncryptionConfiguration",
                  "s3:PutLifecycleConfiguration","s3:PutBucketTagging",
-                 "s3:GetBucketLocation","s3:GetBucketVersioning"],
+                 "s3:GetBucketLocation","s3:GetBucketVersioning","s3:GetLifecycleConfiguration"],
       "Resource": "arn:aws:s3:::${bucket}-*" },
     { "Sid": "TeardownList", "Effect": "Allow",
       "Action": ["s3:ListAllMyBuckets"],
@@ -15,6 +15,10 @@
       "Resource": "arn:aws:s3:::${bucket}-*" },
     { "Sid": "TeardownObjects", "Effect": "Allow",
       "Action": ["s3:DeleteObject","s3:DeleteObjectVersion"],
-      "Resource": "arn:aws:s3:::${bucket}-*/*" }
+      "Resource": "arn:aws:s3:::${bucket}-*/*" },
+    { "Sid": "BaseBucketRules", "Effect": "Allow",
+      "Action": ["s3:GetLifecycleConfiguration","s3:PutLifecycleConfiguration",
+                 "s3:GetBucketVersioning","s3:PutBucketVersioning"],
+      "Resource": "arn:aws:s3:::${bucket}" }
   ]
 }

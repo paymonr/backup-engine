@@ -641,20 +641,25 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
                      "" if ok2 else provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
     # Negative probe: an OLD unscoped role (S3 on "*") would pass the three probes
     # above too, so a leaked runtime key could still reach every bucket via the
-    # role. The narrowed role grants GetBucketVersioning on <base>-* only, so
-    # this call against the BASE bucket must come back AccessDenied.
-    cp = run(["s3api", "get-bucket-versioning", "--bucket", bucket, "--output", "json"],
+    # role. Level 4 lets the role manage the base bucket's lifecycle + versioning
+    # (BaseBucketRules), so this probe can no longer use GetBucketVersioning on the
+    # base bucket -- it now reads the base bucket's TAGS instead, which the
+    # narrowed role only grants on <base>-*, so this call must come back
+    # AccessDenied.
+    cp = run(["s3api", "get-bucket-tagging", "--bucket", bucket, "--output", "json"],
              region=region, key=rk, secret=rs, session_token=rt)
-    denied = cp.returncode != 0 and "AccessDenied" in (cp.stderr or "")
-    if denied:
+    err = cp.stderr or ""
+    if cp.returncode != 0 and "AccessDenied" in err:
         out.append(Probe(scoped_probe, True))
-    elif cp.returncode == 0:
+    elif cp.returncode == 0 or "NoSuchTagSet" in err:
+        # Level 4 lets the role manage the base bucket's lifecycle + versioning, so the
+        # scope probe reads the base bucket's TAGS instead: only an old, wide role can.
         out.append(Probe(scoped_probe, False,
                          "The role still has an older, wider policy — did step 2 of the script run?"))
     else:
         out.append(Probe(scoped_probe, False,
                          "Couldn't confirm the role is limited to this app's buckets — try Verify again.",
-                         provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
+                         provision._scrub(err, rk, rs, rt).strip()))
     return out
 
 
