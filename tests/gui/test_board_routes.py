@@ -187,7 +187,7 @@ def test_needs_you_shows_iam_blocker_row(client, example):
     assert "AccessDenied: s3:DeleteObjectVersion" in body        # the errline
     assert "every Sunday run stops at the same point" in body    # `board` template, {dow} filled
     assert "6 September" in body                                  # {since} filled
-    assert "/setup/destination" in body                          # fix href
+    assert "/setup/permissions" in body                           # fix href
 
 
 # --- band 3: both jobs, worst first, with the run strip ---------------------
@@ -240,12 +240,12 @@ def test_status_json_matches_contract(client, example, no_cost_explorer):
         assert k in js, k
     # verdict
     assert js["verdict"]["state"] == "failed" and js["verdict"]["job"] == "manga"
-    assert js["verdict"]["button"]["href"] == "/setup/destination"
+    assert js["verdict"]["button"]["href"] == "/setup/permissions"
     # needs-you: the IAM blocker
     blockers = [n for n in js["needs_you"] if n["level"] == "blocker"]
     assert blockers and blockers[0]["code"] == "iam-version-perms"
     assert blockers[0]["errline"] == "AccessDenied: s3:DeleteObjectVersion"
-    assert blockers[0]["fix"]["href"] == "/setup/destination"
+    assert blockers[0]["fix"]["href"] == "/setup/permissions"
     # jobs: worst first, each a JobStatus (8.2) with a 14-cell strip
     assert [j["name"] for j in js["jobs"]] == ["manga", "appdata"]
     assert js["jobs"][0]["state"] == "FAILED" and js["jobs"][1]["state"] == "OK"

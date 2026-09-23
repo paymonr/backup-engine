@@ -94,8 +94,9 @@ export AWS_SECRET_ACCESS_KEY=...
 
 This runs `tofu apply` and prints the values to paste into `config/backup.env` and
 `config/secrets.env`. See [`opentofu/README.md`](opentofu/README.md) for what the module
-provisions (versioning, default SSE-S3, all-public-access blocked, lifecycle backstop) and how to
-re-run it later (e.g. to rotate the runtime key).
+provisions (versioning, default SSE-S3, all-public-access blocked, the bucket-admin role) and how to
+re-run it later (e.g. to rotate the runtime key). It creates no lifecycle rules — backup-engine
+writes the bucket's S3 rules itself once it is set up (see [How history is kept](#how-history-is-kept)).
 
 ### Mode: guided manual (no OpenTofu, no admin creds in any tool)
 
@@ -105,9 +106,10 @@ yourself), replicate what the module does:
 1. **Create the bucket** in your chosen region. Enable **versioning**, **default encryption**
    (SSE-S3/AES-256), and **block all public access** (all four settings). Set object ownership to
    **Bucket owner enforced** (disables ACLs).
-2. **Add lifecycle rules** on the `appdata/` and `media/` prefixes: expire noncurrent versions
-   after 30 days, abort incomplete multipart uploads after 7 days (both match the module's
-   defaults; adjust if you like).
+2. **Don't add lifecycle rules.** backup-engine writes the bucket's S3 lifecycle rules itself,
+   through its bucket-admin role (Setup → AWS permissions sets that up). Until it does, the bucket
+   simply keeps every old version — the safe direction. Rules you do add in the console are kept
+   as they are (see [How history is kept](#how-history-is-kept)).
 3. **Create an IAM policy** scoped to just this bucket and just the two prefixes — object actions
    only, no bucket-configuration permissions:
 
@@ -119,14 +121,15 @@ yourself), replicate what the module does:
        {
          "Sid": "ListBucketScoped",
          "Effect": "Allow",
-         "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketVersions"],
+         "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketVersions",
+                    "s3:GetBucketVersioning"],
          "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
        },
        {
          "Sid": "ObjectRW",
          "Effect": "Allow",
          "Action": [
-           "s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
+           "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
            "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts",
            "s3:RestoreObject"
          ],
@@ -186,11 +189,31 @@ one retention policy:
 - **Tiered (keep last / daily / weekly / monthly)** — restic-style bucketed retention; available for
   **versioned** (restic) jobs only.
 
-Policies are enforced client-side, after each run: `restic forget` for versioned jobs, the
-versioned-files prune step for versioned-files jobs (see below), and an S3-version prune for archive
-jobs. In every case the bucket's baseline lifecycle rules (noncurrent-version expiration) remain the
-guaranteed *outer bound* — a job's retention policy can only prune within that bound, never beyond
-it. A Phase-2 Settings screen will let you view/edit the baseline lifecycle from the GUI.
+### How history is kept
+
+Each kind of history has exactly one owner:
+
+- **versioned** (restic) jobs — the app, after each run (`restic forget --prune`).
+- **versioned-files** jobs — the app's own prune step (see below).
+- **archive** (Plain copy) jobs — **S3 itself**: the job's policy *is* its folder's S3 lifecycle rule
+  (`backup-engine:media/<job>/`, or `backup-engine:bucket` for a dedicated bucket). *Keep for N days*
+  → old versions expire N days after being replaced; *keep last N versions* → S3 keeps the newest N
+  old versions of each file (S3 allows at most 100); *keep everything* → no rule at all. There is no
+  prune step of the app's own.
+
+backup-engine writes each bucket's lifecycle rules itself — right after setup, whenever a job is
+saved or deleted, and before every backup run — through its bucket-admin role (AWS permissions
+level 4; Setup → AWS permissions). Besides the Plain copy rules it keeps an **undo window** on the
+versioned and versioned-files folders (default 30 days: data a job already removed stays
+recoverable that long) and one bucket-wide housekeeping rule (abandoned uploads cleared after 7
+days, leftover delete markers cleared). It never creates a rule that expires or moves *current*
+files, and the backup key itself can't permanently delete old versions.
+
+Rules you add yourself in the AWS console are always kept exactly as they are. The app's own rules
+are checked before every backup run (and by **Check now** on Setup): if they were changed outside
+backup-engine they are put back and flagged on the Board until you acknowledge it, and a new console
+rule that could delete or move backups is flagged the same way (but left in place — you may have
+meant it). On a non-AWS endpoint without lifecycle support, Plain copy keeps every old version.
 
 A cold storage class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for **archive** and
 **versioned-files** jobs — both store plain objects. For **versioned** (restic) jobs a cold class is
@@ -204,12 +227,12 @@ versions: **keep everything** never prunes; **keep for N days** prunes a non-cur
 version once it is older than N days; **keep last N versions** prunes older versions once more than N versions of
 a file exist (tiered retention isn't offered for this job type — it's restic-only). At the end of
 each run the job walks its catalog, deletes whichever non-current versions the policy now allows
-pruning, and drops them from the catalog. There is **no bucket versioning and no S3 lifecycle rule**
-involved in this — the engine does its own versioning (one object per version, under
-`media/<job>/…@<timestamp>-<id>` keys) and prunes it itself with ordinary object deletes, using only
-the existing `media/*` object permissions (no new IAM — the new `s3:DeleteObjectVersion` /
-`s3:ListBucketVersions` IAM actions are for the **archive** job type's S3-version prune, not
-versioned-files). The current version of every file is always retained regardless of age or policy.
+pruning, and drops them from the catalog. The engine does its own versioning (one object per
+version, under `media/<job>/…@<timestamp>-<id>` keys) and prunes it itself with ordinary object
+deletes, using only the existing `media/*` object permissions. On a versioned bucket those deletes
+are soft: the folder's S3 undo window (default 30 days) keeps pruned data recoverable for that long,
+then its lifecycle rule clears it. The current version of every file is always retained regardless
+of age or policy.
 The per-job catalog is a SQLite database kept durable by uploading it to
 `media/<job>/_catalog/catalog.sqlite` (always STANDARD) at the end of every run and re-fetching it on
 a fresh machine, so version history survives a rebuilt container.

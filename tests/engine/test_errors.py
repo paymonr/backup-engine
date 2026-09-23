@@ -14,9 +14,18 @@ def test_manga_access_denied_delete_version_is_iam_version_perms():
     assert c.code == "iam-version-perms"
     assert c.blocker is True
     assert c.short == "AccessDenied"
-    assert c.fix_route == "/setup/destination"
+    assert c.fix_route == "/setup/permissions"      # the permissions update (spec 2026-09-23)
     # board template carries the {dow}/{since} placeholders verbatim
     assert "{dow}" in c.board and "{since}" in c.board
+
+
+def test_iam_version_perms_never_asks_to_grant_version_deletes_back():
+    # The key no longer deletes old versions (S3 rules do); the copy must not send the
+    # owner to re-apply a policy for a permission the app no longer needs.
+    c = errors.CLASSES["iam-version-perms"]
+    text = " ".join([c.verdict, c.cause, c.board, c.fix])
+    assert "setup.sh" not in text and "re-apply" not in text and "by hand" not in text
+    assert "S3 rules" in c.fix and c.fix_route == "/setup/permissions"
 
 
 def test_iam_version_perms_matches_list_object_versions_variant():
