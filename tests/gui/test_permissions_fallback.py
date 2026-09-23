@@ -91,7 +91,8 @@ def test_script_refuses_unexpected_values(principal, bucket, region):
 
 # --- verify ------------------------------------------------------------------------
 
-def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, base_denied=True, flaky=0):
+def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, base_denied=True,
+          base_tag_success=False, rules_ok=True, flaky=0):
     state = {"flaky": flaky}
 
     def run(args, *, region, key, secret, session_token=None):
@@ -114,11 +115,22 @@ def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, base_denied=True, fla
         if args[:2] == ["s3api", "get-bucket-tagging"]:
             assert session_token == "tok" and key == "ASIATMP"     # runs as the ROLE
             # The narrowed role only grants GetBucketTagging on <base>-* -- the BASE
-            # bucket must come back AccessDenied. A wide role gets through (tags, or
-            # NoSuchTagSet when the bucket has none).
+            # bucket must come back AccessDenied. A wide role gets through: either a
+            # real TagSet (rc 0) or NoSuchTagSet when the bucket has none.
             if base_denied:
                 return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:GetBucketTagging")
+            if base_tag_success:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"TagSet": []}), stderr="")
             return SimpleNamespace(returncode=254, stdout="", stderr="An error occurred (NoSuchTagSet) when calling the GetBucketTagging operation")
+        if args[:2] == ["s3api", "get-bucket-lifecycle-configuration"]:
+            assert session_token == "tok" and key == "ASIATMP"     # runs as the ROLE
+            # BaseBucketRules grants GetBucketLifecycleConfiguration on the base
+            # bucket -- a level-4 role can read it (a real config, or
+            # NoSuchLifecycleConfiguration when none is set yet); a level-3 role
+            # (no BaseBucketRules) gets AccessDenied.
+            if rules_ok:
+                return SimpleNamespace(returncode=254, stdout="", stderr="An error occurred (NoSuchLifecycleConfiguration) when calling the GetBucketLifecycleConfiguration operation")
+            return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:GetBucketLifecycleConfiguration")
         raise AssertionError(args)
     return run
 
@@ -130,30 +142,33 @@ def _verify(run, **kw):
 
 def test_verify_all_good():
     probes = _verify(_fake())
-    assert len(probes) == 4 and all(p.ok for p in probes)
+    assert len(probes) == 5 and all(p.ok for p in probes)
 
 
 def test_verify_names_the_script_step_when_the_role_is_missing():
     probes = _verify(_fake(assume_ok=False))
-    assert [p.ok for p in probes] == [True, False, False, False]
+    assert [p.ok for p in probes] == [True, False, False, False, False]
     assert "step 1" in probes[1].hint
-    # The third and fourth probes (both need the role, which just failed) carry
-    # their OWN dependent hint rather than re-running their own checks.
+    # The third, fourth and fifth probes (all need the role, which just failed)
+    # carry their OWN dependent hint rather than re-running their own checks.
     assert "Needs the role first" in probes[2].hint and "step 1" in probes[2].hint
     assert "Needs the role first" in probes[3].hint and "step 1" in probes[3].hint
+    assert "Needs the role first" in probes[4].hint and "step 1" in probes[4].hint
 
 
 def test_verify_detects_the_role_policy_is_missing():
     probes = _verify(_fake(policy_ok=False))
-    assert [p.ok for p in probes] == [True, True, False, True]
+    assert [p.ok for p in probes] == [True, True, False, True, True]
     assert "step 2" in probes[2].hint
 
 
 def test_verify_detects_an_old_unscoped_role():
     # An old, wide role policy still lets the assumed creds read the BASE
-    # bucket's versioning -- Verify must never stamp that as ok.
-    probes = _verify(_fake(base_denied=False))
-    assert [p.ok for p in probes] == [True, True, True, False]
+    # bucket's tags -- Verify must never stamp that as ok. Covers the exit-0
+    # branch (a real TagSet comes back); test_verify_counts_no_such_tag_set_as_a_wide_role
+    # covers the NoSuchTagSet branch.
+    probes = _verify(_fake(base_denied=False, base_tag_success=True))
+    assert [p.ok for p in probes] == [True, True, True, False, True]
     assert not all(p.ok for p in probes)
     assert "older, wider policy" in probes[3].hint
 
@@ -161,6 +176,17 @@ def test_verify_detects_an_old_unscoped_role():
 def test_verify_counts_no_such_tag_set_as_a_wide_role():
     probes = _verify(_fake(base_denied=False))
     assert probes[3].ok is False and "older, wider policy" in probes[3].hint
+
+
+def test_verify_detects_a_level_three_role_missing_base_bucket_rules():
+    # A level-3 role (no BaseBucketRules) passes the four probes above it too --
+    # it can assume the role, its policy is present, and it's still correctly
+    # denied the base bucket's tags. Only the 5th probe (lifecycle configuration,
+    # granted solely by BaseBucketRules) catches the gap.
+    probes = _verify(_fake(rules_ok=False))
+    assert [p.ok for p in probes] == [True, True, True, True, False]
+    assert not all(p.ok for p in probes)
+    assert "step 2" in probes[4].hint
 
 
 def test_verify_scoped_probe_runs_with_the_assumed_creds():
@@ -190,6 +216,11 @@ def test_verify_scoped_probe_scrubs_a_non_access_denied_error():
             return SimpleNamespace(
                 returncode=254, stdout="",
                 stderr="SlowDown for key=ASIATMP secret=tmpsek session=tmpsessiontoken")
+        if args[:2] == ["s3api", "get-bucket-lifecycle-configuration"]:
+            return SimpleNamespace(
+                returncode=254, stdout="",
+                stderr="An error occurred (NoSuchLifecycleConfiguration) when calling the "
+                       "GetBucketLifecycleConfiguration operation")
         raise AssertionError(args)
     probes = _verify(run, tries=1)
     assert probes[3].ok is False
@@ -229,6 +260,11 @@ def test_verify_scrubs_the_assumed_role_creds_too():
                 stderr="AccessDenied for key=ASIATMP secret=tmpsek token=tmpsessiontoken")
         if args[:2] == ["s3api", "get-bucket-tagging"]:
             return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied")
+        if args[:2] == ["s3api", "get-bucket-lifecycle-configuration"]:
+            return SimpleNamespace(
+                returncode=254, stdout="",
+                stderr="An error occurred (NoSuchLifecycleConfiguration) when calling the "
+                       "GetBucketLifecycleConfiguration operation")
         raise AssertionError(args)
     probes = _verify(run, tries=1)
     assert probes[2].ok is False

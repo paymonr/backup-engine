@@ -616,6 +616,7 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
     role_probe = f"Can assume the role {ROLE_NAME}"
     policy_probe = f"The role {ROLE_NAME} has its policy"
     scoped_probe = "The role can't reach the shared bucket"
+    rules_probe = "The role can manage the shared bucket's S3 rules"
     out = []
     cp = run(["s3api", "list-object-versions", "--bucket", bucket, "--max-items", "1",
               "--output", "json"], region=region, key=key, secret=secret)
@@ -631,6 +632,7 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
                          provision._scrub(str(e), key, secret)))
         out.append(Probe(policy_probe, False, "Needs the role first (step 1)."))
         out.append(Probe(scoped_probe, False, "Needs the role first (step 1)."))
+        out.append(Probe(rules_probe, False, "Needs the role first (step 1)."))
         return out
     out.append(Probe(role_probe, True))
     rk, rs, rt = creds["AWS_ACCESS_KEY_ID"], creds["AWS_SECRET_ACCESS_KEY"], creds["AWS_SESSION_TOKEN"]
@@ -642,9 +644,8 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
     # Negative probe: an OLD unscoped role (S3 on "*") would pass the three probes
     # above too, so a leaked runtime key could still reach every bucket via the
     # role. Level 4 lets the role manage the base bucket's lifecycle + versioning
-    # (BaseBucketRules), so this probe can no longer use GetBucketVersioning on the
-    # base bucket -- it now reads the base bucket's TAGS instead, which the
-    # narrowed role only grants on <base>-*, so this call must come back
+    # (BaseBucketRules), so this probe reads the base bucket's TAGS instead --
+    # granted to the narrowed role only on <base>-*, so this call must come back
     # AccessDenied.
     cp = run(["s3api", "get-bucket-tagging", "--bucket", bucket, "--output", "json"],
              region=region, key=rk, secret=rs, session_token=rt)
@@ -652,13 +653,26 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
     if cp.returncode != 0 and "AccessDenied" in err:
         out.append(Probe(scoped_probe, True))
     elif cp.returncode == 0 or "NoSuchTagSet" in err:
-        # Level 4 lets the role manage the base bucket's lifecycle + versioning, so the
-        # scope probe reads the base bucket's TAGS instead: only an old, wide role can.
         out.append(Probe(scoped_probe, False,
                          "The role still has an older, wider policy — did step 2 of the script run?"))
     else:
         out.append(Probe(scoped_probe, False,
                          "Couldn't confirm the role is limited to this app's buckets — try Verify again.",
+                         provision._scrub(err, rk, rs, rt).strip()))
+    # Positive probe: a level-3 role (no BaseBucketRules) would pass all four probes
+    # above too, since none of them require the role to reach the base bucket's S3
+    # rules -- Verify must not stamp a level-3 role as level-4-current, or
+    # feature_available("s3-rules") would let S3-rules applies through that then
+    # fail AccessDenied. GetBucketLifecycleConfiguration on the base bucket is only
+    # granted by BaseBucketRules, so this call must succeed (or report the bucket
+    # simply has no lifecycle rules yet).
+    cp = run(["s3api", "get-bucket-lifecycle-configuration", "--bucket", bucket, "--output", "json"],
+             region=region, key=rk, secret=rs, session_token=rt)
+    err = cp.stderr or ""
+    if cp.returncode == 0 or "NoSuchLifecycleConfiguration" in err:
+        out.append(Probe(rules_probe, True))
+    else:
+        out.append(Probe(rules_probe, False, "Set by step 2 of the script — did it run?",
                          provision._scrub(err, rk, rs, rt).strip()))
     return out
 
