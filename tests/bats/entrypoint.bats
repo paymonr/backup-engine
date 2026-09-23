@@ -38,7 +38,8 @@ EOF
   grep -q "^0 4 \* \* 0 .*backup-job.sh movies$" "$CACHE_DIR/crontab"
   grep -q "^0 3 \* \* \* .*backup-job.sh appdata$" "$CACHE_DIR/crontab"
   ! grep -q "scratch" "$CACHE_DIR/crontab"
-  [ "$(wc -l <"$CACHE_DIR/crontab")" -eq 2 ]
+  grep -qx '17 \* \* \* \* python3 -m app.engine.lifecycle check-all' "$CACHE_DIR/crontab"
+  [ "$(wc -l <"$CACHE_DIR/crontab")" -eq 3 ]
 }
 
 @test "entrypoint --emit-crontab with no jobs.json writes an empty crontab" {
@@ -63,7 +64,16 @@ EOF
   [ "$status" -eq 0 ]
   grep -q "backup-job.sh good" "$CACHE_DIR/crontab"
   ! grep -q "evil" "$CACHE_DIR/crontab"
-  [ "$(wc -l <"$CACHE_DIR/crontab")" -eq 1 ]
+  [ "$(wc -l <"$CACHE_DIR/crontab")" -eq 2 ]
+}
+
+@test "entrypoint --emit-crontab ends with the same hourly S3 rules check line the GUI renders" {
+  write_jobs_json
+  run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
+  [ "$status" -eq 0 ]
+  local want
+  want="$(python3 -c 'from app.gui import jobs_io; print(jobs_io.S3_RULES_CHECK_LINE)')"
+  [ "$(tail -1 "$CACHE_DIR/crontab")" = "$want" ]
 }
 
 # final-fix R-final-1: a corrupt jobs.json must NOT brick boot. load() exits 0 (empty

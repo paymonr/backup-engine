@@ -534,3 +534,24 @@ def test_cli_check_passes_the_trigger_through(cfg, monkeypatch, capsys):
     assert seen["trigger"] == "manual"
     assert lc.main(["check", "--bucket", BASE, "--trigger", "$(rm -rf /)"]) == 0
     assert seen["trigger"] == "scheduled"                       # anything odd falls back
+
+
+def test_check_all_checks_every_bucket_as_a_scheduled_run(cfg, monkeypatch, capsys):
+    monkeypatch.setenv("CONFIG_DIR", cfg["CONFIG_DIR"])
+    monkeypatch.setenv("CACHE_DIR", cfg["CACHE_DIR"])
+    seen = []
+    monkeypatch.setattr(lc, "check", lambda c, b, **k: seen.append((b, k.get("trigger"))) or "ok")
+    assert lc.main(["check-all"]) == 0
+    assert seen == [(BASE, "scheduled")]
+    assert capsys.readouterr().out.strip() == f"S3 rules check · {BASE}: in place"
+
+
+def test_check_all_is_silent_when_s3_rules_are_not_managed(cfg, monkeypatch, capsys):
+    from pathlib import Path
+    env = Path(cfg["CONFIG_DIR"], "backup.env")
+    env.write_text(env.read_text().replace("PERMISSIONS_VERSION=4", "PERMISSIONS_VERSION=3"))
+    monkeypatch.setenv("CONFIG_DIR", cfg["CONFIG_DIR"])
+    monkeypatch.setenv("CACHE_DIR", cfg["CACHE_DIR"])
+    monkeypatch.setattr(lc, "check", lambda *a, **k: pytest.fail("no check below level 4"))
+    assert lc.main(["check-all"]) == 0
+    assert capsys.readouterr().out == ""

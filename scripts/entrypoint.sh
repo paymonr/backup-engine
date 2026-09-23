@@ -40,6 +40,12 @@ emit_crontab() {
     [ "$enabled" = "1" ] || continue
     printf '%s %s %s\n' "$schedule" "$HERE/backup-job.sh" "$name" >>"$ct"
   done
+  # Hourly S3 rules check (spec 2026-09-23, R-B9): rules changed outside backup-engine are
+  # caught between backup runs too. Same line + same condition as jobs_io.render_crontab
+  # (S3_RULES_CHECK_LINE) -- crontab_stale compares the two renders byte for byte.
+  if [ -s "$ct" ]; then
+    printf '%s\n' '17 * * * * python3 -m app.engine.lifecycle check-all' >>"$ct"
+  fi
   log_info "wrote crontab:"; cat "$ct"
 }
 

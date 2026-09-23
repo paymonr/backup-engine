@@ -7,7 +7,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
-from app.gui import permissions
+from app.gui import jobs_io, permissions
 
 ACCOUNT = "123456789012"
 USER_ARN = f"arn:aws:iam::{ACCOUNT}:user/backup-engine-runtime"
@@ -92,7 +92,7 @@ def test_script_refuses_unexpected_values(principal, bucket, region):
 # --- verify ------------------------------------------------------------------------
 
 def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, base_denied=True,
-          base_tag_success=False, rules_ok=True, flaky=0):
+          base_tag_success=False, rules_ok=True, flaky=0, version_delete_denied=True):
     state = {"flaky": flaky}
 
     def run(args, *, region, key, secret, session_token=None):
@@ -131,6 +131,14 @@ def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, base_denied=True,
             if rules_ok:
                 return SimpleNamespace(returncode=254, stdout="", stderr="An error occurred (NoSuchLifecycleConfiguration) when calling the GetBucketLifecycleConfiguration operation")
             return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:GetBucketLifecycleConfiguration")
+        if args[:2] == ["s3api", "delete-object"]:
+            assert session_token is None and key == "AKIARUN"     # runs as the BACKUP key
+            assert args[args.index("--version-id") + 1] == "null"
+            assert args[args.index("--key") + 1].startswith(permissions.VERSION_PROBE_PREFIX)
+            if version_delete_denied:
+                return SimpleNamespace(returncode=254, stdout="", stderr=(
+                    "An error occurred (AccessDenied) when calling the DeleteObject operation: Access Denied"))
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
         raise AssertionError(args)
     return run
 
@@ -142,12 +150,12 @@ def _verify(run, **kw):
 
 def test_verify_all_good():
     probes = _verify(_fake())
-    assert len(probes) == 5 and all(p.ok for p in probes)
+    assert len(probes) == 6 and all(p.ok for p in probes)
 
 
 def test_verify_names_the_script_step_when_the_role_is_missing():
     probes = _verify(_fake(assume_ok=False))
-    assert [p.ok for p in probes] == [True, False, False, False, False]
+    assert [p.ok for p in probes] == [True, False, False, False, False, True]
     assert "step 1" in probes[1].hint
     # The third, fourth and fifth probes (all need the role, which just failed)
     # carry their OWN dependent hint rather than re-running their own checks.
@@ -158,7 +166,7 @@ def test_verify_names_the_script_step_when_the_role_is_missing():
 
 def test_verify_detects_the_role_policy_is_missing():
     probes = _verify(_fake(policy_ok=False))
-    assert [p.ok for p in probes] == [True, True, False, True, True]
+    assert [p.ok for p in probes] == [True, True, False, True, True, True]
     assert "step 2" in probes[2].hint
 
 
@@ -168,7 +176,7 @@ def test_verify_detects_an_old_unscoped_role():
     # branch (a real TagSet comes back); test_verify_counts_no_such_tag_set_as_a_wide_role
     # covers the NoSuchTagSet branch.
     probes = _verify(_fake(base_denied=False, base_tag_success=True))
-    assert [p.ok for p in probes] == [True, True, True, False, True]
+    assert [p.ok for p in probes] == [True, True, True, False, True, True]
     assert not all(p.ok for p in probes)
     assert "older, wider policy" in probes[3].hint
 
@@ -184,7 +192,7 @@ def test_verify_detects_a_level_three_role_missing_base_bucket_rules():
     # denied the base bucket's tags. Only the 5th probe (lifecycle configuration,
     # granted solely by BaseBucketRules) catches the gap.
     probes = _verify(_fake(rules_ok=False))
-    assert [p.ok for p in probes] == [True, True, True, True, False]
+    assert [p.ok for p in probes] == [True, True, True, True, False, True]
     assert not all(p.ok for p in probes)
     assert "step 2" in probes[4].hint
 
@@ -221,6 +229,8 @@ def test_verify_scoped_probe_scrubs_a_non_access_denied_error():
                 returncode=254, stdout="",
                 stderr="An error occurred (NoSuchLifecycleConfiguration) when calling the "
                        "GetBucketLifecycleConfiguration operation")
+        if args[:2] == ["s3api", "delete-object"]:
+            return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied")
         raise AssertionError(args)
     probes = _verify(run, tries=1)
     assert probes[3].ok is False
@@ -265,9 +275,32 @@ def test_verify_scrubs_the_assumed_role_creds_too():
                 returncode=254, stdout="",
                 stderr="An error occurred (NoSuchLifecycleConfiguration) when calling the "
                        "GetBucketLifecycleConfiguration operation")
+        if args[:2] == ["s3api", "delete-object"]:
+            return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied")
         raise AssertionError(args)
     probes = _verify(run, tries=1)
     assert probes[2].ok is False
     assert "ASIATMP" not in probes[2].detail
     assert "tmpsek" not in probes[2].detail
     assert "tmpsessiontoken" not in probes[2].detail
+
+
+def test_verify_proves_the_backup_key_cannot_permanently_delete_old_versions():
+    probes = _verify(_fake())
+    assert probes[5].name == "The backup key can't permanently delete old versions" and probes[5].ok
+
+
+def test_verify_flags_a_backup_key_that_still_deletes_old_versions():
+    probes = _verify(_fake(version_delete_denied=False), tries=1)
+    assert probes[5].ok is False and "step 3" in probes[5].hint
+
+
+def test_the_version_probe_runs_even_when_the_role_is_missing():
+    probes = _verify(_fake(assume_ok=False), tries=1)
+    assert probes[5].ok is True
+
+
+def test_the_version_probe_names_a_key_no_job_can_own():
+    # "~" is outside the job-name charset, so the probe can never touch a real job's folder.
+    assert "~" in permissions.VERSION_PROBE_PREFIX
+    assert not jobs_io.valid_name(permissions.VERSION_PROBE_PREFIX.split("/")[1])

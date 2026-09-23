@@ -719,6 +719,26 @@ def _cfg_from_env() -> dict:
             "CACHE_DIR": os.environ.get("CACHE_DIR", "/cache")}
 
 
+def check_all_lines(cfg) -> list[str]:
+    """The hourly check (R-B9, crontab `check-all`): every bucket, as a scheduled run. Prints
+    nothing when S3 rules aren't managed here (below level 4, no role, not set up). Never raises."""
+    try:
+        if not managed(cfg["CONFIG_DIR"]):
+            return []
+        base, _, _ = _context(cfg)
+        buckets = buckets_for(base, jobs_io.load(cfg["CONFIG_DIR"]))
+    except Exception as e:                                   # noqa: BLE001 — cron must never see a trace
+        return [f"S3 rules check: couldn't start ({type(e).__name__})"]
+    out = []
+    for b in buckets:
+        try:
+            words = _CHECK_WORDS.get(check(cfg, b, trigger="scheduled"), "couldn't be checked (see Setup)")
+        except Exception as e:                               # noqa: BLE001
+            words = f"couldn't be checked ({type(e).__name__})"
+        out.append(f"S3 rules check · {b}: {words}")
+    return out
+
+
 _TRIGGER = re.compile(r"[a-z][a-z-]{0,19}")
 
 
@@ -730,6 +750,7 @@ def main(argv=None) -> int:
     s = sub.add_parser("sync"); s.add_argument("--bucket")
     c = sub.add_parser("check"); c.add_argument("--bucket", required=True)
     c.add_argument("--trigger", default="scheduled")
+    sub.add_parser("check-all")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     cfg = _cfg_from_env()
     if args.cmd == "check":
@@ -740,6 +761,10 @@ def main(argv=None) -> int:
         except Exception as e:                       # noqa: BLE001 — never block a backup
             words = f"couldn't be checked ({type(e).__name__})"
         print(f"S3 rules check · {args.bucket}: {words}")
+        return 0
+    if args.cmd == "check-all":
+        for line in check_all_lines(cfg):
+            print(line)
         return 0
     try:
         results = [sync(cfg, args.bucket)] if args.bucket else sync_all(cfg)

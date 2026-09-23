@@ -552,7 +552,7 @@ def test_render_crontab_dry_run_returns_lines_without_writing(tmp_path):
     jobs_io.upsert(cfg, _job(name="movies", schedule="0 4 * * 0", enabled=True), source_root=root)
     cache = str(tmp_path / "cache")
     text = jobs_io.render_crontab(cfg, cache, "/app/scripts", dry_run=True, source_root=root)
-    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n"
+    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n" + jobs_io.S3_RULES_CHECK_LINE + "\n"
     assert not Path(cache, "crontab").exists()   # dry run never writes
 
 def test_render_crontab_writes_and_skips_disabled_and_invalid(tmp_path):
@@ -568,9 +568,30 @@ def test_render_crontab_writes_and_skips_disabled_and_invalid(tmp_path):
     ])
     cache = str(tmp_path / "cache")
     text = jobs_io.render_crontab(cfg, cache, "/app/scripts", source_root=root)
-    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n"
+    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n" + jobs_io.S3_RULES_CHECK_LINE + "\n"
     assert Path(cache, "crontab").read_text() == text     # written for real
     assert "evil" not in text and "paused" not in text
+
+# --- S3 rules (spec 2026-09-23, R-B9): the hourly tamper check -------------------------------
+
+def test_render_crontab_adds_the_hourly_s3_rules_check_after_the_jobs(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="movies", schedule="0 4 * * 0", enabled=True), source_root=root)
+    text = jobs_io.render_crontab(cfg, str(tmp_path / "cache"), "/app/scripts", dry_run=True, source_root=root)
+    assert text.splitlines()[-1] == jobs_io.S3_RULES_CHECK_LINE
+    assert jobs_io.S3_RULES_CHECK_LINE == "17 * * * * python3 -m app.engine.lifecycle check-all"
+
+
+def test_render_crontab_without_jobs_stays_empty(tmp_path):
+    # Nothing scheduled -> nothing to check; an empty crontab also keeps crontab_stale false
+    # on a fresh install where no crontab file exists yet.
+    assert jobs_io.render_crontab(_cfg(tmp_path), str(tmp_path / "cache"), "/app/scripts",
+                                  dry_run=True, source_root=_root(tmp_path)) == ""
+
+
+def test_entrypoint_renders_the_same_check_line():
+    text = (Path(__file__).resolve().parents[2] / "scripts" / "entrypoint.sh").read_text()
+    assert f"'{jobs_io.S3_RULES_CHECK_LINE}'" in text
 
 def test_delete_removes_cache_files(tmp_path):
     cfg, root = _cfg(tmp_path), _root(tmp_path)

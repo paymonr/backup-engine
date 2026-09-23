@@ -17,6 +17,11 @@ STORAGE_CLASSES = ("STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARC
 _KEEP_KEYS = ("last", "daily", "weekly", "monthly")
 _RETENTION_TYPES = ("keep_all", "days", "count", "tiered")
 
+# The hourly S3 rules tamper check (spec 2026-09-23, R-B9). entrypoint.sh:emit_crontab prints
+# the SAME line under the same condition (at least one scheduled job) -- crontab_stale
+# compares the two renders byte for byte.
+S3_RULES_CHECK_LINE = "17 * * * * python3 -m app.engine.lifecycle check-all"
+
 def valid_name(s: str) -> bool:
     return bool(JOB_NAME_RE.match(s or "")) and s not in (".", "..")
 
@@ -386,6 +391,8 @@ def render_crontab(config_dir, cache_dir, scripts_dir, *, dry_run=False, source_
         if not v.get("enabled"):
             continue
         lines.append(f"{v['schedule']} {scripts_dir}/backup-job.sh {v['name']}")
+    if lines:
+        lines.append(S3_RULES_CHECK_LINE)
     text = "".join(line + "\n" for line in lines)
     if not dry_run:
         p = _crontab_path(cache_dir)
