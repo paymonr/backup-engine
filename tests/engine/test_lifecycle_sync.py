@@ -163,3 +163,65 @@ def test_sync_never_touches_objects_or_versions(cfg):
     for c in fake.calls:
         assert c[1] in ("assume-role", "get-bucket-lifecycle-configuration",
                         "put-bucket-lifecycle-configuration"), c
+
+
+# --- I2: a sync never silently absorbs rules changed outside backup-engine -------------------
+
+def _set_manga(cfg, retention):
+    jobs_p = Path(cfg["CONFIG_DIR"], "jobs.json")
+    data = json.loads(jobs_p.read_text())
+    data["jobs"][0]["retention"] = retention
+    jobs_p.write_text(json.dumps(data))
+
+
+def _live(fake, rid, bucket=BASE):
+    return next(r for r in fake.rules[bucket] if r["ID"] == rid)
+
+
+def test_sync_alarms_when_the_app_rules_changed_since_the_last_apply(cfg):
+    fake = FakeS3()
+    lc.sync(cfg, BASE, run=fake)
+    _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] = {"NoncurrentDays": 1}
+    res = lc.sync(cfg, BASE, run=fake)                      # e.g. a job save
+    assert res.changed is True and res.state == "restored"
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
+    st = lc.load_status(cfg["CACHE_DIR"])[BASE]
+    assert st["state"] == "restored" and st["alarm"]["kind"] == "restored"
+    assert any("1 days" in l for l in st["alarm"]["lines"])
+    ends = [e for e in _events(cfg) if e["kind"] == "s3-rules" and e["event"] == "end"]
+    assert len(ends) == 2                                    # the first apply + the tamper record
+    log = Path(cfg["CACHE_DIR"], _events(cfg)[-2]["log"]).read_text()
+    assert "S3 rules were changed outside backup-engine — restored" in log
+
+
+def test_sync_after_a_job_change_is_not_tampering(cfg):
+    fake = FakeS3()
+    lc.sync(cfg, BASE, run=fake)
+    _set_manga(cfg, {"type": "days", "days": 365})
+    res = lc.sync(cfg, BASE, run=fake)
+    assert res.changed is True and res.state == "ok"
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 365}
+    assert "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
+
+
+def test_sync_tampering_that_cannot_be_put_back_is_not_restored(cfg):
+    fake = FakeS3()
+    lc.sync(cfg, BASE, run=fake)
+    fake.rules[BASE] = []
+    fake.deny_put = True
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)
+    st = lc.load_status(cfg["CACHE_DIR"])[BASE]
+    assert st["state"] == "not_restored" and st["alarm"]["kind"] == "not_restored"
+
+
+def test_live_rules_already_matching_the_jobs_are_not_tampering(cfg):
+    # e.g. an earlier write landed but the app stopped before recording it.
+    fake = FakeS3()
+    lc.sync(cfg, BASE, run=fake)
+    _set_manga(cfg, {"type": "days", "days": 365})
+    _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] = {"NoncurrentDays": 365}
+    res = lc.sync(cfg, BASE, run=fake)
+    assert res.state == "ok" and len(fake.puts()) == 1
+    assert "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
+    assert lc.app_rules_differ(lc.load_applied(cfg["CACHE_DIR"], BASE), fake.rules[BASE]) is False

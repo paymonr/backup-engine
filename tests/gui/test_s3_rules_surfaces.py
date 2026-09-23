@@ -92,6 +92,38 @@ def test_multi_bucket_not_restored_alarm_wins_over_restored(cfg):
     assert board["level"] == "blocker" and "NOT restored" in board["text"]
 
 
+def _jobs(cfg, days):
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": [
+        {"name": "manga", "type": "archive", "source": "media/manga", "schedule": "0 3 * * *",
+         "enabled": True, "storage_class": "STANDARD", "retention": {"type": "days", "days": days}}]}))
+
+
+def test_row_warns_when_the_latest_job_settings_have_not_reached_s3(cfg):
+    # I3: a job save whose sync failed must not read "in place" once a later check is ok.
+    _jobs(cfg, 180)
+    lifecycle.save_applied(cfg["CACHE_DIR"], BASE, lifecycle.desired_rules(BASE, BASE, json.loads(
+        Path(cfg["CONFIG_DIR"], "jobs.json").read_text())["jobs"], {}))
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail="")
+    assert s3_rules.setup_row(cfg)["state"] == "ok"
+    _jobs(cfg, 365)                                  # saved; S3 still enforces 180
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "warn"
+    assert row["sentence"] == "Your latest job settings haven't reached S3 yet — try Check now"
+    _status(cfg, state="error", checked_at="2026-09-23T05:00:00Z", detail="AccessDenied")
+    assert s3_rules.setup_row(cfg)["sentence"] == "Your latest job settings haven't reached S3 yet — try Check now"
+
+
+def test_row_pending_check_never_calls_aws(cfg, monkeypatch):
+    def no_aws(*a, **k):
+        raise AssertionError("no AWS on a GET")
+    monkeypatch.setattr(lifecycle, "read_rules", no_aws)
+    monkeypatch.setattr(lifecycle, "role_creds", no_aws)
+    _jobs(cfg, 365)
+    lifecycle.save_applied(cfg["CACHE_DIR"], BASE, [])
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail="")
+    assert s3_rules.setup_row(cfg)["state"] == "warn"
+
+
 def test_unsupported_storage_warns(cfg):
     _status(cfg, state="unsupported", checked_at="2026-09-23T05:00:00Z", detail="NotImplemented")
     assert "doesn't support S3 rules" in s3_rules.setup_row(cfg)["sentence"]
@@ -142,12 +174,57 @@ def test_check_now_requires_csrf(client):
     assert client.post("/setup/s3-rules/check").status_code == 400
 
 
-def test_check_now_syncs_then_checks(client, monkeypatch):
+def test_check_now_checks_every_bucket_as_a_manual_run(client, monkeypatch):
+    # The check itself applies what the jobs want (I3) and judges drift against what
+    # was applied (I2) -- a sync first would overwrite tampering before the check saw it.
     calls = []
     monkeypatch.setattr(lifecycle, "sync_all", lambda cfg, **k: calls.append("sync") or [])
-    monkeypatch.setattr(lifecycle, "check", lambda cfg, b, **k: calls.append(("check", b)) or "ok")
+    monkeypatch.setattr(lifecycle, "check", lambda cfg, b, **k: calls.append(("check", b, k.get("trigger"))) or "ok")
     r = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)})
-    assert r.status_code in (302, 303) and calls == ["sync", ("check", BASE)]
+    assert r.status_code in (302, 303) and calls == [("check", BASE, "manual")]
+
+
+def _real_check_with(monkeypatch, fake):
+    import functools
+    monkeypatch.setattr(lifecycle, "check", functools.partial(lifecycle.check, run=fake))
+
+
+def test_check_now_alarms_on_a_tampered_rule(client, cfg, monkeypatch):
+    from tests.engine.test_lifecycle_sync import FakeS3
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": [
+        {"name": "manga", "type": "archive", "source": "media/manga", "schedule": "0 3 * * *",
+         "enabled": True, "storage_class": "STANDARD", "retention": {"type": "days", "days": 180}}]}))
+    fake = FakeS3()
+    lifecycle.sync(cfg, BASE, run=fake)
+    manga = next(r for r in fake.rules[BASE] if r["ID"] == "backup-engine:media/manga/")
+    manga["NoncurrentVersionExpiration"] = {"NoncurrentDays": 1}          # shortened in the console
+    _real_check_with(monkeypatch, fake)
+    r = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)}, follow_redirects=True)
+    body = r.get_data(as_text=True)
+    assert "all in place" not in body and "see Setup for what needs attention" in body
+    assert lifecycle.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]["kind"] == "restored"
+    manga = next(r for r in fake.rules[BASE] if r["ID"] == "backup-engine:media/manga/")
+    assert manga["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
+
+
+def test_check_now_says_all_in_place_only_without_an_open_alarm(client, cfg, monkeypatch):
+    monkeypatch.setattr(lifecycle, "check", lambda cfg, b, **k: "ok")
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail="",
+            alarm={"kind": "restored", "at": "2026-09-23T04:59:00Z", "lines": []})
+    body = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)},
+                       follow_redirects=True).get_data(as_text=True)
+    assert "all in place" not in body
+    lifecycle.acknowledge(cfg["CACHE_DIR"])
+    body = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)},
+                       follow_redirects=True).get_data(as_text=True)
+    assert "all in place" in body
+
+
+def test_check_now_below_level_four_asks_for_the_permissions_update(client, cfg):
+    _env(cfg, level=3)
+    body = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)},
+                       follow_redirects=True).get_data(as_text=True)
+    assert "S3 rules need the AWS permissions update first." in body
 
 
 def test_acknowledge_clears_the_alarm(client, cfg):

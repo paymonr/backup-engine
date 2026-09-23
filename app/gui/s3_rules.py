@@ -31,6 +31,9 @@ def apply_for(cfg, buckets: list[str]) -> list[tuple[str, str]]:
         except Exception:                                  # noqa: BLE001 — never fail the caller
             msgs.append(("warning", "Saved, but S3 rules couldn't be updated — Setup → S3 rules shows the details."))
             continue
+        if res.state == "restored":
+            msgs.append(("warning", "S3 rules had been changed outside backup-engine — they're back the way "
+                                    "your jobs need them. Setup shows the details."))
         if res.changed and res.lines:
             shown = res.lines[:3] + (["…"] if len(res.lines) > 3 else [])
             msgs.append(("success", "S3 rules updated: " + "; ".join(shown)))
@@ -51,6 +54,24 @@ def _alarm(status: dict, buckets: list[str]) -> dict | None:
     if not alarms:
         return None
     return next((a for a in alarms if a.get("kind") == "not_restored"), alarms[0])
+
+
+def _pending(cfg, buckets: list[str]) -> bool:
+    """A bucket whose last-applied app rules aren't what the jobs want now (e.g. a job
+    save whose S3 write failed). State files + jobs only — no AWS."""
+    from . import jobs_io
+    config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+    try:
+        base = config_io.read_backup_env(config_dir).get("S3_BUCKET", "").strip()
+        jobs, settings = jobs_io.load(config_dir), lifecycle.load_settings(config_dir)
+        for b in buckets:
+            applied = lifecycle.load_applied(cache, b)
+            if applied is not None and lifecycle.app_rules_differ(
+                    applied, lifecycle.desired_rules(b, base, jobs, settings)):
+                return True
+    except Exception:                                        # noqa: BLE001 — a GET never 500s on this
+        return False
+    return False
 
 
 def setup_row(cfg) -> dict | None:
@@ -78,6 +99,8 @@ def setup_row(cfg) -> dict | None:
         # what the jobs need — an acknowledged not_restored must not read as "ok"
         # until the next successful Check now/backup run fixes it (or re-alarms).
         row.update(state="warn", sentence="S3 rules still differ from what your jobs need — try Check now")
+    elif _pending(cfg, buckets):
+        row.update(state="warn", sentence="Your latest job settings haven't reached S3 yet — try Check now")
     elif "unsupported" in states:
         row.update(state="warn", sentence="This storage doesn't support S3 rules — Plain copy keeps all old versions")
     elif "error" in states:
@@ -109,16 +132,10 @@ _ATTENTION = ("warning", "S3 rules checked — see Setup for what needs attentio
 
 
 def check_all(cfg) -> list[tuple[str, str]]:
-    """Check now: never raises (the route must not 500) -- anything unexpected is a
-    generic warning; the per-bucket state files carry the detail."""
+    """Check now: the engine check on every bucket, as a manual run (it applies what the
+    jobs want and alarms drift itself). Never raises -- the route must not 500;
+    anything unexpected is a generic warning and the state files carry the detail."""
     ctx = {"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}
-    try:
-        lifecycle.sync_all(ctx)
-    except lifecycle.LifecycleError as e:
-        if e.kind == "not_managed":
-            return [("warning", "S3 rules need the AWS permissions update first.")]
-    except Exception:                                        # noqa: BLE001
-        pass
     try:
         buckets = _buckets(cfg)
     except Exception:                                        # noqa: BLE001
@@ -126,9 +143,15 @@ def check_all(cfg) -> list[tuple[str, str]]:
     states = []
     for b in buckets:
         try:
-            states.append(lifecycle.check(ctx, b))
+            states.append(lifecycle.check(ctx, b, trigger="manual"))
         except Exception:                                    # noqa: BLE001
             states.append("error")
-    if states and all(s == "ok" for s in states):
+    if "not_managed" in states:
+        return [("warning", "S3 rules need the AWS permissions update first.")]
+    try:
+        open_alarm = _alarm(lifecycle.load_status(cfg["CACHE_DIR"]), buckets)
+    except Exception:                                        # noqa: BLE001
+        open_alarm = True
+    if states and all(s == "ok" for s in states) and not open_alarm:
         return [("success", "S3 rules checked — all in place.")]
     return [_ATTENTION]

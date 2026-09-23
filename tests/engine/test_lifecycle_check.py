@@ -132,3 +132,71 @@ def test_check_never_raises_even_when_the_status_file_cannot_be_written(cfg, mon
     monkeypatch.setattr(lc, "set_status", boom)
     monkeypatch.setattr(lc, "read_rules", boom)
     assert lc.check(cfg, BASE, run=FakeS3()) == "error"
+
+
+# --- I2/I3: the check applies what the jobs want; drift is judged against what was applied --
+
+from tests.engine.test_lifecycle_sync import _live, _set_manga  # noqa: E402
+
+
+def test_a_failed_job_save_sync_is_retried_by_the_next_check(cfg):
+    fake = FakeS3()
+    _applied(cfg, fake)                                          # manga: 180 days
+    _set_manga(cfg, {"type": "days", "days": 365})
+    fake.deny_put = True
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)                             # the job save's sync fails
+    fake.deny_put = False
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 365}
+    st = lc.load_status(cfg["CACHE_DIR"])[BASE]
+    assert st["state"] == "ok" and "alarm" not in st
+    assert lc.app_rules_differ(lc.load_applied(cfg["CACHE_DIR"], BASE), fake.rules[BASE]) is False
+
+
+def test_tampering_is_restored_to_what_the_jobs_want_now(cfg):
+    fake = FakeS3()
+    _applied(cfg, fake)
+    _set_manga(cfg, {"type": "days", "days": 365})               # saved while the sync failed
+    _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] = {"NoncurrentDays": 1}
+    assert lc.check(cfg, BASE, run=fake) == "restored"
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 365}
+    assert lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]["kind"] == "restored"
+
+
+def test_check_records_its_trigger(cfg):
+    from tests.engine.test_lifecycle_sync import _events
+    fake = FakeS3()
+    _applied(cfg, fake)
+    fake.rules[BASE] = []
+    assert lc.check(cfg, BASE, run=fake, trigger="manual") == "restored"
+    starts = [e for e in _events(cfg) if e["kind"] == "s3-rules" and e["event"] == "start"]
+    assert starts[-1]["trigger"] == "manual"
+    fake.rules[BASE] = []
+    lc.check(cfg, BASE, run=fake)
+    starts = [e for e in _events(cfg) if e["kind"] == "s3-rules" and e["event"] == "start"]
+    assert starts[-1]["trigger"] == "scheduled"
+
+
+def test_check_on_a_dedicated_bucket(cfg):
+    from pathlib import Path
+    jobs_p = Path(cfg["CONFIG_DIR"], "jobs.json")
+    data = json.loads(jobs_p.read_text())
+    data["jobs"].append({"name": "photos", "type": "archive", "source": "media/photos",
+                         "schedule": "0 3 * * *", "enabled": True, "storage_class": "STANDARD",
+                         "retention": {"type": "count", "count": 10},
+                         "dedicated": True, "bucket": f"{BASE}-photos", "bucket_versioned": True})
+    jobs_p.write_text(json.dumps(data))
+    ded = f"{BASE}-photos"
+    fake = FakeS3()
+    lc.sync_all(cfg, run=fake)
+    base_before = json.loads(json.dumps(fake.rules[BASE]))
+    assert lc.check(cfg, ded, run=fake) == "ok"
+    _live(fake, "backup-engine:bucket", ded)["NoncurrentVersionExpiration"] = {"NoncurrentDays": 1}
+    assert lc.check(cfg, ded, run=fake) == "restored"
+    assert _live(fake, "backup-engine:bucket", ded)["NoncurrentVersionExpiration"] == {
+        "NoncurrentDays": 1, "NewerNoncurrentVersions": 10}
+    st = lc.load_status(cfg["CACHE_DIR"])
+    assert st[ded]["alarm"]["kind"] == "restored" and "alarm" not in st[BASE]
+    assert fake.rules[BASE] == base_before                       # the base bucket untouched
+    assert {r["ID"] for r in fake.rules[ded]} == {"backup-engine:bucket", "backup-engine:housekeeping"}

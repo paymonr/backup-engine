@@ -328,13 +328,20 @@ def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm:
     _status_path(cache_dir).write_text(json.dumps(data, indent=2, sort_keys=True))
 
 
-# --- sync: bring a bucket's app rules to the desired set ------------------------------
+# --- sync / check: one read-compare-write pass ------------------------------------------
 
 @dataclass
 class SyncResult:
     bucket: str
     changed: bool
     lines: list
+    state: str = "ok"          # ok | restored (the app rules had been changed outside backup-engine)
+
+
+def app_rules_differ(a: list[dict], b: list[dict]) -> bool:
+    """THE comparison of two rule sets' app-owned rules (console rules ignored) -- used
+    by the engine and by the Setup row, so "in step" means the same thing everywhere."""
+    return app_rules_of(a) != app_rules_of(b)
 
 
 def _change_lines(before: list[dict], after: list[dict]) -> list[str]:
@@ -350,33 +357,80 @@ def _context(cfg) -> tuple[str, str, str]:
             cfg["CACHE_DIR"])
 
 
-def sync(cfg, bucket: str, *, run=provision._run_aws, jobs=None) -> SyncResult:
-    """Apply the desired app rules to `bucket` (console rules kept). Records the
-    result in state and, when anything changed, an Activity entry."""
+def _err_state(e: LifecycleError) -> str:
+    return "unsupported" if e.kind == "unsupported" else "error"
+
+
+TAMPERED = "S3 rules were changed outside backup-engine"
+
+
+def _reconcile(cfg, bucket: str, *, run, jobs, trigger: str):
+    """The pass behind sync() and check(). Tamper detection compares the live app
+    rules with what the app last APPLIED; whatever the app writes is always what the
+    jobs want NOW (DESIRED), merged with the console rules:
+      live == desired (no legacy IDs)  -> in step, nothing written;
+      applied exists and live != applied -> changed outside: alarm + Activity, write desired;
+      otherwise (job change, a failed earlier write, first apply) -> write desired.
+    Live rules that already equal desired are never tampering -- nothing to put back.
+    Returns (state, SyncResult | None, LifecycleError | None); state is what was
+    recorded: ok | restored | not_restored | error | unsupported."""
     config_dir = cfg["CONFIG_DIR"]
     base, region, cache = _context(cfg)
-    if not managed(config_dir):
-        raise LifecycleError("not_managed", "S3 rules need the AWS permissions update")
     jobs = jobs_io.load(config_dir) if jobs is None else jobs
     want = desired_rules(bucket, base, jobs, load_settings(config_dir))
-    notes = notes_for(bucket, base, jobs)
+    detail = "; ".join(notes_for(bucket, base, jobs))
+    applied = load_applied(cache, bucket)
     try:
         creds = role_creds(config_dir, region, run=run)
         live = read_rules(bucket, creds, region, run=run)
-        if app_rules_of(live) == app_rules_of(want) and not any(
-                r.get("ID") in LEGACY_IDS for r in live):
+    except LifecycleError as e:
+        set_status(cache, bucket, _err_state(e), e.detail)
+        return _err_state(e), None, e
+    in_step = not app_rules_differ(live, want) and not any(r.get("ID") in LEGACY_IDS for r in live)
+    if in_step:
+        if applied is None or app_rules_differ(applied, want):
             save_applied(cache, bucket, want)
-            set_status(cache, bucket, "ok", "; ".join(notes))
-            return SyncResult(bucket, False, [])
+        set_status(cache, bucket, "ok", detail)
+        return "ok", SyncResult(bucket, False, []), None
+    tampered = applied is not None and app_rules_differ(live, applied)
+    tamper_lines = _change_lines(applied, live) if tampered else []
+    try:
         write_rules(bucket, merge(live, want), creds, region, run=run)
     except LifecycleError as e:
-        set_status(cache, bucket, "unsupported" if e.kind == "unsupported" else "error", e.detail)
-        raise
+        if not tampered:
+            set_status(cache, bucket, _err_state(e), e.detail)
+            return _err_state(e), None, e
+        set_status(cache, bucket, "not_restored", e.detail,
+                   alarm={"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
+        runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
+                           lines=[*tamper_lines, e.detail], outcome="failed", error=e.detail,
+                           trigger=trigger)
+        return "not_restored", None, e
     save_applied(cache, bucket, want)
-    set_status(cache, bucket, "ok", "; ".join(notes))
-    lines = _change_lines(live, want) + notes
-    runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines)
-    return SyncResult(bucket, True, lines)
+    lines = _change_lines(live, want) + ([detail] if detail else [])
+    if tampered:
+        set_status(cache, bucket, "restored", detail,
+                   alarm={"kind": "restored", "at": _now_iso(), "lines": tamper_lines})
+        also = ["Your latest job settings were applied too."] if app_rules_differ(applied, want) else []
+        runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — restored · {bucket}",
+                           lines=[*tamper_lines, *also], trigger=trigger)
+        return "restored", SyncResult(bucket, True, lines, "restored"), None
+    set_status(cache, bucket, "ok", detail)
+    runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines,
+                       trigger=trigger)
+    return "ok", SyncResult(bucket, True, lines), None
+
+
+def sync(cfg, bucket: str, *, run=provision._run_aws, jobs=None, trigger: str = "manual") -> SyncResult:
+    """Apply the desired app rules to `bucket` (console rules kept) -- job save/delete,
+    setup. Rules changed outside backup-engine since the last apply are alarmed, not
+    silently absorbed. Raises LifecycleError on failure (after recording it)."""
+    if not managed(cfg["CONFIG_DIR"]):
+        raise LifecycleError("not_managed", "S3 rules need the AWS permissions update")
+    _, res, err = _reconcile(cfg, bucket, run=run, jobs=jobs, trigger=trigger)
+    if err is not None:
+        raise err
+    return res
 
 
 def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
@@ -397,58 +451,22 @@ def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
 
 # --- tamper check -----------------------------------------------------------------------
 
-def check(cfg, bucket: str, *, run=provision._run_aws) -> str:
-    """Compare the bucket's live APP rules with what the app last applied. A difference
-    (or a deleted configuration) is tampering: restore, alarm, record. Console-rule
-    edits are not tampering. Never raises: it runs before every backup and behind
-    Check now -- anything unexpected becomes the "error" state."""
+def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled") -> str:
+    """Before every backup run (trigger "scheduled") and behind Check now ("manual"):
+    the same pass as sync() -- drift from what was applied is restored + alarmed, and
+    job settings that haven't reached S3 yet are applied. Never raises: anything
+    unexpected becomes the "error" state."""
     try:
-        return _check(cfg, bucket, run=run)
+        if not managed(cfg["CONFIG_DIR"]):
+            return "not_managed"
+        state, _, _ = _reconcile(cfg, bucket, run=run, jobs=None, trigger=trigger)
+        return state
     except Exception as e:                                   # noqa: BLE001 — never raise
         try:
             set_status(cfg["CACHE_DIR"], bucket, "error", f"the check stopped unexpectedly ({type(e).__name__})")
         except Exception:                                    # noqa: BLE001 — state dir unwritable
             pass
         return "error"
-
-
-def _check(cfg, bucket: str, *, run) -> str:
-    config_dir = cfg["CONFIG_DIR"]
-    _, region, cache = _context(cfg)
-    if not managed(config_dir):
-        return "not_managed"
-    applied = load_applied(cache, bucket)
-    if applied is None:
-        try:
-            sync(cfg, bucket, run=run)
-            return "ok"
-        except LifecycleError as e:
-            return "unsupported" if e.kind == "unsupported" else "error"
-    try:
-        creds = role_creds(config_dir, region, run=run)
-        live = read_rules(bucket, creds, region, run=run)
-    except LifecycleError as e:
-        set_status(cache, bucket, "unsupported" if e.kind == "unsupported" else "error", e.detail)
-        return "unsupported" if e.kind == "unsupported" else "error"
-    if app_rules_of(live) == app_rules_of(applied):
-        set_status(cache, bucket, "ok")
-        return "ok"
-    lines = _change_lines(applied, live)
-    try:
-        write_rules(bucket, merge(live, applied), creds, region, run=run)
-    except LifecycleError as e:
-        alarm = {"kind": "not_restored", "at": _now_iso(), "lines": lines}
-        set_status(cache, bucket, "not_restored", e.detail, alarm=alarm)
-        runs.record_system(cache, kind="s3-rules",
-                           summary=f"S3 rules were changed outside backup-engine — NOT restored · {bucket}",
-                           lines=[*lines, e.detail], outcome="failed", error=e.detail, trigger="scheduled")
-        return "not_restored"
-    alarm = {"kind": "restored", "at": _now_iso(), "lines": lines}
-    set_status(cache, bucket, "restored", alarm=alarm)
-    runs.record_system(cache, kind="s3-rules",
-                       summary=f"S3 rules were changed outside backup-engine — restored · {bucket}",
-                       lines=lines, trigger="scheduled")
-    return "restored"
 
 
 def acknowledge(cache_dir: str, bucket: str | None = None) -> None:
