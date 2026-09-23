@@ -295,7 +295,13 @@ def run_tofu_apply(bucket, region, admin_key, admin_secret, session_token=None,
     scrub_vals = (admin_key, admin_secret, session_token or "")
     try:
         tf_dir = Path(workdir, "opentofu")
-        shutil.copytree(module_src, tf_dir)
+        # Never copy a LOCAL tfstate/.terraform left in the repo checkout (e.g. from a
+        # manual `tofu` run) into this throwaway apply -- this apply's own state is
+        # ephemeral (`-backend=false`) and the temp dir is removed in `finally` below;
+        # the lock file (.terraform.lock.hcl) is provider-version pinning, not state,
+        # so it's deliberately NOT excluded here.
+        shutil.copytree(module_src, tf_dir,
+                        ignore=shutil.ignore_patterns("*.tfstate", "*.tfstate.*", ".terraform"))
         shutil.copytree(provisioning_src, Path(workdir, "provisioning"))
         # tfvars as JSON so bucket/region can't break out of an HCL string
         # literal (injection-safe). tofu auto-loads terraform.tfvars.json.

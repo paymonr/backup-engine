@@ -4,3 +4,6 @@ tests/
 *.md
 **/__pycache__/
 *.pyc
+**/*.tfstate
+**/*.tfstate.*
+**/.terraform/

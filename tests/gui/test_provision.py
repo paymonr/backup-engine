@@ -196,6 +196,40 @@ def test_apply_tolerates_tofu_output_missing_multi_bucket_keys():
     assert out["bucket_admin_role_arn"] == ""
 
 
+def test_apply_excludes_tfstate_and_terraform_dir_from_the_module_copy(tmp_path):
+    # tfstate hygiene (deploy hygiene): a LOCAL tfstate/.terraform left in the repo
+    # checkout (e.g. from a manual `tofu` run) must never be copied into this
+    # throwaway apply -- this apply's own state is ephemeral (-backend=false) and
+    # the whole temp dir is removed afterwards regardless. The lock file
+    # (.terraform.lock.hcl) is provider-version pinning, not state -- it DOES copy.
+    module_src = tmp_path / "opentofu-src"
+    module_src.mkdir()
+    (module_src / "main.tf").write_text("# tf\n")
+    (module_src / ".terraform.lock.hcl").write_text("# lock\n")
+    (module_src / "terraform.tfstate").write_text("{}")
+    (module_src / "terraform.tfstate.backup").write_text("{}")
+    (module_src / ".terraform").mkdir()
+    (module_src / ".terraform" / "modules.json").write_text("{}")
+
+    seen = {}
+
+    def run(args, *, cwd, env):
+        seen["names"] = {p.name for p in _Path(cwd).iterdir()}
+
+        class CP:
+            returncode = 0
+            stdout = TOFU_OUTPUT if args[0] == "output" else ""
+            stderr = ""
+        return CP()
+
+    provision.run_tofu_apply("b", "us-east-1", "K", "S", run=run, module_src=module_src)
+    names = seen["names"]
+    assert "main.tf" in names and ".terraform.lock.hcl" in names
+    assert "terraform.tfstate" not in names
+    assert "terraform.tfstate.backup" not in names
+    assert ".terraform" not in names
+
+
 class _CP:
     def __init__(self, returncode=0, stdout="", stderr=""):
         self.returncode = returncode
