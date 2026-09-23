@@ -38,6 +38,20 @@ def client(app):
     return app.test_client()
 
 
+@pytest.fixture(autouse=True)
+def s3_rules_calls(monkeypatch):
+    """This file's `app` fixture stamps PERMISSIONS_VERSION to the current level
+    with a bucket-admin role ARN (needed for the dedicated-bucket tests below), so
+    lifecycle.managed() is True for every test here. Without this stub, job_save's
+    s3_rules.apply_for call (Task 7) would shell out to the real `aws sts
+    assume-role` on every save -- swallowed by apply_for's blanket except, so
+    tests would still pass, but silently touching AWS. Autouse, mirroring
+    tests/gui/test_provision_routes.py's converge_calls."""
+    calls = []
+    monkeypatch.setattr(s3_rules, "apply_for", lambda cfg, buckets: calls.append(buckets) or [])
+    return calls
+
+
 def _csrf(client):
     client.get("/jobs/new")
     with client.session_transaction() as s:
@@ -405,11 +419,10 @@ def test_edit_dedicated_job_shows_locked_bucket(client, app):
 def test_edit_dedicated_job_preserves_bucket_without_touching_aws(client, app, monkeypatch):
     # The Critical: editing a dedicated job (here its schedule) must PRESERVE its
     # dedicated bucket and NEVER call assume_role/ensure_bucket to (re-)CREATE it on
-    # the edit path. (Task 7: a save now separately syncs S3 rules for the job's
-    # bucket, which legitimately assumes the bucket-admin role for that purpose --
-    # that path is covered by tests/gui/test_s3_rules_triggers.py, so it's stubbed
-    # here to keep this test scoped to the JIT-create avoidance it's named for.)
-    monkeypatch.setattr(s3_rules, "apply_for", lambda cfg, buckets: [])
+    # the edit path. (Task 7's own S3-rules-sync-on-save AWS call is stubbed file-
+    # wide by the autouse s3_rules_calls fixture above and covered separately by
+    # tests/gui/test_s3_rules_triggers.py, so this test stays scoped to the
+    # JIT-create avoidance it's named for.)
     called = []
     monkeypatch.setattr(provision, "assume_role", lambda *a, **k: called.append("assume_role"))
     monkeypatch.setattr(buckets, "ensure_bucket", lambda *a, **k: called.append("ensure_bucket"))
