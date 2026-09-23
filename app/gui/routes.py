@@ -59,6 +59,9 @@ def _board_payload(cfg) -> dict:
     row = permissions.needs_you_row(cfg["CONFIG_DIR"])
     if row:
         board["needs_you"].append(row)
+    s3row = s3_rules.needs_you_row(cfg)
+    if s3row:
+        board["needs_you"].append(s3row)
     return board
 
 
@@ -1001,13 +1004,14 @@ _WHAT_LABELS = {
     "test-restore": "test restore", "usage-refresh": "usage refresh",
     "billing-check": "billing check", "probe": "destination probe",
     "provision": "destination setup", "permissions": "permissions update",
+    "s3-rules": "S3 rules update",
 }
 _OUTCOME_LABELS = {"ok": "OK", "failed": "Failed", "running": "Running", "aborted": "Stopped"}
 # The record kinds each Activity `kind` filter selects (spec 8.4).
 _KIND_GROUPS = {
     "runs": set(runs.BACKUP_KINDS),
     "restores": set(runs.OP_KINDS),
-    "setup": {"usage-refresh", "billing-check", "probe", "provision", "permissions"},
+    "setup": {"usage-refresh", "billing-check", "probe", "provision", "permissions", "s3-rules"},
 }
 # The outcomes each Activity `outcome` filter selects (spec 5.5).
 _OUTCOME_GROUPS = {"ok": {"ok"}, "failed": {"failed", "aborted"}, "running": {"running"}}
@@ -1456,6 +1460,7 @@ _SETUP_CHECK_NAMES = {
     "jobs_scheduled": "At least one job scheduled",
     "restore_tested": "Restore ever tested",
     "permissions": "AWS permissions up to date",
+    "s3_rules": "S3 rules match your jobs",
     "scheduler": "Scheduler up to date",
 }
 

@@ -56,6 +56,21 @@
             <a class="linklike" href="{{ c.fix_url }}">Test a restore →</a>
           {% elif c.code == 'permissions' and c.state != 'ok' %}
             <a class="linklike" href="/setup/permissions">Update permissions →</a>
+          {% elif c.code == 's3_rules' %}
+            {% if c.get('blocker') %}
+            <form method="post" action="/setup/s3-rules/acknowledge" style="display:inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button type="submit" class="btn btn-sm">I've seen this</button>
+            </form>
+            {% elif c.fix_url == '/setup/permissions' %}
+            <a class="linklike" href="/setup/permissions">Update permissions →</a>
+            {% endif %}
+            {% if c.fix_url != '/setup/permissions' %}
+            <form method="post" action="/setup/s3-rules/check" style="display:inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button type="submit" class="btn btn-sm">Check now</button>
+            </form>
+            {% endif %}
           {% endif %}
         </td>
       </tr>

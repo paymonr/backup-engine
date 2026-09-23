@@ -12,7 +12,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config_io, jobs_io, points, vocab, estimate_io, permissions
+from . import config_io, jobs_io, points, vocab, estimate_io, permissions, s3_rules
 from ..engine import runs
 
 COLD_CLASSES = ("GLACIER", "DEEP_ARCHIVE")   # thaw-first to read
@@ -286,6 +286,9 @@ def setup_checks(cfg, *, now=None, crontab_stale=False) -> list[dict]:
     perm = _check_permissions(config_dir)
     if perm:
         rows.append(perm)
+    s3 = s3_rules.setup_row(cfg)
+    if s3:
+        rows.append(s3)
     if crontab_stale:
         rows.append({"code": "scheduler", "state": "warn",
                      "sentence": "The schedule file on disk does not match your jobs; "
