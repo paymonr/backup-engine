@@ -712,9 +712,12 @@
   function updateHint() {
     if (!hint) return;
     var v = bucketInput.value || "";
-    // A dedicated bucket's name must be <base>-<suffix> (Addendum 2026-09-22); a
-    // value equal to base has no suffix at all, so it must show the hint too.
-    hint.hidden = !v || v.indexOf(base + "-") === 0;
+    // A dedicated bucket's name must be <base>-<suffix> with a NON-EMPTY suffix
+    // (Addendum 2026-09-22); a value equal to base, OR to exactly base + "-" (the
+    // suffix is empty), has no real suffix -- the server refuses both -- so the
+    // hint must show for either, not just for values that don't start with base + "-".
+    var prefixed = v.indexOf(base + "-") === 0;
+    hint.hidden = !v || (prefixed && v !== base + "-");
   }
   function prefill() {
     if (bucketTouched) return;

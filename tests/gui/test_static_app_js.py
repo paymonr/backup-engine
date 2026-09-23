@@ -9,6 +9,7 @@ attribute, the data-copy-target fallback, and the legacy execCommand path requir
 plain-http/LAN-IP deployments where navigator.clipboard is unavailable) still exist in
 the shipped file, so a future refactor can't silently drop them again.
 """
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,3 +33,15 @@ def test_readme_no_longer_calls_the_automated_wizard_planned():
     body = README.read_text()
     assert "planned, later phase" not in body
     assert "GUI wizard is planned" not in body
+
+
+def test_dedicated_bucket_hint_covers_the_empty_suffix_case():
+    # updateHint (job-form wizard, Task 8 + Addendum 2026-09-22): a bucket value of
+    # exactly `base + "-"` has NO suffix at all -- the server refuses it
+    # (routes._dedicated_name_ok requires len(bucket) > len(base) + 1) -- so the
+    # hint must stay visible for that value too, not just for ones that don't even
+    # start with `base + "-"`.
+    src = APP_JS.read_text()
+    m = re.search(r"function updateHint\(\) \{.*?\n  \}", src, re.S)
+    assert m, "updateHint() not found in app.js"
+    assert 'v !== base + "-"' in m.group(0)
