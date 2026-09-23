@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from app.gui import provision
@@ -154,6 +155,12 @@ def test_tofu_outputs_the_runtime_user_arn():
 def test_tofu_no_longer_owns_lifecycle_rules():
     main_tf = (provision.OPENTOFU_DIR / "main.tf").read_text()
     variables = (provision.OPENTOFU_DIR / "variables.tf").read_text()
-    assert "aws_s3_bucket_lifecycle_configuration" not in main_tf
+    versions = (provision.OPENTOFU_DIR / "versions.tf").read_text()
+    assert 'resource "aws_s3_bucket_lifecycle_configuration"' not in main_tf
     assert "noncurrent_version_expiration_days" not in variables
     assert "abort_incomplete_multipart_days" not in variables
+    # M3: old state that still tracks the backstop configuration FORGETS it (never destroys
+    # it -- a destroy would delete the app's rules and the owner's console rules with it).
+    assert re.search(r"removed\s*\{\s*from\s*=\s*aws_s3_bucket_lifecycle_configuration\.backup\s*\}", main_tf)
+    assert "destroy = true" not in main_tf
+    assert 'required_version = ">= 1.7.0"' in versions

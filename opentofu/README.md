@@ -21,9 +21,10 @@ It provisions:
     (default 30 days), and one housekeeping rule clears abandoned uploads
     and leftover delete markers. Until the app applies them the bucket keeps
     every old version (the safe direction). Re-running `tofu apply` with
-    state from an older version of this module removes its old
-    `backstop-appdata`/`backstop-media` rules; the app re-applies its own on
-    the next check, job save or backup run.
+    state from an older version of this module only *forgets* its old
+    lifecycle configuration (a `removed` block) — nothing in the bucket
+    changes, so the rules backup-engine wrote and any rule you added in the
+    console stay exactly as they are.
 - **`aws_iam_user.runtime`** + a single inline policy — the credentials the
   container uses. It is scoped to:
   - `s3:ListBucket` / `s3:GetBucketLocation` on the bucket itself (required
@@ -49,7 +50,7 @@ It provisions:
 
 ## Usage
 
-Requires [OpenTofu](https://opentofu.org/) >= 1.6.0 and AWS admin
+Requires [OpenTofu](https://opentofu.org/) >= 1.7.0 and AWS admin
 credentials available to your shell (e.g. via `AWS_PROFILE`,
 `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, or an SSO session) — **not**
 inside the backup container. This module is meant to be run once (or

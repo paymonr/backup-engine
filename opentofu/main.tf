@@ -72,3 +72,11 @@ resource "aws_iam_role_policy" "bucket_admin" {
     bucket = var.bucket_name
   })
 }
+
+# Lifecycle rules belong to backup-engine now (S3 rules). State from an older version of this
+# module still tracks the old backstop configuration: FORGET it, never destroy it -- a destroy
+# would delete the bucket's whole lifecycle configuration, the app's own rules and any rule
+# added in the AWS console with them.
+removed {
+  from = aws_s3_bucket_lifecycle_configuration.backup
+}
