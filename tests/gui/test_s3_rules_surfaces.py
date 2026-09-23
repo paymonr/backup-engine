@@ -212,6 +212,7 @@ def test_check_now_alarms_on_a_tampered_rule(client, cfg, monkeypatch):
     Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": [
         {"name": "manga", "type": "archive", "source": "media/manga", "schedule": "0 3 * * *",
          "enabled": True, "storage_class": "STANDARD", "retention": {"type": "days", "days": 180}}]}))
+    lifecycle.seed_new_bucket(cfg["CACHE_DIR"], BASE)
     fake = FakeS3()
     lifecycle.sync(cfg, BASE, run=fake)
     manga = next(r for r in fake.rules[BASE] if r["ID"] == "backup-engine:media/manga/")
@@ -359,3 +360,15 @@ def test_acknowledge_never_500s(client, cfg, monkeypatch):
     import html
     r = client.post("/setup/s3-rules/acknowledge", data={"csrf": _csrf(client)}, follow_redirects=True)
     assert r.status_code == 200 and "Couldn't clear the S3 rules alarm" in html.unescape(r.get_data(as_text=True))
+
+
+def test_row_warns_about_changes_waiting_for_confirmation(cfg):
+    jobs180 = [{"name": "manga", "type": "archive", "source": "media/manga", "schedule": "0 3 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "days", "days": 180}}]
+    lifecycle.save_applied(cfg["CACHE_DIR"], BASE, lifecycle.desired_rules(BASE, BASE, jobs180, {}),
+                           folders=["media/manga/"])
+    _jobs(cfg, 30)                                    # saved since: keeps less than S3 has
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail="")
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "warn" and row["fix_url"] == "/setup/storage"
+    assert row["sentence"] == "1 change waiting for your confirmation"

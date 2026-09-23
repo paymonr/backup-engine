@@ -37,6 +37,11 @@ def apply_for(cfg, buckets: list[str]) -> list[tuple[str, str]]:
         elif res.state == "console_rule":
             msgs.append(("warning", "A new S3 rule could delete or move backups — backup-engine left it in "
                                     "place. Setup shows the details."))
+        if res.waiting:
+            where = ", ".join("versioning" if c.folder is None else (c.folder or "whole bucket")
+                              for c in res.waiting)
+            msgs.append(("warning", f"S3 keeps the current rule for {where} — a change that keeps less "
+                                    "waits for your confirmation in Setup → S3 rules."))
         if res.changed and res.lines:
             shown = res.lines[:3] + (["…"] if len(res.lines) > 3 else [])
             msgs.append(("success", "S3 rules updated: " + "; ".join(shown)))
@@ -68,22 +73,19 @@ def _sentence(alarm: dict) -> str:
     return f"S3 rules were changed outside backup-engine — {word}{tail}"
 
 
-def _pending(cfg, buckets: list[str]) -> bool:
-    """A bucket whose last-applied app rules aren't what the jobs want now (e.g. a job
-    save whose S3 write failed). State files + jobs only — no AWS."""
-    from . import jobs_io
-    config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+def _outstanding(cfg, buckets: list[str]) -> tuple[bool, int]:
+    """(any bucket not yet given what the jobs want, how many keeps-less changes wait for the
+    owner) -- state files + jobs only, never AWS (R-B3). Any error reads as (False, 0): a
+    GET never 500s on this."""
     try:
-        base = config_io.read_backup_env(config_dir).get("S3_BUCKET", "").strip()
-        jobs, settings = jobs_io.load(config_dir), lifecycle.load_settings(config_dir)
+        not_reached, waiting = False, 0
         for b in buckets:
-            applied = lifecycle.load_applied(cache, b)
-            if applied is not None and lifecycle.app_rules_differ(
-                    applied, lifecycle.desired_rules(b, base, jobs, settings)):
-                return True
-    except Exception:                                        # noqa: BLE001 — a GET never 500s on this
-        return False
-    return False
+            nr, w = lifecycle.outstanding({"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}, b)
+            not_reached = not_reached or nr
+            waiting += len(w)
+        return not_reached, waiting
+    except Exception:                                        # noqa: BLE001
+        return False, 0
 
 
 def setup_row(cfg) -> dict | None:
@@ -105,13 +107,17 @@ def setup_row(cfg) -> dict | None:
     states = [e.get("state") for e in entries]
     checked = [e.get("checked_at") for e in entries if e.get("checked_at")]
     row["verified_at"] = min(checked) if checked else None
+    not_reached, waiting = _outstanding(cfg, buckets)
     if "not_restored" in states:
         # The alarm was acknowledged (popped), but the bucket's rules are still not
         # what the jobs need — an acknowledged not_restored must not read as "ok"
         # until the next successful Check now/backup run fixes it (or re-alarms).
         row.update(state="warn", sentence="S3 rules still differ from what your jobs need — try Check now")
-    elif _pending(cfg, buckets):
+    elif not_reached:
         row.update(state="warn", sentence="Your latest job settings haven't reached S3 yet — try Check now")
+    elif waiting:
+        row.update(state="warn", fix_url="/setup/storage",
+                   sentence=f"{waiting} change{'' if waiting == 1 else 's'} waiting for your confirmation")
     elif "unsupported" in states:
         row.update(state="warn", sentence="This storage doesn't support S3 rules — Plain copy keeps all old versions")
     elif "error" in states:

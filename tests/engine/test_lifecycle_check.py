@@ -7,6 +7,8 @@ from tests.engine.test_lifecycle_sync import BASE, CONSOLE, FakeS3, cfg  # noqa:
 
 
 def _applied(cfg, fake):
+    if not fake.rules.get(BASE):
+        lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)          # a bucket the app created: every folder applies
     lc.sync(cfg, BASE, run=fake)
     return list(fake.rules[BASE])
 
@@ -189,6 +191,7 @@ def test_check_on_a_dedicated_bucket(cfg):
                          "dedicated": True, "bucket": f"{BASE}-photos", "bucket_versioned": True})
     jobs_p.write_text(json.dumps(data))
     ded = f"{BASE}-photos"
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE); lc.seed_new_bucket(cfg["CACHE_DIR"], ded)
     fake = FakeS3()
     lc.sync_all(cfg, run=fake)
     base_before = json.loads(json.dumps(fake.rules[BASE]))

@@ -150,6 +150,7 @@ def test_sync_all_covers_the_base_and_dedicated_buckets(cfg):
                          "retention": {"type": "count", "count": 10},
                          "dedicated": True, "bucket": f"{BASE}-photos", "bucket_versioned": True})
     jobs_p.write_text(json.dumps(data))
+    lc.seed_new_bucket(cfg["CACHE_DIR"], f"{BASE}-photos")
     fake = FakeS3()
     results = lc.sync_all(cfg, run=fake)
     assert [r.bucket for r in results] == [BASE, f"{BASE}-photos"]
@@ -179,6 +180,7 @@ def _live(fake, rid, bucket=BASE):
 
 
 def test_sync_alarms_when_the_app_rules_changed_since_the_last_apply(cfg):
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
     fake = FakeS3()
     lc.sync(cfg, BASE, run=fake)
     _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] = {"NoncurrentDays": 1}
@@ -195,6 +197,7 @@ def test_sync_alarms_when_the_app_rules_changed_since_the_last_apply(cfg):
 
 
 def test_sync_after_a_job_change_is_not_tampering(cfg):
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
     fake = FakeS3()
     lc.sync(cfg, BASE, run=fake)
     _set_manga(cfg, {"type": "days", "days": 365})
@@ -217,6 +220,7 @@ def test_sync_tampering_that_cannot_be_put_back_is_not_restored(cfg):
 
 def test_live_rules_already_matching_the_jobs_are_not_tampering(cfg):
     # e.g. an earlier write landed but the app stopped before recording it.
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
     fake = FakeS3()
     lc.sync(cfg, BASE, run=fake)
     _set_manga(cfg, {"type": "days", "days": 365})

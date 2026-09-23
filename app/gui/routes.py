@@ -2373,6 +2373,9 @@ def job_save():
                                   versioned=bool(f.get("bucket_versioned")), creds=creds)
         except (provision.AssumeRoleError, buckets.BucketError) as e:
             return _render_job_form(cfg, job=existing, fv=fv, errors={"form": str(e)})
+        # A bucket backup-engine just created: its first S3 rules apply treats the new job's
+        # folder as new -- keeps more, applied at once (R-B2).
+        lifecycle.seed_new_bucket(cfg["CACHE_DIR"], bucket)
         job["dedicated"] = True
         job["bucket"] = bucket
         job["bucket_versioned"] = bool(f.get("bucket_versioned"))

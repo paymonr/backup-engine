@@ -61,6 +61,13 @@ def test_job_buckets(cfg):
     assert s3_rules.job_buckets(cfg, {"name": "x", "dedicated": True, "bucket": f"{BASE}-x"}) == [f"{BASE}-x"]
 
 
+def test_apply_for_says_a_change_that_keeps_less_is_waiting(cfg, monkeypatch):
+    ch = lifecycle.Change("backup-engine:media/m/", "media/m/", lifecycle.KEEPS_LESS, "media/m/: a → b", None, None)
+    monkeypatch.setattr(lifecycle, "sync", lambda c, b, **k: lifecycle.SyncResult(b, False, [], "ok", [ch]))
+    (level, text), = s3_rules.apply_for(cfg, [BASE])
+    assert level == "warning" and "media/m/" in text and "waits for your confirmation" in text
+
+
 # --- routes -----------------------------------------------------------------------------
 
 @pytest.fixture

@@ -695,3 +695,18 @@ def test_a_legacy_plain_copy_count_over_100_never_blocks_the_edit_form(client, a
                 "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 500}})
     tag = re.search(r'<input[^>]*name="retention_count"[^>]*>', client.get("/jobs/movies/edit").get_data(as_text=True))
     assert 'max=' not in tag.group(0)
+
+
+def test_a_new_dedicated_bucket_starts_with_an_empty_applied_state(client, app, monkeypatch):
+    # R-B2: the bucket was just created, so the new job's folder is new -- its first S3
+    # rules apply keeps more and needs no confirmation.
+    from app.engine import lifecycle
+    monkeypatch.setattr(provision, "assume_role", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "ASIA"})
+    monkeypatch.setattr(buckets, "ensure_bucket", lambda name, **k: None)
+    r = client.post("/jobs", data={"csrf": _csrf(client), "name": "photos", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
+    assert r.status_code in (302, 303)
+    doc = lifecycle.load_applied_doc(app.config["CACHE_DIR"], "bw-backups-photos")
+    assert doc["rules"] == [] and doc["folders"] == []
