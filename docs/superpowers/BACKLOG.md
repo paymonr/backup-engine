@@ -5,6 +5,31 @@ resumed after a break. Design items follow the brainstorming → spec → plan f
 
 ---
 
+## Check & update AWS permissions — parked items (branch permissions-converge, 2026-09-22)
+Built via SDD (Tasks 1–16; spec `specs/2026-09-22-permissions-converge-design.md` + its addendum). The final
+security review found PolicyGrant + the extra-buckets policy made the runtime key escalatable to account admin;
+owner chose **prefix-only dedicated buckets** (names must be `<base>-…`; role scoped to `<base>-*`, no IAM
+actions; extra-buckets policy + off-prefix grant path removed). Parked (all non-blocking):
+- **Pre-existing `<base>-…` buckets are adoptable**: `ensure_bucket` accepts `BucketAlreadyOwnedByYou`, then
+  rewrites lifecycle + tags it `managed-by=backup-engine` (a teardown target). Consider refusing to adopt a
+  bucket that already has objects or lacks our tag.
+- **Local `*.tfvars` not excluded** from the automated-setup copy / image (`name_prefix` override would break
+  converge's fixed names). None exist today.
+- **Manual-render route** (`/setup/destination/manual/render`) calls `render_policy(bucket)` without
+  `_check_base_bucket` (no wildcard statements there — UX only). Keys page accepts any non-blank S3_BUCKET.
+- **Obsolete extra-buckets policy** stays attached (inert) on installs provisioned 09-21..09-22; the script
+  prints an optional detach. Could add an explicit cleanup step later.
+- Code nits: `permissions_routes` imports private `_fmt_verified`/`_runtime_creds` from routes; `config_save`
+  uses `sysop._runtime_key` instead of `_runtime_creds`; `settle_tries<=0` unclamped; `_doc()`/bare dict lookups
+  in `discover` can still raise on malformed AWS docs; a post-apply re-check read error says "Nothing was
+  changed"; `buckets.is_prefixed` now unused in production; redundant `^`/`$` on fullmatch'd patterns;
+  duplicated `"; ".join(adds)` in needs-you row + Setup row; toggle copy vs `DEDICATED_NEEDS_UPDATE` are two
+  strings; tofu tests match file text by substring.
+- Test gaps: no table test tying `ensure_bucket`/teardown s3api calls to the role's actions; vocab sweep doesn't
+  render a stamped Destination line; no POST unprovisioned-redirect tests for the permissions routes.
+
+---
+
 ## Data explorer — parked minors (from the 2026-09-22 final whole-branch review)
 The data-explorer feature (browse + targeted restore across all 3 backup types; top-level
 Explore nav) shipped on branch `data-explorer` (fbc2638..HEAD). Final review = CHANGES-NEEDED;
@@ -30,7 +55,7 @@ the final fix wave. These five Minors were parked:
 
 ---
 
-## 1. In-app restic data explorer  — TODO (not started)
+## 1. In-app restic data explorer  — SHIPPED (merged + deployed 2026-09-22; see parked minors above)
 
 **What:** an in-app way to *browse/inspect* what's actually stored in S3 for a
 job, using restic (and the equivalent for the other engines) — snapshots → file
@@ -54,7 +79,7 @@ Right now exploring means `docker exec … restic ls/find/dump`.
 
 ---
 
-## 2. Backup resilience / state monitor  — DESIGN IN PROGRESS (awaiting ✅ on defaults)
+## 2. Backup resilience / state monitor  — SHIPPED (merged + deployed 2026-09-22; parked minors below)
 
 **What:** survive interruptions of large (2 TB) backups — pause/resume, retry a
 failed run with backoff, auto-resume after a container restart/reboot/deploy, and
@@ -79,7 +104,7 @@ retry 3×/backoff/transient-only; naming), then → spec (`docs/superpowers/spec
 
 ---
 
-## 3. Optional per-job dedicated S3 buckets (just-in-time)  — BUILT (awaiting merge/deploy)
+## 3. Optional per-job dedicated S3 buckets (just-in-time)  — SHIPPED; now PREFIX-ONLY (permissions-converge, 2026-09-22)
 
 Reframed from "one-bucket-per-job-type" to **opt-in, per-job** dedicated buckets,
 JIT-created at job save via STS AssumeRole (runtime key stays object-only). Object
