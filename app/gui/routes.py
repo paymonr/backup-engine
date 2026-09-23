@@ -12,7 +12,8 @@ from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
-               dirsize, attributions, status, vocab, points, readiness, ops, permissions)
+               dirsize, attributions, status, vocab, points, readiness, ops, permissions,
+               s3_rules)
 from ..estimator.prices import load_prices
 from ..estimator import usage
 from ..engine import cron, runs, errors, progress, buckets, sysop
@@ -1883,6 +1884,10 @@ def provision_automated_run():
           "warning")
     if perm_warning:
         flash(perm_warning, "warning")
+    # Initial S3 rules (spec 2026-09-23 §7): right after the permissions step, so the
+    # new bucket gets its rules at once. Soft-fail like the permissions step.
+    for category, msg in s3_rules.apply_for(cfg, [result["bucket"]]):
+        flash(msg, category)
     return redirect(url_for("gui.setup_page"))
 
 @bp.get("/jobs")
@@ -2331,6 +2336,14 @@ def job_save():
         if not _dedicated_name_ok(base, bucket):
             return _render_job_form(cfg, job=existing, fv=fv,
                                     errors={"form": DEDICATED_NAME_RULE.format(base=base)})
+        # S3 rules give a dedicated bucket ONE whole-bucket rule from its single job
+        # (controller ruling, Task 7): a second job on the same bucket would fight over
+        # the same rule ID. Refuse it here, before any AWS call.
+        taken = next((j["name"] for j in jobs_io.load(cfg["CONFIG_DIR"])
+                      if j.get("dedicated") and j.get("bucket") == bucket), None)
+        if taken:
+            return _render_job_form(cfg, job=existing, fv=fv,
+                                    errors={"form": f"The bucket {bucket} already belongs to the job {taken} — give this job its own name."})
         role = config_io.bucket_admin_role_arn(cfg["CONFIG_DIR"])
         region = env.get("AWS_REGION", "us-east-1")
         akey, asec = _runtime_creds(cfg)          # secrets.env, via the sysop reader
@@ -2369,6 +2382,8 @@ def job_save():
     # read true right after creating/editing (Task-4 carry-forward).
     jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
                            source_root=cfg["SOURCE_ROOT"])
+    for category, msg in s3_rules.apply_for(cfg, s3_rules.job_buckets(cfg, job)):
+        flash(msg, category)
     flash(f"Saved {job['name']}.", "success")
     if f.get("run_now"):
         runner.trigger_job(cfg["SCRIPTS_DIR"], job["name"])
@@ -2390,6 +2405,7 @@ def job_delete(name):
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
     cfg = current_app.config
+    gone = jobs_io.get(cfg["CONFIG_DIR"], name) or {"name": name}
     try:
         # Pass cache_dir so the job's caches go with it (Task-4 carry-forward):
         # state/<job>.json, runs.jsonl and points.json are all removed (7.1.9).
@@ -2399,6 +2415,8 @@ def job_delete(name):
         # file untouched (delete builds on _load_strict, which raised).
         flash(str(e))
         return redirect(url_for("gui.jobs_page"))
+    for category, msg in s3_rules.apply_for(cfg, s3_rules.job_buckets(cfg, gone)):
+        flash(msg, category)
     flash(f"Deleted {name}.")
     return redirect(url_for("gui.jobs_page"))
 

@@ -6,7 +6,7 @@
 import json
 import pathlib
 import pytest
-from app.gui import config_io, create_app, jobs_io, permissions
+from app.gui import config_io, create_app, jobs_io, permissions, s3_rules
 import app.engine.buckets as buckets
 import app.gui.provision as provision
 
@@ -174,6 +174,31 @@ def test_dedicated_save_creates_bucket_then_redirects(client, app, monkeypatch):
     assert _jobs(app)[0]["dedicated"] is True
     assert _jobs(app)[0]["bucket"] == "bw-backups-photos"
     assert _jobs(app)[0]["bucket_versioned"] is True
+
+
+def test_dedicated_save_refuses_a_bucket_already_used_by_another_job(client, app, monkeypatch):
+    # Controller ruling (Task 7 review): S3 rules give a dedicated bucket ONE
+    # whole-bucket rule from its single job -- a second job on the same bucket would
+    # fight over the same rule ID (S3 rejects the put) and conflicting settings.
+    # Refuse it server-side, before any AWS call, the same way the name-rule checks do.
+    _seed(app, {"name": "photos", "type": "archive", "source": "media/movies",
+                "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                "dedicated": True, "bucket": "bw-backups-photos", "bucket_versioned": True,
+                "retention": {"type": "keep_all"}})
+
+    def fail(*a, **k):
+        raise AssertionError("must not touch AWS once the bucket is already taken")
+    monkeypatch.setattr(provision, "assume_role", fail)
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "movies2", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "already belongs to the job photos" in body
+    jobs = _jobs(app)
+    assert len(jobs) == 1 and jobs[0]["name"] == "photos"      # nothing new saved
 
 
 def test_dedicated_save_surfaces_bucket_error(client, app, monkeypatch):
@@ -379,7 +404,12 @@ def test_edit_dedicated_job_shows_locked_bucket(client, app):
 
 def test_edit_dedicated_job_preserves_bucket_without_touching_aws(client, app, monkeypatch):
     # The Critical: editing a dedicated job (here its schedule) must PRESERVE its
-    # dedicated bucket and NEVER call assume_role/ensure_bucket on the edit path.
+    # dedicated bucket and NEVER call assume_role/ensure_bucket to (re-)CREATE it on
+    # the edit path. (Task 7: a save now separately syncs S3 rules for the job's
+    # bucket, which legitimately assumes the bucket-admin role for that purpose --
+    # that path is covered by tests/gui/test_s3_rules_triggers.py, so it's stubbed
+    # here to keep this test scoped to the JIT-create avoidance it's named for.)
+    monkeypatch.setattr(s3_rules, "apply_for", lambda cfg, buckets: [])
     called = []
     monkeypatch.setattr(provision, "assume_role", lambda *a, **k: called.append("assume_role"))
     monkeypatch.setattr(buckets, "ensure_bucket", lambda *a, **k: called.append("ensure_bucket"))
