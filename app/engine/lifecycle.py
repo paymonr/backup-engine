@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import secrets
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -1038,6 +1039,198 @@ def acknowledge(cache_dir: str, bucket: str | None = None, seen: str | None = No
             if seen is None or newest <= seen:
                 entry.pop("alarm", None)
         _write_atomic(_status_path(cache_dir), json.dumps(data, indent=2, sort_keys=True))
+
+
+# --- previews and typed confirmation (spec §3, ruling R-B4) ------------------------------------
+
+PREVIEW_TTL_S = 3600
+_TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
+_STALE = "That preview is out of date — preview the change again."
+
+
+class PreviewError(Exception):
+    """kind: not_managed | not_checked (nothing applied yet) | stale (token missing, older
+    than an hour, or jobs/settings changed since) | typed (bucket name not typed) | invalid
+    (the edit can't be saved). `message` is owner words."""
+    def __init__(self, kind: str, message: str):
+        super().__init__(message)
+        self.kind, self.message = kind, message
+
+
+@dataclass
+class Preview:
+    bucket: str
+    token: str | None                 # None: nothing keeps less -- save + sync directly
+    changes: list                     # every Change the write would make vs what S3 was given
+    keeps_less: list                  # the Changes that need the owner's confirmation
+    impacts: dict                     # rule_id -> {versions, bytes, oldest_age_days, scanned_at} | None
+    needs_typed: bool                 # the bucket name must be typed to apply
+    edit: dict
+
+
+def _parse_iso(s) -> datetime | None:
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pending_path(cache_dir: str, token: str) -> Path:
+    return Path(_state_dir(cache_dir), "pending", f"{token}.json")
+
+
+def load_preview(cache_dir: str, token: str) -> dict | None:
+    if not isinstance(token, str) or not _TOKEN.fullmatch(token):
+        return None
+    try:
+        data = json.loads(_pending_path(cache_dir, token).read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def discard_preview(cache_dir: str, token: str) -> None:
+    if isinstance(token, str) and _TOKEN.fullmatch(token):
+        try:
+            _pending_path(cache_dir, token).unlink()
+        except OSError:
+            pass
+
+
+def _prune_previews(cache_dir: str) -> None:
+    d = Path(_state_dir(cache_dir), "pending")
+    now = datetime.now(timezone.utc).timestamp()
+    for p in d.glob("*.json") if d.is_dir() else []:
+        try:
+            if now - p.stat().st_mtime > PREVIEW_TTL_S:
+                p.unlink()
+        except OSError:
+            pass
+
+
+def _inputs_hash(config_dir: str) -> str:
+    """jobs.json + storage.json exactly as they are on disk -- any save in between goes stale."""
+    h = hashlib.sha256()
+    for name in (jobs_io.JOBS_FILE, SETTINGS_FILE):
+        try:
+            h.update(Path(config_dir, name).read_bytes())
+        except OSError:
+            pass
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _set_hash(rs: RuleSet) -> str:
+    payload = {"rules": [_norm(r) for r in rs.rules.values()], "versioning": rs.versioning}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def edited(jobs: list[dict], settings: dict, edit: dict) -> tuple[list[dict], dict]:
+    """jobs + settings as they will be once `edit` is saved."""
+    if not isinstance(edit, dict) or edit.get("kind") not in ("job", "settings", "confirm"):
+        raise PreviewError("invalid", "That change couldn't be read — try again.")
+    job = edit.get("job")
+    if isinstance(job, dict):
+        jobs = [j for j in jobs if j.get("name") != job.get("name")] + [job]
+    new = edit.get("settings")
+    if isinstance(new, dict):
+        buckets = new.get("buckets")
+        settings = {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}}
+    return jobs, settings
+
+
+def save_edit(cfg, edit: dict) -> None:
+    """Save an edit: the job through jobs_io's normal write path (validated -- raises
+    ValueError -- and with the crontab re-rendered so it stays in step, exactly like
+    routes.py's job_save), then storage.json, held under its own lock (settings_lock) so
+    a concurrent writer -- e.g. seed_undo_days from a sync/check pass -- never interleaves
+    with this write."""
+    config_dir = cfg["CONFIG_DIR"]
+    job = edit.get("job")
+    if isinstance(job, dict):
+        source_root = cfg.get("SOURCE_ROOT") or os.environ.get("SOURCE_ROOT", "/backup/media")
+        jobs_io.upsert(config_dir, job, source_root=source_root)
+        scripts_dir = cfg.get("SCRIPTS_DIR") or os.environ.get("SCRIPTS_DIR", "/app/scripts")
+        jobs_io.render_crontab(config_dir, cfg["CACHE_DIR"], scripts_dir, source_root=source_root)
+    new = edit.get("settings")
+    if isinstance(new, dict):
+        buckets = new.get("buckets")
+        with settings_lock(config_dir):
+            save_settings(config_dir, {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}})
+
+
+def _needs_typed(change: Change, imp: dict | None) -> bool:
+    """Typed confirmation whenever the change deletes anything -- or might: no summary yet
+    (spec error table) -- or suspends versioning."""
+    if change.folder is None:
+        return change.rule_id == "versioning"
+    return imp is None or imp["versions"] > 0
+
+
+def preview(cfg, bucket: str, edit: dict) -> Preview:
+    """What saving `edit` would change in `bucket`'s rules, vs what S3 was last given. Files
+    only -- never AWS. Writes a token only when something keeps less."""
+    from . import storage_summary                 # local: storage_summary imports lifecycle
+    config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+    if not managed(config_dir):
+        raise PreviewError("not_managed", "S3 rules need the AWS permissions update first.")
+    jobs, settings = edited(jobs_io.load(config_dir), load_settings(config_dir), edit)
+    want = want_for(cfg, bucket, jobs, settings)
+    before = baseline_from_applied(_applied_doc(cache, bucket), want)
+    if before is None:
+        raise PreviewError("not_checked", "S3 rules for this bucket haven't been checked yet — "
+                                          "press Check now first.")
+    changes = classify(before, want)
+    less = [c for c in changes if c.kind == KEEPS_LESS]
+    impacts: dict[str, dict | None] = {}
+    for c in less:
+        if c.folder is None:
+            continue
+        summary = storage_summary.load(cache, bucket, c.folder)
+        impacts[c.rule_id] = (dict(storage_summary.impact(summary, c.before, c.after),
+                                   scanned_at=summary.get("scanned_at")) if summary else None)
+    needs_typed = any(_needs_typed(c, impacts.get(c.rule_id)) for c in less)
+    token = None
+    if less:
+        _prune_previews(cache)
+        token = secrets.token_urlsafe(18)
+        _write_atomic(_pending_path(cache, token), json.dumps({
+            "token": token, "bucket": bucket, "edit": edit, "target_hash": _set_hash(want),
+            "inputs_hash": _inputs_hash(config_dir), "created_at": _now_iso(), "needs_typed": needs_typed}))
+    return Preview(bucket, token, changes, less, impacts, needs_typed, edit)
+
+
+def apply_confirmed(cfg, token: str, typed: str, *, run=provision._run_aws) -> SyncResult:
+    """The owner confirmed a preview: re-check it, save its edit, and write the proposed rules
+    WITHOUT the gate, under the bucket lock (R-B4)."""
+    config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+    if not managed(config_dir):
+        raise PreviewError("not_managed", "S3 rules need the AWS permissions update first.")
+    t = load_preview(cache, token)
+    if t is None or not isinstance(t.get("bucket"), str):
+        raise PreviewError("stale", _STALE)
+    created = _parse_iso(t.get("created_at"))
+    if created is None or (datetime.now(timezone.utc) - created).total_seconds() > PREVIEW_TTL_S:
+        discard_preview(cache, token)
+        raise PreviewError("stale", _STALE)
+    bucket = t["bucket"]
+    if t.get("needs_typed") and (typed or "").strip() != bucket:
+        raise PreviewError("typed", f"Type the bucket name {bucket} exactly to confirm.")
+    with bucket_lock(cache, bucket):
+        jobs, settings = edited(jobs_io.load(config_dir), load_settings(config_dir), t.get("edit"))
+        if (_inputs_hash(config_dir) != t.get("inputs_hash")
+                or _set_hash(want_for(cfg, bucket, jobs, settings)) != t.get("target_hash")):
+            discard_preview(cache, token)
+            raise PreviewError("stale", _STALE)
+        try:
+            save_edit(cfg, t["edit"])
+        except ValueError as e:                  # jobs_io.JobsFileError is a ValueError too
+            raise PreviewError("invalid", str(e))
+        discard_preview(cache, token)
+        _, res, err = _reconcile_locked(cfg, bucket, run=run, trigger="manual", gated=False)
+    if err is not None:
+        raise err
+    return res
 
 
 # --- CLI ------------------------------------------------------------------------------------
