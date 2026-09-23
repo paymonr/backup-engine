@@ -1004,14 +1004,15 @@ _WHAT_LABELS = {
     "test-restore": "test restore", "usage-refresh": "usage refresh",
     "billing-check": "billing check", "probe": "destination probe",
     "provision": "destination setup", "permissions": "permissions update",
-    "s3-rules": "S3 rules update",
+    "s3-rules": "S3 rules update", "storage-summary": "storage summary",
 }
 _OUTCOME_LABELS = {"ok": "OK", "failed": "Failed", "running": "Running", "aborted": "Stopped"}
 # The record kinds each Activity `kind` filter selects (spec 8.4).
 _KIND_GROUPS = {
     "runs": set(runs.BACKUP_KINDS),
     "restores": set(runs.OP_KINDS),
-    "setup": {"usage-refresh", "billing-check", "probe", "provision", "permissions", "s3-rules"},
+    "setup": {"usage-refresh", "billing-check", "probe", "provision", "permissions", "s3-rules",
+              "storage-summary"},
 }
 # The outcomes each Activity `outcome` filter selects (spec 5.5).
 _OUTCOME_GROUPS = {"ok": {"ok"}, "failed": {"failed", "aborted"}, "running": {"running"}}

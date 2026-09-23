@@ -13,6 +13,7 @@ setup() {
   export JOBS_IO_STUB="$BATS_TEST_TMPDIR/jobsio.sh"
   export JOBS_IO_CMD="bash $JOBS_IO_STUB"
   export LIFECYCLE_CMD="true"
+  export SUMMARY_CMD="true"
 }
 run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
 
@@ -661,4 +662,23 @@ EOF
   run_job movies
   [ "$status" -eq 0 ]
   grep -qx "check --bucket my-bucket --trigger scheduled" "$log"
+}
+
+@test "a finished run starts a detached storage summary of its folder, with no run id of its own" {
+  local stub="$BATS_TEST_TMPDIR/summary.sh" out="$BATS_TEST_TMPDIR/summary.log"
+  printf '#!/usr/bin/env bash\necho "$* trigger=${BE_TRIGGER:-unset} run=${BE_RUN_ID:-unset}" >>"%s"\n' "$out" >"$stub"
+  export SUMMARY_CMD="bash $stub"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  for _ in $(seq 1 50); do [ -s "$out" ] && break; sleep 0.1; done
+  grep -qx "storage-summary --job movies trigger=scheduled run=unset" "$out"
+}
+
+@test "a storage summary that can't start never fails the run" {
+  export SUMMARY_CMD="$BATS_TEST_TMPDIR/no-such-command"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
 }
