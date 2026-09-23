@@ -3180,3 +3180,24 @@ Verify: `python3 -m pytest -q`, `bats tests/bats/`, `shellcheck setup.sh scripts
 11. **No AWS on GET (T7 minor, Global Constraint).** One test: monkeypatch `app.gui.provision.subprocess.run` to raise, provision an install (no stamp), then GET `/`, `/status.json`, `/setup`, `/setup/destination`, `/setup/permissions`, `/jobs/new` → all 200.
 
 Verify: `python3 -m pytest -q`, `bats tests/bats/`, `shellcheck ...`, `(cd opentofu && tofu fmt -check)`. Commit (one or several): `fix(permissions): clear stale stamp on re-setup; IAM settle retry; hardening; keep tfstate out of the image`.
+
+### Task 16: Verify rejects an un-narrowed role; shape-check the base bucket before rendering IAM
+
+Spec: the "Follow-up (fix-wave re-review, owner-approved)" paragraph at the end of the spec addendum.
+
+**Files:** `app/gui/permissions.py`, `app/gui/permissions_routes.py`, `tests/gui/test_permissions_fallback.py`, `tests/gui/test_permissions_plan.py`, `tests/gui/test_permissions_routes.py` (and `tests/gui/test_permissions_engine.py` if a fixture needs the new guard).
+
+1. **Negative scope probe.** `_probe_once` gains a 4th probe after "The role … has its policy": `"The role can't reach the shared bucket"`. Under the SAME assumed creds run `["s3api", "get-bucket-versioning", "--bucket", bucket, "--output", "json"]`. The probe is ok ONLY when `returncode != 0` and `"AccessDenied"` is in stderr (the narrowed role grants `GetBucketVersioning` on `<base>-*` only). A success means the role still has an older, wider policy → not ok, hint `"The role still has an older, wider policy — did step 2 of the script run?"`. Any other failure (no AccessDenied) → not ok, hint `"Couldn't confirm the role is limited to this app's buckets — try Verify again."`, detail scrubbed of the assumed key/secret/token. When assume-role fails, this probe is `False` with hint `"Needs the role first (step 1)."` (like probe 3). `verify()` therefore returns exactly 4 probes; the existing retry loop covers IAM propagation after the owner runs the script. Update the fakes in `tests/gui/test_permissions_fallback.py` so `get-bucket-versioning` under the assumed creds returns AccessDenied by default; add tests: (a) old wide role (get-bucket-versioning succeeds) → probe 4 fails with the "older, wider policy" hint and `all(p.ok)` is False; (b) a non-AccessDenied error → probe 4 fails with the "try Verify again" hint and the assumed secret/token is scrubbed from its detail; (c) the probe runs with the assumed creds (assert `session_token`); (d) the all-good path has 4 ok probes. Adjust any existing assertion on the probe count (3 → 4). Also update the route test fixtures in `tests/gui/test_permissions_routes.py` only if they assert a probe count.
+2. **Base-bucket guard before rendering IAM.** Add in `permissions.py`:
+   ```python
+   _BASE_BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", re.ASCII)
+
+   def _check_base_bucket(bucket: str) -> None:
+       """The base bucket name goes into IAM Resource ARNs; anything but a plain S3 name
+       (e.g. "*", "?", "${...}") could widen the <base>-* confinement."""
+       if not _BASE_BUCKET_RE.fullmatch(bucket or "") or ".." in bucket:
+           raise PermissionsError("bucket", f"{bucket!r} is not a plain S3 bucket name")
+   ```
+   Call it at the top of `required_docs()` (the single place converge/plan and `script()` render policies). In `permissions_routes._perm_error_message` add `kind == "bucket"` → `"The shared bucket name on Keys & secrets isn't a plain S3 bucket name, so no AWS permissions were built from it. Fix it there first. Nothing was changed."`. Tests: `required_docs` refuses `"*"`, `"a*b"`, `"${aws:username}"`, `"Bad_Name"`, `"x..y"`, `"name\n"` and accepts `"unraid-backup-123456789012"` and a legacy dotted `"my.backups.bucket"`; a route test: provisioned install whose `S3_BUCKET=*` → POST `/setup/permissions/update` returns 400 with that message and `converge`… — monkeypatch `permissions.runtime_principal` and let the REAL `converge` run with a fake `run` that raises if any `iam` write is attempted (the guard must fire before any AWS write; preflight/account calls may be stubbed via monkeypatching `provision.verify_admin_can_provision` and `provision.aws_account_id`).
+
+Verify: `python3 -m pytest -q`, `bats tests/bats/`. Commit: `fix(permissions): Verify rejects an un-narrowed role; shape-check the base bucket before rendering IAM`.

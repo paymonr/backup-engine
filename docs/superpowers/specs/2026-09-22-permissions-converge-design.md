@@ -285,11 +285,18 @@ re-lifecycle ANY bucket in the account. Owner decision: **prefix-only dedicated 
   assumes the role; (3) the assumed role can `s3api list-buckets` (proves the role policy is on).
 
 **Also folded in (review Important 2, Minors 4–10, deploy hygiene):** a new provision/re-setup
-clears the stamp + role ARN (guided Validate; Keys save that changes the bucket or submits a new
-runtime key; automated setup whose final converge fails); converge's post-apply re-check retries
+clears the stamp (+ role ARN on guided Validate and on an automated setup whose final converge
+fails; a Keys save that changes the bucket or submits a new runtime key clears the stamp only — the
+role ARN is a visible Keys field, and gating needs the stamp anyway); converge's post-apply re-check retries
 briefly for IAM eventual consistency; the delete-admin-key reminder also follows a Preview that
 found nothing to do; shape checks use `re.fullmatch` + `re.ASCII`; `current_level` uses
 `isdecimal`; unparseable AWS JSON becomes a clean error; the static messages drop `Markup` (tests
 compare unescaped text); `_run_admin` reuses `_guard`; `*.tfstate*` / `.terraform/` never reach
 the image (`.dockerignore`) or the automated-setup temp copy; a regression test proves no GET
 calls AWS.
+
+**Follow-up (fix-wave re-review, owner-approved):** Verify gains a 4th probe — under the assumed role,
+`s3api get-bucket-versioning --bucket <base>` must be **AccessDenied** (the narrowed role reaches only
+`<base>-*`; an old unscoped role would succeed), so Verify can never stamp an un-narrowed role. And the
+base bucket name is shape-checked (`[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]`, no `..`, ASCII, fullmatch) before
+it is rendered into any IAM policy document, so a Keys edit like `*` can't widen the `<base>-*` confinement.
