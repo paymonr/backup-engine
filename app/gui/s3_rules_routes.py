@@ -35,6 +35,16 @@ def s3_rules_acknowledge():
     _csrf_or_400()
     if _unprovisioned():
         return redirect(url_for("gui.setup_page"))
-    lifecycle.acknowledge(current_app.config["CACHE_DIR"])
-    flash("Noted — the S3 rules alarm is cleared.", "success")
+    cfg = current_app.config
+    seen = (request.form.get("seen") or "").strip() or None
+    try:
+        lifecycle.acknowledge(cfg["CACHE_DIR"], seen=seen)
+        still = s3_rules.open_alarm(cfg) is not None
+    except Exception:                                        # noqa: BLE001 — never a 500 (O2)
+        flash("Couldn't clear the S3 rules alarm — try again.", "warning")
+        return redirect(url_for("gui.setup_page"))
+    if still:
+        flash("Noted. A newer S3 rules alarm arrived after this page loaded — it's still shown.", "warning")
+    else:
+        flash("Noted — the S3 rules alarm is cleared.", "success")
     return redirect(url_for("gui.setup_page"))

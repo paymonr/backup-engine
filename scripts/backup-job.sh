@@ -127,7 +127,8 @@ main() {
   # or a long wait on the bucket's state lock. LIFECYCLE_CMD/LIFECYCLE_TIMEOUT are test seams.
   # shellcheck disable=SC2086  # LIFECYCLE_CMD is a command line, split on purpose
   timeout "${LIFECYCLE_TIMEOUT:-120}" ${LIFECYCLE_CMD:-python3 -m app.engine.lifecycle} \
-    check --bucket "${JOB_BUCKET:-${S3_BUCKET:-}}" || log_warn "S3 rules check could not run"
+    check --bucket "${JOB_BUCKET:-${S3_BUCKET:-}}" --trigger "${BE_TRIGGER:-scheduled}" \
+    || log_warn "S3 rules check could not run"
   local src="$SOURCE_ROOT/$JOB_SOURCE"
   [ -d "$src" ] || _fail "job '$JOB' source '$src' missing"
   : "${RESTIC_CACHE_DIR:=$CACHE_DIR/restic}"

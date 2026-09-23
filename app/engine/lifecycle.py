@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -224,6 +225,11 @@ def app_rules_of(rules: list[dict]) -> dict[str, dict]:
     return {r["ID"]: _norm(r) for r in rules if is_app_rule(r)}
 
 
+def _days(n) -> str:
+    """"1 day" / "30 days" (M4)."""
+    return f"{n} day" if n == 1 else f"{n} days"
+
+
 def describe(rule: dict) -> str:
     """One app rule in plain words (Activity lines, flashes, tamper alarms -- so a rule
     edited outside the app also names what it now does to current files)."""
@@ -235,11 +241,12 @@ def describe(rule: dict) -> str:
     if "NewerNoncurrentVersions" in nce:
         parts.append(f"newest {nce['NewerNoncurrentVersions']} old versions of each file kept")
         if nce.get("NoncurrentDays", 1) > 1:
-            parts.append(f"older ones removed {nce['NoncurrentDays']} days after being replaced")
+            parts.append(f"older ones removed {_days(nce['NoncurrentDays'])} after being replaced")
     elif "NoncurrentDays" in nce:
-        parts.append(f"old versions removed {nce['NoncurrentDays']} days after being replaced")
+        parts.append(f"old versions removed {_days(nce['NoncurrentDays'])} after being replaced")
     if "AbortIncompleteMultipartUpload" in rule:
-        parts.append(f"abandoned uploads cleared after {rule['AbortIncompleteMultipartUpload']['DaysAfterInitiation']} days")
+        parts.append("abandoned uploads cleared after "
+                     + _days(rule["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"]))
     if (rule.get("Expiration") or {}).get("ExpiredObjectDeleteMarker"):
         parts.append("leftover delete markers cleared")
     # never created by the app -- only present when someone changed the rule outside it
@@ -279,23 +286,23 @@ def destructive_actions(rule: dict) -> list[str]:
     out = []
     exp = rule.get("Expiration") if isinstance(rule.get("Expiration"), dict) else {}
     if "Days" in exp:
-        out.append(f"expires current files {exp['Days']} days after they're written")
+        out.append(f"expires current files {_days(exp['Days'])} after they're written")
     if "Date" in exp:
         out.append(f"expires current files on {str(exp['Date'])[:10]}")
     nce = rule.get("NoncurrentVersionExpiration")
     if isinstance(nce, dict):
-        words = f"removes old versions {nce.get('NoncurrentDays', '?')} days after being replaced"
+        words = f"removes old versions {_days(nce.get('NoncurrentDays', '?'))} after being replaced"
         if "NewerNoncurrentVersions" in nce:
             words += f" (newest {nce['NewerNoncurrentVersions']} kept)"
         out.append(words)
     for t in _as_list(rule.get("Transitions")) + _as_list(rule.get("Transition")):
-        when = (f"after {t['Days']} days" if "Days" in t else
+        when = (f"after {_days(t['Days'])}" if "Days" in t else
                 f"on {str(t['Date'])[:10]}" if "Date" in t else "")
         out.append(f"moves current files to {t.get('StorageClass', 'another class')} {when}".rstrip())
     for t in (_as_list(rule.get("NoncurrentVersionTransitions"))
               + _as_list(rule.get("NoncurrentVersionTransition"))):
         out.append(f"moves old versions to {t.get('StorageClass', 'another class')} "
-                   f"{t.get('NoncurrentDays', '?')} days after being replaced")
+                   f"{_days(t.get('NoncurrentDays', '?'))} after being replaced")
     return out
 
 
@@ -332,8 +339,9 @@ _SEVERITY = {"restored": 1, "console_rule": 2, "not_restored": 3}
 
 def merge_alarms(alarms: list[dict | None]) -> dict | None:
     """Several open alarms (one bucket over time, or several buckets) as one: the most
-    severe kind heads it (ties: the latest), and every console rule ID named by any of
-    them is kept, so a later alarm can never hide an earlier one's rule."""
+    severe kind heads it (ties: the latest), every console rule ID named by any of them is
+    kept, so a later alarm can never hide an earlier one's rule, and `latest` is the newest
+    `at` of them all (O2: acknowledge clears only what the owner saw)."""
     alarms = [a for a in alarms if isinstance(a, dict) and a]
     if not alarms:
         return None
@@ -346,6 +354,7 @@ def merge_alarms(alarms: list[dict | None]) -> dict | None:
     for a in alarms:
         lines += [ln for ln in (a.get("lines") or []) if ln not in lines]
     out["lines"] = lines[:50]
+    out["latest"] = max((a.get("latest") or a.get("at") or "") for a in alarms)
     return out
 
 
@@ -485,12 +494,17 @@ def load_status(cache_dir: str) -> dict:
 def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm: dict | None = None) -> None:
     """state: ok | error | unsupported | restored | not_restored. An `alarm` (restored |
     not_restored | console_rule) survives later clean checks until the owner
-    acknowledges it; a new one is merged with any still open (merge_alarms)."""
+    acknowledges it; a new one is merged with any still open (merge_alarms). A pass that
+    RESTORED the app's rules turns an open not_restored alarm of this bucket into a
+    restored one (M1) -- its lines and console rule IDs stay."""
     with _status_lock(cache_dir):                # buckets share this file: read-modify-write locked
         data = load_status(cache_dir)
         prev = data.get(bucket) or {}
+        prev_alarm = prev.get("alarm")
+        if state == "restored" and isinstance(prev_alarm, dict) and prev_alarm.get("kind") == "not_restored":
+            prev_alarm = dict(prev_alarm, kind="restored")
         entry = {"state": state, "checked_at": _now_iso(), "detail": detail}
-        keep = merge_alarms([prev.get("alarm"), alarm]) if alarm is not None else prev.get("alarm")
+        keep = merge_alarms([prev_alarm, alarm]) if alarm is not None else prev_alarm
         if keep:
             entry["alarm"] = keep
         data[bucket] = entry
@@ -585,34 +599,37 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str):
 
     in_step = not app_rules_differ(live, want) and not any(r.get("ID") in LEGACY_IDS for r in live)
     if in_step:
+        status("ok", detail)                     # M2: the alarm is on disk before the fingerprint moves
         if applied is None or app_rules_differ(applied, want) or stored_fp != live_fp:
             save_applied(cache, bucket, want, console=live_fp)
-        status("ok", detail)
         return headline("ok"), SyncResult(bucket, False, [], headline("ok")), None
     tampered = applied is not None and app_rules_differ(live, applied)
     tamper_lines = _change_lines(applied, live) if tampered else []
     try:
         write_rules(bucket, merge(live, want), creds, region, run=run)
     except LifecycleError as e:
-        if applied is not None and stored_fp != live_fp:
-            save_applied(cache, bucket, applied, console=live_fp)      # alarm a console rule once
         if not tampered:
             status(_err_state(e), e.detail)
+            if applied is not None and stored_fp != live_fp:
+                save_applied(cache, bucket, applied, console=live_fp)  # alarm a console rule once
             return _err_state(e), None, e
         status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
+        if stored_fp != live_fp:
+            save_applied(cache, bucket, applied, console=live_fp)
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
                            lines=[*tamper_lines, e.detail], outcome="failed", error=e.detail,
                            trigger=trigger)
         return "not_restored", None, e
-    save_applied(cache, bucket, want, console=live_fp)
     lines = _change_lines(live, want) + ([detail] if detail else [])
     if tampered:
         status("restored", detail, {"kind": "restored", "at": _now_iso(), "lines": tamper_lines})
+        save_applied(cache, bucket, want, console=live_fp)
         also = ["Your latest job settings were applied too."] if app_rules_differ(applied, want) else []
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — restored · {bucket}",
                            lines=[*tamper_lines, *also], trigger=trigger)
         return headline("restored"), SyncResult(bucket, True, lines, headline("restored")), None
     status("ok", detail)
+    save_applied(cache, bucket, want, console=live_fp)
     runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines,
                        trigger=trigger)
     return headline("ok"), SyncResult(bucket, True, lines, headline("ok")), None
@@ -668,11 +685,17 @@ def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled
         return "error"
 
 
-def acknowledge(cache_dir: str, bucket: str | None = None) -> None:
+def acknowledge(cache_dir: str, bucket: str | None = None, seen: str | None = None) -> None:
+    """Clear open alarms. With `seen` (the newest alarm time the owner's page showed), an
+    alarm that arrived after that page loaded stays (O2)."""
     with _status_lock(cache_dir):
         data = load_status(cache_dir)
         for b, entry in data.items():
-            if bucket in (None, b) and isinstance(entry, dict):
+            if bucket not in (None, b) or not isinstance(entry, dict):
+                continue
+            alarm = entry.get("alarm")
+            newest = (alarm.get("latest") or alarm.get("at") or "") if isinstance(alarm, dict) else ""
+            if seen is None or newest <= seen:
                 entry.pop("alarm", None)
         _write_atomic(_status_path(cache_dir), json.dumps(data, indent=2, sort_keys=True))
 
@@ -696,6 +719,9 @@ def _cfg_from_env() -> dict:
             "CACHE_DIR": os.environ.get("CACHE_DIR", "/cache")}
 
 
+_TRIGGER = re.compile(r"[a-z][a-z-]{0,19}")
+
+
 def main(argv=None) -> int:
     import argparse
     import sys
@@ -703,11 +729,14 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("sync"); s.add_argument("--bucket")
     c = sub.add_parser("check"); c.add_argument("--bucket", required=True)
+    c.add_argument("--trigger", default="scheduled")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     cfg = _cfg_from_env()
     if args.cmd == "check":
+        # O4: backup-job.sh passes BE_TRIGGER, so a Run now records its check as manual.
+        trigger = args.trigger if _TRIGGER.fullmatch(args.trigger or "") else "scheduled"
         try:
-            words = _CHECK_WORDS.get(check(cfg, args.bucket), "couldn't be checked (see Setup)")
+            words = _CHECK_WORDS.get(check(cfg, args.bucket, trigger=trigger), "couldn't be checked (see Setup)")
         except Exception as e:                       # noqa: BLE001 — never block a backup
             words = f"couldn't be checked ({type(e).__name__})"
         print(f"S3 rules check · {args.bucket}: {words}")

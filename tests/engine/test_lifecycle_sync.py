@@ -187,7 +187,7 @@ def test_sync_alarms_when_the_app_rules_changed_since_the_last_apply(cfg):
     assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
     st = lc.load_status(cfg["CACHE_DIR"])[BASE]
     assert st["state"] == "restored" and st["alarm"]["kind"] == "restored"
-    assert any("1 days" in l for l in st["alarm"]["lines"])
+    assert any("removed 1 day after being replaced" in l for l in st["alarm"]["lines"])
     ends = [e for e in _events(cfg) if e["kind"] == "s3-rules" and e["event"] == "end"]
     assert len(ends) == 2                                    # the first apply + the tamper record
     log = Path(cfg["CACHE_DIR"], _events(cfg)[-2]["log"]).read_text()

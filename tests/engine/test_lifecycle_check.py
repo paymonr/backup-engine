@@ -227,8 +227,8 @@ def test_a_new_destructive_console_rule_alarms_once_and_is_left_alone(cfg):
     st = lc.load_status(cfg["CACHE_DIR"])[BASE]
     assert st["alarm"]["kind"] == "console_rule" and st["alarm"]["rules"] == ["x"]
     log = _s3_rule_logs(cfg)[-1]
-    assert "x" in log and "expires current files 1 days after" in log
-    assert "removes old versions 1 days after being replaced" in log
+    assert "x" in log and "expires current files 1 day after" in log
+    assert "removes old versions 1 day after being replaced" in log
     # alarms once: the fingerprint moved on, the alarm stays until acknowledged
     n = len(_s3_rule_logs(cfg))
     assert lc.check(cfg, BASE, run=fake) == "ok"
@@ -455,3 +455,82 @@ def test_lifecycle_aws_calls_carry_short_timeouts(cfg):
     assert fake.calls
     for c in fake.calls:
         assert c[-4:] == ["--cli-connect-timeout", "10", "--cli-read-timeout", "30"], c
+
+
+# --- Phase A carry-overs: M1, M2, O2, O4, R-B9 --------------------------------------------
+
+def test_a_restored_pass_turns_an_open_not_restored_alarm_into_restored(cfg):
+    cache = cfg["CACHE_DIR"]
+    lc.set_status(cache, BASE, "not_restored", "AccessDenied",
+                  alarm={"kind": "not_restored", "at": "2026-09-23T01:00:00Z", "lines": ["a"], "rules": ["x"]})
+    lc.set_status(cache, BASE, "restored",
+                  alarm={"kind": "restored", "at": "2026-09-23T02:00:00Z", "lines": ["b"]})
+    alarm = lc.load_status(cache)[BASE]["alarm"]
+    assert alarm["kind"] == "restored" and alarm["rules"] == ["x"] and alarm["lines"] == ["a", "b"]
+    # any other state keeps the most severe: a later failed restore is NOT restored again
+    lc.set_status(cache, BASE, "not_restored", "AccessDenied",
+                  alarm={"kind": "not_restored", "at": "2026-09-23T03:00:00Z", "lines": []})
+    assert lc.load_status(cache)[BASE]["alarm"]["kind"] == "not_restored"
+
+
+def test_a_later_restore_on_the_same_bucket_replaces_not_restored_end_to_end(cfg):
+    fake = FakeS3()
+    _applied(cfg, fake)
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    assert lc.check(cfg, BASE, run=fake) == "console_rule"
+    fake.rules[BASE] = [r for r in fake.rules[BASE] if r["ID"] == "x"]      # app rules deleted...
+    fake.deny_put = True
+    assert lc.check(cfg, BASE, run=fake) == "not_restored"                   # ...and not put back
+    fake.deny_put = False
+    assert lc.check(cfg, BASE, run=fake) == "restored"                       # ...now they are
+    alarm = lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]
+    assert alarm["kind"] == "restored" and alarm["rules"] == ["x"]           # the console rule stays named
+
+
+def test_a_failed_status_write_never_loses_a_console_alarm(cfg, monkeypatch):
+    fake = FakeS3()
+    _applied(cfg, fake)
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    real = lc.set_status
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(lc, "set_status", boom)
+    assert lc.check(cfg, BASE, run=fake) == "error"
+    monkeypatch.setattr(lc, "set_status", real)
+    assert lc.check(cfg, BASE, run=fake) == "console_rule"                   # alarmed, never absorbed
+    assert lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]["rules"] == ["x"]
+
+
+def test_acknowledge_keeps_an_alarm_newer_than_what_the_owner_saw(cfg):
+    cache = cfg["CACHE_DIR"]
+    lc.set_status(cache, BASE, "restored",
+                  alarm={"kind": "restored", "at": "2026-09-23T01:00:00Z", "lines": []})
+    lc.set_status(cache, f"{BASE}-photos", "restored",
+                  alarm={"kind": "restored", "at": "2026-09-23T05:00:00Z", "lines": []})
+    lc.acknowledge(cache, seen="2026-09-23T02:00:00Z")
+    st = lc.load_status(cache)
+    assert "alarm" not in st[BASE] and "alarm" in st[f"{BASE}-photos"]
+    lc.acknowledge(cache, seen="2026-09-23T05:00:00Z")
+    assert "alarm" not in lc.load_status(cache)[f"{BASE}-photos"]
+
+
+def test_acknowledge_judges_a_merged_alarm_by_its_newest_part(cfg):
+    cache = cfg["CACHE_DIR"]
+    lc.set_status(cache, BASE, "not_restored",
+                  alarm={"kind": "not_restored", "at": "2026-09-23T01:00:00Z", "lines": []})
+    lc.set_status(cache, BASE, "not_restored",
+                  alarm={"kind": "console_rule", "at": "2026-09-23T04:00:00Z", "lines": [], "rules": ["x"]})
+    lc.acknowledge(cache, seen="2026-09-23T01:00:00Z")          # the page only showed the first
+    assert lc.load_status(cache)[BASE]["alarm"]["rules"] == ["x"]
+
+
+def test_cli_check_passes_the_trigger_through(cfg, monkeypatch, capsys):
+    monkeypatch.setenv("CONFIG_DIR", cfg["CONFIG_DIR"])
+    monkeypatch.setenv("CACHE_DIR", cfg["CACHE_DIR"])
+    seen = {}
+    monkeypatch.setattr(lc, "check", lambda c, b, **k: seen.update(k) or "ok")
+    assert lc.main(["check", "--bucket", BASE, "--trigger", "manual"]) == 0
+    assert seen["trigger"] == "manual"
+    assert lc.main(["check", "--bucket", BASE, "--trigger", "$(rm -rf /)"]) == 0
+    assert seen["trigger"] == "scheduled"                       # anything odd falls back

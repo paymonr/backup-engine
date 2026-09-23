@@ -331,3 +331,31 @@ def test_setup_page_offers_acknowledge_for_a_console_rule_alarm(client, cfg):
     assert "A new S3 rule could delete or move backups: x" in body
     assert 'action="/setup/s3-rules/acknowledge"' in body
     assert "A new S3 rule could delete or move backups" in html.unescape(client.get("/").get_data(as_text=True))
+
+
+# --- O2: acknowledge what the page showed, never a 500 ------------------------------------
+
+def test_setup_page_carries_the_alarm_time_it_showed(client, cfg):
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail="",
+            alarm={"kind": "restored", "at": "2026-09-23T04:59:00Z", "lines": []})
+    body = client.get("/setup").get_data(as_text=True)
+    assert 'name="seen" value="2026-09-23T04:59:00Z"' in body
+
+
+def test_acknowledge_only_clears_what_the_page_showed(client, cfg):
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail="",
+            alarm={"kind": "restored", "at": "2026-09-23T06:00:00Z", "lines": []})
+    body = client.post("/setup/s3-rules/acknowledge",
+                       data={"csrf": _csrf(client), "seen": "2026-09-23T04:59:00Z"},
+                       follow_redirects=True).get_data(as_text=True)
+    assert "alarm" in lifecycle.load_status(cfg["CACHE_DIR"])[BASE]
+    assert "A newer S3 rules alarm arrived after this page loaded" in body
+
+
+def test_acknowledge_never_500s(client, cfg, monkeypatch):
+    def boom(*a, **k):
+        raise OSError(30, "Read-only file system")
+    monkeypatch.setattr(lifecycle, "acknowledge", boom)
+    import html
+    r = client.post("/setup/s3-rules/acknowledge", data={"csrf": _csrf(client)}, follow_redirects=True)
+    assert r.status_code == 200 and "Couldn't clear the S3 rules alarm" in html.unescape(r.get_data(as_text=True))

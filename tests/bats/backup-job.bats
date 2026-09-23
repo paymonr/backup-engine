@@ -641,3 +641,24 @@ EOF
   grep -qx "timeout 120" "$tlog"
   grep -q "^check --bucket my-bucket" "$log"
 }
+
+@test "the S3 rules check is told who started the run" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh" log="$BATS_TEST_TMPDIR/lc.log"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$log" >"$stub"
+  export LIFECYCLE_CMD="bash $stub" BE_TRIGGER=manual
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -qx "check --bucket my-bucket --trigger manual" "$log"
+}
+
+@test "a scheduled run's S3 rules check says scheduled" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh" log="$BATS_TEST_TMPDIR/lc.log"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$log" >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  unset BE_TRIGGER
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -qx "check --bucket my-bucket --trigger scheduled" "$log"
+}

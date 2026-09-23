@@ -181,7 +181,7 @@ def test_console_fingerprint_ignores_app_rules_and_s3_formatting():
 
 
 @pytest.mark.parametrize("rule,words", [
-    ({"Expiration": {"Days": 1}}, ["expires current files 1 days after they're written"]),
+    ({"Expiration": {"Days": 1}}, ["expires current files 1 day after they're written"]),
     ({"Expiration": {"Date": "2027-01-01T00:00:00Z"}}, ["expires current files on 2027-01-01"]),
     ({"NoncurrentVersionExpiration": {"NoncurrentDays": 3}}, ["removes old versions 3 days after being replaced"]),
     ({"NoncurrentVersionExpiration": {"NoncurrentDays": 3, "NewerNoncurrentVersions": 2}},
@@ -214,8 +214,33 @@ def test_describe_names_what_a_tampered_app_rule_now_does():
     r["Expiration"] = {"Days": 1}
     r["Transitions"] = [{"Days": 0, "StorageClass": "GLACIER"}]
     words = lc.describe(r)
-    assert "expires current files 1 days after they're written" in words
+    assert "expires current files 1 day after they're written" in words
     assert "moves current files to GLACIER after 0 days" in words
     assert lc.describe(dict(lc.plain_rule("media/m/", {"type": "days", "days": 180}), Status="Disabled")) == \
         "media/m/: switched off"
     assert lc.describe({"ID": "backup-engine:x", "Status": "Enabled", "Filter": {"Prefix": "x/"}}) == "x/: no actions"
+
+
+# --- Phase A carry-overs (M4, O2) --------------------------------------------------------
+
+def test_one_day_reads_as_a_day():
+    assert lc.describe(lc.plain_rule("media/m/", {"type": "days", "days": 1})) == \
+        "media/m/: old versions removed 1 day after being replaced"
+    bset = lc.bucket_settings({"buckets": {BASE: {"abort_uploads_days": 1,
+                                                  "delete_marker_cleanup": False}}}, BASE)
+    assert lc.describe(lc.housekeeping_rule(bset)) == "whole bucket: abandoned uploads cleared after 1 day"
+    rule = {"ID": "r", "Filter": {"Prefix": ""},
+            "NoncurrentVersionTransitions": [{"NoncurrentDays": 1, "StorageClass": "GLACIER"}],
+            "Transitions": [{"Days": 1, "StorageClass": "GLACIER"}]}
+    assert lc.destructive_actions(rule) == ["moves current files to GLACIER after 1 day",
+                                            "moves old versions to GLACIER 1 day after being replaced"]
+
+
+def test_merge_alarms_remembers_the_newest_alarm_time():
+    a = {"kind": "not_restored", "at": "2026-09-23T01:00:00Z", "lines": []}
+    b = {"kind": "console_rule", "at": "2026-09-23T03:00:00Z", "lines": [], "rules": ["x"]}
+    m = lc.merge_alarms([a, b])
+    assert m["kind"] == "not_restored" and m["at"] == "2026-09-23T01:00:00Z"
+    assert m["latest"] == "2026-09-23T03:00:00Z"
+    older = {"kind": "restored", "at": "2026-09-23T02:00:00Z", "lines": []}
+    assert lc.merge_alarms([m, older])["latest"] == "2026-09-23T03:00:00Z"

@@ -60,6 +60,7 @@
             {% if c.get('blocker') %}
             <form method="post" action="/setup/s3-rules/acknowledge" style="display:inline">
               <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="seen" value="{{ c.get('alarm_seen') or '' }}">
               <button type="submit" class="btn btn-sm">I've seen this</button>
             </form>
             {% elif c.fix_url == '/setup/permissions' %}

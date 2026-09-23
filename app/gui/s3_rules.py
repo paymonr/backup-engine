@@ -98,7 +98,8 @@ def setup_row(cfg) -> dict | None:
     status = lifecycle.load_status(cache)
     alarm = _alarm(status, buckets)
     if alarm:
-        row.update(state="fail", blocker=True, verified_at=alarm.get("at"), sentence=_sentence(alarm))
+        row.update(state="fail", blocker=True, verified_at=alarm.get("at"), sentence=_sentence(alarm),
+                   alarm_seen=alarm.get("latest") or alarm.get("at"))
         return row
     entries = [status.get(b) or {} for b in buckets]
     states = [e.get("state") for e in entries]
@@ -120,6 +121,11 @@ def setup_row(cfg) -> dict | None:
     else:
         row.update(state="ok", sentence="Your jobs' S3 rules are in place")
     return row
+
+
+def open_alarm(cfg) -> dict | None:
+    """Every bucket's open alarm as one (state files only)."""
+    return _alarm(lifecycle.load_status(cfg["CACHE_DIR"]), _buckets(cfg))
 
 
 def needs_you_row(cfg) -> dict | None:
