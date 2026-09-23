@@ -121,6 +121,10 @@ main() {
   exec > >(tee -a "$CACHE_DIR/$BE_RUN_LOG") 2>&1; _BE_TEE_PID=$!                              # (3)
   version_banner
   validate_source                                                                              # (4)
+  # S3 rules tamper check (spec 2026-09-23 §2): the app's lifecycle rules for this job's
+  # bucket must still be what it applied; drift is restored + alarmed. Never blocks the run.
+  ${LIFECYCLE_CMD:-python3 -m app.engine.lifecycle} check --bucket "${JOB_BUCKET:-$S3_BUCKET}" \
+    || log_warn "S3 rules check could not run"
   local src="$SOURCE_ROOT/$JOB_SOURCE"
   [ -d "$src" ] || _fail "job '$JOB' source '$src' missing"
   : "${RESTIC_CACHE_DIR:=$CACHE_DIR/restic}"

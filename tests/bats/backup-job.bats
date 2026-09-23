@@ -12,6 +12,7 @@ setup() {
   chmod +x "$b/rclone" "$b/restic"; export PATH="$b:$PATH"
   export JOBS_IO_STUB="$BATS_TEST_TMPDIR/jobsio.sh"
   export JOBS_IO_CMD="bash $JOBS_IO_STUB"
+  export LIFECYCLE_CMD="true"
 }
 run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
 
@@ -591,4 +592,43 @@ EOF
   run_job cfg
   [ "$status" -eq 0 ]
   [ ! -f "$CACHE_DIR/state/cfg.resumes" ]
+}
+
+# --- Task 5: S3 rules tamper check runs before every backup ------------------------------------
+
+@test "the S3 rules check runs before the backup, for the job's bucket" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh"; export ORDER_LOG="$BATS_TEST_TMPDIR/order.log"; : >"$ORDER_LOG"
+  printf '#!/usr/bin/env bash\necho "lifecycle $*" >>"$ORDER_LOG"\nexit 0\n' >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  printf '#!/usr/bin/env bash\necho "rclone $1" >>"$ORDER_LOG"\nexit 0\n' >"$BATS_TEST_TMPDIR/bin/rclone"
+  # days retention drives archive_prune, which shells to the real `aws` CLI when python3 isn't
+  # stubbed (as the pre-existing "archive job days retention" test above also does) -- stub it so
+  # this test stays about ORDER, not a real (and here, unauthenticated) AWS call.
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$BATS_TEST_TMPDIR/bin/python3"; chmod +x "$BATS_TEST_TMPDIR/bin/python3"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=days; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  # version_banner (run earlier in main()) also calls `rclone version`, which the rclone stub
+  # above logs to ORDER_LOG too -- so assert ORDER, not that the lifecycle check is literally
+  # the first line (controller ruling, task-5-brief.md's defect).
+  local lc_line copy_line
+  lc_line=$(grep -n "^lifecycle check --bucket my-bucket" "$ORDER_LOG" | head -1 | cut -d: -f1)
+  copy_line=$(grep -n "^rclone copy" "$ORDER_LOG" | head -1 | cut -d: -f1)
+  # each on its own line (not `A && B && C`): under bats' `set -e`, only the LAST command
+  # of a `&&`/`||` chain is allowed to fail the test -- a failure of an earlier command in
+  # such a chain is silently swallowed (classic bash gotcha), which would let this assertion
+  # pass even when the lifecycle check never ran.
+  [ -n "$lc_line" ]
+  [ -n "$copy_line" ]
+  [ "$lc_line" -lt "$copy_line" ]
+}
+
+@test "a failing S3 rules check never stops the backup" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
 }

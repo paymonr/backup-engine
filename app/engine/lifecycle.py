@@ -379,3 +379,93 @@ def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
     if errors and not results:
         raise errors[0]
     return results
+
+
+# --- tamper check -----------------------------------------------------------------------
+
+def check(cfg, bucket: str, *, run=provision._run_aws) -> str:
+    """Compare the bucket's live APP rules with what the app last applied. A difference
+    (or a deleted configuration) is tampering: restore, alarm, record. Console-rule
+    edits are not tampering. Never raises."""
+    config_dir = cfg["CONFIG_DIR"]
+    _, region, cache = _context(cfg)
+    if not managed(config_dir):
+        return "not_managed"
+    applied = load_applied(cache, bucket)
+    if applied is None:
+        try:
+            sync(cfg, bucket, run=run)
+            return "ok"
+        except LifecycleError as e:
+            return "unsupported" if e.kind == "unsupported" else "error"
+    try:
+        creds = role_creds(config_dir, region, run=run)
+        live = read_rules(bucket, creds, region, run=run)
+    except LifecycleError as e:
+        set_status(cache, bucket, "unsupported" if e.kind == "unsupported" else "error", e.detail)
+        return "unsupported" if e.kind == "unsupported" else "error"
+    if app_rules_of(live) == app_rules_of(applied):
+        set_status(cache, bucket, "ok")
+        return "ok"
+    lines = _change_lines(applied, live)
+    try:
+        write_rules(bucket, merge(live, applied), creds, region, run=run)
+    except LifecycleError as e:
+        alarm = {"kind": "not_restored", "at": _now_iso(), "lines": lines}
+        set_status(cache, bucket, "not_restored", e.detail, alarm=alarm)
+        runs.record_system(cache, kind="s3-rules",
+                           summary=f"S3 rules were changed outside backup-engine — NOT restored · {bucket}",
+                           lines=[*lines, e.detail], outcome="failed", error=e.detail, trigger="scheduled")
+        return "not_restored"
+    alarm = {"kind": "restored", "at": _now_iso(), "lines": lines}
+    set_status(cache, bucket, "restored", alarm=alarm)
+    runs.record_system(cache, kind="s3-rules",
+                       summary=f"S3 rules were changed outside backup-engine — restored · {bucket}",
+                       lines=lines, trigger="scheduled")
+    return "restored"
+
+
+def acknowledge(cache_dir: str, bucket: str | None = None) -> None:
+    data = load_status(cache_dir)
+    for b, entry in data.items():
+        if bucket in (None, b) and isinstance(entry, dict):
+            entry.pop("alarm", None)
+    _status_path(cache_dir).parent.mkdir(parents=True, exist_ok=True)
+    _status_path(cache_dir).write_text(json.dumps(data, indent=2, sort_keys=True))
+
+
+# --- CLI ------------------------------------------------------------------------------------
+
+def _cfg_from_env() -> dict:
+    return {"CONFIG_DIR": os.environ.get("CONFIG_DIR", "/config"),
+            "CACHE_DIR": os.environ.get("CACHE_DIR", "/cache")}
+
+
+def main(argv=None) -> int:
+    import argparse
+    import sys
+    ap = argparse.ArgumentParser(prog="python3 -m app.engine.lifecycle")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("sync"); s.add_argument("--bucket")
+    c = sub.add_parser("check"); c.add_argument("--bucket", required=True)
+    args = ap.parse_args(sys.argv[1:] if argv is None else argv)
+    cfg = _cfg_from_env()
+    if args.cmd == "check":
+        try:
+            state = check(cfg, args.bucket)
+        except Exception as e:                       # noqa: BLE001 — never block a backup
+            state = f"error ({type(e).__name__})"
+        print(f"S3 rules check · {args.bucket}: {state}")
+        return 0
+    try:
+        results = [sync(cfg, args.bucket)] if args.bucket else sync_all(cfg)
+    except LifecycleError as e:
+        print(f"S3 rules: {e.kind} {e.detail}".strip(), file=sys.stderr)
+        return 1
+    for r in results:
+        print(f"S3 rules · {r.bucket}: {'updated' if r.changed else 'already in step'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
