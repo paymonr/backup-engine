@@ -16,7 +16,7 @@ from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jo
                s3_rules)
 from ..estimator.prices import load_prices
 from ..estimator import usage
-from ..engine import cron, runs, errors, progress, buckets, sysop
+from ..engine import cron, runs, errors, progress, buckets, sysop, lifecycle
 
 bp = Blueprint("gui", __name__)
 
@@ -1913,6 +1913,11 @@ def jobs_page():
 _RETENTION_DEFAULT_BY_TYPE = {"versioned": "tiered", "versioned-files": "days",
                               "archive": "days"}
 
+# S3 keeps at most 100 old versions per file (lifecycle NewerNoncurrentVersions): a
+# Plain copy "keep the last N" above that is refused on save, never silently capped.
+PLAIN_COUNT_CAP = (f"S3 can keep at most {lifecycle.MAX_NEWER} old versions per file — pick "
+                   f"{lifecycle.MAX_NEWER} or fewer, or keep a number of days")
+
 DEDICATED_NEEDS_UPDATE = ("Dedicated buckets need a one-time AWS permissions update first — "
                           "open Setup → AWS permissions.")
 
@@ -2286,6 +2291,16 @@ def job_save():
     if unacked:
         return _render_job_form(cfg, job=existing, fv=fv, acknowledged=acked,
                                 status_code=200)
+
+    # Write path only (never on load), and BEFORE the dedicated-bucket create below, so
+    # a refused save touches no AWS. A non-number is left to jobs_io's validation.
+    if engine == "archive" and f.get("retention_type") == "count":
+        try:
+            over = int(f.get("retention_count", "")) > lifecycle.MAX_NEWER
+        except (TypeError, ValueError):
+            over = False
+        if over:
+            return _render_job_form(cfg, job=existing, fv=fv, errors={"form": PLAIN_COUNT_CAP})
 
     job = {"name": posted_name, "type": engine, "source": f.get("source", "").strip(),
            "schedule": f.get("schedule", "").strip(),

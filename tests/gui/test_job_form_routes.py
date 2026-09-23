@@ -619,3 +619,79 @@ def test_dedicated_post_without_permissions_is_refused_without_aws(unstamped_cli
         "enabled": "1", "retention_type": "days", "retention_days": "180",
         "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
     assert "one-time AWS permissions update" in r.get_data(as_text=True)
+
+
+# --- #6: S3 keeps at most 100 old versions per file (Plain copy "keep the last N") ----------
+
+COUNT_CAP_MSG = ("S3 can keep at most 100 old versions per file — pick 100 or fewer, "
+                 "or keep a number of days")
+
+
+def _plain_count(client, n, **extra):
+    data = {"csrf": _csrf(client), "name": "movies", "type": "archive", "source": "media/movies",
+            "schedule": "0 4 * * 0", "storage_class": "STANDARD", "enabled": "1",
+            "retention_type": "count", "retention_count": str(n)}
+    data.update(extra)
+    return client.post("/jobs", data=data)
+
+
+def test_plain_copy_count_over_100_is_refused(client, app):
+    import html
+    r = _plain_count(client, 500)
+    assert r.status_code == 200
+    assert COUNT_CAP_MSG in html.unescape(r.get_data(as_text=True))
+    assert _jobs(app) == []
+
+
+def test_plain_copy_count_over_100_is_refused_before_a_dedicated_bucket_is_made(client, app, monkeypatch):
+    def fail(*a, **k):
+        raise AssertionError("must not touch AWS for a refused save")
+    monkeypatch.setattr(provision, "assume_role", fail)
+    monkeypatch.setattr(buckets, "ensure_bucket", fail)
+    r = _plain_count(client, 101, dedicated="1", bucket="bw-backups-movies", bucket_versioned="1")
+    assert r.status_code == 200 and _jobs(app) == []
+
+
+def test_plain_copy_count_of_100_saves(client, app):
+    assert _plain_count(client, 100).status_code in (302, 303)
+    assert _jobs(app)[0]["retention"] == {"type": "count", "count": 100}
+
+
+def test_snapshot_count_over_100_is_not_capped(client, app):
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "appdata", "type": "versioned", "source": "appdata",
+                                   "schedule": "0 5 * * *", "storage_class": "STANDARD", "enabled": "1",
+                                   "retention_type": "count", "retention_count": "150"})
+    assert r.status_code in (302, 303)
+    assert _jobs(app)[0]["retention"]["count"] == 150
+
+
+def test_an_existing_plain_copy_count_over_100_still_loads(client, app):
+    # Refused on the write path only -- never on load (S3 simply keeps 100).
+    _seed(app, {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 500}})
+    assert client.get("/jobs/movies/edit").status_code == 200
+    assert jobs_io.get(app.config["CONFIG_DIR"], "movies")["retention"]["count"] == 500
+
+
+def test_the_plain_copy_edit_form_caps_the_count_input(client, app):
+    import re
+    _seed(app, {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 10}})
+    count_input = re.compile(r'<input[^>]*name="retention_count"[^>]*>')
+    assert 'max="100"' in count_input.search(client.get("/jobs/movies/edit").get_data(as_text=True)).group(0)
+    # the new-job form can still switch type client-side: no cap there (the server enforces it)
+    assert 'max=' not in count_input.search(client.get("/jobs/new").get_data(as_text=True)).group(0)
+    _seed(app, {"name": "appdata", "type": "versioned", "source": "appdata", "schedule": "0 5 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 150}})
+    assert 'max=' not in count_input.search(client.get("/jobs/appdata/edit").get_data(as_text=True)).group(0)
+
+
+def test_a_legacy_plain_copy_count_over_100_never_blocks_the_edit_form(client, app):
+    # A browser max on an input holding 500 would block EVERY submit (even after picking
+    # "keep for N days") -- the cap is only rendered when the value already fits.
+    import re
+    _seed(app, {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 500}})
+    tag = re.search(r'<input[^>]*name="retention_count"[^>]*>', client.get("/jobs/movies/edit").get_data(as_text=True))
+    assert 'max=' not in tag.group(0)
