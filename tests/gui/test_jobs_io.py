@@ -640,3 +640,23 @@ def test_job_env_emits_JOB_BUCKET_only_when_dedicated(capsys):
     assert "JOB_BUCKET='be-1-photos'" in text
     base = dict(job); base.update(dedicated=False, bucket="")
     assert "JOB_BUCKET" not in jobs_io.job_env_text(base)
+
+# --- S3 rules (spec 2026-09-23 §1): Plain copy "newest N + days" ------------
+
+def test_count_retention_may_carry_days():
+    from app.gui.jobs_io import _normalize_retention
+    r = _normalize_retention({"retention": {"type": "count", "count": "10", "days": "30"}}, "archive")
+    assert r == {"type": "count", "count": 10, "days": 30}
+
+
+def test_count_retention_without_days_is_unchanged():
+    from app.gui.jobs_io import _normalize_retention
+    assert _normalize_retention({"retention": {"type": "count", "count": 5}}, "archive") == {"type": "count", "count": 5}
+    assert _normalize_retention({"retention": {"type": "count", "count": 5, "days": ""}}, "archive") == {"type": "count", "count": 5}
+
+
+@pytest.mark.parametrize("bad", ["0", "-3", "x"])
+def test_count_retention_days_must_be_positive(bad):
+    from app.gui.jobs_io import _normalize_retention
+    with pytest.raises(ValueError):
+        _normalize_retention({"retention": {"type": "count", "count": 5, "days": bad}}, "archive")

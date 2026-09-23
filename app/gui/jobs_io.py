@@ -109,7 +109,18 @@ def _normalize_retention(job: dict, typ: str) -> dict:
             raise ValueError("retention count must be a positive integer")
         if c < 1:
             raise ValueError("retention count must be >= 1")
-        return {"type": "count", "count": c}
+        out = {"type": "count", "count": c}
+        # Plain copy's combined S3 form (spec 2026-09-23 §1): keep the newest N old
+        # versions; older ones go D days after being replaced. Absent/blank = D of 1.
+        if r.get("days") not in (None, ""):
+            try:
+                d = int(r["days"])
+            except (TypeError, ValueError):
+                raise ValueError("retention days must be a positive integer")
+            if d < 1:
+                raise ValueError("retention days must be >= 1")
+            out["days"] = d
+        return out
     return {"type": "keep_all"}
 
 def load(config_dir) -> list[dict]:
