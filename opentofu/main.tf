@@ -30,20 +30,6 @@ resource "aws_s3_bucket_ownership_controls" "backup" {
   rule { object_ownership = "BucketOwnerEnforced" }
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "backup" {
-  bucket = aws_s3_bucket.backup.id
-  dynamic "rule" {
-    for_each = toset(["appdata/", "media/"])
-    content {
-      id     = "backstop-${replace(rule.value, "/", "")}"
-      status = "Enabled"
-      filter { prefix = rule.value }
-      noncurrent_version_expiration { noncurrent_days = var.noncurrent_version_expiration_days }
-      abort_incomplete_multipart_upload { days_after_initiation = var.abort_incomplete_multipart_days }
-    }
-  }
-}
-
 # --- Least-privilege runtime IAM (object-only on the two prefixes) ---
 resource "aws_iam_user" "runtime" {
   name = "${var.name_prefix}-runtime"

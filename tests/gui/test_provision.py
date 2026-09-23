@@ -277,10 +277,10 @@ def test_console_steps_walk_through_bucket_creation():
     steps = " ".join(provision.render_console_steps("acme", "us-east-1")["steps"]).lower()
     assert "create bucket" in steps
     assert "versioning" in steps and "encryption" in steps
-    assert "block public access" in steps and "lifecycle" in steps
+    assert "block public access" in steps
     assert "unraid-backup" in steps  # suggested naming convention
-    # spec 5.11: step 5 reads the retention default (180 days), matching the model.
-    assert "expire old versions after 180 days" in steps
+    assert "backup-engine sets the bucket's s3 rules itself" in steps
+    assert "180 days" not in steps
 
 
 # --- verify_admin_can_provision (capability preflight) ----------------------

@@ -149,3 +149,11 @@ def test_tofu_outputs_the_runtime_user_arn():
     outputs = (provision.OPENTOFU_DIR / "outputs.tf").read_text()
     assert 'output "runtime_user_arn"' in outputs
     assert "aws_iam_user.runtime.arn" in outputs
+
+
+def test_tofu_no_longer_owns_lifecycle_rules():
+    main_tf = (provision.OPENTOFU_DIR / "main.tf").read_text()
+    variables = (provision.OPENTOFU_DIR / "variables.tf").read_text()
+    assert "aws_s3_bucket_lifecycle_configuration" not in main_tf
+    assert "noncurrent_version_expiration_days" not in variables
+    assert "abort_incomplete_multipart_days" not in variables

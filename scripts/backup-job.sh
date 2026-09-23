@@ -221,12 +221,7 @@ _run_archive() {
   [ "$rc" -eq 0 ] || _fail "rclone $verb failed for '$JOB'"
   COPIED=1
   rclone check "$src" "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$JOB" --size-only || log_warn "rclone check differences for '$JOB' (size-only)"
-  if [ "$JOB_RETENTION_TYPE" != keep_all ]; then
-    local plog="$CACHE_DIR/state/$JOB-prune.log" rc=0; : >"$plog"
-    python3 -m app.engine.archive_prune "$JOB" --type "$JOB_RETENTION_TYPE" \
-      --days "${JOB_RETENTION_DAYS:-0}" --count "${JOB_RETENTION_COUNT:-1}" 2>&1 | tee -a "$plog" >/dev/null || rc=$?
-    [ "$rc" -eq 0 ] || _fail_phase prune "$(_first_error_line "$plog")"
-  fi
+  # Plain copy history is S3's job (spec 2026-09-23): the folder's lifecycle rule keeps/removes old versions.
 }
 
 _run_vfiles() {

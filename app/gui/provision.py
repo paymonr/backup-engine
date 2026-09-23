@@ -273,9 +273,7 @@ def render_console_steps(bucket: str, region: str) -> dict:
         "Leave Block Public Access fully on (keep all four boxes checked).",
         "Set Bucket Versioning to Enabled.",
         "Set Default encryption to SSE-S3 (Amazon S3 managed keys, AES-256).",
-        "Click Create bucket. Then open it → Management → Create lifecycle rule. "
-        "Turn on versioning, and expire old versions after 180 days; "
-        "abort incomplete multipart uploads after 7 days.",
+        "Click Create bucket. backup-engine sets the bucket's S3 rules itself once setup is finished.",
         "In IAM, create a user named backup-engine-runtime (no console access).",
         "Open that user → Permissions → Add permissions → Create inline policy → JSON, paste the "
         "policy above, and name it backup-engine-runtime-object-only.",
