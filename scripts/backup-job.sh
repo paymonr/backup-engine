@@ -122,9 +122,12 @@ main() {
   version_banner
   validate_source                                                                              # (4)
   # S3 rules tamper check (spec 2026-09-23 §2): the app's lifecycle rules for this job's
-  # bucket must still be what it applied; drift is restored + alarmed. Never blocks the run.
-  ${LIFECYCLE_CMD:-python3 -m app.engine.lifecycle} check --bucket "${JOB_BUCKET:-$S3_BUCKET}" \
-    || log_warn "S3 rules check could not run"
+  # bucket must still be what it applied; drift is restored + alarmed. Never blocks the run:
+  # a failure only warns, and `timeout` (coreutils, in the image) cuts off a hung AWS endpoint
+  # or a long wait on the bucket's state lock. LIFECYCLE_CMD/LIFECYCLE_TIMEOUT are test seams.
+  # shellcheck disable=SC2086  # LIFECYCLE_CMD is a command line, split on purpose
+  timeout "${LIFECYCLE_TIMEOUT:-120}" ${LIFECYCLE_CMD:-python3 -m app.engine.lifecycle} \
+    check --bucket "${JOB_BUCKET:-${S3_BUCKET:-}}" || log_warn "S3 rules check could not run"
   local src="$SOURCE_ROOT/$JOB_SOURCE"
   [ -d "$src" ] || _fail "job '$JOB' source '$src' missing"
   : "${RESTIC_CACHE_DIR:=$CACHE_DIR/restic}"

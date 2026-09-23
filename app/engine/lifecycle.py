@@ -367,19 +367,28 @@ def managed(config_dir: str) -> bool:
             and bool(config_io.bucket_admin_role_arn(config_dir)))
 
 
+# A hung endpoint must not stall a job save or the pre-backup check (which also has a
+# `timeout` around it in backup-job.sh). Only lifecycle's own aws calls carry these.
+_AWS_TIMEOUTS = ["--cli-connect-timeout", "10", "--cli-read-timeout", "30"]
+
+
+def _timed(run):
+    return lambda args, **kw: run([*args, *_AWS_TIMEOUTS], **kw)
+
+
 def role_creds(config_dir: str, region: str, *, run=provision._run_aws) -> dict:
     from .sysop import _runtime_key      # local import: sysop is heavy and imports gui modules
     key, secret = _runtime_key(config_dir)
     try:
         return provision.assume_role(config_io.bucket_admin_role_arn(config_dir), region=region,
-                                     key=key, secret=secret, run=run)
+                                     key=key, secret=secret, run=_timed(run))
     except provision.AssumeRoleError as e:
         raise LifecycleError("role", provision._scrub(str(e), key, secret))
 
 
 def _call(run, creds, region, args):
-    return run(args, region=region, key=creds["AWS_ACCESS_KEY_ID"],
-               secret=creds["AWS_SECRET_ACCESS_KEY"], session_token=creds.get("AWS_SESSION_TOKEN"))
+    return _timed(run)(args, region=region, key=creds["AWS_ACCESS_KEY_ID"],
+                       secret=creds["AWS_SECRET_ACCESS_KEY"], session_token=creds.get("AWS_SESSION_TOKEN"))
 
 
 def _fail(creds, stderr: str) -> LifecycleError:
@@ -665,6 +674,18 @@ def acknowledge(cache_dir: str, bucket: str | None = None) -> None:
 
 # --- CLI ------------------------------------------------------------------------------------
 
+# What the backup log shows for each check state (owner words, never internal names).
+_CHECK_WORDS = {
+    "ok": "in place",
+    "restored": "changed outside backup-engine — restored (see Setup)",
+    "not_restored": "changed outside backup-engine — NOT restored (see Setup)",
+    "console_rule": "a new S3 rule could delete or move backups (see Setup)",
+    "error": "couldn't be checked (see Setup)",
+    "unsupported": "this storage doesn't support S3 rules",
+    "not_managed": "skipped (needs the AWS permissions update)",
+}
+
+
 def _cfg_from_env() -> dict:
     return {"CONFIG_DIR": os.environ.get("CONFIG_DIR", "/config"),
             "CACHE_DIR": os.environ.get("CACHE_DIR", "/cache")}
@@ -681,10 +702,10 @@ def main(argv=None) -> int:
     cfg = _cfg_from_env()
     if args.cmd == "check":
         try:
-            state = check(cfg, args.bucket)
+            words = _CHECK_WORDS.get(check(cfg, args.bucket), "couldn't be checked (see Setup)")
         except Exception as e:                       # noqa: BLE001 — never block a backup
-            state = f"error ({type(e).__name__})"
-        print(f"S3 rules check · {args.bucket}: {state}")
+            words = f"couldn't be checked ({type(e).__name__})"
+        print(f"S3 rules check · {args.bucket}: {words}")
         return 0
     try:
         results = [sync(cfg, args.bucket)] if args.bucket else sync_all(cfg)

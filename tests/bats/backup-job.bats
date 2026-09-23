@@ -614,3 +614,30 @@ EOF
   [ "$status" -eq 0 ]
   grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
 }
+
+@test "a hung S3 rules check is cut off by the timeout and the backup still runs" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh"
+  printf '#!/usr/bin/env bash\nexec sleep 30\n' >"$stub"
+  export LIFECYCLE_CMD="bash $stub" LIFECYCLE_TIMEOUT=1
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  local start=$SECONDS
+  run_job movies
+  [ "$status" -eq 0 ]
+  [ $((SECONDS - start)) -lt 15 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
+  [[ "$output" == *"S3 rules check could not run"* ]]
+}
+
+@test "the S3 rules check runs under a timeout" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh" log="$BATS_TEST_TMPDIR/lc.log"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$log" >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  local b="$BATS_TEST_TMPDIR/bin" tlog="$BATS_TEST_TMPDIR/timeout.log"
+  # a `timeout` shim that records its duration argument then runs the command
+  printf '#!/usr/bin/env bash\necho "timeout $1" >>"%s"\nshift\nexec "$@"\n' "$tlog" >"$b/timeout"; chmod +x "$b/timeout"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -qx "timeout 120" "$tlog"
+  grep -q "^check --bucket my-bucket" "$log"
+}

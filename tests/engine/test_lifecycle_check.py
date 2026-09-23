@@ -424,3 +424,34 @@ def test_a_check_waits_for_a_job_save_sync_on_the_same_bucket(cfg):
     s.join(5); c.join(5)
     assert order == ["get", "put", "put-done", "get"]
     assert results["check"] == "ok" and "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
+
+
+# --- #11: the backup log gets words, not internal states; #10: short aws timeouts ----------
+
+@pytest.mark.parametrize("state,words", [
+    ("not_managed", "skipped (needs the AWS permissions update)"),
+    ("ok", "in place"),
+    ("restored", "changed outside backup-engine — restored (see Setup)"),
+    ("not_restored", "changed outside backup-engine — NOT restored (see Setup)"),
+    ("console_rule", "a new S3 rule could delete or move backups (see Setup)"),
+    ("error", "couldn't be checked (see Setup)"),
+    ("unsupported", "this storage doesn't support S3 rules"),
+])
+def test_cli_check_prints_words_not_internal_states(cfg, monkeypatch, capsys, state, words):
+    monkeypatch.setenv("CONFIG_DIR", cfg["CONFIG_DIR"])
+    monkeypatch.setenv("CACHE_DIR", cfg["CACHE_DIR"])
+    seen = {}
+    monkeypatch.setattr(lc, "check", lambda c, b, **k: seen.update(k) or state)
+    assert lc.main(["check", "--bucket", BASE]) == 0
+    assert capsys.readouterr().out.strip() == f"S3 rules check · {BASE}: {words}"
+    assert seen.get("trigger", "scheduled") == "scheduled"
+
+
+def test_lifecycle_aws_calls_carry_short_timeouts(cfg):
+    fake = FakeS3()
+    lc.sync(cfg, BASE, run=fake)
+    fake.rules[BASE] = []
+    lc.check(cfg, BASE, run=fake)
+    assert fake.calls
+    for c in fake.calls:
+        assert c[-4:] == ["--cli-connect-timeout", "10", "--cli-read-timeout", "30"], c
