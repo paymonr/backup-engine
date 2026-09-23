@@ -42,8 +42,11 @@ def apply_for(cfg, buckets: list[str]) -> list[tuple[str, str]]:
                               for c in res.waiting)
             msgs.append(("warning", f"S3 keeps the current rule for {where} — a change that keeps less "
                                     "waits for your confirmation in Setup → S3 rules."))
-        if res.changed and res.lines:
-            shown = res.lines[:3] + (["…"] if len(res.lines) > 3 else [])
+        # A waiting change is already its own warning above -- don't repeat it in the
+        # success flash too (fix round 1, Minor).
+        applied_lines = [ln for ln in res.lines if not ln.startswith("Waiting for your confirmation")]
+        if res.changed and applied_lines:
+            shown = applied_lines[:3] + (["…"] if len(applied_lines) > 3 else [])
             msgs.append(("success", "S3 rules updated: " + "; ".join(shown)))
     return msgs
 

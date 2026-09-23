@@ -135,6 +135,13 @@ def save_settings(config_dir: str, data: dict) -> None:
     _write_atomic(_settings_path(config_dir), json.dumps(data, indent=2, sort_keys=True))
 
 
+def settings_lock(config_dir: str):
+    """Held around a read-modify-write of storage.json (fcntl, next to it, like the other
+    locks) -- so two writers (e.g. seed_undo_days from a sync/check pass, and a later owner
+    edit) never interleave. Later tasks' storage.json writers use this same lock."""
+    return _flock(Path(config_dir, f".{SETTINGS_FILE}.lock"))
+
+
 def _pos_int(v, default: int) -> int:
     try:
         n = int(v)
@@ -231,6 +238,16 @@ def _days(n) -> str:
     return f"{n} day" if n == 1 else f"{n} days"
 
 
+def _old_version_words(days, newest) -> str:
+    """The "what happens to old versions" phrase for one (days, newest-kept) pair -- shared by
+    describe() (a live S3 rule) and _keeps_words() (a change's before/after) so their wording
+    never drifts (fix round 1, Minor)."""
+    if newest:
+        return (f"newest {newest} old versions of each file kept"
+                + (f"; older ones removed {_days(days)} after being replaced" if days > 1 else ""))
+    return f"old versions removed {_days(days)} after being replaced"
+
+
 def describe(rule: dict) -> str:
     """One app rule in plain words (Activity lines, flashes, tamper alarms -- so a rule
     edited outside the app also names what it now does to current files)."""
@@ -240,11 +257,9 @@ def describe(rule: dict) -> str:
     parts = []
     nce = rule.get("NoncurrentVersionExpiration") or {}
     if "NewerNoncurrentVersions" in nce:
-        parts.append(f"newest {nce['NewerNoncurrentVersions']} old versions of each file kept")
-        if nce.get("NoncurrentDays", 1) > 1:
-            parts.append(f"older ones removed {_days(nce['NoncurrentDays'])} after being replaced")
+        parts.append(_old_version_words(nce.get("NoncurrentDays", 1), nce["NewerNoncurrentVersions"]))
     elif "NoncurrentDays" in nce:
-        parts.append(f"old versions removed {_days(nce['NoncurrentDays'])} after being replaced")
+        parts.append(_old_version_words(nce["NoncurrentDays"], 0))
     if "AbortIncompleteMultipartUpload" in rule:
         parts.append("abandoned uploads cleared after "
                      + _days(rule["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"]))
@@ -390,6 +405,18 @@ def _folder_of(rid: str) -> str:
     return "" if rest == "bucket" else rest
 
 
+def _nce_pair(nce, default_days: int) -> tuple[int, int]:
+    """(NoncurrentDays, NewerNoncurrentVersions) from a NoncurrentVersionExpiration dict, or
+    (default_days, 0) when there isn't one. Shared by expiry() (and so _stricter(), which
+    reuses it) and seed_undo_days() -- each call site keeps its own meaning for a MISSING
+    NoncurrentDays: expiry() defaults to 1 day; seed_undo_days() defaults to 0, so a legacy
+    rule with no explicit days is simply skipped there (fix round 1, Minor)."""
+    if not isinstance(nce, dict):
+        return default_days, 0
+    return (int(nce.get("NoncurrentDays", default_days) or default_days),
+            int(nce.get("NewerNoncurrentVersions", 0) or 0))
+
+
 def expiry(rule) -> tuple[float, int]:
     """(days, newest kept) of a folder rule's old-version expiry: an old version goes once it
     was replaced `days` ago AND at least `newest` newer old versions exist. (inf, 0) = old
@@ -398,7 +425,7 @@ def expiry(rule) -> tuple[float, int]:
     nce = r.get("NoncurrentVersionExpiration")
     if r.get("Status") == "Disabled" or not isinstance(nce, dict):
         return math.inf, 0
-    return int(nce.get("NoncurrentDays", 1)), int(nce.get("NewerNoncurrentVersions", 0))
+    return _nce_pair(nce, 1)
 
 
 def keeps_less(before, after) -> bool:
@@ -414,10 +441,7 @@ def _keeps_words(rule) -> str:
     d, n = expiry(rule)
     if d == math.inf:
         return "every old version kept"
-    if n:
-        return (f"newest {n} old versions of each file kept"
-                + (f", older ones removed {_days(d)} after being replaced" if d > 1 else ""))
-    return f"old versions removed {_days(d)} after being replaced"
+    return _old_version_words(d, n)
 
 
 def _change_words(rid: str, before, after) -> str:
@@ -464,19 +488,20 @@ def _legacy_targets(rid: str, folders) -> list[str]:
 
 
 def _stricter(a: dict | None, b: dict) -> dict:
-    """Two rules on one folder as S3 applies them: the shorter expiry, the fewer newest kept."""
+    """Two rules on one folder as S3 actually applies them: an old version goes if EITHER
+    rule would remove it. When one rule's removals are a superset of the other's (its days
+    and newest-kept are both <=), that rule alone is exact for the pair. Otherwise the two
+    are incomparable, and no per-dimension combination (e.g. the min of each day/newest) is
+    safe -- it can UNDER-state what's really being removed today and so HIDE a real
+    keeps-less change (fix round 1, Minor). Keep one of the two rules unchanged instead:
+    that always UNDER-approximates the true combined deletion, so it never hides a shrink --
+    deterministically `b` (the later, more specific rule, in practice the app's own)."""
     if a is None:
         return b
-    out = dict(a)
-    ea, eb = a.get("NoncurrentVersionExpiration"), b.get("NoncurrentVersionExpiration")
-    if isinstance(eb, dict) and not isinstance(ea, dict):
-        out["NoncurrentVersionExpiration"] = eb
-    elif isinstance(ea, dict) and isinstance(eb, dict):
-        nce = {"NoncurrentDays": min(int(ea.get("NoncurrentDays", 1)), int(eb.get("NoncurrentDays", 1)))}
-        newest = min(int(ea.get("NewerNoncurrentVersions", 0)), int(eb.get("NewerNoncurrentVersions", 0)))
-        if newest:
-            nce["NewerNoncurrentVersions"] = newest
-        out["NoncurrentVersionExpiration"] = nce
+    da, na = expiry(a)
+    db, nb = expiry(b)
+    chosen = a if da <= db and na <= nb else b
+    out = dict(chosen)
     if "NoncurrentVersionTransitions" in b and "NoncurrentVersionTransitions" not in out:
         out["NoncurrentVersionTransitions"] = b["NoncurrentVersionTransitions"]
     return out
@@ -510,13 +535,21 @@ def baseline_from_live(live_rules: list[dict], want: RuleSet, known: frozenset |
     return RuleSet(rules, want.folders if known is None else known)
 
 
+def _has_run(cache_dir: str, job: str) -> bool:
+    """R-B2': CACHE_DIR/state/<job>.json (written by backup-job.sh at the end of every run,
+    success or failure -- app/gui/runner.py::read_state) OR CACHE_DIR/state/<job>.runs.jsonl
+    (app/engine/runs.py, appended at the START of a run) -- so a first run still in progress,
+    or one that was only ever paused, counts too (fix round 1, Minor)."""
+    return (Path(cache_dir, "state", f"{job}.json").exists()
+           or Path(cache_dir, "state", f"{job}.runs.jsonl").exists())
+
+
 def _known_folders(cache_dir: str, bucket: str, base: str, jobs: list[dict]) -> frozenset:
     """R-B2': on a FIRST apply, a folder is known only when at least one of its jobs has ever
-    run -- CACHE_DIR/state/<job>.json, written by backup-job.sh at the end of every run,
-    success or failure (app/gui/runner.py::read_state) -- because only then can it have data
-    in S3. A folder whose jobs never ran is a new job's folder: always keeps-more."""
+    run -- because only then can it have data in S3. A folder whose jobs never ran is a new
+    job's folder: always keeps-more."""
     return frozenset(f.folder for f in folders_for(bucket, base, jobs)
-                     if any(Path(cache_dir, "state", f"{j}.json").exists() for j in f.jobs))
+                     if any(_has_run(cache_dir, j) for j in f.jobs))
 
 
 def classify(before: RuleSet, after: RuleSet) -> list[Change]:
@@ -579,7 +612,7 @@ def seed_undo_days(config_dir: str, bucket: str, live_rules: list[dict], folders
         if rid not in LEGACY_IDS or r.get("Status") == "Disabled" or not isinstance(nce, dict) \
                 or "NewerNoncurrentVersions" in nce:
             continue
-        days = int(nce.get("NoncurrentDays", 0) or 0)
+        days, _ = _nce_pair(nce, 0)
         if days <= DEFAULT_UNDO_DAYS:
             continue
         for f in _legacy_targets(rid, undo):
@@ -587,22 +620,23 @@ def seed_undo_days(config_dir: str, bucket: str, live_rules: list[dict], folders
                 found[f] = min(found.get(f, days), days)
     if not found:
         return False
-    settings = load_settings(config_dir)
-    b = settings["buckets"].get(bucket)
-    b = dict(b) if isinstance(b, dict) else {}
-    fs = dict(b["folders"]) if isinstance(b.get("folders"), dict) else {}
-    changed = False
-    for folder, days in sorted(found.items()):
-        entry = dict(fs[folder]) if isinstance(fs.get(folder), dict) else {}
-        if "undo_days" in entry:
-            continue
-        entry["undo_days"] = days
-        fs[folder] = entry
-        changed = True
-    if changed:
-        b["folders"] = fs
-        settings["buckets"][bucket] = b
-        save_settings(config_dir, settings)
+    with settings_lock(config_dir):                      # read-modify-write, never interleaved
+        settings = load_settings(config_dir)
+        b = settings["buckets"].get(bucket)
+        b = dict(b) if isinstance(b, dict) else {}
+        fs = dict(b["folders"]) if isinstance(b.get("folders"), dict) else {}
+        changed = False
+        for folder, days in sorted(found.items()):
+            entry = dict(fs[folder]) if isinstance(fs.get(folder), dict) else {}
+            if "undo_days" in entry:
+                continue
+            entry["undo_days"] = days
+            fs[folder] = entry
+            changed = True
+        if changed:
+            b["folders"] = fs
+            settings["buckets"][bucket] = b
+            save_settings(config_dir, settings)
     return changed
 
 
@@ -871,7 +905,13 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     before = baseline_from_live(live, want, known) if first else baseline_from_applied(doc, want)
     waiting = [c for c in classify(before, want) if c.kind == KEEPS_LESS] if gated else []
     target = list((gate(before, want) if gated else want).rules.values())
-    folders = sorted(want.folders)
+    # I1: never forget a known folder -- a folder that once had a job (so may already have
+    # data in S3) stays recorded even after that job is deleted, so if it's later reused
+    # (the only way to change a job's type is delete + recreate under the same name) its new
+    # rule is judged against what S3 actually has there, not treated as a brand-new folder.
+    # `before.folders` already IS the previous applied record's folders (baseline_from_applied
+    # reused, not re-parsed) on every pass but the first, where it's <= want.folders anyway.
+    folders = sorted(before.folders | want.folders)
     old_folders = doc.get("folders") if isinstance(doc, dict) and isinstance(doc.get("folders"), list) else None
     waiting_lines = [f"Waiting for your confirmation (S3 keeps the current rule): {c.words}" for c in waiting]
     console_note = ([f"Kept as it is — a rule added in the AWS console: {line}"

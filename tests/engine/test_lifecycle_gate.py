@@ -53,6 +53,18 @@ def test_undo_windows_and_housekeeping():
                        "old versions removed 7 days after being replaced")
 
 
+def test_keeps_words_agrees_with_describes_wording_for_the_combined_form():
+    # Minor (fix round 1): _keeps_words() used ", " where describe() uses "; " for the same
+    # "newest N ... older ones removed D days ..." phrase -- they must agree (one wording).
+    before = lc.plain_rule(M, {"type": "count", "count": 10, "days": 30})
+    after = lc.plain_rule(M, {"type": "count", "count": 5, "days": 45})
+    (c,) = lc.classify(_rs([before], [M]), _rs([after], [M]))
+    assert c.words == (
+        "media/manga/: newest 10 old versions of each file kept; older ones removed 30 days after being replaced → "
+        "newest 5 old versions of each file kept; older ones removed 45 days after being replaced")
+    assert lc.describe(before).split(": ", 1)[1] in c.words
+
+
 def test_a_new_jobs_folder_always_keeps_more():
     (c,) = lc.classify(_rs([], []), _rs([lc.plain_rule(M, {"type": "days", "days": 1})], [M]))
     assert c.kind == lc.KEEPS_MORE
@@ -166,9 +178,88 @@ def test_the_owners_migration_case_only_holds_the_job_that_has_run(cfg):
     assert [c.folder for c in res.waiting] == [M]
 
 
+def test_a_job_that_has_run_and_is_genuinely_longer_applies_without_waiting(cfg):
+    # I3 (fix round 1): the controller-required case -- legacy backstop-media 30d live, a
+    # Plain copy job that HAS run with days:180 (longer than the legacy backstop): applied
+    # at once, not waiting -- proves the gate on a KNOWN folder, not just the "unknown
+    # folder always applies" shortcut.
+    _ran(cfg, "manga")
+    fake = FakeS3({BASE: LEGACY})
+    res = lc.sync(cfg, BASE, run=fake)
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
+    assert res.waiting == []
+
+
+def test_has_run_also_counts_a_runs_jsonl_with_no_json_yet(cfg):
+    # Minor (fix round 1): a first run still in progress (or one that was only ever paused)
+    # writes state/<job>.runs.jsonl before state/<job>.json exists -- that must count too.
+    Path(cfg["CACHE_DIR"], "state", "manga.runs.jsonl").write_text('{"event": "start"}\n')
+    _set_manga(cfg, {"type": "days", "days": 7})
+    fake = FakeS3({BASE: LEGACY})
+    res = lc.sync(cfg, BASE, run=fake)
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 30}
+    assert [c.folder for c in res.waiting] == [M]
+
+
+def test_stricter_never_hides_a_shrink_behind_an_incomparable_pair(cfg):
+    # Minor (fix round 1): legacy 30d (no newest limit) + a live app rule (1 day, newest 10)
+    # on the same folder -- neither contains the other, so combining them by per-dimension
+    # min (the old bug) would claim (1 day, no newest limit) is already live, which HIDES a
+    # real shrink to a plain 7-day rule. Picking one rule (the app's) instead never hides it.
+    _ran(cfg, "manga")
+    _set_manga(cfg, {"type": "days", "days": 7})
+    app_rule = {"ID": "backup-engine:media/manga/", "Status": "Enabled", "Filter": {"Prefix": M},
+                "NoncurrentVersionExpiration": {"NoncurrentDays": 1, "NewerNoncurrentVersions": 10}}
+    fake = FakeS3({BASE: LEGACY + [app_rule]})
+    res = lc.sync(cfg, BASE, run=fake)
+    assert [c.folder for c in res.waiting] == [M]
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {
+        "NoncurrentDays": 1, "NewerNoncurrentVersions": 10}                # held: S3 keeps the live rule
+
+
+# --- I1: a deleted job's folder is never forgotten (fix round 1) ---------------------------
+
+def test_a_deleted_jobs_folder_stays_recorded_though_its_rule_is_gone(cfg):
+    _ran(cfg, "manga")
+    fake = FakeS3({BASE: LEGACY})
+    lc.sync(cfg, BASE, run=fake)                               # manga: 180 days applied
+    jobs_p = Path(cfg["CONFIG_DIR"], "jobs.json")
+    data = json.loads(jobs_p.read_text())
+    data["jobs"].pop(0)                                        # delete manga
+    jobs_p.write_text(json.dumps(data))
+    res = lc.sync(cfg, BASE, run=fake)
+    assert res.waiting == []                                   # a deleted job's rule going away keeps more
+    assert "backup-engine:media/manga/" not in {r["ID"] for r in fake.rules[BASE]}
+    assert M in lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["folders"]     # not forgotten
+
+
+def test_recreating_a_deleted_jobs_folder_under_a_new_type_waits_for_confirmation(cfg):
+    # I1 repro: manga Plain copy 180d applied -> job deleted -> re-created as File history
+    # (the only way to change a job's type) -- its 30-day undo rule must wait: S3's folder
+    # was left with NO rule (keep everything) when the old job was deleted, so a fresh
+    # 30-day undo rule is a real shrink, not a new job's folder.
+    _ran(cfg, "manga")
+    fake = FakeS3({BASE: LEGACY})
+    lc.sync(cfg, BASE, run=fake)                               # manga: 180 days applied
+    jobs_p = Path(cfg["CONFIG_DIR"], "jobs.json")
+    data = json.loads(jobs_p.read_text())
+    manga = data["jobs"].pop(0)
+    jobs_p.write_text(json.dumps(data))
+    lc.sync(cfg, BASE, run=fake)                               # job deleted: rule gone, folder remembered
+    data = json.loads(jobs_p.read_text())
+    manga = dict(manga, type="versioned-files", retention_days="90")
+    manga.pop("retention", None)
+    data["jobs"].insert(0, manga)                              # same name, new type (type is locked in the UI)
+    jobs_p.write_text(json.dumps(data))
+    res = lc.sync(cfg, BASE, run=fake)
+    assert [c.folder for c in res.waiting] == [M]
+    assert "backup-engine:media/manga/" not in {r["ID"] for r in fake.rules[BASE]}    # S3 still has no rule there
+
+
 # --- the pass ------------------------------------------------------------------------------
 
 def test_the_spec_migration_applies_longer_plain_copy_history_automatically(cfg):
+    _ran(cfg, "manga", "appdata_backups")                    # I3: exercise the gate on KNOWN folders
     fake = FakeS3({BASE: LEGACY})                            # manga 180 > the 30-day backstop
     res = lc.sync(cfg, BASE, run=fake)
     assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
@@ -244,6 +335,7 @@ def test_keep_everything_to_days_on_a_known_folder_waits(cfg):
 
 
 def test_a_legacy_backstop_longer_than_30_days_seeds_the_undo_window(cfg):
+    _ran(cfg, "manga", "appdata_backups")                    # I3: exercise the gate on KNOWN folders
     long = json.loads(json.dumps(LEGACY))
     for r in long:
         r["NoncurrentVersionExpiration"] = {"NoncurrentDays": 90}
@@ -252,6 +344,37 @@ def test_a_legacy_backstop_longer_than_30_days_seeds_the_undo_window(cfg):
     assert lc.load_settings(cfg["CONFIG_DIR"])["buckets"][BASE]["folders"]["appdata/"]["undo_days"] == 90
     assert _live(fake, "backup-engine:appdata/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 90}
     assert res.waiting == []                                 # appdata 90 -> 90; manga 90 -> 180
+
+
+def test_seed_undo_days_holds_the_settings_lock_during_its_read_modify_write(cfg, monkeypatch):
+    # Minor (fix round 1): storage.json's read-modify-write in seed_undo_days must be
+    # guarded by settings_lock() like the other state files' locks.
+    import fcntl
+
+    def _is_locked(path):
+        with open(path, "a") as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            return False
+
+    lock_path = Path(cfg["CONFIG_DIR"], ".storage.json.lock")
+    seen = []
+    real_save = lc.save_settings
+
+    def spy_save(config_dir, data):
+        seen.append(_is_locked(lock_path))
+        return real_save(config_dir, data)
+    monkeypatch.setattr(lc, "save_settings", spy_save)
+
+    long = json.loads(json.dumps(LEGACY))
+    for r in long:
+        r["NoncurrentVersionExpiration"] = {"NoncurrentDays": 90}
+    lc.sync(cfg, BASE, run=FakeS3({BASE: long}))
+    assert seen == [True]                                    # locked while save_settings ran
+    assert not _is_locked(lock_path)                          # released afterwards
 
 
 def test_the_undo_seed_never_overrides_the_owners_own_setting(cfg):

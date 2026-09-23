@@ -68,6 +68,20 @@ def test_apply_for_says_a_change_that_keeps_less_is_waiting(cfg, monkeypatch):
     assert level == "warning" and "media/m/" in text and "waits for your confirmation" in text
 
 
+def test_apply_for_shows_a_waiting_change_once_not_in_the_success_flash_too(cfg, monkeypatch):
+    # Minor (fix round 1): res.lines (used for the success flash) also carries the
+    # "Waiting for your confirmation" line (it's meant for the Activity log) -- the job-save
+    # flashes must show it only once, in the separate warning.
+    ch = lifecycle.Change("backup-engine:media/m/", "media/m/", lifecycle.KEEPS_LESS, "media/m/: a → b", None, None)
+    waiting_line = "Waiting for your confirmation (S3 keeps the current rule): media/m/: a → b"
+    lines = ["now: appdata/: old versions removed 60 days after being replaced", waiting_line]
+    monkeypatch.setattr(lifecycle, "sync", lambda c, b, **k: lifecycle.SyncResult(b, True, lines, "ok", [ch]))
+    msgs = s3_rules.apply_for(cfg, [BASE])
+    success = next(text for level, text in msgs if level == "success")
+    assert waiting_line not in success
+    assert sum(1 for level, text in msgs if "waits for your confirmation" in text) == 1
+
+
 # --- routes -----------------------------------------------------------------------------
 
 @pytest.fixture

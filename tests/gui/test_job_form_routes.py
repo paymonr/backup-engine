@@ -697,16 +697,20 @@ def test_a_legacy_plain_copy_count_over_100_never_blocks_the_edit_form(client, a
     assert 'max=' not in tag.group(0)
 
 
-def test_a_new_dedicated_bucket_starts_with_an_empty_applied_state(client, app, monkeypatch):
-    # R-B2: the bucket was just created, so the new job's folder is new -- its first S3
-    # rules apply keeps more and needs no confirmation.
+def test_job_save_does_not_seed_an_already_owned_bucket(client, app, monkeypatch):
+    # I2 (fix round 1): buckets.ensure_bucket treats BucketAlreadyOwnedByYou as success too,
+    # so job_save must never call lifecycle.seed_new_bucket -- doing so on a bucket that
+    # already exists would wrongly mark every folder "new" and could hide a real keeps-less
+    # change or a tamper alarm. R-B2' already handles a genuinely new bucket's never-run job.
     from app.engine import lifecycle
     monkeypatch.setattr(provision, "assume_role", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "ASIA"})
-    monkeypatch.setattr(buckets, "ensure_bucket", lambda name, **k: None)
+    monkeypatch.setattr(buckets, "ensure_bucket", lambda name, **k: None)   # already-owned -> success
+
+    def fail(*a, **k):
+        raise AssertionError("job_save must not seed a bucket's applied state")
+    monkeypatch.setattr(lifecycle, "seed_new_bucket", fail)
     r = client.post("/jobs", data={"csrf": _csrf(client), "name": "photos", "type": "archive",
         "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
         "enabled": "1", "retention_type": "days", "retention_days": "180",
         "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
     assert r.status_code in (302, 303)
-    doc = lifecycle.load_applied_doc(app.config["CACHE_DIR"], "bw-backups-photos")
-    assert doc["rules"] == [] and doc["folders"] == []
