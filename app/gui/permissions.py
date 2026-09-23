@@ -171,7 +171,18 @@ def trust_doc(user_arn: str) -> dict:
                            "Action": "sts:AssumeRole"}]}
 
 
+_BASE_BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", re.ASCII)
+
+
+def _check_base_bucket(bucket: str) -> None:
+    """The base bucket name goes into IAM Resource ARNs; anything but a plain S3 name
+    (e.g. "*", "?", "${...}") could widen the <base>-* confinement."""
+    if not _BASE_BUCKET_RE.fullmatch(bucket or "") or ".." in bucket:
+        raise PermissionsError("bucket", f"{bucket!r} is not a plain S3 bucket name")
+
+
 def required_docs(principal: Principal, bucket: str) -> dict:
+    _check_base_bucket(bucket)
     return {
         "trust": trust_doc(principal.arn),
         "role": json.loads(provision.render_bucket_admin_policy(bucket)),
@@ -604,6 +615,7 @@ class Probe:
 def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> list[Probe]:
     role_probe = f"Can assume the role {ROLE_NAME}"
     policy_probe = f"The role {ROLE_NAME} has its policy"
+    scoped_probe = "The role can't reach the shared bucket"
     out = []
     cp = run(["s3api", "list-object-versions", "--bucket", bucket, "--max-items", "1",
               "--output", "json"], region=region, key=key, secret=secret)
@@ -618,6 +630,7 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
         out.append(Probe(role_probe, False, "Steps 1 and 3 of the script set this up — did step 1 run?",
                          provision._scrub(str(e), key, secret)))
         out.append(Probe(policy_probe, False, "Needs the role first (step 1)."))
+        out.append(Probe(scoped_probe, False, "Needs the role first (step 1)."))
         return out
     out.append(Probe(role_probe, True))
     rk, rs, rt = creds["AWS_ACCESS_KEY_ID"], creds["AWS_SECRET_ACCESS_KEY"], creds["AWS_SESSION_TOKEN"]
@@ -626,6 +639,22 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
     out.append(Probe(policy_probe, ok2,
                      "" if ok2 else "Set by step 2 of the script — did it run?",
                      "" if ok2 else provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
+    # Negative probe: an OLD unscoped role (S3 on "*") would pass the three probes
+    # above too, so a leaked runtime key could still reach every bucket via the
+    # role. The narrowed role grants GetBucketVersioning on <base>-* only, so
+    # this call against the BASE bucket must come back AccessDenied.
+    cp = run(["s3api", "get-bucket-versioning", "--bucket", bucket, "--output", "json"],
+             region=region, key=rk, secret=rs, session_token=rt)
+    denied = cp.returncode != 0 and "AccessDenied" in (cp.stderr or "")
+    if denied:
+        out.append(Probe(scoped_probe, True))
+    elif cp.returncode == 0:
+        out.append(Probe(scoped_probe, False,
+                         "The role still has an older, wider policy — did step 2 of the script run?"))
+    else:
+        out.append(Probe(scoped_probe, False,
+                         "Couldn't confirm the role is limited to this app's buckets — try Verify again.",
+                         provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
     return out
 
 

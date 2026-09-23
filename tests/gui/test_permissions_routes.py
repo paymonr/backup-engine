@@ -1,7 +1,9 @@
 # tests/gui/test_permissions_routes.py — /setup/permissions (spec 2026-09-22 §3).
 # The engine is monkeypatched: these tests pin the routes, not AWS.
 import html
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from app.gui import config_io, create_app, permissions, provision
@@ -152,6 +154,34 @@ def test_runtime_key_problem_is_explained(client, monkeypatch):
     monkeypatch.setattr(permissions, "runtime_principal", boom)
     r = client.post("/setup/permissions/update", data={"csrf": _csrf(client), **CREDS})
     assert r.status_code == 400 and "saved backup key" in r.get_data(as_text=True)
+
+
+def test_bad_base_bucket_shape_blocks_before_any_iam_write(client, dirs, monkeypatch):
+    # S3_BUCKET is free text on Keys & secrets. A value like "*" would widen the
+    # <base>-* confinement if it reached an IAM Resource ARN -- the shape guard in
+    # required_docs() must fire before converge() ever writes anything to AWS.
+    # The REAL converge runs here (only the AWS-admin preflight/account calls and
+    # the aws-CLI runner are stubbed) so this proves the guard's placement, not
+    # just its existence.
+    Path(dirs["config"], "backup.env").write_text("S3_BUCKET=*\nAWS_REGION=us-east-1\n")
+    monkeypatch.setattr(provision, "verify_admin_can_provision", lambda *a, **k: None)
+    monkeypatch.setattr(provision, "aws_account_id", lambda *a, **k: ACCOUNT)
+
+    def fake_run(args, *, region, key, secret, session_token=None):
+        if args[:2] in (["iam", "list-user-policies"], ["iam", "list-attached-user-policies"]):
+            return SimpleNamespace(returncode=0, stdout=json.dumps(
+                {"PolicyNames": [], "AttachedPolicies": []}), stderr="")
+        if args[:2] == ["iam", "get-role"]:
+            return SimpleNamespace(returncode=254, stdout="", stderr="NoSuchEntity")
+        raise AssertionError(f"no AWS write is expected before the bucket-shape guard: {args}")
+
+    monkeypatch.setitem(permissions.converge.__kwdefaults__, "run", fake_run)
+    r = client.post("/setup/permissions/update", data={"csrf": _csrf(client), **CREDS})
+    # Jinja autoescapes the apostrophe in "isn't" to `&#39;` -- unescape first.
+    body = html.unescape(r.get_data(as_text=True))
+    assert r.status_code == 400
+    assert "isn't a plain S3 bucket name" in body
+    assert "Fix it there first" in body
 
 
 # --- the commands path -------------------------------------------------------------

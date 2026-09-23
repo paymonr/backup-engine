@@ -91,7 +91,7 @@ def test_script_refuses_unexpected_values(principal, bucket, region):
 
 # --- verify ------------------------------------------------------------------------
 
-def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, flaky=0):
+def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, base_denied=True, flaky=0):
     state = {"flaky": flaky}
 
     def run(args, *, region, key, secret, session_token=None):
@@ -111,6 +111,13 @@ def _fake(*, list_ok=True, assume_ok=True, policy_ok=True, flaky=0):
             if not policy_ok:
                 return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:ListAllMyBuckets")
             return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Buckets": []}))
+        if args[:2] == ["s3api", "get-bucket-versioning"]:
+            assert session_token == "tok" and key == "ASIATMP"     # runs as the ROLE
+            # The narrowed role only grants GetBucketVersioning on <base>-* --
+            # the BASE bucket itself must come back AccessDenied.
+            if base_denied:
+                return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:GetBucketVersioning")
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Status": "Enabled"}))
         raise AssertionError(args)
     return run
 
@@ -122,22 +129,68 @@ def _verify(run, **kw):
 
 def test_verify_all_good():
     probes = _verify(_fake())
-    assert len(probes) == 3 and all(p.ok for p in probes)
+    assert len(probes) == 4 and all(p.ok for p in probes)
 
 
 def test_verify_names_the_script_step_when_the_role_is_missing():
     probes = _verify(_fake(assume_ok=False))
-    assert [p.ok for p in probes] == [True, False, False]
+    assert [p.ok for p in probes] == [True, False, False, False]
     assert "step 1" in probes[1].hint
-    # The third probe (needs the role, which just failed) carries its OWN
-    # dependent hint rather than re-running the role-policy check.
+    # The third and fourth probes (both need the role, which just failed) carry
+    # their OWN dependent hint rather than re-running their own checks.
     assert "Needs the role first" in probes[2].hint and "step 1" in probes[2].hint
+    assert "Needs the role first" in probes[3].hint and "step 1" in probes[3].hint
 
 
 def test_verify_detects_the_role_policy_is_missing():
     probes = _verify(_fake(policy_ok=False))
-    assert [p.ok for p in probes] == [True, True, False]
+    assert [p.ok for p in probes] == [True, True, False, True]
     assert "step 2" in probes[2].hint
+
+
+def test_verify_detects_an_old_unscoped_role():
+    # An old, wide role policy still lets the assumed creds read the BASE
+    # bucket's versioning -- Verify must never stamp that as ok.
+    probes = _verify(_fake(base_denied=False))
+    assert [p.ok for p in probes] == [True, True, True, False]
+    assert not all(p.ok for p in probes)
+    assert "older, wider policy" in probes[3].hint
+
+
+def test_verify_scoped_probe_runs_with_the_assumed_creds():
+    seen = {}
+
+    def run(args, *, region, key, secret, session_token=None):
+        if args[:2] == ["s3api", "get-bucket-versioning"]:
+            seen["key"], seen["secret"], seen["token"] = key, secret, session_token
+            return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied")
+        return _fake()(args, region=region, key=key, secret=secret, session_token=session_token)
+
+    _verify(run, tries=1)
+    assert seen == {"key": "ASIATMP", "secret": "tmpsek", "token": "tok"}
+
+
+def test_verify_scoped_probe_scrubs_a_non_access_denied_error():
+    def run(args, *, region, key, secret, session_token=None):
+        if args[:2] == ["s3api", "list-object-versions"]:
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        if args[:2] == ["sts", "assume-role"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Credentials": {
+                "AccessKeyId": "ASIATMP", "SecretAccessKey": "tmpsek",
+                "SessionToken": "tmpsessiontoken"}}))
+        if args[:2] == ["s3api", "list-buckets"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Buckets": []}))
+        if args[:2] == ["s3api", "get-bucket-versioning"]:
+            return SimpleNamespace(
+                returncode=254, stdout="",
+                stderr="SlowDown for key=ASIATMP secret=tmpsek session=tmpsessiontoken")
+        raise AssertionError(args)
+    probes = _verify(run, tries=1)
+    assert probes[3].ok is False
+    assert "try Verify again" in probes[3].hint
+    assert "ASIATMP" not in probes[3].detail
+    assert "tmpsek" not in probes[3].detail
+    assert "tmpsessiontoken" not in probes[3].detail
 
 
 def test_verify_retries_for_iam_propagation():
@@ -168,6 +221,8 @@ def test_verify_scrubs_the_assumed_role_creds_too():
             return SimpleNamespace(
                 returncode=254, stdout="",
                 stderr="AccessDenied for key=ASIATMP secret=tmpsek token=tmpsessiontoken")
+        if args[:2] == ["s3api", "get-bucket-versioning"]:
+            return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied")
         raise AssertionError(args)
     probes = _verify(run, tries=1)
     assert probes[2].ok is False

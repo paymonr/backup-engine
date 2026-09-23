@@ -82,6 +82,27 @@ def test_tofu_iam_resources_match_the_converge_table():
     assert sorted(permissions.TOFU_RESOURCES.values()) == ["R1", "R2", "R3"]
 
 
+# --- base-bucket shape guard (fix-wave re-review, addendum follow-up) -----------
+
+@pytest.mark.parametrize("bucket", [
+    "*", "a*b", "${aws:username}", "Bad_Name", "x..y", "name\n",
+])
+def test_required_docs_refuses_a_malshaped_base_bucket(bucket):
+    # S3_BUCKET is free text on the Keys page, rendered straight into IAM Resource
+    # ARNs -- a value like "*" would widen the <base>-* confinement.
+    with pytest.raises(permissions.PermissionsError) as e:
+        permissions.required_docs(P, bucket)
+    assert e.value.kind == "bucket"
+
+
+@pytest.mark.parametrize("bucket", [
+    "unraid-backup-123456789012",
+    "my.backups.bucket",   # legacy dotted bucket names stay valid
+])
+def test_required_docs_accepts_a_plain_s3_bucket_name(bucket):
+    permissions.required_docs(P, bucket)   # must not raise
+
+
 # --- normalization -------------------------------------------------------------
 
 def test_formatting_only_differences_are_the_same_policy():

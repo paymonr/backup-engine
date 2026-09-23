@@ -58,6 +58,9 @@ def _perm_error_message(e: permissions.PermissionsError) -> str:
     if e.kind == "user_missing":
         return ("The backup key's IAM user no longer exists in AWS. Set up the destination "
                 "again. Nothing was changed.")
+    if e.kind == "bucket":
+        return ("The shared bucket name on Keys & secrets isn't a plain S3 bucket name, so no "
+                "AWS permissions were built from it. Fix it there first. Nothing was changed.")
     if e.kind == "script":
         return "Couldn't generate the commands for this install's settings."
     what = e.action or "the current IAM setup"
