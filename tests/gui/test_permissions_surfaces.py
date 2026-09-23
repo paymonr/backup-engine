@@ -98,3 +98,19 @@ def test_activity_labels_a_permissions_record(dirs, template_path):
     permissions.record(dirs["cache"], mode="update", lines=["Create the extra-buckets policy"])
     body = _client(dirs, template_path).get("/activity").get_data(as_text=True)
     assert "permissions update" in body
+
+
+# --- no AWS call on ANY GET (Global Constraint, T7 minor) --------------------
+
+def test_no_get_route_ever_calls_aws(dirs, template_path, monkeypatch):
+    from app.gui import provision
+
+    def boom(*a, **k):
+        raise AssertionError(f"AWS must never be called on a GET: {a!r} {k!r}")
+    monkeypatch.setattr(provision.subprocess, "run", boom)
+    _provision(dirs)   # provisioned, but no stamp -- the "unchecked" state
+    client = _client(dirs, template_path)
+    for path in ("/", "/status.json", "/setup", "/setup/destination",
+                "/setup/permissions", "/jobs/new"):
+        r = client.get(path)
+        assert r.status_code == 200, f"{path}: {r.status_code}"

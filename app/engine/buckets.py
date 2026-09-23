@@ -8,8 +8,11 @@ import subprocess
 import sys
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_BUCKET_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{1,61})[a-z0-9]$")
-_IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+# fullmatch (not match()+"$") below: match()+"$" tolerates a trailing "\n" -- it
+# matches just before it -- fullmatch requires the whole string to be consumed.
+# re.ASCII keeps \d in _IP_RE from also matching Unicode look-alike digits.
+_BUCKET_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{1,61})[a-z0-9]$", re.ASCII)
+_IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$", re.ASCII)
 
 def slugify(name: str) -> str:
     return _SLUG_RE.sub("-", (name or "").lower()).strip("-")
@@ -21,7 +24,7 @@ def is_prefixed(base: str, bucket: str) -> bool:
     return bucket == base or bucket.startswith(base + "-")
 
 def valid_bucket_name(name: str) -> bool:
-    if not name or not _BUCKET_RE.match(name) or ".." in name or _IP_RE.match(name):
+    if not name or not _BUCKET_RE.fullmatch(name) or ".." in name or _IP_RE.fullmatch(name):
         return False
     return True
 

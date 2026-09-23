@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from flask import abort, current_app, flash, redirect, render_template, request, url_for
-from markupsafe import Markup
 
 from . import config_io, permissions, provision, security
 from .routes import _fmt_verified, _runtime_creds, bp
@@ -33,20 +32,18 @@ def _principal_for(cfg, region: str) -> permissions.Principal:
 
 
 ## Fixed, developer-authored copy only — never interpolated with admin/AWS
-## output — so it is safe to mark non-escaping: Jinja's autoescape would
-## otherwise turn the apostrophes here into `&#39;`, breaking the plain-text
-## reading of this sentence for no security benefit (nothing here is
-## attacker-controlled).
+## output. Plain str (not markupsafe.Markup): Jinja's autoescape turns the
+## apostrophes here into `&#39;`, which is fine -- these are never rendered
+## outside an HTML context, so there's no reason to mark them non-escaping.
 _ADMIN_MESSAGES = {
-    "token": Markup("These credentials can't manage AWS IAM. If they're temporary (the access key "
+    "token": ("These credentials can't manage AWS IAM. If they're temporary (the access key "
               "starts with ASIA — from sts get-session-token, SSO or CloudShell), use an "
               "MFA-authenticated session, an SSO role, or a permanent access key, and check the "
               "session token hasn't expired. Nothing was changed."),
-    "permission": Markup("These credentials reached AWS but aren't allowed to manage IAM roles and "
+    "permission": ("These credentials reached AWS but aren't allowed to manage IAM roles and "
                    "policies. Use an admin credential. Nothing was changed."),
 }
-_ADMIN_MESSAGE_DEFAULT = Markup(
-    "Couldn't verify these credentials can manage IAM. Nothing was changed.")
+_ADMIN_MESSAGE_DEFAULT = "Couldn't verify these credentials can manage IAM. Nothing was changed."
 
 
 def _perm_error_message(e: permissions.PermissionsError) -> str:
@@ -72,12 +69,16 @@ def permissions_page():
     return _page()
 
 
-def _run_admin(apply_changes: bool):
+def _guard():
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
-    cfg = current_app.config
-    if not config_io.is_provisioned(cfg["CONFIG_DIR"]):
+    return config_io.is_provisioned(current_app.config["CONFIG_DIR"])
+
+
+def _run_admin(apply_changes: bool):
+    if not _guard():
         return redirect(url_for("gui.provision_home"))
+    cfg = current_app.config
     bucket, region = _bucket_region(cfg)
     f = request.form
     admin = permissions.AdminCreds(f.get("ADMIN_ACCESS_KEY_ID", "").strip(),
@@ -105,9 +106,11 @@ def _run_admin(apply_changes: bool):
     # converge() sends the admin creds to AWS (verify_admin_can_provision, the account
     # lookup, discover()) on EVERY Update request that gets this far, even when the
     # plan turns out empty -- so the delete-the-key reminder applies to every Update
-    # outcome, not just one that actually applied a step. It never applies to Preview:
-    # the owner is about to paste the same key again to apply for real.
-    if apply_changes:
+    # outcome, not just one that actually applied a step. A Preview normally skips it
+    # (the owner is about to paste the same key again to apply for real) EXCEPT when
+    # the plan came back empty -- a Preview that found nothing to do is terminal too
+    # (there's no "apply for real" to come back for), so the reminder still applies.
+    if apply_changes or not outcome.steps:
         flash("We never stored your admin key — delete that access key in AWS now.", "warning")
     if outcome.ok and not outcome.steps:
         flash("Everything's already in place — AWS permissions are up to date.", "success")
@@ -125,12 +128,6 @@ def permissions_update():
 @bp.post("/setup/permissions/preview")
 def permissions_preview():
     return _run_admin(apply_changes=False)
-
-
-def _guard():
-    if not security.verify_csrf(request.form.get("csrf", "")):
-        abort(400, description="csrf")
-    return config_io.is_provisioned(current_app.config["CONFIG_DIR"])
 
 
 @bp.post("/setup/permissions/script")

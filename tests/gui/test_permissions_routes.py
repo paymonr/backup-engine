@@ -1,5 +1,6 @@
 # tests/gui/test_permissions_routes.py — /setup/permissions (spec 2026-09-22 §3).
 # The engine is monkeypatched: these tests pin the routes, not AWS.
+import html
 from pathlib import Path
 
 import pytest
@@ -117,7 +118,9 @@ def test_admin_token_error_is_explained(client, monkeypatch):
         raise provision.AdminCapabilityError("token", "InvalidClientTokenId ADMINSECRETVALUE")
     monkeypatch.setattr(permissions, "converge", boom)
     r = client.post("/setup/permissions/update", data={"csrf": _csrf(client), **CREDS})
-    body = r.get_data(as_text=True)
+    # _ADMIN_MESSAGES is plain str now (review Minor 9), so Jinja autoescapes its
+    # apostrophe to `&#39;` -- unescape before matching the plain-text copy.
+    body = html.unescape(r.get_data(as_text=True))
     assert r.status_code == 400 and "can't manage AWS IAM" in body
     assert "ADMINSECRETVALUE" not in body
 

@@ -51,7 +51,10 @@ def templates_sha256(prov_dir: str | Path = provision.PROVISIONING_DIR) -> str:
 
 def current_level(config_dir: str) -> int | None:
     raw = config_io.read_backup_env(config_dir).get(STAMP_KEY, "").strip()
-    return int(raw) if raw.isdigit() else None
+    # isdigit() alone accepts non-decimal "digit" characters (e.g. superscript "²")
+    # and isdecimal() alone still accepts non-ASCII decimal digits (e.g. Arabic-Indic
+    # "١") that int() happily parses -- require BOTH so only plain ASCII 0-9 counts.
+    return int(raw) if raw.isdecimal() and raw.isascii() else None
 
 
 def checked_at(config_dir: str) -> str | None:
@@ -137,13 +140,18 @@ class Principal:
     arn: str
 
 
-_USER_ARN_RE = re.compile(r"^arn:aws:iam::(\d{12}):user/(?:[\w+=,.@-]+/)*([\w+=,.@-]{1,64})$")
+_USER_ARN_RE = re.compile(r"^arn:aws:iam::(\d{12}):user/(?:[\w+=,.@-]+/)*([\w+=,.@-]{1,64})$",
+                          re.ASCII)
 
 
 def parse_principal(arn: str) -> Principal:
     """The runtime key's identity must be an IAM user (not a role, session or root)."""
     arn = (arn or "").strip()
-    m = _USER_ARN_RE.match(arn)
+    # fullmatch (not match): with `.match()`, a trailing "$" is lenient about a
+    # trailing "\n" (it matches just before it) -- fullmatch requires the WHOLE
+    # string to be consumed, closing that hole. re.ASCII keeps \d/\w from also
+    # accepting Unicode look-alike digits (e.g. a full-width "２").
+    m = _USER_ARN_RE.fullmatch(arn)
     if not m:
         raise PermissionsError("principal", f"{arn or '(empty)'} is not an IAM user")
     return Principal(account=m.group(1), user=m.group(2), arn=arn)
@@ -341,7 +349,10 @@ def discover(principal: Principal, *, region: str, admin: AdminCreds, run=provis
     def get(argv, *, missing_ok=True):
         cp = call([*argv, "--output", "json"])
         if cp.returncode == 0:
-            return json.loads(cp.stdout or "{}")
+            try:
+                return json.loads(cp.stdout or "{}")
+            except ValueError:
+                raise PermissionsError("read", "unreadable AWS response")
         if missing_ok and "NoSuchEntity" in (cp.stderr or ""):
             return None
         raise PermissionsError("read", _scrub(admin, cp.stderr), action=_denied_action(cp.stderr))
@@ -378,7 +389,11 @@ def _make_room(call, admin: AdminCreds, policy_arn: str) -> None:
     cp = call(["iam", "list-policy-versions", "--policy-arn", policy_arn, "--output", "json"])
     if cp.returncode != 0:
         raise PermissionsError("apply", _scrub(admin, cp.stderr), action=_denied_action(cp.stderr))
-    victim = buckets.oldest_non_default_version(json.loads(cp.stdout or "{}").get("Versions", []))
+    try:
+        versions = json.loads(cp.stdout or "{}").get("Versions", [])
+    except ValueError:
+        raise PermissionsError("apply", "unreadable AWS response")
+    victim = buckets.oldest_non_default_version(versions)
     if victim:
         cp = call(["iam", "delete-policy-version", "--policy-arn", policy_arn, "--version-id", victim])
         if cp.returncode != 0:
@@ -414,10 +429,21 @@ def _now_iso(now=None) -> str:
 
 
 def write_stamp(config_dir: str, template_path: str, principal: Principal, *, now=None) -> None:
-    """Record that this install matches this build: the two ARNs + level + time."""
+    """Record that this install matches this build: the role ARN + level + time."""
     env = config_io.read_backup_env(config_dir)
     env.update({"BUCKET_ADMIN_ROLE_ARN": role_arn(principal.account),
                 STAMP_KEY: str(required_level()), CHECKED_KEY: _now_iso(now)})
+    config_io.write_backup_env(template_path, config_dir, env)
+
+
+def clear_stamp(config_dir: str, template_path: str) -> None:
+    """Erase the stamp + recorded role ARN: a new destination (a different bucket,
+    or a new runtime key) is not the install the stamp was written for, and a
+    final converge that failed must not leave a level claimed that was never
+    actually reached. Blanks BUCKET_ADMIN_ROLE_ARN, PERMISSIONS_VERSION and
+    PERMISSIONS_CHECKED_AT; every other key is left exactly as-is."""
+    env = config_io.read_backup_env(config_dir)
+    env.update({"BUCKET_ADMIN_ROLE_ARN": "", STAMP_KEY: "", CHECKED_KEY: ""})
     config_io.write_backup_env(template_path, config_dir, env)
 
 
@@ -452,10 +478,16 @@ class Outcome:
 def converge(principal: Principal, *, bucket: str, region: str, admin: AdminCreds,
              config_dir: str, template_path: str, cache_dir: str,
              apply_changes: bool = True, mode: str = "update",
-             run=provision._run_aws) -> Outcome:
+             run=provision._run_aws, sleep=time.sleep,
+             settle_tries: int = 3, settle_s: float = 3.0) -> Outcome:
     """Discover -> plan -> (apply -> re-discover -> re-plan must be empty) -> stamp.
     Raises provision.AdminCapabilityError / provision.AccountLookupError /
-    PermissionsError before any change; step failures come back in the Outcome."""
+    PermissionsError before any change; step failures come back in the Outcome.
+
+    The post-apply re-check is retried up to `settle_tries` times (sleeping
+    `settle_s` between tries) because IAM reads can briefly still show the
+    pre-write document even after a successful write (eventual consistency) --
+    without this, a real convergence could be misreported as "remaining" work."""
     provision.verify_admin_can_provision(region, admin.key, admin.secret, admin.token, run=run)
     account = provision.aws_account_id(region, admin.key, admin.secret, admin.token, run=run)
     if account != principal.account:
@@ -473,7 +505,12 @@ def converge(principal: Principal, *, bucket: str, region: str, admin: AdminCred
     apply(steps, region=region, admin=admin, run=run)
     if any(s.status == "failed" for s in steps):
         return Outcome(ok=False, applied=True, steps=steps)
-    remaining = plan(discover(principal, region=region, admin=admin, run=run), principal, bucket)
+    remaining: list[Step] = []
+    for attempt in range(settle_tries):
+        remaining = plan(discover(principal, region=region, admin=admin, run=run), principal, bucket)
+        if not remaining or attempt == settle_tries - 1:
+            break
+        sleep(settle_s)
     if remaining:
         return Outcome(ok=False, applied=True, steps=steps, remaining=remaining)
     write_stamp(config_dir, template_path, principal)
@@ -483,17 +520,21 @@ def converge(principal: Principal, *, bucket: str, region: str, admin: AdminCred
 
 # --- the commands fallback: a convergent script + runtime-key Verify ---------------------
 
-_ACCOUNT_RE = re.compile(r"^\d{12}$")
-_IAM_USER_RE = re.compile(r"^[\w+=,.@-]{1,64}$")
-_REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d$")
+# re.ASCII: without it \d/\w also match Unicode look-alikes (e.g. a full-width
+# "２"), which could sneak a 12-"digit"-looking string past the account check.
+# fullmatch (not match+"$") below: match()+"$" tolerates a trailing "\n" -- it
+# matches just before it -- fullmatch requires the whole string to be consumed.
+_ACCOUNT_RE = re.compile(r"^\d{12}$", re.ASCII)
+_IAM_USER_RE = re.compile(r"^[\w+=,.@-]{1,64}$", re.ASCII)
+_REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d$", re.ASCII)
 
 
 def script(principal: Principal, *, bucket: str, region: str) -> str:
     """A bash script that converges IAM with only idempotent commands (for CloudShell).
     Every interpolated value is shape-checked first, and the policy JSON goes in
     quoted heredocs, so nothing in it can reach the shell."""
-    if not (_ACCOUNT_RE.match(principal.account) and _IAM_USER_RE.match(principal.user)
-            and buckets.valid_bucket_name(bucket) and _REGION_RE.match(region or "")):
+    if not (_ACCOUNT_RE.fullmatch(principal.account) and _IAM_USER_RE.fullmatch(principal.user)
+            and buckets.valid_bucket_name(bucket) and _REGION_RE.fullmatch(region or "")):
         raise PermissionsError("script", "the account, user, bucket or region has an unexpected shape")
     docs = required_docs(principal, bucket)
     user = principal.user

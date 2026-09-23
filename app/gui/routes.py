@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
-from markupsafe import Markup
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
                dirsize, attributions, status, vocab, points, readiness, ops, permissions)
 from ..estimator.prices import load_prices
@@ -1610,6 +1609,15 @@ def config_save():
         flash("Bucket name can't be blank — nothing was saved.", "failure")
         return redirect(url_for("gui.config_page"))
 
+    # A changed bucket or a changed runtime key means this is no longer the
+    # install the stamp was written for (spec addendum review Important 2) — the
+    # STORED key (secrets.env, before write_secrets below touches it), not the
+    # process env, is the one to compare a submitted key against.
+    stored_key, _ = sysop._runtime_key(cfg["CONFIG_DIR"])
+    submitted_key = f.get("AWS_ACCESS_KEY_ID", "").strip()
+    bucket_changed = new_bucket != (before.get("S3_BUCKET", "") or "").strip()
+    key_changed = bool(submitted_key) and submitted_key != stored_key
+
     env_keys = [k for k in config_io.template_keys(cfg["TEMPLATE_PATH"])
                 if k not in _KEY_SECRET_FIELDS]
     before_ce = config_io.read_cost_explorer_creds(cfg["CONFIG_DIR"])
@@ -1619,10 +1627,18 @@ def config_save():
     # f.get("AUTO_RESUME_ON_BOOT", "") above would write "" — and auto_resume_on_boot()
     # treats anything other than the literal string "false" as True. Override explicitly.
     values["AUTO_RESUME_ON_BOOT"] = "true" if f.get("AUTO_RESUME_ON_BOOT") else "false"
-    # The stamp is never on this form; carry the saved values through, or
-    # write_backup_env would reset them to the template's blank.
-    for k in _STAMP_KEYS:
-        values[k] = before.get(k, "")
+    # The stamp is never on this form (env_keys above just assigned it whatever a
+    # request happened to submit, e.g. a smuggled PERMISSIONS_VERSION=99 — ignore
+    # that and carry the SAVED value through instead, or write_backup_env would
+    # reset it to the template's blank). Unless the bucket or runtime key just
+    # changed, in which case the stamp is stale and must be cleared instead — the
+    # role ARN is a visible Keys field (BUCKET_ADMIN_ROLE_ARN, in env_keys above),
+    # so it's left exactly as submitted either way.
+    if bucket_changed or key_changed:
+        values[permissions.STAMP_KEY] = values[permissions.CHECKED_KEY] = ""
+    else:
+        for k in _STAMP_KEYS:
+            values[k] = before.get(k, "")
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"], values)
     # Write the runtime key AND the Cost Explorer billing credential in one pass —
     # write_secrets rebuilds secrets.env from the managed UNION, so writing one group
@@ -1630,7 +1646,7 @@ def config_save():
     config_io.write_secrets(cfg["CONFIG_DIR"], {k: f.get(k, "") for k in _KEY_SECRET_FIELDS})
     after_ce = config_io.read_cost_explorer_creds(cfg["CONFIG_DIR"])
     flash("Saved.", "success")
-    if new_bucket != (before.get("S3_BUCKET", "") or "").strip():
+    if bucket_changed:
         flash(f"Base bucket repointed to {new_bucket!r}. Existing data was NOT moved "
               "from the old bucket.", "warning")
     if f.get("TZ", "").strip() and f.get("TZ", "").strip() != (before.get("TZ", "") or "").strip():
@@ -1725,6 +1741,10 @@ def provision_validate():
     config_io.write_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"],
                                {**config_io.read_backup_env(cfg["CONFIG_DIR"]),
                                 "AWS_REGION": region, "S3_BUCKET": bucket})
+    # A guided re-setup is a NEW destination -- a stamp/role ARN from a previous
+    # bucket (or a previous version of backup-engine) must not go on claiming this
+    # one is current. The permissions page verifies it fresh from here.
+    permissions.clear_stamp(cfg["CONFIG_DIR"], cfg["TEMPLATE_PATH"])
     # Record the successful destination setup so Activity shows it (spec 5.5).
     provision.record_setup(cfg["CACHE_DIR"], bucket=bucket, region=region, mode="validate")
     # Refresh the destination probe on the NEW key so /setup reflects it, not a stale
@@ -1734,10 +1754,11 @@ def provision_validate():
           f"recovery passphrase and the first job.", "success")
     return redirect(url_for("gui.permissions_page", mode="commands", _anchor="commands"))
 
-# Fixed, developer-authored copy only -- never interpolated with admin/AWS output -- so
-# it is safe to mark non-escaping the same way permissions_routes._ADMIN_MESSAGES does:
-# Jinja's autoescape would otherwise turn the apostrophe here into `&#39;`.
-SETUP_PERMISSIONS_WARNING = Markup(
+# Fixed, developer-authored copy only -- never interpolated with admin/AWS output.
+# Plain str (not markupsafe.Markup): Jinja's autoescape turns the apostrophe here
+# into `&#39;`, same as permissions_routes._ADMIN_MESSAGES -- there's no reason to
+# mark it non-escaping.
+SETUP_PERMISSIONS_WARNING = (
     "Destination is set, but backup-engine couldn't confirm its AWS "
     "permissions. Open Setup → AWS permissions to finish — nothing is "
     "broken meanwhile.")
@@ -1746,16 +1767,28 @@ SETUP_PERMISSIONS_WARNING = Markup(
 def _finish_setup_permissions(cfg, result, admin) -> str | None:
     """Automated setup's last step (spec 2026-09-22 §4): converge + stamp with the SAME
     in-frame admin creds. It never fails setup -- tofu already created the bucket and
-    key and its state is gone -- so any problem becomes a warning for the success page."""
+    key and its state is gone -- so any problem becomes a warning for the success page.
+    Either failure mode (an exception, or a converge that ran but didn't finish)
+    clears any stamp/role ARN a PREVIOUS destination or version left behind -- this
+    install must not go on claiming a level it never actually reached."""
     try:
         principal = permissions.parse_principal(result.get("runtime_user_arn", ""))
         outcome = permissions.converge(
             principal, bucket=result["bucket"], region=result["region"], admin=admin,
             config_dir=cfg["CONFIG_DIR"], template_path=cfg["TEMPLATE_PATH"],
             cache_dir=cfg["CACHE_DIR"], apply_changes=True, mode="setup")
-    except Exception:  # noqa: BLE001 -- setup already succeeded; never lose it here
+    except Exception as e:  # noqa: BLE001 -- setup already succeeded; never lose it here
+        permissions.clear_stamp(cfg["CONFIG_DIR"], cfg["TEMPLATE_PATH"])
+        # Class + .kind only -- NEVER the exception message, which can carry scrubbed
+        # or unscrubbed AWS/admin-credential detail depending on where it was raised.
+        current_app.logger.warning(
+            "automated setup: AWS permissions check failed (%s)",
+            type(e).__name__ + (f" {e.kind}" if getattr(e, "kind", None) else ""))
         return SETUP_PERMISSIONS_WARNING
-    return None if outcome.ok else SETUP_PERMISSIONS_WARNING
+    if not outcome.ok:
+        permissions.clear_stamp(cfg["CONFIG_DIR"], cfg["TEMPLATE_PATH"])
+        return SETUP_PERMISSIONS_WARNING
+    return None
 
 
 @bp.get("/setup/destination/automated")

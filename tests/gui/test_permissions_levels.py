@@ -67,6 +67,20 @@ def test_garbage_stamp_is_unchecked(dirs):
     assert permissions.current_level(dirs["config"]) is None
 
 
+def test_non_decimal_digit_stamp_is_unchecked(dirs):
+    # isdigit() alone accepts "²" (superscript two) -- isdecimal() does not, even
+    # though int("²") would raise if it slipped through.
+    _env(dirs, "PERMISSIONS_VERSION=²\n")
+    assert permissions.current_level(dirs["config"]) is None
+
+
+def test_non_ascii_decimal_digit_stamp_is_unchecked(dirs):
+    # isdecimal() alone accepts non-ASCII decimal digits (e.g. Arabic-Indic "١")
+    # -- and int() happily parses them -- so isascii() is required too.
+    _env(dirs, "PERMISSIONS_VERSION=١\n")
+    assert permissions.current_level(dirs["config"]) is None
+
+
 def test_template_carries_the_stamp_keys(template_path):
     keys = config_io.template_keys(template_path)
     assert "PERMISSIONS_VERSION" in keys and "PERMISSIONS_CHECKED_AT" in keys
@@ -100,3 +114,52 @@ def test_saving_keys_keeps_the_stamp(client, dirs):
     env = config_io.read_backup_env(dirs["config"])
     assert env["PERMISSIONS_VERSION"] == "3"
     assert env["PERMISSIONS_CHECKED_AT"] == "2026-09-22T10:00:00Z"
+
+
+# --- clear_stamp + config_save's stale-stamp guard (review Important 2) ------
+
+def _post_keys(client, **extra):
+    client.get("/setup/keys")
+    with client.session_transaction() as s:
+        token = s["_csrf"]
+    data = {"csrf": token, "S3_BUCKET": "acme", "AWS_REGION": "us-east-1"}
+    data.update(extra)
+    return client.post("/setup/keys", data=data)
+
+
+def test_clear_stamp_blanks_the_stamp_and_role_arn_only(dirs, template_path):
+    _env(dirs, "S3_BUCKET=acme\nAWS_REGION=us-east-1\n"
+               "BUCKET_ADMIN_ROLE_ARN=arn:aws:iam::123456789012:role/backup-engine-bucket-admin\n"
+               "PERMISSIONS_VERSION=3\nPERMISSIONS_CHECKED_AT=2026-09-22T10:00:00Z\n")
+    permissions.clear_stamp(dirs["config"], template_path)
+    env = config_io.read_backup_env(dirs["config"])
+    assert env.get("PERMISSIONS_VERSION", "") == ""
+    assert env.get("PERMISSIONS_CHECKED_AT", "") == ""
+    assert env.get("BUCKET_ADMIN_ROLE_ARN", "") == ""
+    assert env["S3_BUCKET"] == "acme" and env["AWS_REGION"] == "us-east-1"
+
+
+def test_keys_save_with_a_changed_bucket_clears_the_stamp(client, dirs):
+    r = _post_keys(client, S3_BUCKET="new-bucket")
+    assert r.status_code in (302, 303)
+    env = config_io.read_backup_env(dirs["config"])
+    assert env.get("PERMISSIONS_VERSION", "") == ""
+    assert env.get("PERMISSIONS_CHECKED_AT", "") == ""
+
+
+def test_keys_save_with_a_changed_runtime_key_clears_the_stamp(client, dirs):
+    r = _post_keys(client, AWS_ACCESS_KEY_ID="AKIABRANDNEWDIFFERENTKEY")
+    assert r.status_code in (302, 303)
+    env = config_io.read_backup_env(dirs["config"])
+    assert env.get("PERMISSIONS_VERSION", "") == ""
+    assert env.get("PERMISSIONS_CHECKED_AT", "") == ""
+
+
+def test_keys_save_smuggled_stamp_version_is_ignored(client, dirs):
+    # Same bucket, blank key -> the stamp is kept, but at the STORED value -- a
+    # posted PERMISSIONS_VERSION is not a real field on this form and must never
+    # be trusted, even when the stamp isn't being cleared.
+    r = _post_keys(client, PERMISSIONS_VERSION="99")
+    assert r.status_code in (302, 303)
+    env = config_io.read_backup_env(dirs["config"])
+    assert env["PERMISSIONS_VERSION"] == "3"

@@ -4,6 +4,7 @@
 # transient / unraid-backup / value="us-east-1" / failed at tofu apply /
 # What AWS / OpenTofu reported / arn:aws:s3:::acme/appdata/* / setup.sh) still
 # renders; "First-time setup" is retired in favour of "Where backups go".
+import html
 import pytest
 from pathlib import Path
 from app.gui import create_app
@@ -146,6 +147,51 @@ def test_validate_success_writes_secrets_and_lands_on_permissions(client, dirs, 
     assert "AWS_ACCESS_KEY_ID=AKIA" in sec and "AWS_SECRET_ACCESS_KEY=sek" in sec
     be = Path(dirs["config"], "backup.env").read_text()
     assert "AWS_REGION=eu-west-1" in be and "S3_BUCKET=acme" in be
+
+
+def test_validate_on_a_stamped_install_clears_the_stamp_and_role_arn(client, dirs, monkeypatch, template_path):
+    # Guided re-setup = a NEW destination: a stamp/role ARN from a PREVIOUS bucket
+    # (or backup-engine version) must not go on claiming this one is current
+    # (review Important 2).
+    from app.gui import provision, permissions, config_io
+    monkeypatch.setattr(provision, "validate_runtime_key", lambda *a, **k: None)
+    config_io.write_backup_env(template_path, dirs["config"],
+                               {**config_io.read_backup_env(dirs["config"]),
+                                "S3_BUCKET": "old-bucket", "AWS_REGION": "us-east-1",
+                                "BUCKET_ADMIN_ROLE_ARN":
+                                    "arn:aws:iam::123456789012:role/backup-engine-bucket-admin",
+                                "PERMISSIONS_VERSION": str(permissions.required_level()),
+                                "PERMISSIONS_CHECKED_AT": "2026-09-01T00:00:00Z"})
+    token = _csrf(client, "/setup/destination/manual")
+    r = client.post("/setup/destination/validate",
+                    data={"csrf": token, "bucket": "new-bucket", "region": "us-east-1",
+                          "AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    assert r.status_code in (302, 303)
+    be = config_io.read_backup_env(dirs["config"])
+    assert be["S3_BUCKET"] == "new-bucket"
+    assert be.get("PERMISSIONS_VERSION", "") == ""
+    assert be.get("PERMISSIONS_CHECKED_AT", "") == ""
+    assert be.get("BUCKET_ADMIN_ROLE_ARN", "") == ""
+
+
+def test_validate_on_a_stamped_install_disables_the_dedicated_toggle_after(
+        client, dirs, monkeypatch, template_path):
+    from app.gui import provision, permissions, config_io
+    monkeypatch.setattr(provision, "validate_runtime_key", lambda *a, **k: None)
+    config_io.write_backup_env(template_path, dirs["config"],
+                               {**config_io.read_backup_env(dirs["config"]),
+                                "S3_BUCKET": "old-bucket", "AWS_REGION": "us-east-1",
+                                "BUCKET_ADMIN_ROLE_ARN":
+                                    "arn:aws:iam::123456789012:role/backup-engine-bucket-admin",
+                                "PERMISSIONS_VERSION": str(permissions.required_level()),
+                                "PERMISSIONS_CHECKED_AT": "2026-09-01T00:00:00Z"})
+    token = _csrf(client, "/setup/destination/manual")
+    client.post("/setup/destination/validate",
+               data={"csrf": token, "bucket": "new-bucket", "region": "us-east-1",
+                     "AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert 'id="dedicated" disabled' in body
+    assert "Needs a one-time AWS permissions update" in body
 
 
 def test_validate_success_flashes_destination_set(client, dirs, monkeypatch):
@@ -566,8 +612,11 @@ def test_automated_setup_survives_a_converge_failure(client, dirs, monkeypatch):
     monkeypatch.setattr(permissions, "converge", boom)
     r = _automated(client, monkeypatch, _TOFU_OK)
     assert r.status_code == 200
-    assert b"Destination set: acme in us-east-1" in r.data
-    assert b"couldn't confirm its AWS permissions" in r.data
+    # SETUP_PERMISSIONS_WARNING is plain str now (review Minor 9), so Jinja
+    # autoescapes its apostrophe to `&#39;` -- unescape before matching.
+    body = html.unescape(r.get_data(as_text=True))
+    assert "Destination set: acme in us-east-1" in body
+    assert "couldn't confirm its AWS permissions" in body
     assert b"ADMINS" not in r.data
     assert "AWS_ACCESS_KEY_ID=AKIARUN" in Path(dirs["config"], "secrets.env").read_text()
 
@@ -575,7 +624,47 @@ def test_automated_setup_survives_a_converge_failure(client, dirs, monkeypatch):
 def test_automated_setup_warns_when_tofu_gave_no_user_arn(client, monkeypatch, converge_calls):
     r = _automated(client, monkeypatch, {k: v for k, v in _TOFU_OK.items() if k != "runtime_user_arn"})
     assert r.status_code == 200 and converge_calls == []
-    assert b"couldn't confirm its AWS permissions" in r.data
+    assert "couldn't confirm its AWS permissions" in html.unescape(r.get_data(as_text=True))
+
+
+def test_automated_setup_converge_failure_clears_a_previous_stamp(client, dirs, monkeypatch, template_path):
+    # A previously-stamped install (an earlier destination, or an earlier version
+    # of backup-engine) that re-runs automated setup and whose final converge
+    # fails must NOT go on claiming the old level is current (review Important 2).
+    from app.gui import permissions, config_io
+    config_io.write_backup_env(template_path, dirs["config"],
+                               {**config_io.read_backup_env(dirs["config"]),
+                                "PERMISSIONS_VERSION": "1", "PERMISSIONS_CHECKED_AT": "2026-01-01T00:00:00Z",
+                                "BUCKET_ADMIN_ROLE_ARN":
+                                    "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"})
+
+    def boom(principal, **kw):
+        raise RuntimeError("IAM hiccup")
+    monkeypatch.setattr(permissions, "converge", boom)
+    r = _automated(client, monkeypatch, _TOFU_OK)
+    assert r.status_code == 200
+    be = config_io.read_backup_env(dirs["config"])
+    assert be.get("PERMISSIONS_VERSION", "") == ""
+    assert be.get("PERMISSIONS_CHECKED_AT", "") == ""
+
+
+def test_automated_setup_converge_failure_logs_class_and_kind_only_never_the_message(
+        client, monkeypatch, caplog):
+    # T10 minor: the swallowed automated-setup error must be logged (it was
+    # silently dropped before), but ONLY the exception class + .kind -- never
+    # .detail/str(e), which can carry scrubbed-or-not admin/AWS text.
+    from app.gui import permissions
+    import logging
+
+    def boom(principal, **kw):
+        raise permissions.PermissionsError("account_mismatch", "leaked-detail ADMINS")
+    monkeypatch.setattr(permissions, "converge", boom)
+    with caplog.at_level(logging.WARNING):
+        r = _automated(client, monkeypatch, _TOFU_OK)
+    assert r.status_code == 200
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("PermissionsError" in m and "account_mismatch" in m for m in msgs)
+    assert not any("leaked-detail" in m or "ADMINS" in m for m in msgs)
 
 
 def test_automated_setup_keeps_the_stamp_converge_wrote(client, dirs, monkeypatch):

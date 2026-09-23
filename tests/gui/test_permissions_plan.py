@@ -41,6 +41,10 @@ def test_parse_principal_handles_an_iam_path():
     f"arn:aws:iam::{ACCOUNT}:root",
     f"arn:aws:iam::{ACCOUNT}:role/backup-engine-bucket-admin",
     "", "not-an-arn",
+    # Shape checks (review Minor 6): re.ASCII keeps \d from matching a Unicode
+    # look-alike digit -- without it, a full-width "２" could sneak a
+    # 12-"digit"-looking account past the check.
+    f"arn:aws:iam::12345678901２:user/backup-engine-runtime",
 ])
 def test_parse_principal_refuses_non_users(arn):
     with pytest.raises(permissions.PermissionsError) as e:

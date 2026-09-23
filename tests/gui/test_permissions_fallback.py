@@ -73,6 +73,15 @@ def test_script_runs_in_order_against_a_stub_aws(tmp_path):
     (permissions.Principal("12345", "backup-engine-runtime", USER_ARN), BUCKET, "us-east-1"),
     (P, "Bad_Bucket;id", "us-east-1"),
     (P, BUCKET, "us-east-1; id"),
+    # Shape checks (review Minor 6): match()+"$" tolerates a trailing "\n" (it
+    # matches just before it) -- fullmatch closes that hole.
+    (P, BUCKET, "us-east-1\n"),
+    (permissions.Principal(ACCOUNT, "backup-engine-runtime\n", USER_ARN), BUCKET, "us-east-1"),
+    (P, "good-name\n", "us-east-1"),
+    # re.ASCII: without it \d also matches a Unicode look-alike digit (a
+    # full-width "２"), which could sneak a 12-"digit"-looking account past the
+    # check ("12345678901２" is 12 CHARACTERS, the last one not ASCII).
+    (permissions.Principal("12345678901２", "backup-engine-runtime", USER_ARN), BUCKET, "us-east-1"),
 ])
 def test_script_refuses_unexpected_values(principal, bucket, region):
     with pytest.raises(permissions.PermissionsError) as e:
@@ -120,6 +129,9 @@ def test_verify_names_the_script_step_when_the_role_is_missing():
     probes = _verify(_fake(assume_ok=False))
     assert [p.ok for p in probes] == [True, False, False]
     assert "step 1" in probes[1].hint
+    # The third probe (needs the role, which just failed) carries its OWN
+    # dependent hint rather than re-running the role-policy check.
+    assert "Needs the role first" in probes[2].hint and "step 1" in probes[2].hint
 
 
 def test_verify_detects_the_role_policy_is_missing():
@@ -138,3 +150,27 @@ def test_verify_retries_for_iam_propagation():
 def test_verify_scrubs_the_runtime_secret():
     probes = _verify(_fake(list_ok=False), tries=1)
     assert "runsek" not in probes[0].detail
+    assert "step 3" in probes[0].hint
+
+
+def test_verify_scrubs_the_assumed_role_creds_too():
+    # Probe 3 runs with the TEMPORARY assumed-role creds, not the runtime key --
+    # a failing s3api list-buckets whose stderr echoes them must still come back
+    # scrubbed.
+    def run(args, *, region, key, secret, session_token=None):
+        if args[:2] == ["s3api", "list-object-versions"]:
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        if args[:2] == ["sts", "assume-role"]:
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Credentials": {
+                "AccessKeyId": "ASIATMP", "SecretAccessKey": "tmpsek",
+                "SessionToken": "tmpsessiontoken"}}))
+        if args[:2] == ["s3api", "list-buckets"]:
+            return SimpleNamespace(
+                returncode=254, stdout="",
+                stderr="AccessDenied for key=ASIATMP secret=tmpsek token=tmpsessiontoken")
+        raise AssertionError(args)
+    probes = _verify(run, tries=1)
+    assert probes[2].ok is False
+    assert "ASIATMP" not in probes[2].detail
+    assert "tmpsek" not in probes[2].detail
+    assert "tmpsessiontoken" not in probes[2].detail

@@ -18,3 +18,9 @@ def test_valid_bucket_name():
     assert buckets.valid_bucket_name("ab") is False            # too short
     assert buckets.valid_bucket_name("a..b") is False
     assert buckets.valid_bucket_name("192.168.1.1") is False   # IP-like
+
+
+def test_valid_bucket_name_refuses_a_trailing_newline():
+    # Shape checks (review Minor 6): match()+"$" tolerates a trailing "\n" (it
+    # matches just before it) -- fullmatch closes that hole.
+    assert buckets.valid_bucket_name("good-name\n") is False

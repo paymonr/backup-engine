@@ -170,7 +170,12 @@ _WRITE_OPS = {"create-role", "update-assume-role-policy", "put-role-policy", "pu
               "create-policy-version", "delete-policy-version"}
 _NEVER = {"create-access-key", "delete-access-key", "update-access-key", "delete-user",
           "delete-role", "delete-policy", "delete-user-policy", "delete-role-policy",
-          "detach-user-policy", "detach-role-policy"}
+          "detach-user-policy", "detach-role-policy",
+          # Prefix-only dedicated buckets (Addendum 2026-09-22): converge must never
+          # create or attach a NEW managed policy -- only the legacy-managed-policy
+          # repair path (create-policy-version on an EXISTING attached ARN) writes to
+          # a managed policy at all, and even that is asserted separately above.
+          "create-policy", "attach-user-policy"}
 
 
 def _assert_never_touch(fake):
@@ -364,3 +369,72 @@ def test_create_that_races_an_existing_entity_counts_as_done():
                                stderr="An error occurred (EntityAlreadyExists) when calling the CreateRole operation")
     permissions.apply(steps, region="us-east-1", admin=ADMIN, run=exists)
     assert steps[0].status == "done"
+
+
+# --- IAM settle retry (review Minor 4): the post-apply re-check tolerates ONE ----
+# stale read (IAM eventual consistency) before giving up.
+
+class _StaleRoleRead(FakeIAM):
+    """The FIRST get-role-policy call after a put-role-policy still returns the doc
+    from just before that write -- simulating one stale post-write IAM read."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._stale_doc = None
+        self._armed = False
+
+    def __call__(self, args, *, region, key, secret, session_token=None):
+        if args[:2] == ["iam", "put-role-policy"] and not self._armed:
+            name = _opts(args)["--policy-name"]
+            self._stale_doc = (self.role or {}).get("policies", {}).get(name)
+            self._armed = True
+        if args[:2] == ["iam", "get-role-policy"] and self._armed:
+            self._armed = False
+            self.calls.append(list(args))
+            if self._stale_doc is None:
+                return self._err("NoSuchEntity", "GetRolePolicy", "no such role policy")
+            return self._ok({"PolicyDocument": self._stale_doc})
+        return super().__call__(args, region=region, key=key, secret=secret, session_token=session_token)
+
+
+def test_settle_retries_once_on_a_stale_post_apply_read_then_stamps(dirs, template_path):
+    # An install that only needs R2 narrowed (like the old-unscoped-policy case
+    # above), but whose FIRST post-apply read of the role policy is stale.
+    fake = _StaleRoleRead(inline={permissions.RUNTIME_POLICY_NAME: WANT["runtime"]},
+                          role={"trust": WANT["trust"],
+                                "policies": {permissions.ROLE_POLICY_NAME: OLD_UNSCOPED_ROLE_POLICY}})
+    slept = []
+    out = _converge(fake, dirs, template_path, sleep=slept.append)
+    assert out.ok and out.applied and out.remaining == []
+    assert slept == [3.0]
+    env = config_io.read_backup_env(dirs["config"])
+    assert env["PERMISSIONS_VERSION"] == str(permissions.required_level())
+
+
+def test_settle_does_not_sleep_when_the_first_recheck_is_already_empty(dirs, template_path):
+    # Every OTHER converge test in this file never sleeps -- the fakes are
+    # immediately consistent, so the settle loop's single re-check already comes
+    # back empty and breaks before ever calling sleep.
+    fake = _level2_box()
+    slept = []
+    out = _converge(fake, dirs, template_path, sleep=slept.append)
+    assert out.ok and slept == []
+
+
+# --- unparseable AWS JSON (review Minor 8): a clean error, not a crash ----------
+
+def test_discover_raises_a_clean_error_on_unparseable_json():
+    def run(args, *, region, key, secret, session_token=None):
+        return SimpleNamespace(returncode=0, stdout="not json", stderr="")
+    with pytest.raises(permissions.PermissionsError) as e:
+        permissions.discover(P, region="us-east-1", admin=ADMIN, run=run)
+    assert e.value.kind == "read"
+    assert "unreadable" in e.value.detail
+
+
+def test_make_room_raises_a_clean_error_on_unparseable_json():
+    def call(argv):
+        return SimpleNamespace(returncode=0, stdout="not json", stderr="")
+    with pytest.raises(permissions.PermissionsError) as e:
+        permissions._make_room(call, ADMIN, f"arn:aws:iam::{ACCOUNT}:policy/{permissions.RUNTIME_POLICY_NAME}")
+    assert e.value.kind == "apply"
+    assert "unreadable" in e.value.detail
