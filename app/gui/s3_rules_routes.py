@@ -66,7 +66,10 @@ def _app_folders(cfg) -> set[tuple[str, str]]:
 
 @bp.post("/setup/storage/refresh")
 def setup_storage_refresh():
-    """Refresh now (spec §4): a detached storage summary of one app folder (progress in Activity)."""
+    """Refresh now (spec §4): a detached storage summary of one app folder (progress in Activity).
+    Never a silent no-op (fix round 1, Minor 2): when there's nothing sysop's own op could
+    actually scan -- S3 rules not managed here, or a custom S3 endpoint -- says so instead
+    of flashing a success-shaped note over a launch that wouldn't have done anything."""
     _csrf_or_400()
     if _unprovisioned():
         return redirect(url_for("gui.setup_page"))
@@ -74,7 +77,12 @@ def setup_storage_refresh():
     bucket, folder = request.form.get("bucket", "").strip(), request.form.get("folder", "")
     if (bucket, folder) not in _app_folders(cfg):
         abort(404, description="That folder isn't one of backup-engine's.")
-    ops.launch_py(cfg, "app.engine.sysop", ["storage-summary", "--bucket", bucket, "--folder", folder],
-                  kind="storage-summary")
-    flash("Refreshing the storage summary — watch it in Activity →", "note")
+    if config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_ENDPOINT", "").strip():
+        flash("This storage doesn't support storage summaries.", "warning")
+    elif not lifecycle.managed(cfg["CONFIG_DIR"]):
+        flash("Storage summaries need the AWS permissions update.", "warning")
+    else:
+        ops.launch_py(cfg, "app.engine.sysop", ["storage-summary", "--bucket", bucket, "--folder", folder],
+                      kind="storage-summary")
+        flash("Refreshing the storage summary — watch it in Activity →", "note")
     return redirect(_storage_url(request.form.get("key", "")))

@@ -682,3 +682,19 @@ EOF
   [ "$status" -eq 0 ]
   grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
 }
+
+@test "a detached storage summary does not hold the job's run lock (inherited fd 9 closed)" {
+  local stub="$BATS_TEST_TMPDIR/summary-slow.sh"
+  printf '#!/usr/bin/env bash\nsleep 6\n' >"$stub"
+  export SUMMARY_CMD="bash $stub"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  # the run's own lock must be free the instant the script exits, regardless of
+  # how long the detached summary scan itself keeps running
+  flock -n "$CACHE_DIR/locks/movies.lock" true
+  # and a second run right away must not be refused as "in progress"
+  run_job movies
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"another movies run is in progress"* ]]
+}

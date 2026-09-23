@@ -97,10 +97,47 @@ def test_a_failed_listing_is_scrubbed():
     assert "runsek" not in str(e.value) and "AKIARUN" not in str(e.value)
 
 
+class _StuckLister:
+    """A page that claims IsTruncated but hands back the SAME (NextKeyMarker,
+    NextVersionIdMarker) it was called with -- a listing that never advances
+    (fix round 1, Minor 1). Fails loudly after a few calls instead of letting an
+    unguarded scan() spin forever."""
+    def __init__(self, cap=5):
+        self.calls, self.cap = 0, cap
+
+    def __call__(self, args, *, region, key, secret, session_token=None):
+        self.calls += 1
+        assert self.calls <= self.cap, "scan() looped without making progress"
+        inp = json.loads(args[args.index("--cli-input-json") + 1])
+        next_key = inp.get("KeyMarker", "media/manga/a.cbz")
+        next_vid = inp.get("VersionIdMarker", "a1")
+        out = {"IsTruncated": True,
+               "Versions": [{"Key": "media/manga/a.cbz", "VersionId": "a1", "IsLatest": True,
+                             "LastModified": "2026-09-20T12:00:00.000Z", "Size": 1}],
+               "DeleteMarkers": [], "NextKeyMarker": next_key, "NextVersionIdMarker": next_vid}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(out), stderr="")
+
+
+def test_a_page_marker_that_never_advances_raises_instead_of_looping_forever():
+    lister = _StuckLister()
+    with pytest.raises(ss.SummaryError):
+        ss.scan(B, "media/manga/", region="us-east-1", key="AKIARUN", secret="runsek",
+               run=lister, now=NOW, page_keys=1)
+    assert lister.calls <= 2
+
+
 def test_the_whole_bucket_is_listed_without_a_prefix():
     lister = FakeLister()
     ss.scan(B, "", region="us-east-1", key="AKIARUN", secret="runsek", run=lister, now=NOW)
     assert "Prefix" not in json.loads(lister.calls[0][lister.calls[0].index("--cli-input-json") + 1])
+
+
+def test_scanned_at_reads_the_summarys_timestamp():
+    # A public reader for `scanned_at` (fix round 1, Minor 4) -- so callers (sysop's
+    # freshness check) never reach into the private `_parse`.
+    assert ss.scanned_at({"scanned_at": "2026-09-23T12:00:00Z"}) == NOW
+    assert ss.scanned_at({}) is None
+    assert ss.scanned_at(None) is None
 
 
 def test_save_and_load_round_trip(tmp_path):
@@ -114,6 +151,23 @@ def test_save_and_load_round_trip(tmp_path):
 
 def _days(d):
     return {"NoncurrentVersionExpiration": {"NoncurrentDays": d}}
+
+
+def test_a_delete_marker_between_two_versions_still_ages_the_one_beneath_it():
+    # fix round 1, Minor 6: a key deleted then recreated -- the delete marker sits BETWEEN
+    # the current (recreated) version and the older one, and it's the marker's own
+    # LastModified (its immediate successor), not the current version's, that ages the
+    # version beneath it.
+    entries = [
+        _v("media/manga/d.cbz", "d2", "2026-09-20T12:00:00.000Z", latest=True, size=300),
+        _v("media/manga/d.cbz", "dm", "2026-09-15T12:00:00.000Z", marker=True),
+        _v("media/manga/d.cbz", "d1", "2026-09-01T12:00:00.000Z", size=150),
+    ]
+    s = _scan(lister=FakeLister(entries))
+    assert s["noncurrent_by_age_days"] == [[8, 1, 150]]
+    assert s["noncurrent_by_rank"] == [[1, 1, 150]]
+    assert (s["noncurrent_versions"], s["noncurrent_bytes"]) == (1, 150)
+    assert (s["delete_markers"], s["current_objects"], s["current_bytes"]) == (1, 1, 300)
 
 
 def test_impact_is_exact_for_days_newest_and_both():

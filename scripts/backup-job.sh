@@ -145,9 +145,13 @@ main() {
   # Storage summary (spec 2026-09-23 §4): a detached, read-only scan of this job's folder so S3
   # rules previews are instant. Never part of the run: no BE_RUN_ID (it records itself), no
   # shared stdout (the run's log tee must not wait for it); a launch failure changes nothing.
+  # `9>&-` closes the job's OWN lock fd (acquire_lock's `exec 9>"$lock"`, above) before the
+  # background process forks -- otherwise it inherits fd 9 and the underlying flock stays held
+  # (a second run of THIS job refused as "in progress") for as long as the scan keeps running,
+  # well after this script has exited (fix round 1, Critical).
   # shellcheck disable=SC2086  # SUMMARY_CMD is a command line, split on purpose
   env -u BE_RUN_ID BE_TRIGGER=scheduled ${SUMMARY_CMD:-python3 -m app.engine.sysop} \
-    storage-summary --job "$JOB" </dev/null >/dev/null 2>&1 &
+    storage-summary --job "$JOB" </dev/null >/dev/null 2>&1 9>&- &
   disown 2>/dev/null || true
   log_info "job '$JOB' complete ($JOB_TYPE, ${dur}s)"
   notify success "backup '$JOB' OK" "$JOB_TYPE finished in ${dur}s"; healthcheck success

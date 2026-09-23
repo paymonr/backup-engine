@@ -237,7 +237,7 @@ def _summary_skip(cfg, params: dict | None) -> bool:
         return True
     if os.environ.get("BE_TRIGGER", "manual") == "scheduled":
         s = storage_summary.load(cfg["CACHE_DIR"], *target)
-        at = storage_summary._parse((s or {}).get("scanned_at"))
+        at = storage_summary.scanned_at(s)
         if at is not None and time.time() - at.timestamp() < SUMMARY_FRESH_S:
             return True
     return False
@@ -268,8 +268,18 @@ def run(kind: str, params: dict | None = None) -> int:
         print(f"sysop: unknown operation {kind!r}", file=sys.stderr)
         return 2
     cfg = _cfg_from_env()
-    if kind == "storage-summary" and _summary_skip(cfg, params):
-        return 0
+    # A silent skip (no Activity record at all) must be decided before any run record
+    # exists -- but an UNEXPECTED failure of the check itself must not crash this
+    # uncaught (run() always returns 0): stash it and replay it inside the op's own
+    # try/except below, so it lands in the same failed-end record an op failure gets
+    # (fix round 1, Minor 3).
+    skip_error = None
+    if kind == "storage-summary":
+        try:
+            if _summary_skip(cfg, params):
+                return 0
+        except Exception as e:                        # noqa: BLE001 — recorded below, not lost
+            skip_error = e
     cache = cfg["CACHE_DIR"]
     run_id = _run_id()
     Path(cache, "logs", "runs", runs.SYSTEM_JOB).mkdir(parents=True, exist_ok=True)
@@ -298,6 +308,8 @@ def run(kind: str, params: dict | None = None) -> int:
             lf.write(f"{_now_iso()} {msg}\n"); lf.flush()
         try:
             log(f"{kind} start")
+            if skip_error is not None:
+                raise skip_error
             _OPS[kind](cfg, log=log, **(params or {}))
             log(f"{kind} ok")
         except Exception as e:                      # noqa: BLE001 — any op failure -> failed end

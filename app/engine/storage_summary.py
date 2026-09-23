@@ -38,6 +38,13 @@ def _parse(s) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def scanned_at(summary: dict | None) -> datetime | None:
+    """A summary's `scanned_at` as a datetime (None when there's no summary, or its
+    timestamp is missing/unreadable) -- the public reader other modules (sysop's
+    freshness check) use instead of reaching into `_parse` (fix round 1, Minor 4)."""
+    return _parse((summary or {}).get("scanned_at"))
+
+
 def slug(folder: str) -> str:
     return folder.strip("/").replace("/", "-") or "bucket"
 
@@ -162,7 +169,12 @@ def scan(bucket: str, folder: str, *, region: str, key: str, secret: str, run=pr
             break
         if not next_key:
             raise SummaryError("the version listing stopped without saying where to continue")
-        marker = (next_key, page.get("NextVersionIdMarker") or "null")
+        next_marker = (next_key, page.get("NextVersionIdMarker") or "null")
+        if next_marker == marker:
+            # A truncated page whose markers are identical to the ones just requested would
+            # spin forever (fix round 1, Minor 1) -- fail loudly instead of hanging.
+            raise SummaryError("the version listing did not advance")
+        marker = next_marker
     return tally.summary(bucket, folder)
 
 

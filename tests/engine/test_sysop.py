@@ -377,6 +377,23 @@ def test_storage_summary_is_skipped_silently_below_level_four(tmp_path, monkeypa
     assert not Path(cache, "state", "_system.runs.jsonl").exists()
 
 
+def test_storage_summary_is_skipped_silently_for_a_custom_s3_endpoint(tmp_path, monkeypatch):
+    # fix round 1, Minor 6: a custom endpoint (S3-compatible, not real AWS) skips the same
+    # silent way as "not managed" -- _summary_target's other early-out.
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED + "S3_ENDPOINT=https://minio.example\n",
+                      secrets=_RUNTIME)
+    monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("no scan"))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    assert not Path(cache, "state", "_system.runs.jsonl").exists()
+
+
+def test_storage_summary_is_skipped_silently_for_an_unknown_job(tmp_path, monkeypatch):
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("no scan"))
+    assert sysop.run("storage-summary", {"job": "ghost"}) == 0
+    assert not Path(cache, "state", "_system.runs.jsonl").exists()
+
+
 def test_an_after_run_scan_skips_a_folder_scanned_minutes_ago(tmp_path, monkeypatch):
     from datetime import datetime, timezone
     cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
@@ -401,6 +418,22 @@ def test_a_failed_scan_is_a_failed_record(tmp_path, monkeypatch):
     assert sysop.run("storage-summary", {"job": "movies"}) == 0
     end = [r for r in _system_records(cache) if r["event"] == "end"][0]
     assert end["outcome"] == "failed" and "AccessDenied" in end["error"]
+
+
+def test_an_unexpected_skip_check_failure_is_recorded_not_lost(tmp_path, monkeypatch):
+    # fix round 1, Minor 3: _summary_skip runs before any run record exists (a clean
+    # skip must stay silent -- see test_storage_summary_is_skipped_silently_below_level_four
+    # above), but a BUG in that check itself must land in the SAME failed-end record an
+    # ordinary op failure gets, not crash sysop.run() uncaught (it must always return 0).
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+
+    def boom(cfg, params):
+        raise RuntimeError("jobs.json is corrupt")
+    monkeypatch.setattr(sysop, "_summary_skip", boom)
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    recs = _system_records(cache)
+    assert [(r["kind"], r["event"]) for r in recs] == [("storage-summary", "start"), ("storage-summary", "end")]
+    assert recs[1]["outcome"] == "failed" and "jobs.json is corrupt" in recs[1]["error"]
 
 
 def test_main_parses_the_storage_summary_arguments(monkeypatch):
