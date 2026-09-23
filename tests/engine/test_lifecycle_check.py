@@ -88,3 +88,47 @@ def test_cli_check_always_exits_zero(cfg, monkeypatch, capsys):
     monkeypatch.setattr(lc, "check", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert lc.main(["check", "--bucket", BASE]) == 0
     assert "S3 rules check" in capsys.readouterr().out
+
+
+# --- a check never raises (it runs before every backup and behind Check now) -----------
+
+def test_a_malformed_plain_copy_job_keeps_everything_and_the_check_still_runs(cfg):
+    from pathlib import Path
+    jobs_p = Path(cfg["CONFIG_DIR"], "jobs.json")
+    data = json.loads(jobs_p.read_text())
+    data["jobs"][0]["retention"] = {"type": "count", "count": "x"}          # manga
+    jobs_p.write_text(json.dumps(data))
+    fake = FakeS3()
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    ids = {r["ID"] for r in fake.rules[BASE]}
+    assert "backup-engine:media/manga/" not in ids and "backup-engine:housekeeping" in ids
+    assert "manga" in lc.load_status(cfg["CACHE_DIR"])[BASE]["detail"]
+
+
+@pytest.mark.parametrize("with_applied,target,exc", [
+    (False, "read_rules", RuntimeError("boom")),
+    (False, "save_applied", OSError(28, "No space left on device")),
+    (False, "desired_rules", ValueError("bad")),
+    (True, "read_rules", RuntimeError("boom")),
+    (True, "write_rules", OSError(28, "No space left on device")),
+    (True, "_change_lines", KeyError("x")),
+])
+def test_check_never_raises(cfg, monkeypatch, with_applied, target, exc):
+    fake = FakeS3()
+    if with_applied:
+        _applied(cfg, fake)
+        fake.rules[BASE] = []                                   # force the restore path too
+
+    def boom(*a, **k):
+        raise exc
+    monkeypatch.setattr(lc, target, boom)
+    assert lc.check(cfg, BASE, run=fake) == "error"
+    assert lc.load_status(cfg["CACHE_DIR"])[BASE]["state"] == "error"
+
+
+def test_check_never_raises_even_when_the_status_file_cannot_be_written(cfg, monkeypatch):
+    def boom(*a, **k):
+        raise OSError(30, "Read-only file system")
+    monkeypatch.setattr(lc, "set_status", boom)
+    monkeypatch.setattr(lc, "read_rules", boom)
+    assert lc.check(cfg, BASE, run=FakeS3()) == "error"

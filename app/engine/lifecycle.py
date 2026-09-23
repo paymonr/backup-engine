@@ -30,6 +30,7 @@ class Folder:
     kind: str                        # "plain" (Plain copy history) | "undo"
     jobs: tuple[str, ...]
     retention: dict | None = None    # plain only: the job's normalized history setting
+    note: str = ""                   # why the folder's rule isn't the job's setting (owner words)
 
 
 def rule_id(folder: str) -> str:
@@ -53,8 +54,15 @@ def folders_for(bucket: str, base: str, jobs: list[dict]) -> list[Folder]:
                 continue
             folder = None
         if typ == "archive":
+            # A malformed setting (hand-edited jobs.json, a Snapshot-only choice) must not
+            # break the whole bucket's rules: keep everything -- no rule, the safe direction.
+            try:
+                retention, note = jobs_io._normalize_retention(j, typ), ""
+            except ValueError:
+                retention = {"type": "keep_all"}
+                note = f"{name}: its history setting couldn't be read, so S3 keeps every old version"
             out.append(Folder(f"media/{name}/" if folder is None else folder, "plain", (name,),
-                              jobs_io._normalize_retention(j, typ)))
+                              retention, note))
         elif typ == "versioned-files":
             out.append(Folder(f"media/{name}/" if folder is None else folder, "undo", (name,)))
         elif typ == "versioned":
@@ -147,6 +155,11 @@ def housekeeping_rule(bset: dict) -> dict:
     if bset["delete_marker_cleanup"]:
         r["Expiration"] = {"ExpiredObjectDeleteMarker": True}
     return r
+
+
+def notes_for(bucket: str, base: str, jobs: list[dict]) -> list[str]:
+    """Owner-facing notes on folders whose rule isn't the job's own setting."""
+    return [f.note for f in folders_for(bucket, base, jobs) if f.note]
 
 
 def desired_rules(bucket: str, base: str, jobs: list[dict], settings: dict) -> list[dict]:
@@ -344,23 +357,24 @@ def sync(cfg, bucket: str, *, run=provision._run_aws, jobs=None) -> SyncResult:
     base, region, cache = _context(cfg)
     if not managed(config_dir):
         raise LifecycleError("not_managed", "S3 rules need the AWS permissions update")
-    want = desired_rules(bucket, base, jobs_io.load(config_dir) if jobs is None else jobs,
-                         load_settings(config_dir))
+    jobs = jobs_io.load(config_dir) if jobs is None else jobs
+    want = desired_rules(bucket, base, jobs, load_settings(config_dir))
+    notes = notes_for(bucket, base, jobs)
     try:
         creds = role_creds(config_dir, region, run=run)
         live = read_rules(bucket, creds, region, run=run)
         if app_rules_of(live) == app_rules_of(want) and not any(
                 r.get("ID") in LEGACY_IDS for r in live):
             save_applied(cache, bucket, want)
-            set_status(cache, bucket, "ok")
+            set_status(cache, bucket, "ok", "; ".join(notes))
             return SyncResult(bucket, False, [])
         write_rules(bucket, merge(live, want), creds, region, run=run)
     except LifecycleError as e:
         set_status(cache, bucket, "unsupported" if e.kind == "unsupported" else "error", e.detail)
         raise
     save_applied(cache, bucket, want)
-    set_status(cache, bucket, "ok")
-    lines = _change_lines(live, want)
+    set_status(cache, bucket, "ok", "; ".join(notes))
+    lines = _change_lines(live, want) + notes
     runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines)
     return SyncResult(bucket, True, lines)
 
@@ -386,7 +400,19 @@ def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
 def check(cfg, bucket: str, *, run=provision._run_aws) -> str:
     """Compare the bucket's live APP rules with what the app last applied. A difference
     (or a deleted configuration) is tampering: restore, alarm, record. Console-rule
-    edits are not tampering. Never raises."""
+    edits are not tampering. Never raises: it runs before every backup and behind
+    Check now -- anything unexpected becomes the "error" state."""
+    try:
+        return _check(cfg, bucket, run=run)
+    except Exception as e:                                   # noqa: BLE001 — never raise
+        try:
+            set_status(cfg["CACHE_DIR"], bucket, "error", f"the check stopped unexpectedly ({type(e).__name__})")
+        except Exception:                                    # noqa: BLE001 — state dir unwritable
+            pass
+        return "error"
+
+
+def _check(cfg, bucket: str, *, run) -> str:
     config_dir = cfg["CONFIG_DIR"]
     _, region, cache = _context(cfg)
     if not managed(config_dir):

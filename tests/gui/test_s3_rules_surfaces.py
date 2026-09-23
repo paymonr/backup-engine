@@ -178,3 +178,51 @@ def test_check_now_on_an_unprovisioned_install_is_a_no_op(unprovisioned_client, 
     monkeypatch.setattr(lifecycle, "check", lambda cfg, b, **k: calls.append(("check", b)) or "ok")
     r = unprovisioned_client.post("/setup/s3-rules/check", data={"csrf": _csrf(unprovisioned_client)})
     assert r.status_code in (302, 303) and calls == []
+
+
+# --- Check now never fails (500) -----------------------------------------------------------
+
+def test_check_all_never_raises(cfg, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(lifecycle, "sync_all", boom)
+    monkeypatch.setattr(lifecycle, "check", boom)
+    (level, text), = s3_rules.check_all(cfg)
+    assert level == "warning" and "Setup" in text
+
+
+def test_check_all_never_raises_on_a_broken_jobs_file(cfg, monkeypatch):
+    from app.gui import jobs_io
+
+    def boom(*a, **k):
+        raise OSError(5, "I/O error")
+    monkeypatch.setattr(jobs_io, "load", boom)
+    (level, _), = s3_rules.check_all(cfg)
+    assert level == "warning"
+
+
+def test_check_now_route_redirects_even_when_the_check_blows_up(client, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(lifecycle, "sync_all", boom)
+    monkeypatch.setattr(lifecycle, "check", boom)
+    r = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)})
+    assert r.status_code in (302, 303)
+
+
+def test_check_now_with_a_malformed_job_redirects_not_500(client, cfg, monkeypatch):
+    # The real engine end to end (fake AWS): a Plain copy job with a broken history
+    # setting and no applied state used to raise out of check() and 500 the route.
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": [
+        {"name": "manga", "type": "archive", "source": "media/manga", "schedule": "0 3 * * *",
+         "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": "x"}}]}))
+    from tests.engine.test_lifecycle_sync import FakeS3
+    from app.gui import provision
+    fake = FakeS3()
+    monkeypatch.setattr(provision, "_run_aws", fake)
+    monkeypatch.setattr(lifecycle, "read_rules", lambda b, c, r, **k: fake.rules.get(b, []))
+    monkeypatch.setattr(lifecycle, "write_rules", lambda b, rules, c, r, **k: fake.rules.__setitem__(b, rules))
+    monkeypatch.setattr(lifecycle, "role_creds", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "S"})
+    r = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)})
+    assert r.status_code in (302, 303)
+    assert "backup-engine:media/manga/" not in {x["ID"] for x in fake.rules[BASE]}

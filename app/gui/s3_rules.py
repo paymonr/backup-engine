@@ -105,7 +105,12 @@ def needs_you_row(cfg) -> dict | None:
             "fix": {"label": "Review", "href": "/setup"}}
 
 
+_ATTENTION = ("warning", "S3 rules checked — see Setup for what needs attention.")
+
+
 def check_all(cfg) -> list[tuple[str, str]]:
+    """Check now: never raises (the route must not 500) -- anything unexpected is a
+    generic warning; the per-bucket state files carry the detail."""
     ctx = {"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}
     try:
         lifecycle.sync_all(ctx)
@@ -114,7 +119,16 @@ def check_all(cfg) -> list[tuple[str, str]]:
             return [("warning", "S3 rules need the AWS permissions update first.")]
     except Exception:                                        # noqa: BLE001
         pass
-    states = [lifecycle.check(ctx, b) for b in _buckets(cfg)]
-    if all(s == "ok" for s in states):
+    try:
+        buckets = _buckets(cfg)
+    except Exception:                                        # noqa: BLE001
+        return [_ATTENTION]
+    states = []
+    for b in buckets:
+        try:
+            states.append(lifecycle.check(ctx, b))
+        except Exception:                                    # noqa: BLE001
+            states.append("error")
+    if states and all(s == "ok" for s in states):
         return [("success", "S3 rules checked — all in place.")]
-    return [("warning", "S3 rules checked — see Setup for what needs attention.")]
+    return [_ATTENTION]

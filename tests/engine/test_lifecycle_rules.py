@@ -147,3 +147,19 @@ def test_describe_in_words():
         "media/m/: newest 10 old versions of each file kept; older ones removed 30 days after being replaced"
     assert lc.describe(lc.housekeeping_rule(lc.bucket_settings({}, BASE))) == \
         "whole bucket: abandoned uploads cleared after 7 days; leftover delete markers cleared"
+
+
+@pytest.mark.parametrize("bad", [
+    {"type": "count", "count": "x"},
+    {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}},   # Snapshot-only
+    {"type": "nope"},
+])
+def test_a_malformed_plain_copy_setting_means_keep_everything(bad):
+    # Never raise: one bad job must not break the bucket's rules. Keep-everything is
+    # the safe direction (no rule = S3 removes nothing), and the folder says why.
+    jobs = [_job("manga", "archive", bad), _job("documents", "versioned-files", {"type": "days", "days": 90})]
+    fs = {f.folder: f for f in lc.folders_for(BASE, BASE, jobs)}
+    assert fs["media/manga/"].retention == {"type": "keep_all"}
+    assert "manga" in fs["media/manga/"].note and fs["media/documents/"].note == ""
+    rules = _by_id(lc.desired_rules(BASE, BASE, jobs, {}))
+    assert "backup-engine:media/manga/" not in rules and "backup-engine:media/documents/" in rules
