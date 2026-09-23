@@ -57,6 +57,24 @@ def test_tamper_alarm_is_a_blocker_on_setup_and_board(cfg, kind, word):
     assert board["level"] == "blocker" and board["code"] == "s3-rules-tampered" and word in board["text"]
 
 
+def test_console_rule_alarm_is_a_blocker_naming_the_rule(cfg):
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail="",
+            alarm={"kind": "console_rule", "at": "2026-09-23T04:59:00Z", "lines": [], "rules": ["x", "y"]})
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "fail" and row.get("blocker")
+    assert row["sentence"] == "A new S3 rule could delete or move backups: x, y"
+    board = s3_rules.needs_you_row(cfg)
+    assert board["level"] == "blocker" and board["code"] == "s3-rules-console-rule"
+    assert "x, y" in board["text"]
+
+
+def test_not_restored_alarm_still_names_a_console_rule(cfg):
+    _status(cfg, state="not_restored", checked_at="2026-09-23T05:00:00Z", detail="",
+            alarm={"kind": "not_restored", "at": "2026-09-23T04:59:00Z", "lines": [], "rules": ["x"]})
+    row = s3_rules.setup_row(cfg)
+    assert "NOT restored" in row["sentence"] and "x" in row["sentence"]
+
+
 def test_acknowledged_not_restored_stays_a_warning_not_ok(cfg):
     # lifecycle.acknowledge() only pops the alarm -- the bucket's own `state` stays
     # "not_restored" until the next Check now/backup run. That must not read as ok.
@@ -303,3 +321,13 @@ def test_check_now_with_a_malformed_job_redirects_not_500(client, cfg, monkeypat
     r = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)})
     assert r.status_code in (302, 303)
     assert "backup-engine:media/manga/" not in {x["ID"] for x in fake.rules[BASE]}
+
+
+def test_setup_page_offers_acknowledge_for_a_console_rule_alarm(client, cfg):
+    import html
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail="",
+            alarm={"kind": "console_rule", "at": "2026-09-23T04:59:00Z", "lines": [], "rules": ["x"]})
+    body = html.unescape(client.get("/setup").get_data(as_text=True))
+    assert "A new S3 rule could delete or move backups: x" in body
+    assert 'action="/setup/s3-rules/acknowledge"' in body
+    assert "A new S3 rule could delete or move backups" in html.unescape(client.get("/").get_data(as_text=True))

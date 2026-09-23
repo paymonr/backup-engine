@@ -34,6 +34,9 @@ def apply_for(cfg, buckets: list[str]) -> list[tuple[str, str]]:
         if res.state == "restored":
             msgs.append(("warning", "S3 rules had been changed outside backup-engine — they're back the way "
                                     "your jobs need them. Setup shows the details."))
+        elif res.state == "console_rule":
+            msgs.append(("warning", "A new S3 rule could delete or move backups — backup-engine left it in "
+                                    "place. Setup shows the details."))
         if res.changed and res.lines:
             shown = res.lines[:3] + (["…"] if len(res.lines) > 3 else [])
             msgs.append(("success", "S3 rules updated: " + "; ".join(shown)))
@@ -49,11 +52,20 @@ def _buckets(cfg) -> list[str]:
 
 
 def _alarm(status: dict, buckets: list[str]) -> dict | None:
-    alarms = [(status.get(b) or {}).get("alarm") for b in buckets]
-    alarms = [a for a in alarms if a]
-    if not alarms:
-        return None
-    return next((a for a in alarms if a.get("kind") == "not_restored"), alarms[0])
+    """Every bucket's open alarm as one (most severe first, every console rule named)."""
+    return lifecycle.merge_alarms([(status.get(b) or {}).get("alarm") for b in buckets])
+
+
+_CONSOLE = "A new S3 rule could delete or move backups"
+
+
+def _sentence(alarm: dict) -> str:
+    rules = ", ".join(alarm.get("rules") or [])
+    if alarm.get("kind") == "console_rule":
+        return f"{_CONSOLE}: {rules}"
+    word = "NOT restored" if alarm.get("kind") == "not_restored" else "restored"
+    tail = f"; a new S3 rule could delete or move backups: {rules}" if rules else ""
+    return f"S3 rules were changed outside backup-engine — {word}{tail}"
 
 
 def _pending(cfg, buckets: list[str]) -> bool:
@@ -86,9 +98,7 @@ def setup_row(cfg) -> dict | None:
     status = lifecycle.load_status(cache)
     alarm = _alarm(status, buckets)
     if alarm:
-        word = "NOT restored" if alarm.get("kind") == "not_restored" else "restored"
-        row.update(state="fail", blocker=True, verified_at=alarm.get("at"),
-                   sentence=f"S3 rules were changed outside backup-engine — {word}")
+        row.update(state="fail", blocker=True, verified_at=alarm.get("at"), sentence=_sentence(alarm))
         return row
     entries = [status.get(b) or {} for b in buckets]
     states = [e.get("state") for e in entries]
@@ -118,13 +128,22 @@ def needs_you_row(cfg) -> dict | None:
     alarm = _alarm(lifecycle.load_status(cfg["CACHE_DIR"]), _buckets(cfg))
     if not alarm:
         return None
+    rules = alarm.get("rules") or []
+    named = (f"The rule {rules[0]} was added or changed outside backup-engine, which left it in place"
+             if len(rules) == 1 else
+             f"The rules {', '.join(rules)} were added or changed outside backup-engine, which left them in place") \
+        + " — check the AWS console."
+    if alarm.get("kind") == "console_rule":
+        return {"level": "blocker", "code": "s3-rules-console-rule", "job": None,
+                "strong": f"{_CONSOLE}.", "text": named,
+                "fix": {"label": "Review", "href": "/setup"}}
     restored = alarm.get("kind") != "not_restored"
     text = ("They were put back the way your jobs need them." if restored else
             "backup-engine couldn't put them back — check the AWS console and the Activity entry.")
     word = "restored" if restored else "NOT restored"
     return {"level": "blocker", "code": "s3-rules-tampered", "job": None,
             "strong": "S3 rules were changed outside backup-engine.",
-            "text": f"{text} ({word})",
+            "text": f"{text} ({word})" + (f" {_CONSOLE}: {', '.join(rules)}." if rules else ""),
             "fix": {"label": "Review", "href": "/setup"}}
 
 

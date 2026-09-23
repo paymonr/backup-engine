@@ -50,6 +50,12 @@ def test_apply_for_warns_when_the_rules_had_been_changed_outside(cfg, monkeypatc
     assert msgs[0][0] == "warning" and "changed outside backup-engine" in msgs[0][1]
 
 
+def test_apply_for_warns_about_a_new_console_rule(cfg, monkeypatch):
+    monkeypatch.setattr(lifecycle, "sync", lambda c, b, **k: lifecycle.SyncResult(b, False, [], "console_rule"))
+    (level, text), = s3_rules.apply_for(cfg, [BASE])
+    assert level == "warning" and "could delete or move backups" in text
+
+
 def test_job_buckets(cfg):
     assert s3_rules.job_buckets(cfg, {"name": "x"}) == [BASE]
     assert s3_rules.job_buckets(cfg, {"name": "x", "dedicated": True, "bucket": f"{BASE}-x"}) == [f"{BASE}-x"]

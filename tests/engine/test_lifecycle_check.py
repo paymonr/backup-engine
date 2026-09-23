@@ -39,12 +39,13 @@ def test_deleted_configuration_is_tampering(cfg):
     assert any(r["ID"] == "backup-engine:housekeeping" for r in fake.rules[BASE])
 
 
-def test_console_rule_edits_are_not_tampering(cfg):
+def test_console_rules_are_never_put_back_or_removed(cfg):
     fake = FakeS3()
     _applied(cfg, fake)
-    fake.rules[BASE].append(CONSOLE)
-    assert lc.check(cfg, BASE, run=fake) == "ok"
-    assert CONSOLE in fake.rules[BASE]
+    fake.rules[BASE].append(CONSOLE)                 # destructive (Expiration Days) -> alarmed (I1)
+    assert lc.check(cfg, BASE, run=fake) == "console_rule"
+    assert CONSOLE in fake.rules[BASE] and len(fake.puts()) == 1   # only the first apply wrote
+    assert lc.load_status(cfg["CACHE_DIR"])[BASE]["state"] == "ok"  # the app's own rules are fine
 
 
 def test_restore_failure_is_not_restored(cfg):
@@ -200,3 +201,114 @@ def test_check_on_a_dedicated_bucket(cfg):
     assert st[ded]["alarm"]["kind"] == "restored" and "alarm" not in st[BASE]
     assert fake.rules[BASE] == base_before                       # the base bucket untouched
     assert {r["ID"] for r in fake.rules[ded]} == {"backup-engine:bucket", "backup-engine:housekeeping"}
+
+
+# --- I1: a console rule that could delete backups is alarmed (never touched) ---------------
+
+HOSTILE = {"ID": "x", "Filter": {"Prefix": ""}, "Expiration": {"Days": 1},
+           "NoncurrentVersionExpiration": {"NoncurrentDays": 1}}
+HARMLESS = {"ID": "abort-uploads", "Status": "Enabled", "Filter": {"Prefix": ""},
+            "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 3}}
+
+
+def _s3_rule_logs(cfg):
+    from pathlib import Path
+    from tests.engine.test_lifecycle_sync import _events
+    ends = [e for e in _events(cfg) if e["kind"] == "s3-rules" and e["event"] == "start"]
+    return [Path(cfg["CACHE_DIR"], e["log"]).read_text() for e in ends]
+
+
+def test_a_new_destructive_console_rule_alarms_once_and_is_left_alone(cfg):
+    fake = FakeS3()
+    _applied(cfg, fake)
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    assert lc.check(cfg, BASE, run=fake) == "console_rule"
+    assert HOSTILE in fake.rules[BASE] and len(fake.puts()) == 1       # never modified or deleted
+    st = lc.load_status(cfg["CACHE_DIR"])[BASE]
+    assert st["alarm"]["kind"] == "console_rule" and st["alarm"]["rules"] == ["x"]
+    log = _s3_rule_logs(cfg)[-1]
+    assert "x" in log and "expires current files 1 days after" in log
+    assert "removes old versions 1 days after being replaced" in log
+    # alarms once: the fingerprint moved on, the alarm stays until acknowledged
+    n = len(_s3_rule_logs(cfg))
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert len(_s3_rule_logs(cfg)) == n
+    assert lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]["kind"] == "console_rule"
+    lc.acknowledge(cfg["CACHE_DIR"])
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
+
+
+def test_a_job_save_cannot_absorb_a_hostile_console_rule(cfg):
+    fake = FakeS3()
+    _applied(cfg, fake)
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    _set_manga(cfg, {"type": "days", "days": 365})
+    res = lc.sync(cfg, BASE, run=fake)                                 # the job save
+    assert res.state == "console_rule"
+    assert HOSTILE in fake.rules[BASE]                                 # kept byte-for-byte on the write
+    assert lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]["kind"] == "console_rule"
+    assert lc.check(cfg, BASE, run=fake) == "ok"                       # still alarmed exactly once
+    assert lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]["rules"] == ["x"]
+
+
+def test_harmless_console_rule_changes_update_the_fingerprint_silently(cfg):
+    fake = FakeS3()
+    _applied(cfg, fake)
+    fake.rules[BASE].append(dict(HARMLESS))
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    disabled = dict(HOSTILE, ID="later", Status="Disabled")
+    fake.rules[BASE].append(disabled)
+    assert lc.check(cfg, BASE, run=fake) == "ok"                       # a disabled rule removes nothing
+    assert "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
+    disabled["Status"] = "Enabled"                                     # ...until it is switched on
+    assert lc.check(cfg, BASE, run=fake) == "console_rule"
+    assert lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]["rules"] == ["later"]
+
+
+def test_a_changed_console_rule_that_becomes_destructive_alarms(cfg):
+    fake = FakeS3()
+    fake.rules[BASE] = [dict(HARMLESS)]
+    _applied(cfg, fake)
+    rule = next(r for r in fake.rules[BASE] if r["ID"] == "abort-uploads")
+    rule["Transitions"] = [{"Days": 0, "StorageClass": "DEEP_ARCHIVE"}]
+    assert lc.check(cfg, BASE, run=fake) == "console_rule"
+    assert "moves current files to DEEP_ARCHIVE" in _s3_rule_logs(cfg)[-1]
+
+
+def test_an_existing_console_rule_is_not_alarmed_on_first_apply(cfg):
+    fake = FakeS3({BASE: [json.loads(json.dumps(HOSTILE))]})
+    assert lc.sync(cfg, BASE, run=fake).state == "ok"
+    assert "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
+
+
+def test_older_applied_state_without_a_fingerprint_records_it_silently(cfg):
+    from pathlib import Path
+    fake = FakeS3()
+    _applied(cfg, fake)
+    p = Path(cfg["CACHE_DIR"], "state", "lifecycle", f"{BASE}.applied.json")
+    data = json.loads(p.read_text())
+    data.pop("console", None)
+    p.write_text(json.dumps(data))
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
+    assert lc.load_console_fingerprint(cfg["CACHE_DIR"], BASE) is not None
+    next(r for r in fake.rules[BASE] if r["ID"] == "x")["Expiration"] = {"Days": 2}
+    assert lc.check(cfg, BASE, run=fake) == "console_rule"
+
+
+def test_a_console_alarm_is_kept_when_a_tamper_alarm_follows(cfg):
+    fake = FakeS3()
+    _applied(cfg, fake)
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    lc.check(cfg, BASE, run=fake)
+    _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] = {"NoncurrentDays": 1}
+    assert lc.check(cfg, BASE, run=fake) == "restored"
+    alarm = lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]
+    assert alarm["kind"] == "console_rule" and alarm["rules"] == ["x"]
+    fake.rules[BASE] = [r for r in fake.rules[BASE] if r["ID"] == "x"]
+    fake.deny_put = True
+    assert lc.check(cfg, BASE, run=fake) == "not_restored"
+    alarm = lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]
+    assert alarm["kind"] == "not_restored" and alarm["rules"] == ["x"]    # the rule ID is still named

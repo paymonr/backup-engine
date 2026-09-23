@@ -5,6 +5,7 @@
 # the owner's settings (config/storage.json); I/O through the bucket-admin role is below.
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -214,6 +215,108 @@ def describe(rule: dict) -> str:
     return f"{where}: " + "; ".join(parts)
 
 
+# --- console rules: anything not made by backup-engine -------------------------------------
+# Never modified or deleted (the owner may have meant them). A new or changed one that
+# can delete or move backups is alarmed once, via a fingerprint kept in applied.json.
+
+def _console_entries(rules: list[dict]) -> list[tuple[str, str, dict]]:
+    out = []
+    for r in rules:
+        if is_app_rule(r):
+            continue
+        h = hashlib.sha256(json.dumps(_norm(r), sort_keys=True).encode()).hexdigest()
+        rid = r.get("ID")
+        out.append((rid if isinstance(rid, str) and rid else f"(no ID) {h[:12]}", h, r))
+    return out
+
+
+def console_fingerprint(rules: list[dict]) -> dict[str, str]:
+    """{rule ID: hash of the rule} for every console rule (S3 key order/filter form ignored)."""
+    return {k: h for k, h, _ in _console_entries(rules)}
+
+
+def _as_list(v) -> list[dict]:
+    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else ([v] if isinstance(v, dict) else [])
+
+
+def destructive_actions(rule: dict) -> list[str]:
+    """What an enabled rule does that can delete or move backups, in words: expiring
+    current files (Days/Date), removing old versions, moving files to another class."""
+    if (rule or {}).get("Status") == "Disabled":
+        return []
+    out = []
+    exp = rule.get("Expiration") if isinstance(rule.get("Expiration"), dict) else {}
+    if "Days" in exp:
+        out.append(f"expires current files {exp['Days']} days after they're written")
+    if "Date" in exp:
+        out.append(f"expires current files on {str(exp['Date'])[:10]}")
+    nce = rule.get("NoncurrentVersionExpiration")
+    if isinstance(nce, dict):
+        words = f"removes old versions {nce.get('NoncurrentDays', '?')} days after being replaced"
+        if "NewerNoncurrentVersions" in nce:
+            words += f" (newest {nce['NewerNoncurrentVersions']} kept)"
+        out.append(words)
+    for t in _as_list(rule.get("Transitions")) + _as_list(rule.get("Transition")):
+        when = (f"after {t['Days']} days" if "Days" in t else
+                f"on {str(t['Date'])[:10]}" if "Date" in t else "")
+        out.append(f"moves current files to {t.get('StorageClass', 'another class')} {when}".rstrip())
+    for t in (_as_list(rule.get("NoncurrentVersionTransitions"))
+              + _as_list(rule.get("NoncurrentVersionTransition"))):
+        out.append(f"moves old versions to {t.get('StorageClass', 'another class')} "
+                   f"{t.get('NoncurrentDays', '?')} days after being replaced")
+    return out
+
+
+def _where(rule: dict) -> str:
+    f = _norm(rule).get("Filter") or {}
+    f = f if isinstance(f, dict) else {}
+    both = f.get("And") if isinstance(f.get("And"), dict) else {}
+    prefix = f.get("Prefix") or both.get("Prefix") or ""
+    narrowed = any(k in f for k in ("Tag", "ObjectSizeGreaterThan", "ObjectSizeLessThan")) or \
+        any(k != "Prefix" for k in both)
+    return (prefix or "whole bucket") + (", some files" if narrowed else "")
+
+
+def console_changes(stored: dict | None, live: list[dict]) -> list[tuple[str, str]]:
+    """Console rules new or changed since the stored fingerprint that can delete or move
+    backups: [(rule ID, "<ID> (<where>): <actions>")]. No stored fingerprint (first
+    apply, older state) = nothing to compare against = no changes."""
+    if stored is None:
+        return []
+    out = []
+    for key, h, rule in _console_entries(live):
+        if stored.get(key) == h:
+            continue
+        words = destructive_actions(rule)
+        if words:
+            out.append((key, f"{key} ({_where(rule)}): " + "; ".join(words)))
+    return out
+
+
+# --- alarms ----------------------------------------------------------------------------------
+
+_SEVERITY = {"restored": 1, "console_rule": 2, "not_restored": 3}
+
+
+def merge_alarms(alarms: list[dict | None]) -> dict | None:
+    """Several open alarms (one bucket over time, or several buckets) as one: the most
+    severe kind heads it (ties: the latest), and every console rule ID named by any of
+    them is kept, so a later alarm can never hide an earlier one's rule."""
+    alarms = [a for a in alarms if isinstance(a, dict) and a]
+    if not alarms:
+        return None
+    head = max(alarms, key=lambda a: (_SEVERITY.get(a.get("kind"), 0), a.get("at") or ""))
+    out = dict(head)
+    rules = sorted({r for a in alarms for r in (a.get("rules") or [])})
+    if rules:
+        out["rules"] = rules
+    lines = []
+    for a in alarms:
+        lines += [ln for ln in (a.get("lines") or []) if ln not in lines]
+    out["lines"] = lines[:50]
+    return out
+
+
 # --- I/O through the bucket-admin role ---------------------------------------------
 
 class LifecycleError(Exception):
@@ -287,19 +390,33 @@ def _state_dir(cache_dir: str) -> Path:
     return Path(cache_dir, "state", "lifecycle")
 
 
-def load_applied(cache_dir: str, bucket: str) -> list[dict] | None:
+def _applied_doc(cache_dir: str, bucket: str) -> dict | None:
     try:
         data = json.loads(Path(_state_dir(cache_dir), f"{bucket}.applied.json").read_text())
     except (OSError, ValueError):
         return None
-    rules = data.get("rules") if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def load_applied(cache_dir: str, bucket: str) -> list[dict] | None:
+    rules = (_applied_doc(cache_dir, bucket) or {}).get("rules")
     return rules if isinstance(rules, list) else None
 
 
-def save_applied(cache_dir: str, bucket: str, rules: list[dict]) -> None:
+def load_console_fingerprint(cache_dir: str, bucket: str) -> dict | None:
+    """The console rules' fingerprint recorded with the last apply; None = none recorded
+    (no apply yet, or state from before fingerprints)."""
+    fp = (_applied_doc(cache_dir, bucket) or {}).get("console")
+    return fp if isinstance(fp, dict) else None
+
+
+def save_applied(cache_dir: str, bucket: str, rules: list[dict], console: dict | None = None) -> None:
     d = _state_dir(cache_dir)
     d.mkdir(parents=True, exist_ok=True)
-    Path(d, f"{bucket}.applied.json").write_text(json.dumps({"rules": rules, "applied_at": _now_iso()}))
+    doc = {"rules": rules, "applied_at": _now_iso()}
+    if console is not None:
+        doc["console"] = console
+    Path(d, f"{bucket}.applied.json").write_text(json.dumps(doc))
 
 
 def _status_path(cache_dir: str) -> Path:
@@ -315,12 +432,13 @@ def load_status(cache_dir: str) -> dict:
 
 
 def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm: dict | None = None) -> None:
-    """state: ok | error | unsupported | restored | not_restored. An `alarm` (a tamper
-    event) survives later clean checks until the owner acknowledges it."""
+    """state: ok | error | unsupported | restored | not_restored. An `alarm` (restored |
+    not_restored | console_rule) survives later clean checks until the owner
+    acknowledges it; a new one is merged with any still open (merge_alarms)."""
     data = load_status(cache_dir)
     prev = data.get(bucket) or {}
     entry = {"state": state, "checked_at": _now_iso(), "detail": detail}
-    keep = alarm if alarm is not None else prev.get("alarm")
+    keep = merge_alarms([prev.get("alarm"), alarm]) if alarm is not None else prev.get("alarm")
     if keep:
         entry["alarm"] = keep
     data[bucket] = entry
@@ -335,7 +453,7 @@ class SyncResult:
     bucket: str
     changed: bool
     lines: list
-    state: str = "ok"          # ok | restored (the app rules had been changed outside backup-engine)
+    state: str = "ok"          # ok | restored (app rules changed outside) | console_rule (alarmed)
 
 
 def app_rules_differ(a: list[dict], b: list[dict]) -> bool:
@@ -372,53 +490,76 @@ def _reconcile(cfg, bucket: str, *, run, jobs, trigger: str):
       applied exists and live != applied -> changed outside: alarm + Activity, write desired;
       otherwise (job change, a failed earlier write, first apply) -> write desired.
     Live rules that already equal desired are never tampering -- nothing to put back.
+    Before anything is recorded, new/changed console rules that can delete or move
+    backups are alarmed ("console_rule") -- never touched -- so no pass can silently
+    absorb one into the stored fingerprint.
     Returns (state, SyncResult | None, LifecycleError | None); state is what was
-    recorded: ok | restored | not_restored | error | unsupported."""
+    recorded (ok | restored | not_restored | error | unsupported), or "console_rule"
+    when this pass raised that alarm and the app's own rules are ok/restored."""
     config_dir = cfg["CONFIG_DIR"]
     base, region, cache = _context(cfg)
     jobs = jobs_io.load(config_dir) if jobs is None else jobs
     want = desired_rules(bucket, base, jobs, load_settings(config_dir))
     detail = "; ".join(notes_for(bucket, base, jobs))
     applied = load_applied(cache, bucket)
+    stored_fp = load_console_fingerprint(cache, bucket) if applied is not None else None
     try:
         creds = role_creds(config_dir, region, run=run)
         live = read_rules(bucket, creds, region, run=run)
     except LifecycleError as e:
         set_status(cache, bucket, _err_state(e), e.detail)
         return _err_state(e), None, e
+
+    live_fp = console_fingerprint(live)
+    changes = console_changes(stored_fp, live)
+    console_alarm = None
+    if changes:
+        console_alarm = {"kind": "console_rule", "at": _now_iso(),
+                         "lines": [line for _, line in changes], "rules": [k for k, _ in changes]}
+        runs.record_system(cache, kind="s3-rules", summary=f"A new S3 rule could delete or move backups · {bucket}",
+                           lines=[*console_alarm["lines"],
+                                  "backup-engine left it in place — check it in the AWS console."],
+                           trigger=trigger)
+
+    def status(state, detail_="", alarm=None):
+        set_status(cache, bucket, state, detail_, alarm=merge_alarms([console_alarm, alarm]))
+
+    def headline(state):
+        return "console_rule" if console_alarm and state in ("ok", "restored") else state
+
     in_step = not app_rules_differ(live, want) and not any(r.get("ID") in LEGACY_IDS for r in live)
     if in_step:
-        if applied is None or app_rules_differ(applied, want):
-            save_applied(cache, bucket, want)
-        set_status(cache, bucket, "ok", detail)
-        return "ok", SyncResult(bucket, False, []), None
+        if applied is None or app_rules_differ(applied, want) or stored_fp != live_fp:
+            save_applied(cache, bucket, want, console=live_fp)
+        status("ok", detail)
+        return headline("ok"), SyncResult(bucket, False, [], headline("ok")), None
     tampered = applied is not None and app_rules_differ(live, applied)
     tamper_lines = _change_lines(applied, live) if tampered else []
     try:
         write_rules(bucket, merge(live, want), creds, region, run=run)
     except LifecycleError as e:
+        if applied is not None and stored_fp != live_fp:
+            save_applied(cache, bucket, applied, console=live_fp)      # alarm a console rule once
         if not tampered:
-            set_status(cache, bucket, _err_state(e), e.detail)
+            status(_err_state(e), e.detail)
             return _err_state(e), None, e
-        set_status(cache, bucket, "not_restored", e.detail,
-                   alarm={"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
+        status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
                            lines=[*tamper_lines, e.detail], outcome="failed", error=e.detail,
                            trigger=trigger)
         return "not_restored", None, e
-    save_applied(cache, bucket, want)
+    save_applied(cache, bucket, want, console=live_fp)
     lines = _change_lines(live, want) + ([detail] if detail else [])
     if tampered:
-        set_status(cache, bucket, "restored", detail,
-                   alarm={"kind": "restored", "at": _now_iso(), "lines": tamper_lines})
+        status("restored", detail, {"kind": "restored", "at": _now_iso(), "lines": tamper_lines})
         also = ["Your latest job settings were applied too."] if app_rules_differ(applied, want) else []
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — restored · {bucket}",
                            lines=[*tamper_lines, *also], trigger=trigger)
-        return "restored", SyncResult(bucket, True, lines, "restored"), None
-    set_status(cache, bucket, "ok", detail)
+        return headline("restored"), SyncResult(bucket, True, lines, headline("restored")), None
+    status("ok", detail)
     runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines,
                        trigger=trigger)
-    return "ok", SyncResult(bucket, True, lines), None
+    return headline("ok"), SyncResult(bucket, True, lines, headline("ok")), None
 
 
 def sync(cfg, bucket: str, *, run=provision._run_aws, jobs=None, trigger: str = "manual") -> SyncResult:

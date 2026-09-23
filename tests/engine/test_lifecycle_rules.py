@@ -163,3 +163,46 @@ def test_a_malformed_plain_copy_setting_means_keep_everything(bad):
     assert "manga" in fs["media/manga/"].note and fs["media/documents/"].note == ""
     rules = _by_id(lc.desired_rules(BASE, BASE, jobs, {}))
     assert "backup-engine:media/manga/" not in rules and "backup-engine:media/documents/" in rules
+
+
+# --- console rules: fingerprint + destructive actions in words (I1) --------------------------
+
+def test_console_fingerprint_ignores_app_rules_and_s3_formatting():
+    app = lc.desired_rules(BASE, BASE, JOBS, {})
+    console = {"ID": "logs", "Status": "Enabled", "Filter": {"Prefix": "logs/"}, "Expiration": {"Days": 14}}
+    fp = lc.console_fingerprint(app + [console])
+    assert set(fp) == {"logs"}
+    reordered = json.loads(json.dumps({"Expiration": {"Days": 14}, "Filter": {"Prefix": "logs/"},
+                                       "Status": "Enabled", "ID": "logs"}))
+    assert lc.console_fingerprint([reordered]) == fp
+    assert lc.console_fingerprint([dict(console, Expiration={"Days": 15})]) != fp
+    no_id = {"Status": "Enabled", "Filter": {}, "Expiration": {"Days": 1}}
+    assert len(lc.console_fingerprint([no_id, dict(no_id, Expiration={"Days": 2})])) == 2
+
+
+@pytest.mark.parametrize("rule,words", [
+    ({"Expiration": {"Days": 1}}, ["expires current files 1 days after they're written"]),
+    ({"Expiration": {"Date": "2027-01-01T00:00:00Z"}}, ["expires current files on 2027-01-01"]),
+    ({"NoncurrentVersionExpiration": {"NoncurrentDays": 3}}, ["removes old versions 3 days after being replaced"]),
+    ({"NoncurrentVersionExpiration": {"NoncurrentDays": 3, "NewerNoncurrentVersions": 2}},
+     ["removes old versions 3 days after being replaced (newest 2 kept)"]),
+    ({"Transitions": [{"Days": 30, "StorageClass": "GLACIER"}]}, ["moves current files to GLACIER after 30 days"]),
+    ({"NoncurrentVersionTransitions": [{"NoncurrentDays": 5, "StorageClass": "DEEP_ARCHIVE"}]},
+     ["moves old versions to DEEP_ARCHIVE 5 days after being replaced"]),
+    ({"Expiration": {"ExpiredObjectDeleteMarker": True}}, []),
+    ({"AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}, []),
+    ({"Status": "Disabled", "Expiration": {"Days": 1}}, []),
+])
+def test_destructive_actions_in_words(rule, words):
+    assert lc.destructive_actions(dict({"ID": "r", "Filter": {"Prefix": ""}}, **rule)) == words
+
+
+def test_merge_alarms_keeps_the_most_severe_and_every_rule_id():
+    restored = {"kind": "restored", "at": "2026-09-23T01:00:00Z", "lines": ["a"]}
+    console = {"kind": "console_rule", "at": "2026-09-23T02:00:00Z", "lines": ["b"], "rules": ["x"]}
+    not_restored = {"kind": "not_restored", "at": "2026-09-23T00:00:00Z", "lines": ["c"]}
+    assert lc.merge_alarms([]) is None and lc.merge_alarms([None]) is None
+    m = lc.merge_alarms([restored, console])
+    assert m["kind"] == "console_rule" and m["rules"] == ["x"]
+    m = lc.merge_alarms([console, not_restored, dict(console, rules=["y"])])
+    assert m["kind"] == "not_restored" and m["rules"] == ["x", "y"]
