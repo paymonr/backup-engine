@@ -324,9 +324,16 @@ cheaper tier" when any tier is set.
 
 ## Build order (one plan, three phases)
 
-- **A — engine & safety:** rules model + `desired`/read/merge/apply/classify, `storage.json`,
-  permissions level 4 (+ Verify probe switch), removals (§7), job-save auto-apply (keeps-more),
-  tamper check before runs, migration, Setup row + Board blocker.
-- **B — visibility & control:** storage summaries + impact, preview/confirm flow, the S3 rules
-  screen, wizard + job page copy, Plain copy shortening preview in the wizard.
+- **A — engine & safety:** rules model + `desired`/read/merge/apply, `storage.json` (defaults +
+  per-folder undo days), permissions level 4 (+ Verify probe switch), removals (§7), job save/delete
+  and setup apply the rules (a job's own setting applies immediately, exactly as the removed archive
+  prune enforced it), tamper check of the app's lifecycle rules before every run + acknowledge, Setup
+  row + Board blocker + Activity label, migration (legacy rules replaced on first apply).
+- **B — visibility & control:** `classify` + keeps-less gating (the preview/confirm flow, incl. the
+  wizard's Plain copy shortening), storage summaries + impact, the S3 rules screen (A overview + B
+  editor), versioning intent + its tamper coverage, housekeeping editing, the combined
+  "newest N + days" wizard option, job page line.
 - **C — cheaper tier:** tier fields in rules/editor/preview + the estimate note.
+
+Estimator (§10): the adapters already model Plain copy days/count/keep_all from the job's setting,
+which S3 now honours exactly — no adapter change in A; the tier note lands in C.
