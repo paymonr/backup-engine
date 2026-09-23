@@ -5,9 +5,12 @@
 # the owner's settings (config/storage.json); I/O through the bucket-admin role is below.
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,11 +102,35 @@ def load_settings(config_dir: str) -> dict:
     return {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}}
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """tmp + os.replace: a reader (or a crash) never sees a half-written state file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+@contextmanager
+def _flock(path: Path):
+    """An exclusive fcntl lock held for the block (released on exit or process death)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 def save_settings(config_dir: str, data: dict) -> None:
-    p = _settings_path(config_dir)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
-    os.replace(tmp, p)
+    _write_atomic(_settings_path(config_dir), json.dumps(data, indent=2, sort_keys=True))
 
 
 def _pos_int(v, default: int) -> int:
@@ -390,6 +417,18 @@ def _state_dir(cache_dir: str) -> Path:
     return Path(cache_dir, "state", "lifecycle")
 
 
+def bucket_lock(cache_dir: str, bucket: str):
+    """Held around a bucket's whole read-compare-write pass (sync and check), so a check
+    never compares new live rules with not-yet-recorded applied ones (a false alarm
+    and a revert) and two writers never interleave. (Bucket names can't start with
+    "_", so they never collide with _status.lock.)"""
+    return _flock(Path(_state_dir(cache_dir), f"{bucket}.lock"))
+
+
+def _status_lock(cache_dir: str):
+    return _flock(Path(_state_dir(cache_dir), "_status.lock"))
+
+
 def _applied_doc(cache_dir: str, bucket: str) -> dict | None:
     try:
         data = json.loads(Path(_state_dir(cache_dir), f"{bucket}.applied.json").read_text())
@@ -411,12 +450,10 @@ def load_console_fingerprint(cache_dir: str, bucket: str) -> dict | None:
 
 
 def save_applied(cache_dir: str, bucket: str, rules: list[dict], console: dict | None = None) -> None:
-    d = _state_dir(cache_dir)
-    d.mkdir(parents=True, exist_ok=True)
     doc = {"rules": rules, "applied_at": _now_iso()}
     if console is not None:
         doc["console"] = console
-    Path(d, f"{bucket}.applied.json").write_text(json.dumps(doc))
+    _write_atomic(Path(_state_dir(cache_dir), f"{bucket}.applied.json"), json.dumps(doc))
 
 
 def _status_path(cache_dir: str) -> Path:
@@ -435,15 +472,15 @@ def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm:
     """state: ok | error | unsupported | restored | not_restored. An `alarm` (restored |
     not_restored | console_rule) survives later clean checks until the owner
     acknowledges it; a new one is merged with any still open (merge_alarms)."""
-    data = load_status(cache_dir)
-    prev = data.get(bucket) or {}
-    entry = {"state": state, "checked_at": _now_iso(), "detail": detail}
-    keep = merge_alarms([prev.get("alarm"), alarm]) if alarm is not None else prev.get("alarm")
-    if keep:
-        entry["alarm"] = keep
-    data[bucket] = entry
-    _status_path(cache_dir).parent.mkdir(parents=True, exist_ok=True)
-    _status_path(cache_dir).write_text(json.dumps(data, indent=2, sort_keys=True))
+    with _status_lock(cache_dir):                # buckets share this file: read-modify-write locked
+        data = load_status(cache_dir)
+        prev = data.get(bucket) or {}
+        entry = {"state": state, "checked_at": _now_iso(), "detail": detail}
+        keep = merge_alarms([prev.get("alarm"), alarm]) if alarm is not None else prev.get("alarm")
+        if keep:
+            entry["alarm"] = keep
+        data[bucket] = entry
+        _write_atomic(_status_path(cache_dir), json.dumps(data, indent=2, sort_keys=True))
 
 
 # --- sync / check: one read-compare-write pass ------------------------------------------
@@ -482,7 +519,12 @@ def _err_state(e: LifecycleError) -> str:
 TAMPERED = "S3 rules were changed outside backup-engine"
 
 
-def _reconcile(cfg, bucket: str, *, run, jobs, trigger: str):
+def _reconcile(cfg, bucket: str, *, run, trigger: str):
+    with bucket_lock(cfg["CACHE_DIR"], bucket):
+        return _reconcile_locked(cfg, bucket, run=run, trigger=trigger)
+
+
+def _reconcile_locked(cfg, bucket: str, *, run, trigger: str):
     """The pass behind sync() and check(). Tamper detection compares the live app
     rules with what the app last APPLIED; whatever the app writes is always what the
     jobs want NOW (DESIRED), merged with the console rules:
@@ -498,7 +540,7 @@ def _reconcile(cfg, bucket: str, *, run, jobs, trigger: str):
     when this pass raised that alarm and the app's own rules are ok/restored."""
     config_dir = cfg["CONFIG_DIR"]
     base, region, cache = _context(cfg)
-    jobs = jobs_io.load(config_dir) if jobs is None else jobs
+    jobs = jobs_io.load(config_dir)                          # under the lock: never a stale list
     want = desired_rules(bucket, base, jobs, load_settings(config_dir))
     detail = "; ".join(notes_for(bucket, base, jobs))
     applied = load_applied(cache, bucket)
@@ -562,13 +604,13 @@ def _reconcile(cfg, bucket: str, *, run, jobs, trigger: str):
     return headline("ok"), SyncResult(bucket, True, lines, headline("ok")), None
 
 
-def sync(cfg, bucket: str, *, run=provision._run_aws, jobs=None, trigger: str = "manual") -> SyncResult:
+def sync(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "manual") -> SyncResult:
     """Apply the desired app rules to `bucket` (console rules kept) -- job save/delete,
     setup. Rules changed outside backup-engine since the last apply are alarmed, not
     silently absorbed. Raises LifecycleError on failure (after recording it)."""
     if not managed(cfg["CONFIG_DIR"]):
         raise LifecycleError("not_managed", "S3 rules need the AWS permissions update")
-    _, res, err = _reconcile(cfg, bucket, run=run, jobs=jobs, trigger=trigger)
+    _, res, err = _reconcile(cfg, bucket, run=run, trigger=trigger)
     if err is not None:
         raise err
     return res
@@ -580,7 +622,9 @@ def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
     results, errors = [], []
     for bucket in buckets_for(base, jobs):
         try:
-            results.append(sync(cfg, bucket, run=run, jobs=jobs))
+            # jobs are re-read inside each bucket's lock -- a list loaded out here could be
+            # stale by then (a job save in between) and would write old settings back.
+            results.append(sync(cfg, bucket, run=run))
         except LifecycleError as e:
             if e.kind == "not_managed":
                 raise
@@ -600,7 +644,7 @@ def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled
     try:
         if not managed(cfg["CONFIG_DIR"]):
             return "not_managed"
-        state, _, _ = _reconcile(cfg, bucket, run=run, jobs=None, trigger=trigger)
+        state, _, _ = _reconcile(cfg, bucket, run=run, trigger=trigger)
         return state
     except Exception as e:                                   # noqa: BLE001 — never raise
         try:
@@ -611,12 +655,12 @@ def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled
 
 
 def acknowledge(cache_dir: str, bucket: str | None = None) -> None:
-    data = load_status(cache_dir)
-    for b, entry in data.items():
-        if bucket in (None, b) and isinstance(entry, dict):
-            entry.pop("alarm", None)
-    _status_path(cache_dir).parent.mkdir(parents=True, exist_ok=True)
-    _status_path(cache_dir).write_text(json.dumps(data, indent=2, sort_keys=True))
+    with _status_lock(cache_dir):
+        data = load_status(cache_dir)
+        for b, entry in data.items():
+            if bucket in (None, b) and isinstance(entry, dict):
+                entry.pop("alarm", None)
+        _write_atomic(_status_path(cache_dir), json.dumps(data, indent=2, sort_keys=True))
 
 
 # --- CLI ------------------------------------------------------------------------------------

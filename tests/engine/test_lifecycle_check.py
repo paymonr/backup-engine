@@ -312,3 +312,115 @@ def test_a_console_alarm_is_kept_when_a_tamper_alarm_follows(cfg):
     assert lc.check(cfg, BASE, run=fake) == "not_restored"
     alarm = lc.load_status(cfg["CACHE_DIR"])[BASE]["alarm"]
     assert alarm["kind"] == "not_restored" and alarm["rules"] == ["x"]    # the rule ID is still named
+
+
+# --- #5: state files are written atomically and read-modify-written under locks ------------
+
+import fcntl  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+
+def _is_locked(path) -> bool:
+    with open(path, "a") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        return False
+
+
+@pytest.mark.parametrize("write", [
+    lambda cache: lc.set_status(cache, BASE, "error", "later"),
+    lambda cache: lc.save_applied(cache, BASE, []),
+    lambda cache: lc.acknowledge(cache),
+])
+def test_state_files_are_replaced_atomically(cfg, monkeypatch, write):
+    cache = cfg["CACHE_DIR"]
+    lc.set_status(cache, BASE, "ok", alarm={"kind": "restored", "at": "t", "lines": []})
+    lc.save_applied(cache, BASE, [{"ID": "backup-engine:housekeeping"}])
+    before = {p.name: p.read_text() for p in Path(cache, "state").rglob("*.json")}
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(lc.os, "replace", boom)
+    with pytest.raises(OSError):
+        write(cache)
+    after = {p.name: p.read_text() for p in Path(cache, "state").rglob("*.json")}
+    assert after == before                                   # never half-written
+    assert not [p for p in Path(cache, "state").rglob("*.tmp")]
+
+
+def test_concurrent_status_updates_on_different_buckets_keep_both_alarms(cfg, monkeypatch):
+    cache = cfg["CACHE_DIR"]
+    real = lc.load_status
+
+    def slow_load(c):
+        data = real(c)
+        time.sleep(0.2)                                      # widen the read-modify-write window
+        return data
+    monkeypatch.setattr(lc, "load_status", slow_load)
+    ts = [threading.Thread(target=lc.set_status, args=(cache, b, "restored"),
+                           kwargs={"alarm": {"kind": "restored", "at": "t", "lines": []}})
+          for b in (BASE, f"{BASE}-photos")]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    st = real(cache)
+    assert st[BASE]["alarm"] and st[f"{BASE}-photos"]["alarm"]
+
+
+def test_the_whole_pass_holds_the_bucket_lock(cfg, monkeypatch):
+    lock = Path(cfg["CACHE_DIR"], "state", "lifecycle", f"{BASE}.lock")
+    seen = []
+    real_load = lc.jobs_io.load
+
+    def spy_load(config_dir):
+        seen.append(_is_locked(lock))
+        return real_load(config_dir)
+    monkeypatch.setattr(lc.jobs_io, "load", spy_load)
+    fake = FakeS3()
+    real_run = fake.__call__
+
+    def spy_run(args, **kw):
+        seen.append(_is_locked(lock))
+        return real_run(args, **kw)
+    lc.sync(cfg, BASE, run=spy_run)
+    lc.check(cfg, BASE, run=spy_run)
+    assert seen and all(seen)
+    assert not _is_locked(lock)                              # released afterwards
+
+
+def test_a_check_waits_for_a_job_save_sync_on_the_same_bucket(cfg):
+    fake = FakeS3()
+    _applied(cfg, fake)                                      # manga 180 applied
+    entered, release, order = threading.Event(), threading.Event(), []
+
+    def slow(args, **kw):
+        if args[:2] == ["s3api", "put-bucket-lifecycle-configuration"]:
+            order.append("put")
+            r = fake(args, **kw)                             # the new rules are live...
+            entered.set()
+            release.wait(5)                                  # ...but not yet recorded as applied
+            order.append("put-done")
+            return r
+        if args[:2] == ["s3api", "get-bucket-lifecycle-configuration"]:
+            order.append("get")
+        return fake(args, **kw)
+
+    _set_manga(cfg, {"type": "days", "days": 365})
+    results = {}
+    s = threading.Thread(target=lambda: results.setdefault("sync", lc.sync(cfg, BASE, run=slow)))
+    s.start()
+    assert entered.wait(5)
+    c = threading.Thread(target=lambda: results.setdefault("check", lc.check(cfg, BASE, run=slow)))
+    c.start()
+    time.sleep(0.3)
+    assert order == ["get", "put"]                           # the check has not read S3 yet
+    release.set()
+    s.join(5); c.join(5)
+    assert order == ["get", "put", "put-done", "get"]
+    assert results["check"] == "ok" and "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
