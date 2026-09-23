@@ -57,6 +57,41 @@ def test_tamper_alarm_is_a_blocker_on_setup_and_board(cfg, kind, word):
     assert board["level"] == "blocker" and board["code"] == "s3-rules-tampered" and word in board["text"]
 
 
+def test_acknowledged_not_restored_stays_a_warning_not_ok(cfg):
+    # lifecycle.acknowledge() only pops the alarm -- the bucket's own `state` stays
+    # "not_restored" until the next Check now/backup run. That must not read as ok.
+    _status(cfg, state="not_restored", checked_at="2026-09-23T05:00:00Z", detail="AccessDenied",
+            alarm={"kind": "not_restored", "at": "2026-09-23T04:59:00Z", "lines": []})
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "fail" and row.get("blocker")
+
+    lifecycle.acknowledge(cfg["CACHE_DIR"])
+
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "warn"
+    assert row["sentence"] == "S3 rules still differ from what your jobs need — try Check now"
+
+
+def test_multi_bucket_not_restored_alarm_wins_over_restored(cfg):
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": [
+        {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * *",
+         "enabled": True, "storage_class": "STANDARD", "dedicated": True, "bucket": f"{BASE}-movies"},
+        {"name": "shows", "type": "archive", "source": "media/shows", "schedule": "0 6 * * *",
+         "enabled": True, "storage_class": "STANDARD", "dedicated": True, "bucket": f"{BASE}-shows"},
+    ]}))
+    Path(cfg["CACHE_DIR"], "state", "_lifecycle.json").write_text(json.dumps({
+        BASE: {"state": "ok", "checked_at": "2026-09-23T05:00:00Z", "detail": ""},
+        f"{BASE}-movies": {"state": "not_restored", "checked_at": "2026-09-23T05:00:00Z", "detail": "",
+                           "alarm": {"kind": "not_restored", "at": "2026-09-23T04:59:00Z", "lines": []}},
+        f"{BASE}-shows": {"state": "restored", "checked_at": "2026-09-23T05:00:00Z", "detail": "",
+                          "alarm": {"kind": "restored", "at": "2026-09-23T04:58:00Z", "lines": []}},
+    }))
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "fail" and row.get("blocker") and "NOT restored" in row["sentence"]
+    board = s3_rules.needs_you_row(cfg)
+    assert board["level"] == "blocker" and "NOT restored" in board["text"]
+
+
 def test_unsupported_storage_warns(cfg):
     _status(cfg, state="unsupported", checked_at="2026-09-23T05:00:00Z", detail="NotImplemented")
     assert "doesn't support S3 rules" in s3_rules.setup_row(cfg)["sentence"]
@@ -126,3 +161,20 @@ def test_activity_labels_s3_rules_records(client, cfg):
     from app.engine import runs
     runs.record_system(cfg["CACHE_DIR"], kind="s3-rules", summary="S3 rules updated · b")
     assert "S3 rules update" in client.get("/activity").get_data(as_text=True)
+
+
+@pytest.fixture
+def unprovisioned_client(dirs, template_path):
+    app = create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
+                      "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
+                      "SOURCE_ROOT": dirs["cache"], "SECRET_KEY": "test", "TESTING": True,
+                      "PRICES_LIVE": False})
+    return app.test_client()
+
+
+def test_check_now_on_an_unprovisioned_install_is_a_no_op(unprovisioned_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(lifecycle, "sync_all", lambda cfg, **k: calls.append("sync") or [])
+    monkeypatch.setattr(lifecycle, "check", lambda cfg, b, **k: calls.append(("check", b)) or "ok")
+    r = unprovisioned_client.post("/setup/s3-rules/check", data={"csrf": _csrf(unprovisioned_client)})
+    assert r.status_code in (302, 303) and calls == []

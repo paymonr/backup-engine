@@ -73,7 +73,12 @@ def setup_row(cfg) -> dict | None:
     states = [e.get("state") for e in entries]
     checked = [e.get("checked_at") for e in entries if e.get("checked_at")]
     row["verified_at"] = min(checked) if checked else None
-    if "unsupported" in states:
+    if "not_restored" in states:
+        # The alarm was acknowledged (popped), but the bucket's rules are still not
+        # what the jobs need — an acknowledged not_restored must not read as "ok"
+        # until the next successful Check now/backup run fixes it (or re-alarms).
+        row.update(state="warn", sentence="S3 rules still differ from what your jobs need — try Check now")
+    elif "unsupported" in states:
         row.update(state="warn", sentence="This storage doesn't support S3 rules — Plain copy keeps all old versions")
     elif "error" in states:
         row.update(state="warn", sentence="S3 rules couldn't be checked — try Check now")
