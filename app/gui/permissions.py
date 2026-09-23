@@ -350,9 +350,16 @@ def discover(principal: Principal, *, region: str, admin: AdminCreds, run=provis
         cp = call([*argv, "--output", "json"])
         if cp.returncode == 0:
             try:
-                return json.loads(cp.stdout or "{}")
-            except ValueError:
-                raise PermissionsError("read", "unreadable AWS response")
+                data = json.loads(cp.stdout or "{}")
+                # Syntactically valid JSON that isn't an object (e.g. a bare list)
+                # would otherwise sail through here and blow up as an AttributeError
+                # the first time a caller does `.get(...)` on it -- treat it the
+                # same as unparseable JSON.
+                if not isinstance(data, dict):
+                    raise ValueError("AWS response was not a JSON object")
+            except ValueError as e:
+                raise PermissionsError("read", "unreadable AWS response") from e
+            return data
         if missing_ok and "NoSuchEntity" in (cp.stderr or ""):
             return None
         raise PermissionsError("read", _scrub(admin, cp.stderr), action=_denied_action(cp.stderr))
@@ -390,10 +397,15 @@ def _make_room(call, admin: AdminCreds, policy_arn: str) -> None:
     if cp.returncode != 0:
         raise PermissionsError("apply", _scrub(admin, cp.stderr), action=_denied_action(cp.stderr))
     try:
-        versions = json.loads(cp.stdout or "{}").get("Versions", [])
-    except ValueError:
-        raise PermissionsError("apply", "unreadable AWS response")
-    victim = buckets.oldest_non_default_version(versions)
+        data = json.loads(cp.stdout or "{}")
+        # Syntactically valid JSON that isn't an object (e.g. a bare list) would
+        # otherwise blow up as an AttributeError on the `.get(...)` below --
+        # treat it the same as unparseable JSON.
+        if not isinstance(data, dict):
+            raise ValueError("AWS response was not a JSON object")
+    except ValueError as e:
+        raise PermissionsError("apply", "unreadable AWS response") from e
+    victim = buckets.oldest_non_default_version(data.get("Versions", []))
     if victim:
         cp = call(["iam", "delete-policy-version", "--policy-arn", policy_arn, "--version-id", victim])
         if cp.returncode != 0:

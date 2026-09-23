@@ -94,6 +94,19 @@ def test_preview_changes_nothing(client, monkeypatch):
     assert "delete that access key in AWS now" not in body
 
 
+def test_preview_with_nothing_to_do_still_flashes_the_delete_key_reminder(client, monkeypatch):
+    # review Minor 5: a Preview whose plan comes back EMPTY is terminal too (there's
+    # no "apply for real" left to come back for), so unlike a Preview with a
+    # non-empty plan (test_preview_changes_nothing above), the reminder still fires.
+    monkeypatch.setattr(permissions, "converge",
+                        lambda p, **kw: permissions.Outcome(ok=True, applied=False, steps=[]))
+    r = client.post("/setup/permissions/preview", data={"csrf": _csrf(client), **CREDS},
+                    follow_redirects=True)
+    body = r.get_data(as_text=True)
+    assert "already in place" in body
+    assert "delete that access key in AWS now" in body
+
+
 def test_already_current_redirects_with_a_flash(client, monkeypatch):
     monkeypatch.setattr(permissions, "converge",
                         lambda p, **kw: permissions.Outcome(ok=True, applied=False, steps=[]))

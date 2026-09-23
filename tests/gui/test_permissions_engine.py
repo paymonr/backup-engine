@@ -438,3 +438,24 @@ def test_make_room_raises_a_clean_error_on_unparseable_json():
         permissions._make_room(call, ADMIN, f"arn:aws:iam::{ACCOUNT}:policy/{permissions.RUNTIME_POLICY_NAME}")
     assert e.value.kind == "apply"
     assert "unreadable" in e.value.detail
+
+
+def test_discover_raises_a_clean_error_on_non_dict_json():
+    # Syntactically VALID JSON that isn't an object (e.g. a bare list) must not
+    # sail through and blow up as an AttributeError the first time a caller does
+    # `.get(...)` on it -- it's just as "unreadable" as malformed JSON.
+    def run(args, *, region, key, secret, session_token=None):
+        return SimpleNamespace(returncode=0, stdout="[1, 2, 3]", stderr="")
+    with pytest.raises(permissions.PermissionsError) as e:
+        permissions.discover(P, region="us-east-1", admin=ADMIN, run=run)
+    assert e.value.kind == "read"
+    assert "unreadable" in e.value.detail
+
+
+def test_make_room_raises_a_clean_error_on_non_dict_json():
+    def call(argv):
+        return SimpleNamespace(returncode=0, stdout="[1, 2, 3]", stderr="")
+    with pytest.raises(permissions.PermissionsError) as e:
+        permissions._make_room(call, ADMIN, f"arn:aws:iam::{ACCOUNT}:policy/{permissions.RUNTIME_POLICY_NAME}")
+    assert e.value.kind == "apply"
+    assert "unreadable" in e.value.detail
