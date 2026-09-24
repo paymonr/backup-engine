@@ -211,6 +211,25 @@ def test_ok_job_renders_cost_band_cache_only(client, example, no_cost_explorer):
     assert no_cost_explorer["ce"] is False             # no CE during render
 
 
+def test_small_measured_job_shows_mb_on_cost_band(client, app, source_root):
+    # Owner request: sizes scale their unit, so a small job stops reading a flat
+    # "0.35 GB" and reads "358.4 MB" instead -- on the job page's cost band
+    # specifically (job_cost_band's `rows` / `in_bucket_bytes`), independent of
+    # the `example` fixture's two jobs which both stay in GB range.
+    cfg, cache = app.config["CONFIG_DIR"], app.config["CACHE_DIR"]
+    jobs_io.upsert(cfg, {"name": "manga", "type": "archive", "source": "media/manga",
+                         "schedule": "0 4 * * 0", "enabled": True, "storage_class": "STANDARD",
+                         "created_at": "2026-09-01T00:00:00Z"},
+                   source_root=str(source_root))
+    small_bytes = int(0.35 * 1024 ** 3)          # the owner's own example figure
+    Path(cache, "usage.json").write_text(json.dumps({
+        "fetched_at": 1757833200.0,
+        "data": {"media/manga": {"bytes": small_bytes, "count": 40}}}))
+    body = client.get("/jobs/manga").get_data(as_text=True)
+    assert "358.4 MB" in body
+    assert "0.35 GB" not in body
+
+
 def test_ok_job_has_edit_link_with_locked_fields(client, example):
     body = client.get("/jobs/appdata").get_data(as_text=True)
     assert "How it is set up" in body

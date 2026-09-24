@@ -7,14 +7,6 @@
     `#confirm-name` and `#start-restore` (Appendix B, decision 42). -#}
 
 {%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
-{%- macro humanbytes(b) -%}
-{%- if b is none -%}—
-{%- elif b >= 1099511627776 -%}{{ '%.2f'|format(b / 1099511627776) }} TB
-{%- elif b >= 1073741824 -%}{{ '%.2f'|format(b / 1073741824) }} GB
-{%- elif b >= 1048576 -%}{{ '%.1f'|format(b / 1048576) }} MB
-{%- else -%}{{ b|int }} B
-{%- endif -%}
-{%- endmacro -%}
 
 {% set verb = 'Warm up first' if intent == 'thaw' else ('Download now' if intent == 'download' else 'Start restore') %}
 {% set post_action = '/jobs/' + name + '/thaw' if intent == 'thaw' else '/jobs/' + name + '/restore' %}
@@ -51,7 +43,7 @@
       <dd><span class="mono">{{ choice.target }}</span>{% if is_versioned %} <span class="hint">Inside it the files keep their original path.</span>{% endif %}</dd>
       {% endif %}
       <dt>Size</dt>
-      <dd>{% if size_bytes is not none %}<span class="mono p-{{ size_provenance }}">{{ humanbytes(size_bytes) }}</span>{% if file_count %} · {{ '{:,}'.format(file_count) }} files{% endif %}{% else %}not measured yet{% endif %}</dd>
+      <dd>{% if size_bytes is not none %}<span class="mono p-{{ size_provenance }}">{{ size_bytes | size }}</span>{% if file_count %} · {{ '{:,}'.format(file_count) }} files{% endif %}{% else %}not measured yet{% endif %}</dd>
       <dt>Needs</dt>
       <dd>
         {% if is_versioned %}<div>{% if rec.passphrase.state == 'set' %}Recovery passphrase: set, and not the shipped example.{% else %}<span style="color:var(--danger)">Recovery passphrase: not set — still the shipped example.</span>{% endif %}</div>{% endif %}
@@ -92,7 +84,7 @@
         {% if intent == 'thaw' %}
         <strong>This asks Amazon to warm up the files, one request each — the request itself takes hours to send — and starts a charged warm-up.</strong> Type the job name to confirm.
         {% else %}
-        <strong>This writes {{ humanbytes(size_bytes) }} to your array and starts a charged download.</strong> Type the job name to confirm.
+        <strong>This writes {{ size_bytes | size }} to your array and starts a charged download.</strong> Type the job name to confirm.
         {% endif %}
         <div class="confirm">
           <label class="fld" for="confirm-name">Type <span class="mono">{{ name }}</span></label>

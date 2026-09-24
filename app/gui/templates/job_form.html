@@ -79,7 +79,7 @@
     <p style="margin-top:12px">Selected
       <span class="mono" id="source-shown">{% if fv.source %}{{ source_root_host }}/{{ fv.source }}{% else %}<span class="faint">nothing yet</span>{% endif %}</span></p>
     <p class="sm faint" id="measure-line" style="margin-top:4px">
-      {% if measured %}<span class="n">{{ '%.2f'|format(est.breakdown.billed_gb) }} GB</span> · <span class="mono">{{ fv.file_count }} files</span> · measured
+      {% if measured %}<span class="n">{{ est.breakdown.billed_gb | size_gb }}</span> · <span class="mono">{{ fv.file_count }} files</span> · measured
         {% if is_edit and fv.measured_at %}{{ fv.measured_at[8:10] }} {{ fv.measured_at[5:7] }}{% else %}just now{% endif %} ·
         <button type="button" class="linklike" id="remeasure-btn">Re-measure</button>
       {% elif fv.source %}<span class="n assumed">measuring…</span>
@@ -132,7 +132,7 @@
 
     <!-- 2b · Where it's stored -->
     <h3 class="subh" style="margin-top:24px">Where it's stored —
-      priced for {% if measured %}your <span class="n">{{ '%.2f'|format(est.breakdown.billed_gb) }} GB</span>{% else %}an assumed <span class="n assumed">20 GB</span>{% endif %}</h3>
+      priced for {% if measured %}your <span class="n">{{ est.breakdown.billed_gb | size_gb }}</span>{% else %}an assumed <span class="n assumed">20 GB</span>{% endif %}</h3>
     <div class="tscroll card" style="margin-top:8px">
       <table class="classes">
         <thead><tr><th scope="col">Class</th><th scope="col">Per month</th><th scope="col">Getting it back</th>
@@ -306,7 +306,7 @@
       <span id="first-reason">{{ est.first_bill_reason_text if est else '' }}</span>.
       <button type="button" class="linklike" data-toggle="new-working">Show working ▸</button></p>
     <div id="new-working" hidden class="sev note" style="margin-top:10px">
-      <p id="working-text">{% if est %}{{ '%.2f'|format(est.breakdown.billed_gb) }} GB measured ×
+      <p id="working-text">{% if est %}{{ est.breakdown.billed_gb | size_gb }} measured ×
         <span class="mono">${{ '%.3f'|format(est.breakdown.rate_gb_month) }}</span>/GB·mo =
         <span class="mono">{{ money(est.breakdown.storage) }}</span> to store the files.{% endif %}</p>
     </div>

@@ -6,6 +6,7 @@ from __future__ import annotations
 from ..estimator.prices import PriceTable
 from ..estimator.model import STORAGE_CLASSES
 from ..estimator.schedule import backups_per_month
+from .units import fmt_gb, fmt_bytes
 
 COLD_CLASSES = ("GLACIER", "DEEP_ARCHIVE")  # thaw-required to READ
 
@@ -68,14 +69,14 @@ def class_advice(job_type: str, storage_class: str, schedule: str,
     #    are packed. `object_count` is the EFFECTIVE count (already reflects packing).
     if (storage_class in COLD_CLASSES and object_count and object_count >= 50_000
             and size_gb and (size_gb * 1024 / object_count) < 10.0):
-        avg_kb = size_gb * 1024 * 1024 / object_count
+        avg_bytes = size_gb * 1024 ** 3 / object_count
         out.append({"level": "warn", "text": (
-            "{:,} objects averaging ~{:.0f} KB on {}. Cold storage adds ~40 KB "
+            "{:,} objects averaging ~{} on {}. Cold storage adds ~40 KB "
             "overhead per object and charges ~10x more per upload request, so a "
             "huge number of small files can cost more than the data. Bundle them "
             "into larger archives (e.g. .cbz per chapter, or tar) before backing "
             "up — a few thousand big objects instead of millions of tiny ones."
-        ).format(int(object_count), avg_kb, storage_class)})
+        ).format(int(object_count), fmt_bytes(avg_bytes), storage_class)})
 
     # 1. restic (Snapshots) cannot operate on a thaw-required class (spec §8-2):
     #    strong WARNING that steers to Versioned files; NOT a hard block.
@@ -184,7 +185,7 @@ def _churn_phrase(pct: float) -> str:
 
 
 def _fmt_gb(size_gb: float) -> str:
-    return f"{size_gb:,.2f} GB"
+    return fmt_gb(size_gb)
 
 
 def recommend_type(*, size_gb: float, file_count: int, change_rate_pct: float,

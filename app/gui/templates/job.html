@@ -10,14 +10,6 @@
 
 {%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
 {%- macro smoney(v) -%}{% if v is not none %}{{ '+' if v >= 0 else '−' }}${{ '{:,.2f}'.format(v|abs) }}{% else %}—{% endif %}{%- endmacro -%}
-{%- macro humanbytes(b) -%}
-{%- if b is none -%}—
-{%- elif b >= 1099511627776 -%}{{ '%.2f'|format(b / 1099511627776) }} TB
-{%- elif b >= 1073741824 -%}{{ '%.2f'|format(b / 1073741824) }} GB
-{%- elif b >= 1048576 -%}{{ '%.1f'|format(b / 1048576) }} MB
-{%- else -%}{{ b|int }} B
-{%- endif -%}
-{%- endmacro -%}
 {%- macro dur(s) -%}
 {%- if s is none -%}—
 {%- elif s < 60 -%}{{ s|int }} s
@@ -271,7 +263,7 @@
         <dl class="defgrid">
           <dt>Copy as of</dt><dd>{% if rjob and rjob.newest_point %}{{ datelabel(rjob.newest_point.at) }} {{ hhmm(rjob.newest_point.at) }} · last completed run{% else %}no completed run yet{% endif %}</dd>
           <dt>Files</dt><dd>{% if pv.file_count is not none %}<span class="mono">{{ '{:,}'.format(pv.file_count) }}</span>{% else %}not measured yet{% endif %}</dd>
-          <dt>Size</dt><dd>{{ prov(humanbytes(pv.size_bytes), pv.size_provenance) if pv.size_bytes is not none else 'not measured yet' }}</dd>
+          <dt>Size</dt><dd>{{ prov(pv.size_bytes | size, pv.size_provenance) if pv.size_bytes is not none else 'not measured yet' }}</dd>
           <dt>Storage tier</dt><dd>{{ vocab.CLASS_NAMES.get(cls, cls).split(' · ')[0] }} <code>{{ cls }}</code></dd>
           <dt>History</dt><dd>{{ pv.note }}</dd>
         </dl>
@@ -308,12 +300,12 @@
           <label class="rp"><input type="radio" name="point" value="{{ p.id }}"{% if loop.first %} checked{% endif %}>
             <span class="d mono">{{ p.label }}</span>
             <span class="id mono">{{ p.id }}</span>
-            <span class="m mono">{% if p.size_bytes is not none %}{{ humanbytes(p.size_bytes) }}{% if p.files_changed is not none %} · {{ p.files_changed }} files changed{% endif %}{% else %}size not recorded{% endif %}</span></label>
+            <span class="m mono">{% if p.size_bytes is not none %}{{ p.size_bytes | size }}{% if p.files_changed is not none %} · {{ p.files_changed }} files changed{% endif %}{% else %}size not recorded{% endif %}</span></label>
           {% endfor %}
           {% if pv.has_details %}
           <details style="margin-top:var(--sp-2)"><summary class="linklike">Show the other {{ pv.hidden_count }} restore points</summary>
             <table style="margin-top:var(--sp-2)"><tbody>
-            {% for p in pv.hidden %}<tr><td class="mono">{{ p.label }}</td><td class="mono hint">{{ p.id }}</td><td class="hint">{% if p.size_bytes is not none %}{{ humanbytes(p.size_bytes) }}{% else %}size not recorded{% endif %}</td></tr>{% endfor %}
+            {% for p in pv.hidden %}<tr><td class="mono">{{ p.label }}</td><td class="mono hint">{{ p.id }}</td><td class="hint">{% if p.size_bytes is not none %}{{ p.size_bytes | size }}{% else %}size not recorded{% endif %}</td></tr>{% endfor %}
             </tbody></table>
           </details>
           {% endif %}
@@ -351,7 +343,7 @@
             <div>{% if is_cold %}<span class="warn" aria-hidden="true">!</span><span><strong>Not ready yet:</strong> this job is on the thaw-first tier <code>{{ cls }}</code>. Amazon has to warm it up before a single file can be read — up to {{ hours_hi }} hours at Standard speed, up to {{ alt_hours }} at Bulk — and the warm-up is charged separately.</span>{% else %}<span class="ok" aria-hidden="true">✓</span><span><strong>Ready now:</strong> this job is on the instant tier <code>{{ cls }}</code>, so there is no waiting — the first file starts copying immediately.</span>{% endif %}</div>
             {% set rq = rjob.cost_full_restore if rjob else none %}
             {% set rsize = rjob.size_bytes if rjob else none %}
-            <div><span class="{{ 'warn' if is_cold else 'ok' }}" aria-hidden="true">{{ '!' if is_cold else '✓' }}</span><span><strong>{{ 'Warm-up + data out:' if is_cold else 'Data out of Amazon:' }}</strong> {{ humanbytes(rsize) }} ≈ {% if rq and rq.amount is not none %}<span class="mono">{{ money(rq.amount) }}</span>{% else %}<span class="hint">not priced yet</span>{% endif %} <span class="hint">one time, for a full restore</span></span></div>
+            <div><span class="{{ 'warn' if is_cold else 'ok' }}" aria-hidden="true">{{ '!' if is_cold else '✓' }}</span><span><strong>{{ 'Warm-up + data out:' if is_cold else 'Data out of Amazon:' }}</strong> {{ rsize | size }} ≈ {% if rq and rq.amount is not none %}<span class="mono">{{ money(rq.amount) }}</span>{% else %}<span class="hint">not priced yet</span>{% endif %} <span class="hint">one time, for a full restore</span></span></div>
           </div>
 
           {% if sibling_cold %}
@@ -363,7 +355,7 @@
             {% if band_intent == 'thaw' %}
             <strong>This asks Amazon to warm up the files, one request each — the request itself takes hours to send — and starts a charged warm-up.</strong> The next screen shows both speeds priced and asks you to type the job name.
             {% else %}
-            <strong>This writes {{ humanbytes(rjob.size_bytes if rjob else none) }} to your array and starts a charged download.</strong> The next screen shows the full cost and asks you to type the job name.
+            <strong>This writes {{ (rjob.size_bytes if rjob else none) | size }} to your array and starts a charged download.</strong> The next screen shows the full cost and asks you to type the job name.
             {% endif %}
             <div class="confirm">
               <button type="submit" class="btn btn-primary" id="go-restore">{% if band_intent == 'thaw' %}Warm up first — up to {{ hours_hi }} h →{% elif band_intent == 'download' %}Download now →{% else %}Start restore →{% endif %}</button>
@@ -403,7 +395,7 @@
             <span class="v">{% if cost.unbounded %}Keeps growing{% elif cost.settled is not none %}{{ prov(money(cost.settled), cost.steady_provenance) }}{% else %}—{% endif %}</span>
             <span class="s">{% if cost.unbounded %}there is no plateau for this job{% elif cost.settled is not none %}settles from month {{ cost.steady_month }} — it stops rising{% else %}not priced yet{% endif %}</span></div>
           <div class="sfig"><span class="k">In the bucket now</span>
-            <span class="v">{% if cost.in_bucket_bytes is not none %}{{ prov(humanbytes(cost.in_bucket_bytes), 'measured') }}{% else %}—{% endif %}</span>
+            <span class="v">{% if cost.in_bucket_bytes is not none %}{{ prov(cost.in_bucket_bytes | size, 'measured') }}{% else %}—{% endif %}</span>
             <span class="s">{% if cost.in_bucket_bytes is not none %}measured {{ cost.in_bucket_at or '—' }}{% if cost.shared_store %} · whole snapshot store · shared by {{ cost.shared_by }} jobs{% endif %}{% else %}not measured yet{% endif %}</span></div>
         </div>
 
@@ -412,7 +404,7 @@
             <thead><tr><th>Where the money goes</th><th>How much of it</th><th>Where that number came from</th></tr></thead>
             <tbody>
               <tr><td>Storing your files</td>
-                <td class="mono">{{ prov(humanbytes(cost.in_bucket_bytes), cost.size_provenance) if cost.in_bucket_bytes is not none else '—' }}{% if cost.file_count %} · {{ '{:,}'.format(cost.file_count) }} files{% endif %}</td>
+                <td class="mono">{{ prov(cost.in_bucket_bytes | size, cost.size_provenance) if cost.in_bucket_bytes is not none else '—' }}{% if cost.file_count %} · {{ '{:,}'.format(cost.file_count) }} files{% endif %}</td>
                 <td class="hint">{% if cost.in_bucket_at %}Walked the folder on {{ cost.in_bucket_at }}.{% else %}Not measured yet.{% endif %}</td></tr>
               <tr><td>Getting data out of Amazon</td>
                 <td class="mono">$0.00</td>

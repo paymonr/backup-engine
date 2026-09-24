@@ -35,6 +35,33 @@ def test_readme_no_longer_calls_the_automated_wizard_planned():
     assert "GUI wizard is planned" not in body
 
 
+def test_app_js_has_one_shared_size_formatter():
+    # Owner request: sizes display in MB, not a flat two-decimal GB. app.js used to
+    # hand-roll two DIFFERENT fmtBytes() (the wizard's measure-line, and the live
+    # progress bar) -- now there is exactly one, defined once at top level (so both
+    # IIFEs that used to shadow it with their own copy can see it), following the
+    # same B/KB/MB/GB/TB rules as app/gui/units.py.fmt_bytes.
+    src = APP_JS.read_text()
+    assert src.count("function fmtBytes(") == 1
+    assert src.count("function fmtGb(") == 1
+    # Every call site uses the shared function -- no local re-declaration survives.
+    assert "var gb = b / (1024 * 1024 * 1024);" not in src   # the old wizard fmtBytes
+    assert "m.toFixed(0)" not in src                          # the old progress fmtBytes
+    # The progress bar's variant still treats "not yet known" as null, not "—".
+    m = re.search(r"function fmtBytes\(b\) \{.*?\n\}", src, re.S)
+    assert m, "top-level fmtBytes() not found in app.js"
+    assert "if (b == null) return null;" in m.group(0)
+
+
+def test_wizard_working_text_uses_the_shared_gb_formatter():
+    # The wizard's live "X measured × $rate/GB·mo = ..." line (job_form.html's
+    # #working-text, re-painted from /jobs/estimate.json) used to hardcode
+    # `.toFixed(2) + " GB"` -- now it scales with fmtGb() like everything else.
+    src = APP_JS.read_text()
+    assert 'fmtGb(d.breakdown.billed_gb) + " measured' in src
+    assert '.toFixed(2) + " GB measured' not in src
+
+
 def test_dedicated_bucket_hint_covers_the_empty_suffix_case():
     # updateHint (job-form wizard, Task 8 + Addendum 2026-09-22): a bucket value of
     # exactly `base + "-"` has NO suffix at all -- the server refuses it

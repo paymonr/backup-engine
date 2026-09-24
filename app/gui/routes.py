@@ -13,7 +13,7 @@ from flask import (Blueprint, redirect, url_for, render_template, request, flash
                    current_app, abort, Response, jsonify)
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
                dirsize, attributions, status, vocab, points, readiness, ops, permissions,
-               s3_rules)
+               s3_rules, units)
 from ..estimator.prices import load_prices
 from ..estimator import usage
 from ..engine import cron, runs, errors, progress, buckets, sysop, lifecycle
@@ -1134,12 +1134,12 @@ def _lookup_run(cache_dir, job, run_id):
 
 
 def _humanbytes(b) -> str | None:
+    """Thin wrapper over the shared formatter (units.fmt_bytes): callers here rely
+    on `None -> None` (not the em dash the shared one prints), so it stays a
+    one-line shim rather than a straight rebind."""
     if b is None:
         return None
-    for lim, unit, dec in ((2**40, "TB", 2), (2**30, "GB", 2), (2**20, "MB", 1)):
-        if b >= lim:
-            return f"{b / lim:.{dec}f} {unit}"
-    return f"{int(b)} B"
+    return units.fmt_bytes(b)
 
 
 def _human_dur(s) -> str:

@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 
 from ..engine import lifecycle, storage_summary
-from . import config_io, permissions, vocab
+from . import config_io, permissions, vocab, units
 
 _WHY = {"role": "couldn't use the bucket-admin role", "aws": "AWS refused the change",
         "unsupported": "this storage doesn't support S3 rules",
@@ -407,10 +407,7 @@ def why(kind: str) -> str:
 
 
 def _human_bytes(b) -> str:
-    for lim, unit, dec in ((2 ** 40, "TB", 2), (2 ** 30, "GB", 2), (2 ** 20, "MB", 1)):
-        if b >= lim:
-            return f"{b / lim:.{dec}f} {unit}"
-    return f"{int(b)} B"
+    return units.fmt_bytes(b)
 
 
 def _whole(v, msg: str, *, max_: int | None = None) -> int:
