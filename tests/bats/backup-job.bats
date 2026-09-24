@@ -664,6 +664,19 @@ EOF
   grep -qx "check --bucket my-bucket --trigger scheduled" "$log"
 }
 
+@test "the S3 rules check sees the run's own id (its start record never makes the folder known)" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh" log="$BATS_TEST_TMPDIR/lc.log"
+  printf '#!/usr/bin/env bash\necho "run=${BE_RUN_ID:-unset}" >>"%s"\n' "$log" >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  local id
+  id="$(grep '"event":"start"' "$CACHE_DIR/state/movies.runs.jsonl" | head -1 | sed 's/.*"id":"\([^"]*\)".*/\1/')"
+  [ -n "$id" ]
+  grep -qx "run=$id" "$log"
+}
+
 @test "a finished run starts a detached storage summary of its folder, with no run id of its own" {
   local stub="$BATS_TEST_TMPDIR/summary.sh" out="$BATS_TEST_TMPDIR/summary.log"
   printf '#!/usr/bin/env bash\necho "$* trigger=${BE_TRIGGER:-unset} run=${BE_RUN_ID:-unset}" >>"%s"\n' "$out" >"$stub"
