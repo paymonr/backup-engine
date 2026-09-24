@@ -72,6 +72,9 @@
               <button type="submit" class="btn btn-sm">Check now</button>
             </form>
             {% endif %}
+            {% if c.fix_url != '/setup/permissions' %}
+            <a class="linklike" href="/setup/storage">{{ 'Review in S3 rules →' if c.fix_url == '/setup/storage' else 'S3 rules →' }}</a>
+            {% endif %}
           {% endif %}
         </td>
       </tr>
@@ -83,6 +86,8 @@
     <a class="linklike" href="/setup/destination">Set up the destination →</a>
     &nbsp;·&nbsp;
     <a class="linklike" href="/setup/keys">Keys &amp; secrets →</a>
+    &nbsp;·&nbsp;
+    <a class="linklike" href="/setup/storage">S3 rules →</a>
     &nbsp;·&nbsp;
     <a class="linklike" href="/setup/about">About this app →</a>
   </p>

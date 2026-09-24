@@ -307,6 +307,7 @@ ALL_PAGES = [
     "/setup/keys",                    # Keys & secrets
     "/setup/about",                   # About / glossary
     "/setup/permissions",             # AWS permissions
+    "/setup/storage",                 # S3 rules (spec 2026-09-23 §5)
     "/jobs/new",                      # Create job
     "/jobs/appdata/edit",             # Edit job
     "/jobs/appdata/restore",          # restore-confirm — warm (5.4)

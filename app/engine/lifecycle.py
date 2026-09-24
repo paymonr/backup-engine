@@ -349,6 +349,19 @@ def console_changes(stored: dict | None, live: list[dict]) -> list[tuple[str, st
     return out
 
 
+def console_rules(rules: list[dict]) -> list[tuple[str, dict]]:
+    """[(key, rule)] for every rule not made by backup-engine (key = its ID, or "(no ID) …")."""
+    return [(k, r) for k, _h, r in _console_entries(rules)]
+
+
+def rule_prefix(rule: dict) -> str:
+    f = _norm(rule).get("Filter") or {}
+    if not isinstance(f, dict):
+        return ""
+    both = f.get("And") if isinstance(f.get("And"), dict) else {}
+    return f.get("Prefix") or both.get("Prefix") or ""
+
+
 # --- alarms ----------------------------------------------------------------------------------
 
 _SEVERITY = {"restored": 1, "console_rule": 2, "not_restored": 3}
@@ -765,6 +778,23 @@ def load_console_fingerprint(cache_dir: str, bucket: str) -> dict | None:
     return fp if isinstance(fp, dict) else None
 
 
+def save_live(cache_dir: str, bucket: str, rules: list[dict], versioning: str | None = None) -> None:
+    """What a pass last READ from S3 -- console rules included -- so the S3 rules screen shows
+    them without an AWS call on GET."""
+    doc = {"rules": rules, "read_at": _now_iso()}
+    if versioning is not None:
+        doc["versioning"] = versioning
+    _write_atomic(Path(_state_dir(cache_dir), f"{bucket}.live.json"), json.dumps(doc))
+
+
+def load_live(cache_dir: str, bucket: str) -> dict | None:
+    try:
+        data = json.loads(Path(_state_dir(cache_dir), f"{bucket}.live.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("rules"), list) else None
+
+
 def load_applied_doc(cache_dir: str, bucket: str) -> dict | None:
     """The whole applied record: {"rules", "applied_at", "console"?, "folders"?} (GUI, previews)."""
     return _applied_doc(cache_dir, bucket)
@@ -904,6 +934,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     except LifecycleError as e:
         set_status(cache, bucket, _err_state(e), e.detail)
         return _err_state(e), None, e, stale
+    save_live(cache, bucket, live)
 
     first = applied is None
     if first:

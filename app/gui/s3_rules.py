@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from ..engine import lifecycle
-from . import config_io, permissions
+from . import config_io, permissions, vocab
 
 _WHY = {"role": "couldn't use the bucket-admin role", "aws": "AWS refused the change",
         "unsupported": "this storage doesn't support S3 rules"}
@@ -189,3 +189,85 @@ def check_all(cfg) -> list[tuple[str, str]]:
     if states and all(s == "ok" for s in states) and not open_alarm:
         return [("success", "S3 rules checked — all in place.")]
     return [_ATTENTION]
+
+
+# --- the S3 rules screen (spec §5, layout A) — state files only, never AWS --------------------
+
+def _human_time(iso) -> str | None:
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).strftime("%d %b %H:%M")
+    except (ValueError, TypeError):
+        return None
+
+
+def console_view(rules: list[dict], folders) -> list[dict]:
+    """Console rules, read-only (spec §1/§5): what each does, a danger flag for current-file
+    expiry/moves, an overlap flag for old-version actions on an app folder."""
+    out = []
+    for key, r in lifecycle.console_rules(rules):
+        on = r.get("Status") != "Disabled"
+        exp = r.get("Expiration") if isinstance(r.get("Expiration"), dict) else {}
+        danger = on and ("Days" in exp or "Date" in exp or bool(r.get("Transitions") or r.get("Transition")))
+        noncurrent = on and any(k in r for k in ("NoncurrentVersionExpiration", "NoncurrentVersionTransitions",
+                                                 "NoncurrentVersionTransition"))
+        prefix = lifecycle.rule_prefix(r)
+        out.append({"id": key, "where": lifecycle._where(r), "disabled": not on,
+                    "words": lifecycle.describe(r).split(": ", 1)[-1],
+                    "danger": danger,
+                    "overlap": noncurrent and any(f.startswith(prefix) or prefix.startswith(f) for f in folders)})
+    return out
+
+
+def _bucket_view(cfg, bucket: str, base: str, jobs: list[dict], settings: dict) -> dict:
+    cache = cfg["CACHE_DIR"]
+    want = lifecycle.want_for(cfg, bucket, jobs, settings)
+    before = lifecycle.baseline_from_applied(lifecycle.load_applied_doc(cache, bucket), want)
+    shown = before.rules if before is not None else want.rules      # what S3 was last given
+    waiting = ({c.rule_id: c for c in lifecycle.classify(before, want) if c.kind == lifecycle.KEEPS_LESS}
+               if before is not None else {})
+    types = {j.get("name"): j.get("type") for j in jobs}
+    rows = []
+    for f in lifecycle.folders_for(bucket, base, jobs):
+        rid = lifecycle.rule_id(f.folder)
+        d, n = lifecycle.expiry(shown.get(rid))
+        w = waiting.get(rid)
+        rows.append({"key": f"{bucket}|{f.folder}", "folder": f.folder, "where": f.folder or "whole bucket",
+                     "kind": f.kind, "jobs": list(f.jobs), "type": vocab.TYPE_NAMES.get(types.get(f.jobs[0]), ""),
+                     "keeps": {"days": None if d == float("inf") else d, "newer": n or None},
+                     "waiting": w.words.split(": ", 1)[-1] if w else None, "note": f.note})
+    bset = lifecycle.bucket_settings(settings, bucket)
+    live = lifecycle.load_live(cache, bucket)
+    return {"name": bucket, "dedicated": bucket != base, "applied": before is not None, "rows": rows,
+            "console": console_view(live["rules"], want.folders) if live else [],
+            "live_read_at": _human_time((live or {}).get("read_at")),
+            "versioning": (live or {}).get("versioning"),
+            "housekeeping": {"key": f"{bucket}|*", "abort_days": bset["abort_uploads_days"],
+                             "markers": bset["delete_marker_cleanup"]},
+            "waiting": [c.words for c in waiting.values()]}
+
+
+def screen(cfg) -> dict:
+    """The S3 rules screen's view model (spec §5)."""
+    from . import jobs_io
+    config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+    v = {"provisioned": config_io.is_provisioned(config_dir), "managed": False, "buckets": [],
+         "status": None, "alarm": None, "alarm_seen": None}
+    if not v["provisioned"]:
+        return v
+    v["managed"] = lifecycle.managed(config_dir)
+    if not v["managed"]:
+        return v
+    ctx = {"CONFIG_DIR": config_dir, "CACHE_DIR": cache}
+    base = config_io.read_backup_env(config_dir).get("S3_BUCKET", "").strip()
+    jobs, settings = jobs_io.load(config_dir), lifecycle.load_settings(config_dir)
+    buckets = lifecycle.buckets_for(base, jobs)
+    alarm = _alarm(lifecycle.load_status(cache), buckets)
+    row = setup_row(cfg) or {}
+    v["alarm"] = alarm
+    v["alarm_seen"] = (alarm or {}).get("latest") or (alarm or {}).get("at")
+    v["status"] = {"level": "blocker" if alarm else ("ok" if row.get("state") == "ok" else "warn"),
+                   "sentence": row.get("sentence", ""), "checked_at": row.get("verified_at"),
+                   "checked_human": _human_time(row.get("verified_at"))}
+    v["buckets"] = [_bucket_view(ctx, b, base, jobs, settings) for b in buckets]
+    return v

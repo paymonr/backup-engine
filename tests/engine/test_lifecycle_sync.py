@@ -229,3 +229,16 @@ def test_live_rules_already_matching_the_jobs_are_not_tampering(cfg):
     assert res.state == "ok" and len(fake.puts()) == 1
     assert "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
     assert lc.app_rules_differ(lc.load_applied(cfg["CACHE_DIR"], BASE), fake.rules[BASE]) is False
+
+
+# --- every pass stores what it read (Task 14: the S3 rules screen never calls AWS) -----------
+
+def test_every_pass_stores_what_it_read(cfg):
+    fake = FakeS3({BASE: LEGACY + [CONSOLE]})
+    lc.sync(cfg, BASE, run=fake)
+    live = lc.load_live(cfg["CACHE_DIR"], BASE)
+    assert live["rules"] == LEGACY + [CONSOLE] and live["read_at"]
+    lc.check(cfg, BASE, run=fake)
+    assert lc.load_live(cfg["CACHE_DIR"], BASE)["rules"] == fake.rules[BASE]
+    assert lc.console_rules(fake.rules[BASE]) == [("archive-old-logs", CONSOLE)]
+    assert lc.rule_prefix(CONSOLE) == "logs/" and lc.rule_prefix({"Filter": {}}) == ""

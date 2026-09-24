@@ -125,3 +125,105 @@ def test_activity_labels_storage_summaries(client, cfg):
     runs.record_system(cfg["CACHE_DIR"], kind="storage-summary", summary="storage summary · media/manga/")
     body = client.get("/activity?kind=setup").get_data(as_text=True)
     assert "storage summary" in body
+
+
+# --- the overview (Task 14) -------------------------------------------------------------------
+
+CONSOLE_RULE = {"ID": "archive-old-logs", "Status": "Enabled", "Filter": {"Prefix": "logs/"},
+                "Expiration": {"Days": 14}}
+OVERLAP_RULE = {"ID": "trim-media", "Status": "Enabled", "Filter": {"Prefix": "media/"},
+                "NoncurrentVersionExpiration": {"NoncurrentDays": 60}}
+
+
+def _full_state(cfg):
+    _applied(cfg)
+    applied = lifecycle.load_applied(cfg["CACHE_DIR"], BASE)
+    lifecycle.save_live(cfg["CACHE_DIR"], BASE, [CONSOLE_RULE, OVERLAP_RULE, *applied])
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "ok")
+
+
+def test_below_level_four_the_screen_only_asks_for_the_permissions_update(client, cfg):
+    env = Path(cfg["CONFIG_DIR"], "backup.env")
+    env.write_text(env.read_text().replace("PERMISSIONS_VERSION=4", "PERMISSIONS_VERSION=3"))
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "Needs the permissions update" in body and 'href="/setup/permissions"' in body
+    assert 'data-s3-state="not-managed"' in body and "data-row=" not in body
+
+
+def test_the_screen_shows_each_folder_and_what_s3_keeps(client, cfg):
+    _full_state(cfg)
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert f'data-bucket="{BASE}"' in body and "Shared bucket" in body
+    assert f'data-row="{BASE}|media/manga/"' in body and f'data-row="{BASE}|appdata/"' in body
+    assert 'Old versions for <span class="mono">180</span> days' in body
+    assert 'Undo window <span class="mono">30</span> days' in body
+    assert "manga · Plain copy" in body and "appdata_backups · Snapshot backup" in body
+    assert 'data-s3-state="ok"' in body and "Check now" in body
+
+
+def test_console_rules_are_read_only_and_flagged(client, cfg):
+    _full_state(cfg)
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert 'data-console="archive-old-logs"' in body and "expires current files 14 days after" in body
+    assert "deletes or moves current backups" in body
+    assert 'data-console="trim-media"' in body and "S3 applies the shorter expiry where rules overlap" in body
+    assert f'href="/setup/storage?edit={BASE}%7Clogs' not in body          # never editable
+
+
+def test_changes_waiting_for_confirmation_are_listed(client, cfg):
+    _applied(cfg)                                                           # S3 keeps manga 180 days
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "days", "days": 30}
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "Waiting for your confirmation" in body
+    assert "old versions removed 180 days after being replaced → old versions removed 30 days" in body
+
+
+def test_a_dedicated_bucket_gets_its_own_card(client, cfg):
+    jobs = JOBS + [{"name": "photos", "type": "archive", "source": "media/manga", "schedule": "0 4 * * *",
+                    "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 10},
+                    "dedicated": True, "bucket": f"{BASE}-photos"}]
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    _applied(cfg, jobs=jobs, bucket=f"{BASE}-photos")
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "Dedicated bucket" in body and f'data-row="{BASE}-photos|"' in body
+    assert 'Newest <span class="mono">10</span> old versions per file' in body
+
+
+def test_a_tamper_alarm_heads_the_screen_with_acknowledge(client, cfg):
+    _full_state(cfg)
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "restored",
+                         alarm={"kind": "restored", "at": "2026-09-23T04:59:00Z", "lines": []})
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert 'data-s3-state="blocker"' in body and "changed outside backup-engine" in body
+    assert 'action="/setup/s3-rules/acknowledge"' in body and 'name="back" value="storage"' in body
+
+
+def test_check_now_and_acknowledge_come_back_to_the_screen(client, monkeypatch):
+    monkeypatch.setattr(lifecycle, "check", lambda c, b, **k: "ok")
+    r = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client), "back": "storage"})
+    assert r.headers["Location"].endswith("/setup/storage")
+    r = client.post("/setup/s3-rules/acknowledge", data={"csrf": _csrf(client), "back": "storage"})
+    assert r.headers["Location"].endswith("/setup/storage")
+    r = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client), "back": "https://evil.example"})
+    assert r.headers["Location"].endswith("/setup")
+
+
+def test_setup_links_to_the_screen_and_the_screen_is_in_the_setup_nav(client, cfg):
+    _applied(cfg)
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "ok")
+    assert 'href="/setup/storage"' in client.get("/setup").get_data(as_text=True)
+    import html
+    body = html.unescape(client.get("/setup/storage").get_data(as_text=True))
+    assert '<a href="/setup" aria-current="page">Setup</a>' in body
+
+
+def test_the_screen_obeys_the_vocabulary_and_mono_laws(client, cfg):
+    from tests.gui.test_vocabulary import forbidden_hits, mono_violations
+    _full_state(cfg)
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "count", "count": 10, "days": 30}      # a waiting item too
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert forbidden_hits(body) == [] and mono_violations(body) == []

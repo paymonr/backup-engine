@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from flask import abort, current_app, flash, redirect, request, url_for
+from flask import abort, current_app, flash, redirect, render_template, request, url_for
 
 from ..engine import lifecycle
 from . import config_io, jobs_io, ops, s3_rules, security
@@ -23,21 +23,33 @@ def _unprovisioned():
     return not config_io.is_provisioned(current_app.config["CONFIG_DIR"])
 
 
+def _back() -> str:
+    """Where check/acknowledge return: the S3 rules screen when it posted them, else Setup."""
+    return "/setup/storage" if request.form.get("back") == "storage" else url_for("gui.setup_page")
+
+
+@bp.get("/setup/storage")
+def setup_storage():
+    """S3 rules (spec §5): state files only -- no AWS call on GET."""
+    return render_template("s3_rules.html", v=s3_rules.screen(current_app.config), ed=None, pvw=None,
+                           csrf=security.issue_csrf())
+
+
 @bp.post("/setup/s3-rules/check")
 def s3_rules_check():
     _csrf_or_400()
     if _unprovisioned():
-        return redirect(url_for("gui.setup_page"))
+        return redirect(_back())
     for category, msg in s3_rules.check_all(current_app.config):
         flash(msg, category)
-    return redirect(url_for("gui.setup_page"))
+    return redirect(_back())
 
 
 @bp.post("/setup/s3-rules/acknowledge")
 def s3_rules_acknowledge():
     _csrf_or_400()
     if _unprovisioned():
-        return redirect(url_for("gui.setup_page"))
+        return redirect(_back())
     cfg = current_app.config
     seen = (request.form.get("seen") or "").strip() or None
     try:
@@ -45,12 +57,12 @@ def s3_rules_acknowledge():
         still = s3_rules.open_alarm(cfg) is not None
     except Exception:                                        # noqa: BLE001 — never a 500 (O2)
         flash("Couldn't clear the S3 rules alarm — try again.", "warning")
-        return redirect(url_for("gui.setup_page"))
+        return redirect(_back())
     if still:
         flash("Noted. A newer S3 rules alarm arrived after this page loaded — it's still shown.", "warning")
     else:
         flash("Noted — the S3 rules alarm is cleared.", "success")
-    return redirect(url_for("gui.setup_page"))
+    return redirect(_back())
 
 
 def _storage_url(key: str = "") -> str:
