@@ -387,3 +387,15 @@ def test_paused_outcome_and_attempts_fold(tmp_path):
     runs.append_event(c, "cfg", {"v":1,"id":"20260921T050000Z-aaaa","job":"cfg","kind":"backup","event":"end","outcome":"paused","finished_at":"2026-09-21T05:01:00Z","attempts":2})
     rec = runs.read_runs(c, "cfg", reconcile=False).records[0]
     assert rec.outcome == "paused" and rec.attempts == 2
+
+
+# --- record_system -----------------------------------------------------------
+
+def test_record_system_writes_a_start_end_pair_and_a_log(tmp_path):
+    rid = runs.record_system(str(tmp_path), kind="s3-rules", summary="S3 rules updated · b",
+                             lines=["media/m/: old versions removed 180 days after being replaced"])
+    events = [json.loads(l) for l in (tmp_path / "state" / "_system.runs.jsonl").read_text().splitlines()]
+    assert [(e["kind"], e["event"]) for e in events] == [("s3-rules", "start"), ("s3-rules", "end")]
+    assert events[1]["outcome"] == "ok" and events[0]["id"] == rid
+    log = (tmp_path / events[0]["log"]).read_text()
+    assert "S3 rules updated · b" in log and "180 days" in log

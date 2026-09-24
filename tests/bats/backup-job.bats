@@ -12,6 +12,8 @@ setup() {
   chmod +x "$b/rclone" "$b/restic"; export PATH="$b:$PATH"
   export JOBS_IO_STUB="$BATS_TEST_TMPDIR/jobsio.sh"
   export JOBS_IO_CMD="bash $JOBS_IO_STUB"
+  export LIFECYCLE_CMD="true"
+  export SUMMARY_CMD="true"
 }
 run_job() { run bash "$BATS_TEST_DIRNAME/../../scripts/backup-job.sh" "$1"; }
 
@@ -72,7 +74,7 @@ _install_alert_probes() {
   ! grep -q -- "forget" "$RESTIC_LOG"
 }
 
-@test "archive job days retention -> archive_prune invoked with --type days --days N" {
+@test "Plain copy never runs a history clean-up of its own (S3 rules own it)" {
   local b="$BATS_TEST_TMPDIR/bin"
   export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
@@ -80,19 +82,8 @@ _install_alert_probes() {
   printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=days; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
   run_job movies
   [ "$status" -eq 0 ]
-  grep -q -- "-m app.engine.archive_prune movies --type days --days 30 --count 1" "$PYTHON_LOG"
-}
-
-@test "archive job keep_all retention -> no archive_prune call" {
-  local b="$BATS_TEST_TMPDIR/bin"
-  export PYTHON_LOG="$BATS_TEST_TMPDIR/python.log"; : >"$PYTHON_LOG"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$PYTHON_LOG"\nexit 0\n' >"$b/python3"
-  chmod +x "$b/python3"
-  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=DEEP_ARCHIVE; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
-  run_job movies
-  [ "$status" -eq 0 ]
   grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
-  [ ! -s "$PYTHON_LOG" ]
+  ! grep -q "archive_prune" "$PYTHON_LOG"
 }
 
 @test "missing source dir -> failure" {
@@ -159,9 +150,6 @@ _install_alert_probes() {
   export PYTHONPATH="$BATS_TEST_DIRNAME/../.."
   export JOBS_IO_CMD="python3 -m app.gui.jobs_io"
   export CONFIG_DIR="$BATS_TEST_TMPDIR/config"; mkdir -p "$CONFIG_DIR"
-  # keep_all isolates this test to its actual intent (real jobs_io CLI -> rclone copy). Without it the
-  # default archive retention is days/180, which now (7.1.6, prune failures are failures) runs the real
-  # archive_prune against a bucket that does not exist in the sandbox and correctly fails the job.
   printf '%s\n' '{"jobs":[{"name":"movies","type":"archive","source":"media/movies","schedule":"0 4 * * 0","enabled":true,"storage_class":"DEEP_ARCHIVE","mirror":false,"retention":{"type":"keep_all"}}]}' >"$CONFIG_DIR/jobs.json"
   run_job movies
   [ "$status" -eq 0 ]
@@ -591,4 +579,146 @@ EOF
   run_job cfg
   [ "$status" -eq 0 ]
   [ ! -f "$CACHE_DIR/state/cfg.resumes" ]
+}
+
+# --- Task 5: S3 rules tamper check runs before every backup ------------------------------------
+
+@test "the S3 rules check runs before the backup, for the job's bucket" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh"; export ORDER_LOG="$BATS_TEST_TMPDIR/order.log"; : >"$ORDER_LOG"
+  printf '#!/usr/bin/env bash\necho "lifecycle $*" >>"$ORDER_LOG"\nexit 0\n' >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  printf '#!/usr/bin/env bash\necho "rclone $1" >>"$ORDER_LOG"\nexit 0\n' >"$BATS_TEST_TMPDIR/bin/rclone"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=days; echo JOB_RETENTION_DAYS=30\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  # version_banner (run earlier in main()) also calls `rclone version`, which the rclone stub
+  # above logs to ORDER_LOG too -- so assert ORDER, not that the lifecycle check is literally
+  # the first line (controller ruling, task-5-brief.md's defect).
+  local lc_line copy_line
+  lc_line=$(grep -n "^lifecycle check --bucket my-bucket" "$ORDER_LOG" | head -1 | cut -d: -f1)
+  copy_line=$(grep -n "^rclone copy" "$ORDER_LOG" | head -1 | cut -d: -f1)
+  # each on its own line (not `A && B && C`): under bats' `set -e`, only the LAST command
+  # of a `&&`/`||` chain is allowed to fail the test -- a failure of an earlier command in
+  # such a chain is silently swallowed (classic bash gotcha), which would let this assertion
+  # pass even when the lifecycle check never ran.
+  [ -n "$lc_line" ]
+  [ -n "$copy_line" ]
+  [ "$lc_line" -lt "$copy_line" ]
+}
+
+@test "a failing S3 rules check never stops the backup" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
+}
+
+@test "a hung S3 rules check is cut off by the timeout and the backup still runs" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh"
+  printf '#!/usr/bin/env bash\nexec sleep 30\n' >"$stub"
+  export LIFECYCLE_CMD="bash $stub" LIFECYCLE_TIMEOUT=1
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  local start=$SECONDS
+  run_job movies
+  [ "$status" -eq 0 ]
+  [ $((SECONDS - start)) -lt 15 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
+  [[ "$output" == *"S3 rules check could not run"* ]]
+}
+
+@test "the S3 rules check runs under a timeout" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh" log="$BATS_TEST_TMPDIR/lc.log"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$log" >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  local b="$BATS_TEST_TMPDIR/bin" tlog="$BATS_TEST_TMPDIR/timeout.log"
+  # a `timeout` shim that records its duration argument then runs the command
+  printf '#!/usr/bin/env bash\necho "timeout $1" >>"%s"\nshift\nexec "$@"\n' "$tlog" >"$b/timeout"; chmod +x "$b/timeout"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -qx "timeout 240" "$tlog"
+  grep -q "^check --bucket my-bucket" "$log"
+}
+
+@test "the S3 rules check is told who started the run" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh" log="$BATS_TEST_TMPDIR/lc.log"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$log" >"$stub"
+  export LIFECYCLE_CMD="bash $stub" BE_TRIGGER=manual
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -qx "check --bucket my-bucket --trigger manual" "$log"
+}
+
+@test "a scheduled run's S3 rules check says scheduled" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh" log="$BATS_TEST_TMPDIR/lc.log"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$log" >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  unset BE_TRIGGER
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -qx "check --bucket my-bucket --trigger scheduled" "$log"
+}
+
+@test "the S3 rules check sees the run's own id (its start record never makes the folder known)" {
+  local stub="$BATS_TEST_TMPDIR/lifecycle.sh" log="$BATS_TEST_TMPDIR/lc.log"
+  printf '#!/usr/bin/env bash\necho "run=${BE_RUN_ID:-unset}" >>"%s"\n' "$log" >"$stub"
+  export LIFECYCLE_CMD="bash $stub"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  local id
+  id="$(grep '"event":"start"' "$CACHE_DIR/state/movies.runs.jsonl" | head -1 | sed 's/.*"id":"\([^"]*\)".*/\1/')"
+  [ -n "$id" ]
+  grep -qx "run=$id" "$log"
+}
+
+@test "a finished run starts a detached storage summary of its folder, with no run id of its own" {
+  local stub="$BATS_TEST_TMPDIR/summary.sh" out="$BATS_TEST_TMPDIR/summary.log"
+  printf '#!/usr/bin/env bash\necho "$* trigger=${BE_TRIGGER:-unset} run=${BE_RUN_ID:-unset}" >>"%s"\n' "$out" >"$stub"
+  export SUMMARY_CMD="bash $stub"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  for _ in $(seq 1 50); do [ -s "$out" ] && break; sleep 0.1; done
+  grep -qx "storage-summary --job movies trigger=scheduled run=unset" "$out"
+}
+
+@test "a Run now run's detached storage summary records the run's own trigger" {
+  local stub="$BATS_TEST_TMPDIR/summary.sh" out="$BATS_TEST_TMPDIR/summary.log"
+  printf '#!/usr/bin/env bash\necho "$* trigger=${BE_TRIGGER:-unset}" >>"%s"\n' "$out" >"$stub"
+  export SUMMARY_CMD="bash $stub" BE_TRIGGER=manual
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  for _ in $(seq 1 50); do [ -s "$out" ] && break; sleep 0.1; done
+  grep -qx "storage-summary --job movies trigger=manual" "$out"
+}
+
+@test "a storage summary that can't start never fails the run" {
+  export SUMMARY_CMD="$BATS_TEST_TMPDIR/no-such-command"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  grep -q "copy $SOURCE_ROOT/media/movies s3:my-bucket/media/movies" "$RCLONE_LOG"
+}
+
+@test "a detached storage summary does not hold the job's run lock (inherited fd 9 closed)" {
+  local stub="$BATS_TEST_TMPDIR/summary-slow.sh"
+  printf '#!/usr/bin/env bash\nsleep 6\n' >"$stub"
+  export SUMMARY_CMD="bash $stub"
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  # the run's own lock must be free the instant the script exits, regardless of
+  # how long the detached summary scan itself keeps running
+  flock -n "$CACHE_DIR/locks/movies.lock" true
+  # and a second run right away must not be refused as "in progress"
+  run_job movies
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"another movies run is in progress"* ]]
 }

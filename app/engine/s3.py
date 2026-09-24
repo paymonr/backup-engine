@@ -124,11 +124,3 @@ def list_versions(bucket, prefix, *, endpoint: str | None = None, runner=subproc
         out.append({"key": v["Key"], "version_id": v["VersionId"],
                     "is_latest": bool(v.get("IsLatest")), "last_modified": ts})
     return out
-
-
-def delete_version(bucket, key, version_id, *, endpoint: str | None = None, runner=subprocess.run) -> None:
-    """Delete a specific version of an object by version_id. `endpoint`
-    (S3_ENDPOINT) targets an S3-compatible backend (MinIO/B2/R2) instead of
-    real AWS."""
-    _run(runner, ["aws", "s3api", "delete-object", *_endpoint_args(endpoint),
-                  "--bucket", bucket, "--key", key, "--version-id", version_id])

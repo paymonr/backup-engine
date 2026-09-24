@@ -31,15 +31,22 @@ prepare() {
 }
 
 emit_crontab() {
-  local ct="$CACHE_DIR/crontab"; : >"$ct"
+  local ct="$CACHE_DIR/crontab" list; : >"$ct"
   # No `2>/dev/null`: jobs_io.load() now exits 0 on a corrupt/mis-shaped jobs.json
-  # (emitting nothing, so pipefail no longer aborts PID 1) and writes ONE diagnostic
+  # (emitting nothing, so a failure no longer aborts PID 1) and writes ONE diagnostic
   # to stderr — let it reach the container log instead of swallowing why no jobs ran.
-  CONFIG_DIR="${CONFIG_DIR:-/config}" python3 -m app.gui.jobs_io --list | \
+  list="$(CONFIG_DIR="${CONFIG_DIR:-/config}" python3 -m app.gui.jobs_io --list)"
   while IFS=$'\t' read -r enabled schedule name; do
     [ "$enabled" = "1" ] || continue
     printf '%s %s %s\n' "$schedule" "$HERE/backup-job.sh" "$name" >>"$ct"
-  done
+  done <<<"$list"
+  # Hourly S3 rules check (spec 2026-09-23, R-B9): rules changed outside backup-engine are
+  # caught between backup runs too. Same line + same condition as jobs_io.render_crontab
+  # (S3_RULES_CHECK_LINE: at least one valid job, enabled OR paused -- a paused job's data
+  # still sits in S3, final fix wave M2) -- crontab_stale compares the two renders byte for byte.
+  if [ -n "$list" ]; then
+    printf '%s\n' '17 * * * * timeout 900 python3 -m app.engine.lifecycle check-all' >>"$ct"
+  fi
   log_info "wrote crontab:"; cat "$ct"
 }
 

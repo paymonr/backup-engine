@@ -16,7 +16,9 @@ def test_ensure_bucket_runs_full_config_sequence():
     assert any("put-public-access-block" in j for j in joined)
     assert any("put-bucket-encryption" in j for j in joined)
     assert any("put-bucket-versioning" in j for j in joined)
-    assert any("put-bucket-lifecycle-configuration" in j for j in joined)
+    # S3 rules own every lifecycle rule now (spec 2026-09-23 §7): ensure_bucket creates
+    # and hardens the bucket; the lifecycle engine applies its rules afterwards.
+    assert not any("put-bucket-lifecycle-configuration" in j for j in joined)
     assert any("put-bucket-tagging" in j for j in joined)
 
 def test_ensure_bucket_idempotent_on_already_owned():

@@ -552,7 +552,7 @@ def test_render_crontab_dry_run_returns_lines_without_writing(tmp_path):
     jobs_io.upsert(cfg, _job(name="movies", schedule="0 4 * * 0", enabled=True), source_root=root)
     cache = str(tmp_path / "cache")
     text = jobs_io.render_crontab(cfg, cache, "/app/scripts", dry_run=True, source_root=root)
-    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n"
+    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n" + jobs_io.S3_RULES_CHECK_LINE + "\n"
     assert not Path(cache, "crontab").exists()   # dry run never writes
 
 def test_render_crontab_writes_and_skips_disabled_and_invalid(tmp_path):
@@ -568,9 +568,41 @@ def test_render_crontab_writes_and_skips_disabled_and_invalid(tmp_path):
     ])
     cache = str(tmp_path / "cache")
     text = jobs_io.render_crontab(cfg, cache, "/app/scripts", source_root=root)
-    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n"
+    assert text == "0 4 * * 0 /app/scripts/backup-job.sh movies\n" + jobs_io.S3_RULES_CHECK_LINE + "\n"
     assert Path(cache, "crontab").read_text() == text     # written for real
     assert "evil" not in text and "paused" not in text
+
+# --- S3 rules (spec 2026-09-23, R-B9): the hourly tamper check -------------------------------
+
+def test_render_crontab_adds_the_hourly_s3_rules_check_after_the_jobs(tmp_path):
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="movies", schedule="0 4 * * 0", enabled=True), source_root=root)
+    text = jobs_io.render_crontab(cfg, str(tmp_path / "cache"), "/app/scripts", dry_run=True, source_root=root)
+    assert text.splitlines()[-1] == jobs_io.S3_RULES_CHECK_LINE
+    # final fix wave M1: under `timeout` -- a hung check-all is cut off (its SIGTERM handler
+    # records "timed out" for the bucket it was on) well before the next hour's run
+    assert jobs_io.S3_RULES_CHECK_LINE == "17 * * * * timeout 900 python3 -m app.engine.lifecycle check-all"
+
+
+def test_render_crontab_without_jobs_stays_empty(tmp_path):
+    # Nothing scheduled -> nothing to check; an empty crontab also keeps crontab_stale false
+    # on a fresh install where no crontab file exists yet.
+    assert jobs_io.render_crontab(_cfg(tmp_path), str(tmp_path / "cache"), "/app/scripts",
+                                  dry_run=True, source_root=_root(tmp_path)) == ""
+
+
+def test_render_crontab_keeps_the_hourly_check_while_every_job_is_paused(tmp_path):
+    # final fix wave M2: pausing every job doesn't take their data out of S3 -- the rules
+    # there still need checking, so the line stays whenever at least one job exists.
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="paused", schedule="0 3 * * *", enabled=False), source_root=root)
+    text = jobs_io.render_crontab(cfg, str(tmp_path / "cache"), "/app/scripts", dry_run=True, source_root=root)
+    assert text == jobs_io.S3_RULES_CHECK_LINE + "\n"
+
+
+def test_entrypoint_renders_the_same_check_line():
+    text = (Path(__file__).resolve().parents[2] / "scripts" / "entrypoint.sh").read_text()
+    assert f"'{jobs_io.S3_RULES_CHECK_LINE}'" in text
 
 def test_delete_removes_cache_files(tmp_path):
     cfg, root = _cfg(tmp_path), _root(tmp_path)
@@ -640,3 +672,37 @@ def test_job_env_emits_JOB_BUCKET_only_when_dedicated(capsys):
     assert "JOB_BUCKET='be-1-photos'" in text
     base = dict(job); base.update(dedicated=False, bucket="")
     assert "JOB_BUCKET" not in jobs_io.job_env_text(base)
+
+# --- S3 rules (spec 2026-09-23 §1): Plain copy "newest N + days" ------------
+
+def test_count_retention_may_carry_days():
+    from app.gui.jobs_io import _normalize_retention
+    r = _normalize_retention({"retention": {"type": "count", "count": "10", "days": "30"}}, "archive")
+    assert r == {"type": "count", "count": 10, "days": 30}
+
+
+def test_count_retention_without_days_is_unchanged():
+    from app.gui.jobs_io import _normalize_retention
+    assert _normalize_retention({"retention": {"type": "count", "count": 5}}, "archive") == {"type": "count", "count": 5}
+    assert _normalize_retention({"retention": {"type": "count", "count": 5, "days": ""}}, "archive") == {"type": "count", "count": 5}
+
+
+@pytest.mark.parametrize("bad", ["0", "-3", "x"])
+def test_count_retention_days_must_be_positive(bad):
+    from app.gui.jobs_io import _normalize_retention
+    with pytest.raises(ValueError):
+        _normalize_retention({"retention": {"type": "count", "count": 5, "days": bad}}, "archive")
+
+
+def test_count_with_days_rejected_for_non_archive(tmp_path):
+    # fix round 1 (Task 17): the combined "newest N + days" shape is Plain copy's own
+    # S3-rule concept -- reject it for other engines, like tiered is rejected for
+    # non-versioned (test_tiered_only_for_versioned above).
+    t = {"type": "count", "count": 10, "days": 30}
+    with pytest.raises(ValueError):
+        _val(_base(type="versioned", source="appdata", retention=t), tmp_path)
+    with pytest.raises(ValueError):
+        _val(_base(type="versioned-files", retention=t), tmp_path)
+    # A plain count (no days) is unaffected -- that's pre-existing, unrelated behavior.
+    assert _val(_base(type="versioned", source="appdata",
+                      retention={"type": "count", "count": 5}), tmp_path) == {"type": "count", "count": 5}

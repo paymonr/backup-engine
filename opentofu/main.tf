@@ -8,6 +8,12 @@ resource "aws_s3_bucket_versioning" "backup" {
   versioning_configuration {
     status = var.base_bucket_versioned ? "Enabled" : "Suspended"
   }
+  # backup-engine owns versioning after this first apply (one owner per setting, like
+  # lifecycle rules below) -- a later `tofu apply` (e.g. to rotate the runtime key) must
+  # never flip an app-side suspend/resume back to this variable's value.
+  lifecycle {
+    ignore_changes = [versioning_configuration]
+  }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "backup" {
@@ -28,20 +34,6 @@ resource "aws_s3_bucket_public_access_block" "backup" {
 resource "aws_s3_bucket_ownership_controls" "backup" {
   bucket = aws_s3_bucket.backup.id
   rule { object_ownership = "BucketOwnerEnforced" }
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "backup" {
-  bucket = aws_s3_bucket.backup.id
-  dynamic "rule" {
-    for_each = toset(["appdata/", "media/"])
-    content {
-      id     = "backstop-${replace(rule.value, "/", "")}"
-      status = "Enabled"
-      filter { prefix = rule.value }
-      noncurrent_version_expiration { noncurrent_days = var.noncurrent_version_expiration_days }
-      abort_incomplete_multipart_upload { days_after_initiation = var.abort_incomplete_multipart_days }
-    }
-  }
 }
 
 # --- Least-privilege runtime IAM (object-only on the two prefixes) ---
@@ -85,4 +77,12 @@ resource "aws_iam_role_policy" "bucket_admin" {
   policy = templatefile("${path.module}/../provisioning/bucket-admin-policy.json.tmpl", {
     bucket = var.bucket_name
   })
+}
+
+# Lifecycle rules belong to backup-engine now (S3 rules). State from an older version of this
+# module still tracks the old backstop configuration: FORGET it, never destroy it -- a destroy
+# would delete the bucket's whole lifecycle configuration, the app's own rules and any rule
+# added in the AWS console with them.
+removed {
+  from = aws_s3_bucket_lifecycle_configuration.backup
 }

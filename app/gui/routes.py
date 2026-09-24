@@ -12,10 +12,11 @@ from pathlib import Path
 from flask import (Blueprint, redirect, url_for, render_template, request, flash,
                    current_app, abort, Response, jsonify)
 from . import (config_io, runner, security, provision, fsbrowse, estimate_io, jobs_io,
-               dirsize, attributions, status, vocab, points, readiness, ops, permissions)
+               dirsize, attributions, status, vocab, points, readiness, ops, permissions,
+               s3_rules)
 from ..estimator.prices import load_prices
 from ..estimator import usage
-from ..engine import cron, runs, errors, progress, buckets, sysop
+from ..engine import cron, runs, errors, progress, buckets, sysop, lifecycle
 
 bp = Blueprint("gui", __name__)
 
@@ -58,6 +59,9 @@ def _board_payload(cfg) -> dict:
     row = permissions.needs_you_row(cfg["CONFIG_DIR"])
     if row:
         board["needs_you"].append(row)
+    s3row = s3_rules.needs_you_row(cfg)
+    if s3row:
+        board["needs_you"].append(s3row)
     return board
 
 
@@ -108,7 +112,11 @@ def _keep_rule_label(job) -> str:
         if t == "days":
             return f"Kept for {int(r.get('days', 0))} days"
         if t == "count":
-            return f"Keep the last {int(r.get('count', 0))}"
+            n = int(r.get('count', 0))
+            if r.get("days"):
+                # The combined "newest N + days" shape (spec 2026-09-23 §1, fix round 1 Minor).
+                return f"Keep the newest {n}, older ones {int(r['days'])} days"
+            return f"Keep the last {n}"
         if t == "tiered":
             return _tiered_label(r.get("keep") or {})
     if job.get("type") == "versioned" and isinstance(job.get("keep"), dict):
@@ -250,7 +258,10 @@ def job_page(name):
         restore=_restore_band_ctx(cfg, job_def, rec),
         sibling_cold=_sibling_cold(cfg, job_def),
         dowdate=lambda iso: _dow_date(iso, tz),
-        schedule_desc=schedule_desc, csrf=security.issue_csrf())
+        schedule_desc=schedule_desc, csrf=security.issue_csrf(),
+        s3h=s3_rules.job_history(cfg, job_def),
+        tier_note=estimate_io.tier_in_use(cfg["CONFIG_DIR"], job=job_def),
+        combined_note=estimate_io.combined_in_use(cfg["CONFIG_DIR"], job=job_def))
 
 
 @bp.get("/jobs/<name>/progress.json")
@@ -1000,13 +1011,15 @@ _WHAT_LABELS = {
     "test-restore": "test restore", "usage-refresh": "usage refresh",
     "billing-check": "billing check", "probe": "destination probe",
     "provision": "destination setup", "permissions": "permissions update",
+    "s3-rules": "S3 rules update", "storage-summary": "storage summary",
 }
 _OUTCOME_LABELS = {"ok": "OK", "failed": "Failed", "running": "Running", "aborted": "Stopped"}
 # The record kinds each Activity `kind` filter selects (spec 8.4).
 _KIND_GROUPS = {
     "runs": set(runs.BACKUP_KINDS),
     "restores": set(runs.OP_KINDS),
-    "setup": {"usage-refresh", "billing-check", "probe", "provision", "permissions"},
+    "setup": {"usage-refresh", "billing-check", "probe", "provision", "permissions", "s3-rules",
+              "storage-summary"},
 }
 # The outcomes each Activity `outcome` filter selects (spec 5.5).
 _OUTCOME_GROUPS = {"ok": {"ok"}, "failed": {"failed", "aborted"}, "running": {"running"}}
@@ -1455,6 +1468,7 @@ _SETUP_CHECK_NAMES = {
     "jobs_scheduled": "At least one job scheduled",
     "restore_tested": "Restore ever tested",
     "permissions": "AWS permissions up to date",
+    "s3_rules": "S3 rules match your jobs",
     "scheduler": "Scheduler up to date",
 }
 
@@ -1883,6 +1897,10 @@ def provision_automated_run():
           "warning")
     if perm_warning:
         flash(perm_warning, "warning")
+    # Initial S3 rules (spec 2026-09-23 §7): right after the permissions step, so the
+    # new bucket gets its rules at once. Soft-fail like the permissions step.
+    for category, msg in s3_rules.apply_for(cfg, [result["bucket"]]):
+        flash(msg, category)
     return redirect(url_for("gui.setup_page"))
 
 @bp.get("/jobs")
@@ -1902,6 +1920,11 @@ def jobs_page():
 
 _RETENTION_DEFAULT_BY_TYPE = {"versioned": "tiered", "versioned-files": "days",
                               "archive": "days"}
+
+# S3 keeps at most 100 old versions per file (lifecycle NewerNoncurrentVersions): a
+# Plain copy "keep the last N" above that is refused on save, never silently capped.
+PLAIN_COUNT_CAP = (f"S3 can keep at most {lifecycle.MAX_NEWER} old versions per file — pick "
+                   f"{lifecycle.MAX_NEWER} or fewer, or keep a number of days")
 
 DEDICATED_NEEDS_UPDATE = ("Dedicated buckets need a one-time AWS permissions update first — "
                           "open Setup → AWS permissions.")
@@ -1932,7 +1955,8 @@ _CLASS_WAS = {c: f"{estimate_io._CLASS_PLAIN[c]} · {c}" for c in jobs_io.STORAG
 _CHANGE_WAS = {0: "Nothing — files only get added (0%)", 1: "A little — rare replacements (~1%)",
                10: "Some — regular edits (~10%)", 30: "A lot — churny (~30%)"}
 _RETENTION_WAS = {"keep_all": "Keep everything", "tiered": "Thin them out over time",
-                  "days": "Keep for N days", "count": "Keep the last N versions"}
+                  "days": "Keep for N days", "count": "Keep the last N versions",
+                  "count_days": "Keep the newest N, older ones for N days"}
 
 
 def _edit_diff(saved, fv, saved_typical, current_typical):
@@ -2004,6 +2028,7 @@ def _fresh_form_values():
     return {"type": "versioned", "source": "", "storage_class": "STANDARD",
             "schedule": "0 5 * * *", "enabled": "1", "name": "",
             "retention_type": "tiered", "retention_days": "180", "retention_count": "30",
+            "retention_nd_count": "10", "retention_nd_days": "30",
             "keep_last": "3", "keep_daily": "7", "keep_weekly": "4", "keep_monthly": "6",
             "change_rate_pct": "1", "change_rate_touched": "", "packing": "",
             "pack_member_gb": "0.05", "mirror": "0", "size_gb": "", "file_count": "",
@@ -2020,6 +2045,8 @@ def _saved_form_values(job):
     fv = _fresh_form_values()
     ret = job.get("retention") or {}
     rtype = ret.get("type") or _RETENTION_DEFAULT_BY_TYPE.get(job.get("type"), "days")
+    if rtype == "count" and ret.get("days"):
+        rtype = "count_days"                  # Plain copy's newest N + days (spec 2026-09-23 §1)
     keep = _keep_defaults(job)
     a = job.get("assumptions") or {}
     m = job.get("measured") or {}
@@ -2031,6 +2058,8 @@ def _saved_form_values(job):
         "retention_type": rtype,
         "retention_days": str(ret.get("days", 180)) if rtype == "days" else "180",
         "retention_count": str(ret.get("count", 30)) if rtype == "count" else "30",
+        "retention_nd_count": str(ret.get("count", 10)) if rtype == "count_days" else "10",
+        "retention_nd_days": str(ret.get("days", 30)) if rtype == "count_days" else "30",
         "keep_last": str(keep["last"]), "keep_daily": str(keep["daily"]),
         "keep_weekly": str(keep["weekly"]), "keep_monthly": str(keep["monthly"]),
         "change_rate_pct": _g(a.get("change_rate_pct"), "0"), "change_rate_touched": "1",
@@ -2076,7 +2105,7 @@ def _form_values_from_request(f):
 
 
 def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
-                     status_code=200, acknowledged=None):
+                     status_code=200, acknowledged=None, s3_preview=None):
     """Server-render the wizard (create or edit), computing the initial figures from
     the frozen model so the page is honest with JS off (spec 5.8 §8). Reused by
     GET /jobs/new, /jobs/<name>/edit, the POST re-render paths and the recalc path."""
@@ -2130,7 +2159,8 @@ def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
         price_stamp=price_stamp, errors=errors or {}, jobsfile_error=jobsfile_error,
         blockers=blockers, unacked=unacked, acknowledged=sorted(ack),
         diff=diff, saved_typical=saved_typical, saved_cmp=saved_cmp, bucket=bucket,
-        dedicated_ok=_dedicated_ok(cfg),
+        dedicated_ok=_dedicated_ok(cfg), s3_preview=s3_preview, refresh_ok=s3_rules.refresh_ok(cfg),
+        s3_copy=s3_rules.wizard_copy(cfg, job),
         csrf=security.issue_csrf()), status_code
 
 
@@ -2277,6 +2307,17 @@ def job_save():
         return _render_job_form(cfg, job=existing, fv=fv, acknowledged=acked,
                                 status_code=200)
 
+    # Write path only (never on load), and BEFORE the dedicated-bucket create below, so
+    # a refused save touches no AWS. A non-number is left to jobs_io's validation.
+    if engine == "archive" and f.get("retention_type") in ("count", "count_days"):
+        field = "retention_count" if f.get("retention_type") == "count" else "retention_nd_count"
+        try:
+            over = int(f.get(field, "")) > lifecycle.MAX_NEWER
+        except (TypeError, ValueError):
+            over = False
+        if over:
+            return _render_job_form(cfg, job=existing, fv=fv, errors={"form": PLAIN_COUNT_CAP})
+
     job = {"name": posted_name, "type": engine, "source": f.get("source", "").strip(),
            "schedule": f.get("schedule", "").strip(),
            "enabled": bool(f.get("enabled")), "storage_class": cls}
@@ -2331,6 +2372,14 @@ def job_save():
         if not _dedicated_name_ok(base, bucket):
             return _render_job_form(cfg, job=existing, fv=fv,
                                     errors={"form": DEDICATED_NAME_RULE.format(base=base)})
+        # S3 rules give a dedicated bucket ONE whole-bucket rule from its single job
+        # (controller ruling, Task 7): a second job on the same bucket would fight over
+        # the same rule ID. Refuse it here, before any AWS call.
+        taken = next((j["name"] for j in jobs_io.load(cfg["CONFIG_DIR"])
+                      if j.get("dedicated") and j.get("bucket") == bucket), None)
+        if taken:
+            return _render_job_form(cfg, job=existing, fv=fv,
+                                    errors={"form": f"The bucket {bucket} already belongs to the job {taken} — give this job its own name."})
         role = config_io.bucket_admin_role_arn(cfg["CONFIG_DIR"])
         region = env.get("AWS_REGION", "us-east-1")
         akey, asec = _runtime_creds(cfg)          # secrets.env, via the sysop reader
@@ -2340,6 +2389,10 @@ def job_save():
                                   versioned=bool(f.get("bucket_versioned")), creds=creds)
         except (provision.AssumeRoleError, buckets.BucketError) as e:
             return _render_job_form(cfg, job=existing, fv=fv, errors={"form": str(e)})
+        # I2 (fix round 1): NOT lifecycle.seed_new_bucket(...) here -- ensure_bucket treats
+        # BucketAlreadyOwnedByYou as success too, so seeding here on an ALREADY-owned bucket
+        # would wrongly mark every folder "new" (hiding a real keeps-less change or a tamper
+        # alarm). R-B2' already makes a genuinely new bucket's never-run job folder new.
         job["dedicated"] = True
         job["bucket"] = bucket
         job["bucket_versioned"] = bool(f.get("bucket_versioned"))
@@ -2354,6 +2407,12 @@ def job_save():
             job["retention_days"] = f.get("retention_days", "90")
         if engine == "archive":
             job["mirror"] = bool(f.get("mirror"))
+        # R-B5: shortening a Plain copy job's history deletes old versions S3 keeps today --
+        # show the preview instead of saving; its confirm POST saves the job and applies.
+        # run_now (fix round 1, Minor) rides along so a confirmed save still runs the job.
+        s3_preview = s3_rules.history_gate(cfg, job, run_now=bool(f.get("run_now")))
+        if s3_preview is not None:
+            return _render_job_form(cfg, job=existing, fv=fv, s3_preview=s3_preview)
         jobs_io.upsert(cfg["CONFIG_DIR"], job, source_root=cfg["SOURCE_ROOT"])
     except jobs_io.JobsFileError as e:
         # Corrupt jobs.json (5.8 §8): a 200 RE-RENDER with the sig-failure and every
@@ -2369,6 +2428,8 @@ def job_save():
     # read true right after creating/editing (Task-4 carry-forward).
     jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
                            source_root=cfg["SOURCE_ROOT"])
+    for category, msg in s3_rules.apply_for(cfg, s3_rules.job_buckets(cfg, job)):
+        flash(msg, category)
     flash(f"Saved {job['name']}.", "success")
     if f.get("run_now"):
         runner.trigger_job(cfg["SCRIPTS_DIR"], job["name"])
@@ -2390,6 +2451,7 @@ def job_delete(name):
     if not security.verify_csrf(request.form.get("csrf", "")):
         abort(400, description="csrf")
     cfg = current_app.config
+    gone = jobs_io.get(cfg["CONFIG_DIR"], name) or {"name": name}
     try:
         # Pass cache_dir so the job's caches go with it (Task-4 carry-forward):
         # state/<job>.json, runs.jsonl and points.json are all removed (7.1.9).
@@ -2399,6 +2461,8 @@ def job_delete(name):
         # file untouched (delete builds on _load_strict, which raised).
         flash(str(e))
         return redirect(url_for("gui.jobs_page"))
+    for category, msg in s3_rules.apply_for(cfg, s3_rules.job_buckets(cfg, gone)):
+        flash(msg, category)
     flash(f"Deleted {name}.")
     return redirect(url_for("gui.jobs_page"))
 
@@ -2434,6 +2498,8 @@ def cost_page_view():
             scrub_month = 1
     return render_template("cost.html", cost=cost, error=error, scrub_month=scrub_month,
                            retrieval_tiers=estimate_io.RETRIEVAL_TIERS,
+                           tier_note=estimate_io.tier_in_use(cfg["CONFIG_DIR"]),
+                           combined_note=estimate_io.combined_in_use(cfg["CONFIG_DIR"]),
                            csrf=security.issue_csrf())
 
 

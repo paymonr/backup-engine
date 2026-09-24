@@ -6,7 +6,7 @@
 import json
 import pathlib
 import pytest
-from app.gui import config_io, create_app, jobs_io, permissions
+from app.gui import config_io, create_app, jobs_io, permissions, s3_rules
 import app.engine.buckets as buckets
 import app.gui.provision as provision
 
@@ -36,6 +36,20 @@ def app(tmp_path, source_root, template_path):
 @pytest.fixture
 def client(app):
     return app.test_client()
+
+
+@pytest.fixture(autouse=True)
+def s3_rules_calls(monkeypatch):
+    """This file's `app` fixture stamps PERMISSIONS_VERSION to the current level
+    with a bucket-admin role ARN (needed for the dedicated-bucket tests below), so
+    lifecycle.managed() is True for every test here. Without this stub, job_save's
+    s3_rules.apply_for call (Task 7) would shell out to the real `aws sts
+    assume-role` on every save -- swallowed by apply_for's blanket except, so
+    tests would still pass, but silently touching AWS. Autouse, mirroring
+    tests/gui/test_provision_routes.py's converge_calls."""
+    calls = []
+    monkeypatch.setattr(s3_rules, "apply_for", lambda cfg, buckets: calls.append(buckets) or [])
+    return calls
 
 
 def _csrf(client):
@@ -174,6 +188,31 @@ def test_dedicated_save_creates_bucket_then_redirects(client, app, monkeypatch):
     assert _jobs(app)[0]["dedicated"] is True
     assert _jobs(app)[0]["bucket"] == "bw-backups-photos"
     assert _jobs(app)[0]["bucket_versioned"] is True
+
+
+def test_dedicated_save_refuses_a_bucket_already_used_by_another_job(client, app, monkeypatch):
+    # Controller ruling (Task 7 review): S3 rules give a dedicated bucket ONE
+    # whole-bucket rule from its single job -- a second job on the same bucket would
+    # fight over the same rule ID (S3 rejects the put) and conflicting settings.
+    # Refuse it server-side, before any AWS call, the same way the name-rule checks do.
+    _seed(app, {"name": "photos", "type": "archive", "source": "media/movies",
+                "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+                "dedicated": True, "bucket": "bw-backups-photos", "bucket_versioned": True,
+                "retention": {"type": "keep_all"}})
+
+    def fail(*a, **k):
+        raise AssertionError("must not touch AWS once the bucket is already taken")
+    monkeypatch.setattr(provision, "assume_role", fail)
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "movies2", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "already belongs to the job photos" in body
+    jobs = _jobs(app)
+    assert len(jobs) == 1 and jobs[0]["name"] == "photos"      # nothing new saved
 
 
 def test_dedicated_save_surfaces_bucket_error(client, app, monkeypatch):
@@ -379,7 +418,11 @@ def test_edit_dedicated_job_shows_locked_bucket(client, app):
 
 def test_edit_dedicated_job_preserves_bucket_without_touching_aws(client, app, monkeypatch):
     # The Critical: editing a dedicated job (here its schedule) must PRESERVE its
-    # dedicated bucket and NEVER call assume_role/ensure_bucket on the edit path.
+    # dedicated bucket and NEVER call assume_role/ensure_bucket to (re-)CREATE it on
+    # the edit path. (Task 7's own S3-rules-sync-on-save AWS call is stubbed file-
+    # wide by the autouse s3_rules_calls fixture above and covered separately by
+    # tests/gui/test_s3_rules_triggers.py, so this test stays scoped to the
+    # JIT-create avoidance it's named for.)
     called = []
     monkeypatch.setattr(provision, "assume_role", lambda *a, **k: called.append("assume_role"))
     monkeypatch.setattr(buckets, "ensure_bucket", lambda *a, **k: called.append("ensure_bucket"))
@@ -576,3 +619,98 @@ def test_dedicated_post_without_permissions_is_refused_without_aws(unstamped_cli
         "enabled": "1", "retention_type": "days", "retention_days": "180",
         "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
     assert "one-time AWS permissions update" in r.get_data(as_text=True)
+
+
+# --- #6: S3 keeps at most 100 old versions per file (Plain copy "keep the last N") ----------
+
+COUNT_CAP_MSG = ("S3 can keep at most 100 old versions per file — pick 100 or fewer, "
+                 "or keep a number of days")
+
+
+def _plain_count(client, n, **extra):
+    data = {"csrf": _csrf(client), "name": "movies", "type": "archive", "source": "media/movies",
+            "schedule": "0 4 * * 0", "storage_class": "STANDARD", "enabled": "1",
+            "retention_type": "count", "retention_count": str(n)}
+    data.update(extra)
+    return client.post("/jobs", data=data)
+
+
+def test_plain_copy_count_over_100_is_refused(client, app):
+    import html
+    r = _plain_count(client, 500)
+    assert r.status_code == 200
+    assert COUNT_CAP_MSG in html.unescape(r.get_data(as_text=True))
+    assert _jobs(app) == []
+
+
+def test_plain_copy_count_over_100_is_refused_before_a_dedicated_bucket_is_made(client, app, monkeypatch):
+    def fail(*a, **k):
+        raise AssertionError("must not touch AWS for a refused save")
+    monkeypatch.setattr(provision, "assume_role", fail)
+    monkeypatch.setattr(buckets, "ensure_bucket", fail)
+    r = _plain_count(client, 101, dedicated="1", bucket="bw-backups-movies", bucket_versioned="1")
+    assert r.status_code == 200 and _jobs(app) == []
+
+
+def test_plain_copy_count_of_100_saves(client, app):
+    assert _plain_count(client, 100).status_code in (302, 303)
+    assert _jobs(app)[0]["retention"] == {"type": "count", "count": 100}
+
+
+def test_snapshot_count_over_100_is_not_capped(client, app):
+    t = _csrf(client)
+    r = client.post("/jobs", data={"csrf": t, "name": "appdata", "type": "versioned", "source": "appdata",
+                                   "schedule": "0 5 * * *", "storage_class": "STANDARD", "enabled": "1",
+                                   "retention_type": "count", "retention_count": "150"})
+    assert r.status_code in (302, 303)
+    assert _jobs(app)[0]["retention"]["count"] == 150
+
+
+def test_an_existing_plain_copy_count_over_100_still_loads(client, app):
+    # Refused on the write path only -- never on load (S3 simply keeps 100).
+    _seed(app, {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 500}})
+    assert client.get("/jobs/movies/edit").status_code == 200
+    assert jobs_io.get(app.config["CONFIG_DIR"], "movies")["retention"]["count"] == 500
+
+
+def test_the_plain_copy_edit_form_caps_the_count_input(client, app):
+    import re
+    _seed(app, {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 10}})
+    count_input = re.compile(r'<input[^>]*name="retention_count"[^>]*>')
+    assert 'max="100"' in count_input.search(client.get("/jobs/movies/edit").get_data(as_text=True)).group(0)
+    # the new-job form can still switch type client-side: no cap there (the server enforces it)
+    assert 'max=' not in count_input.search(client.get("/jobs/new").get_data(as_text=True)).group(0)
+    _seed(app, {"name": "appdata", "type": "versioned", "source": "appdata", "schedule": "0 5 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 150}})
+    assert 'max=' not in count_input.search(client.get("/jobs/appdata/edit").get_data(as_text=True)).group(0)
+
+
+def test_a_legacy_plain_copy_count_over_100_never_blocks_the_edit_form(client, app):
+    # A browser max on an input holding 500 would block EVERY submit (even after picking
+    # "keep for N days") -- the cap is only rendered when the value already fits.
+    import re
+    _seed(app, {"name": "movies", "type": "archive", "source": "media/movies", "schedule": "0 5 * * *",
+                "enabled": True, "storage_class": "STANDARD", "retention": {"type": "count", "count": 500}})
+    tag = re.search(r'<input[^>]*name="retention_count"[^>]*>', client.get("/jobs/movies/edit").get_data(as_text=True))
+    assert 'max=' not in tag.group(0)
+
+
+def test_job_save_does_not_seed_an_already_owned_bucket(client, app, monkeypatch):
+    # I2 (fix round 1): buckets.ensure_bucket treats BucketAlreadyOwnedByYou as success too,
+    # so job_save must never call lifecycle.seed_new_bucket -- doing so on a bucket that
+    # already exists would wrongly mark every folder "new" and could hide a real keeps-less
+    # change or a tamper alarm. R-B2' already handles a genuinely new bucket's never-run job.
+    from app.engine import lifecycle
+    monkeypatch.setattr(provision, "assume_role", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "ASIA"})
+    monkeypatch.setattr(buckets, "ensure_bucket", lambda name, **k: None)   # already-owned -> success
+
+    def fail(*a, **k):
+        raise AssertionError("job_save must not seed a bucket's applied state")
+    monkeypatch.setattr(lifecycle, "seed_new_bucket", fail)
+    r = client.post("/jobs", data={"csrf": _csrf(client), "name": "photos", "type": "archive",
+        "source": "media/movies", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "enabled": "1", "retention_type": "days", "retention_days": "180",
+        "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
+    assert r.status_code in (302, 303)

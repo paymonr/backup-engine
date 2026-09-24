@@ -17,6 +17,13 @@ STORAGE_CLASSES = ("STANDARD", "STANDARD_IA", "GLACIER_IR", "GLACIER", "DEEP_ARC
 _KEEP_KEYS = ("last", "daily", "weekly", "monthly")
 _RETENTION_TYPES = ("keep_all", "days", "count", "tiered")
 
+# The hourly S3 rules tamper check (spec 2026-09-23, R-B9). entrypoint.sh:emit_crontab prints
+# the SAME line under the same condition (at least one valid job, enabled or paused) -- crontab_stale
+# compares the two renders byte for byte. Under `timeout` (final fix wave M1): a hung check-all
+# is cut off long before the next hour's -- its SIGTERM handler records "timed out" for the
+# bucket it was on.
+S3_RULES_CHECK_LINE = "17 * * * * timeout 900 python3 -m app.engine.lifecycle check-all"
+
 def valid_name(s: str) -> bool:
     return bool(JOB_NAME_RE.match(s or "")) and s not in (".", "..")
 
@@ -109,7 +116,23 @@ def _normalize_retention(job: dict, typ: str) -> dict:
             raise ValueError("retention count must be a positive integer")
         if c < 1:
             raise ValueError("retention count must be >= 1")
-        return {"type": "count", "count": c}
+        out = {"type": "count", "count": c}
+        # Plain copy's combined S3 form (spec 2026-09-23 §1): keep the newest N old
+        # versions; older ones go D days after being replaced. Absent/blank = D of 1.
+        # It's Plain copy's own S3-rule shape -- reject it for any other engine (fix
+        # round 1, I-adjacent Minor), the same way tiered is rejected for non-versioned.
+        if r.get("days") not in (None, ""):
+            if typ != "archive":
+                raise ValueError("keeping a number of days for the newest versions is only "
+                                 "valid for Plain copy jobs")
+            try:
+                d = int(r["days"])
+            except (TypeError, ValueError):
+                raise ValueError("retention days must be a positive integer")
+            if d < 1:
+                raise ValueError("retention days must be >= 1")
+            out["days"] = d
+        return out
     return {"type": "keep_all"}
 
 def load(config_dir) -> list[dict]:
@@ -139,6 +162,18 @@ def _load_strict(config_dir) -> list[dict]:
     except ValueError:
         raise JobsFileError("jobs.json is not valid JSON; fix or remove it before "
                             "editing jobs")
+
+def load_strict(config_dir) -> list[dict]:
+    # STRICT READ path for anything that writes somewhere ELSE from the jobs -- the S3 rules
+    # pass (spec 2026-09-23, final fix wave I1). load()'s fail-safe "corrupt -> no jobs" is
+    # right for a page or a crontab, but acting on it would remove every folder's S3 rule; so
+    # here a present-but-unreadable file raises JobsFileError, and so does an entry whose name
+    # backup-engine can't use (load() silently drops it -- its folder's rule would go with it).
+    # A missing file is still simply no jobs.
+    jobs = _load_strict(config_dir)
+    if not all(isinstance(j.get("name"), str) and valid_name(j["name"]) for j in jobs):
+        raise JobsFileError("jobs.json has a job whose name backup-engine can't use")
+    return jobs
 
 def get(config_dir, name) -> dict | None:
     return next((j for j in load(config_dir) if j.get("name") == name), None)
@@ -366,15 +401,20 @@ def render_crontab(config_dir, cache_dir, scripts_dir, *, dry_run=False, source_
     them, so on-disk == this render whenever nothing was hand-edited (crontab_stale).
     dry_run=True returns the text without writing or signalling (7.3, 7.8)."""
     source_root = source_root if source_root is not None else os.environ.get("SOURCE_ROOT", "/backup/media")
-    lines = []
+    lines, any_job = [], False
     for job in load(config_dir):
         try:
             v = validate(job, source_root, require_exists=False)
         except ValueError:
             continue
+        any_job = True
         if not v.get("enabled"):
             continue
         lines.append(f"{v['schedule']} {scripts_dir}/backup-job.sh {v['name']}")
+    # final fix wave M2: whenever at least one (valid) job EXISTS -- a paused job's data still
+    # sits in S3 under the app's rules, so they're still checked hourly.
+    if any_job:
+        lines.append(S3_RULES_CHECK_LINE)
     text = "".join(line + "\n" for line in lines)
     if not dry_run:
         p = _crontab_path(cache_dir)

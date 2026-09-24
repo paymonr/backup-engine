@@ -53,10 +53,6 @@ def _aws(runner, argv, creds, *, ok_substrings=()):
         raise BucketError("other", err.strip())
     return cp
 
-_LIFECYCLE = {"Rules": [{"ID": "backup-engine", "Status": "Enabled", "Filter": {},
-    "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
-    "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}]}
-
 def ensure_bucket(name, *, region, versioned, creds, runner=subprocess.run) -> None:
     if not valid_bucket_name(name):
         raise BucketError("invalid_name", f"{name!r} is not a valid S3 bucket name")
@@ -73,8 +69,6 @@ def ensure_bucket(name, *, region, versioned, creds, runner=subprocess.run) -> N
                   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'], creds)
     _aws(runner, ["s3api", "put-bucket-versioning", "--bucket", name,
                   "--versioning-configuration", f"Status={'Enabled' if versioned else 'Suspended'}"], creds)
-    _aws(runner, ["s3api", "put-bucket-lifecycle-configuration", "--bucket", name,
-                  "--lifecycle-configuration", json.dumps(_LIFECYCLE)], creds)
     _aws(runner, ["s3api", "put-bucket-tagging", "--bucket", name,
                   "--tagging", "TagSet=[{Key=managed-by,Value=backup-engine}]"], creds)
 

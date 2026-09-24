@@ -33,6 +33,11 @@ def test_dedicated_buckets_is_a_level_three_feature():
     assert permissions.feature_level("no-such-feature") is None
 
 
+def test_s3_rules_is_a_level_four_feature():
+    assert permissions.required_level() == 4
+    assert permissions.feature_level("s3-rules") == 4
+
+
 def test_tofu_outputs_the_permissions_level_from_the_manifest():
     outputs = (provision.OPENTOFU_DIR / "outputs.tf").read_text()
     assert 'output "permissions_level"' in outputs
@@ -92,7 +97,8 @@ def test_template_carries_the_stamp_keys(template_path):
 def client(dirs, template_path):
     config_io.write_secrets(dirs["config"], {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "sek"})
     _env(dirs, "S3_BUCKET=acme\nAWS_REGION=us-east-1\n"
-               "PERMISSIONS_VERSION=3\nPERMISSIONS_CHECKED_AT=2026-09-22T10:00:00Z\n")
+               f"PERMISSIONS_VERSION={permissions.required_level()}\n"
+               "PERMISSIONS_CHECKED_AT=2026-09-22T10:00:00Z\n")
     app = create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
                       "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
                       "SECRET_KEY": "test", "TESTING": True})
@@ -112,7 +118,7 @@ def test_saving_keys_keeps_the_stamp(client, dirs):
     r = client.post("/setup/keys", data={"csrf": token, "S3_BUCKET": "acme", "AWS_REGION": "us-east-1"})
     assert r.status_code in (302, 303)
     env = config_io.read_backup_env(dirs["config"])
-    assert env["PERMISSIONS_VERSION"] == "3"
+    assert env["PERMISSIONS_VERSION"] == str(permissions.required_level())
     assert env["PERMISSIONS_CHECKED_AT"] == "2026-09-22T10:00:00Z"
 
 
@@ -162,4 +168,4 @@ def test_keys_save_smuggled_stamp_version_is_ignored(client, dirs):
     r = _post_keys(client, PERMISSIONS_VERSION="99")
     assert r.status_code in (302, 303)
     env = config_io.read_backup_env(dirs["config"])
-    assert env["PERMISSIONS_VERSION"] == "3"
+    assert env["PERMISSIONS_VERSION"] == str(permissions.required_level())

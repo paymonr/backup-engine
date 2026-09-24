@@ -340,6 +340,24 @@ def append_event(cache_dir, job, event: dict) -> None:
         fh.write(json.dumps(event, separators=(",", ":")) + "\n")
 
 
+def record_system(cache_dir, *, kind: str, summary: str, lines=(), outcome: str = "ok",
+                  error: str | None = None, trigger: str = "manual") -> str:
+    """A finished system operation recorded synchronously: a start+end pair under
+    `_system` with a one-file log (summary + one line per detail)."""
+    run_id = new_run_id()
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log_rel = f"logs/runs/{SYSTEM_JOB}/{run_id}.log"
+    log_path = Path(cache_dir, log_rel)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("\n".join([f"{ts} {summary}", *(f"{ts} {line}" for line in lines)]) + "\n")
+    append_event(cache_dir, None, {"v": 1, "id": run_id, "job": None, "kind": kind, "event": "start",
+                                   "trigger": trigger, "started_at": ts, "log": log_rel})
+    append_event(cache_dir, None, {"v": 1, "id": run_id, "job": None, "kind": kind, "event": "end",
+                                   "outcome": outcome, "finished_at": ts, "duration_s": 0,
+                                   "exit_code": 0 if outcome == "ok" else 1, "error": error})
+    return run_id
+
+
 def reconcile(cache_dir, job, *, now=None, force=False) -> int:
     running = [r for r in _read_folded(cache_dir, job).records if r.outcome == "running"]
     if not running:

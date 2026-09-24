@@ -20,16 +20,6 @@ def test_list_versions_parses():
     assert latest["is_latest"] is True and latest["last_modified"] > 0
 
 
-def test_delete_version_calls_s3api():
-    seen = {}
-    def runner(argv, **kw):
-        seen["argv"] = argv
-        return _proc("")
-    s3.delete_version("buck", "media/j/a", "v0", runner=runner)
-    a = seen["argv"]
-    assert "delete-object" in a and "--version-id" in a and "v0" in a and "media/j/a" in a
-
-
 # --- Fix 2: S3_ENDPOINT threaded into the aws-CLI calls (MinIO/B2/R2 support) ---
 
 def test_list_versions_appends_endpoint_url_when_set():
@@ -60,25 +50,6 @@ def test_list_versions_endpoint_with_scheme_passed_through_unchanged():
     s3.list_versions("buck", "media/j/", endpoint="http://127.0.0.1:9000", runner=runner)
     a = seen["argv"]
     assert a[a.index("--endpoint-url") + 1] == "http://127.0.0.1:9000"
-
-
-def test_delete_version_appends_endpoint_url_when_set():
-    seen = {}
-    def runner(argv, **kw):
-        seen["argv"] = argv
-        return _proc("")
-    s3.delete_version("buck", "media/j/a", "v0", endpoint="minio.local:9000", runner=runner)
-    a = seen["argv"]
-    assert a[a.index("--endpoint-url") + 1] == "https://minio.local:9000"
-
-
-def test_delete_version_omits_endpoint_url_when_unset():
-    seen = {}
-    def runner(argv, **kw):
-        seen["argv"] = argv
-        return _proc("")
-    s3.delete_version("buck", "media/j/a", "v0", runner=runner)
-    assert "--endpoint-url" not in seen["argv"]
 
 
 def test_thaw_appends_endpoint_url_when_set():

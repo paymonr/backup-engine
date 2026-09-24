@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import shlex
 import time
 from dataclasses import dataclass, field
@@ -612,10 +613,33 @@ class Probe:
     detail: str = ""
 
 
+# #13 (Phase A review): the backup key must not permanently delete old versions (level 4
+# removed s3:DeleteObjectVersion). The probe deletes the "null" version of a key that never
+# exists -- a no-op for a key that may, AccessDenied for one that may not. "~" is outside the
+# job-name charset, so the key can never be in a real job's folder.
+VERSION_PROBE_PREFIX = "media/~backup-engine-probe/"
+
+
+def _version_delete_probe(*, bucket, region, key, secret, run) -> Probe:
+    name = "The backup key can't permanently delete old versions"
+    probe_key = f"{VERSION_PROBE_PREFIX}{secrets.token_hex(8)}"
+    cp = run(["s3api", "delete-object", "--bucket", bucket, "--key", probe_key,
+              "--version-id", "null", "--output", "json"], region=region, key=key, secret=secret)
+    err = cp.stderr or ""
+    if cp.returncode != 0 and "AccessDenied" in err:
+        return Probe(name, True)
+    if cp.returncode == 0:
+        return Probe(name, False, "The backup key can still permanently delete old versions — "
+                                  "did step 3 of the script run?")
+    return Probe(name, False, "Couldn't confirm the backup key can only soft-delete — try Verify again.",
+                 provision._scrub(err, key, secret).strip())
+
+
 def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> list[Probe]:
     role_probe = f"Can assume the role {ROLE_NAME}"
     policy_probe = f"The role {ROLE_NAME} has its policy"
     scoped_probe = "The role can't reach the shared bucket"
+    rules_probe = "The role can manage the shared bucket's S3 rules"
     out = []
     cp = run(["s3api", "list-object-versions", "--bucket", bucket, "--max-items", "1",
               "--output", "json"], region=region, key=key, secret=secret)
@@ -623,6 +647,7 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
     out.append(Probe("Can list old versions in the backup bucket", ok,
                      "" if ok else "Set by step 3 of the script — did it run?",
                      "" if ok else provision._scrub(cp.stderr or "", key, secret).strip()))
+    version_probe = _version_delete_probe(bucket=bucket, region=region, key=key, secret=secret, run=run)
     try:
         creds = provision.assume_role(role_arn(principal.account), region=region, key=key,
                                       secret=secret, run=run)
@@ -631,6 +656,8 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
                          provision._scrub(str(e), key, secret)))
         out.append(Probe(policy_probe, False, "Needs the role first (step 1)."))
         out.append(Probe(scoped_probe, False, "Needs the role first (step 1)."))
+        out.append(Probe(rules_probe, False, "Needs the role first (step 1)."))
+        out.append(version_probe)
         return out
     out.append(Probe(role_probe, True))
     rk, rs, rt = creds["AWS_ACCESS_KEY_ID"], creds["AWS_SECRET_ACCESS_KEY"], creds["AWS_SESSION_TOKEN"]
@@ -641,20 +668,38 @@ def _probe_once(principal: Principal, *, bucket, region, key, secret, run) -> li
                      "" if ok2 else provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
     # Negative probe: an OLD unscoped role (S3 on "*") would pass the three probes
     # above too, so a leaked runtime key could still reach every bucket via the
-    # role. The narrowed role grants GetBucketVersioning on <base>-* only, so
-    # this call against the BASE bucket must come back AccessDenied.
-    cp = run(["s3api", "get-bucket-versioning", "--bucket", bucket, "--output", "json"],
+    # role. Level 4 lets the role manage the base bucket's lifecycle + versioning
+    # (BaseBucketRules), so this probe reads the base bucket's TAGS instead --
+    # granted to the narrowed role only on <base>-*, so this call must come back
+    # AccessDenied.
+    cp = run(["s3api", "get-bucket-tagging", "--bucket", bucket, "--output", "json"],
              region=region, key=rk, secret=rs, session_token=rt)
-    denied = cp.returncode != 0 and "AccessDenied" in (cp.stderr or "")
-    if denied:
+    err = cp.stderr or ""
+    if cp.returncode != 0 and "AccessDenied" in err:
         out.append(Probe(scoped_probe, True))
-    elif cp.returncode == 0:
+    elif cp.returncode == 0 or "NoSuchTagSet" in err:
         out.append(Probe(scoped_probe, False,
                          "The role still has an older, wider policy — did step 2 of the script run?"))
     else:
         out.append(Probe(scoped_probe, False,
                          "Couldn't confirm the role is limited to this app's buckets — try Verify again.",
-                         provision._scrub(cp.stderr or "", rk, rs, rt).strip()))
+                         provision._scrub(err, rk, rs, rt).strip()))
+    # Positive probe: a level-3 role (no BaseBucketRules) would pass all four probes
+    # above too, since none of them require the role to reach the base bucket's S3
+    # rules -- Verify must not stamp a level-3 role as level-4-current, or
+    # feature_available("s3-rules") would let S3-rules applies through that then
+    # fail AccessDenied. GetBucketLifecycleConfiguration on the base bucket is only
+    # granted by BaseBucketRules, so this call must succeed (or report the bucket
+    # simply has no lifecycle rules yet).
+    cp = run(["s3api", "get-bucket-lifecycle-configuration", "--bucket", bucket, "--output", "json"],
+             region=region, key=rk, secret=rs, session_token=rt)
+    err = cp.stderr or ""
+    if cp.returncode == 0 or "NoSuchLifecycleConfiguration" in err:
+        out.append(Probe(rules_probe, True))
+    else:
+        out.append(Probe(rules_probe, False, "Set by step 2 of the script — did it run?",
+                         provision._scrub(err, rk, rs, rt).strip()))
+    out.append(version_probe)
     return out
 
 

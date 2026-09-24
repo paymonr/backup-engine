@@ -121,6 +121,19 @@ main() {
   exec > >(tee -a "$CACHE_DIR/$BE_RUN_LOG") 2>&1; _BE_TEE_PID=$!                              # (3)
   version_banner
   validate_source                                                                              # (4)
+  # S3 rules tamper check (spec 2026-09-23 §2): the app's lifecycle rules for this job's
+  # bucket must still be what it applied; drift is restored + alarmed. Never blocks the run:
+  # a failure only warns, and `timeout` (coreutils, in the image) cuts off a hung AWS endpoint
+  # or a long wait on the bucket's state lock. The pass makes up to 5 aws calls (assume-role,
+  # get/put lifecycle rules, get/put versioning), each with its own 10s connect + 30s read
+  # timeout and at most 2 attempts (AWS_MAX_ATTEMPTS=2, standard retry mode -- final fix wave
+  # M1), so one hung call can't eat the whole 240s budget by itself; when the budget does run
+  # out, the check's SIGTERM handler records "timed out" for the bucket. LIFECYCLE_CMD/
+  # LIFECYCLE_TIMEOUT are test seams.
+  # shellcheck disable=SC2086  # LIFECYCLE_CMD is a command line, split on purpose
+  timeout "${LIFECYCLE_TIMEOUT:-240}" ${LIFECYCLE_CMD:-python3 -m app.engine.lifecycle} \
+    check --bucket "${JOB_BUCKET:-${S3_BUCKET:-}}" --trigger "${BE_TRIGGER:-scheduled}" \
+    || log_warn "S3 rules check could not run"
   local src="$SOURCE_ROOT/$JOB_SOURCE"
   [ -d "$src" ] || _fail "job '$JOB' source '$src' missing"
   : "${RESTIC_CACHE_DIR:=$CACHE_DIR/restic}"
@@ -134,6 +147,18 @@ main() {
   _write_state success "" 0                                                                    # (6)
   rm -f "$CACHE_DIR/state/$JOB.resumes"   # a clean run resets the auto-resume cap (app.engine.resume)
   points_refresh "$JOB" "$JOB_TYPE" || log_warn "restore-point cache refresh failed for '$JOB' (non-fatal)"   # (7)
+  # Storage summary (spec 2026-09-23 §4): a detached, read-only scan of this job's folder so S3
+  # rules previews are instant. Never part of the run: no BE_RUN_ID (it records itself), no
+  # shared stdout (the run's log tee must not wait for it); a launch failure changes nothing.
+  # It records the run's own trigger (a Run now is "manual" -- final fix wave M12).
+  # `9>&-` closes the job's OWN lock fd (acquire_lock's `exec 9>"$lock"`, above) before the
+  # background process forks -- otherwise it inherits fd 9 and the underlying flock stays held
+  # (a second run of THIS job refused as "in progress") for as long as the scan keeps running,
+  # well after this script has exited (fix round 1, Critical).
+  # shellcheck disable=SC2086  # SUMMARY_CMD is a command line, split on purpose
+  env -u BE_RUN_ID BE_TRIGGER="${BE_TRIGGER:-scheduled}" ${SUMMARY_CMD:-python3 -m app.engine.sysop} \
+    storage-summary --job "$JOB" </dev/null >/dev/null 2>&1 9>&- &
+  disown 2>/dev/null || true
   log_info "job '$JOB' complete ($JOB_TYPE, ${dur}s)"
   notify success "backup '$JOB' OK" "$JOB_TYPE finished in ${dur}s"; healthcheck success
 }
@@ -217,12 +242,7 @@ _run_archive() {
   [ "$rc" -eq 0 ] || _fail "rclone $verb failed for '$JOB'"
   COPIED=1
   rclone check "$src" "s3:${JOB_BUCKET:-$S3_BUCKET}/media/$JOB" --size-only || log_warn "rclone check differences for '$JOB' (size-only)"
-  if [ "$JOB_RETENTION_TYPE" != keep_all ]; then
-    local plog="$CACHE_DIR/state/$JOB-prune.log" rc=0; : >"$plog"
-    python3 -m app.engine.archive_prune "$JOB" --type "$JOB_RETENTION_TYPE" \
-      --days "${JOB_RETENTION_DAYS:-0}" --count "${JOB_RETENTION_COUNT:-1}" 2>&1 | tee -a "$plog" >/dev/null || rc=$?
-    [ "$rc" -eq 0 ] || _fail_phase prune "$(_first_error_line "$plog")"
-  fi
+  # Plain copy history is S3's job (spec 2026-09-23): the folder's lifecycle rule keeps/removes old versions.
 }
 
 _run_vfiles() {

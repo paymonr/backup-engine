@@ -192,7 +192,7 @@ def test_failed_record_renders_error_class(client, example):
     assert "tok-failed" in body
     assert "AccessDenied: s3:DeleteObjectVersion" in body      # verbatim error line
     assert "Fix the permission →" in body                      # errors.classify fix
-    assert "/setup/destination" in body                        # the fix route
+    assert "/setup/permissions" in body                         # the fix route
 
 
 def test_error_class_reads_log_tail_not_head(client, example):

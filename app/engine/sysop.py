@@ -22,10 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runs
+from . import storage_summary
 from ..estimator import usage, billing
 from ..gui import config_io, jobs_io, provision
 
-KINDS = ("usage-refresh", "billing-check", "probe")
+KINDS = ("usage-refresh", "billing-check", "probe", "storage-summary")
 
 
 class SysopError(Exception):
@@ -206,17 +207,81 @@ def probe(cfg, *, log) -> None:
         json.dumps({"destination": dest, "versioning": ver}))
 
 
-_OPS = {"usage-refresh": usage_refresh, "billing-check": billing_check, "probe": probe}
+# --- storage summary (spec 2026-09-23 §4, R-B8) ------------------------------------------------
+
+SUMMARY_FRESH_S = 600      # an after-run scan skips a folder scanned this recently (several
+                           # Snapshot jobs share appdata/); Refresh now always scans
+
+
+def _summary_target(cfg, params: dict | None) -> tuple[str, str] | None:
+    """(bucket, folder) to scan, or None when there is nothing to do here: S3 rules aren't
+    managed (below level 4 / no role), a custom S3 endpoint, or an unknown job."""
+    from . import lifecycle                   # local: lifecycle imports sysop lazily too
+    config_dir = cfg["CONFIG_DIR"]
+    env = config_io.read_backup_env(config_dir)
+    if env.get("S3_ENDPOINT", "").strip() or not lifecycle.managed(config_dir):
+        return None
+    params = params or {}
+    if params.get("job"):
+        return lifecycle.folder_of_job(env.get("S3_BUCKET", "").strip(), jobs_io.load(config_dir), params["job"])
+    if params.get("bucket") and params.get("folder") is not None:
+        return params["bucket"], params["folder"]
+    return None
+
+
+def _summary_skip(cfg, params: dict | None) -> bool:
+    """Silent skips (no Activity record at all): nothing to scan here, or -- for the after-run
+    scan only (backup-job.sh passes --job; Refresh now passes --bucket/--folder) -- a summary of
+    the same folder taken in the last SUMMARY_FRESH_S seconds. Keyed on --job, not the trigger:
+    the after-run scan now records its run's own trigger, and a Run now is "manual" (M12)."""
+    target = _summary_target(cfg, params)
+    if target is None:
+        return True
+    if (params or {}).get("job"):
+        s = storage_summary.load(cfg["CACHE_DIR"], *target)
+        at = storage_summary.scanned_at(s)
+        if at is not None and time.time() - at.timestamp() < SUMMARY_FRESH_S:
+            return True
+    return False
+
+
+def storage_summary_op(cfg, *, log, job=None, bucket=None, folder=None, run=provision._run_aws) -> None:
+    target = _summary_target(cfg, {"job": job, "bucket": bucket, "folder": folder})
+    if target is None:
+        raise SysopError("nothing to scan: S3 rules aren't managed here, or the job has no folder")
+    bucket, folder = target
+    region = (config_io.read_backup_env(cfg["CONFIG_DIR"]).get("AWS_REGION") or "us-east-1").strip()
+    key, secret = _runtime_key(cfg["CONFIG_DIR"])
+    summary = storage_summary.scan(bucket, folder, region=region, key=key, secret=secret, run=run, log=log)
+    storage_summary.save(cfg["CACHE_DIR"], summary)
+    log(f"storage summary: {folder or 'whole bucket'} in {bucket} — {summary['noncurrent_versions']:,} old "
+        f"versions, {summary['current_objects']:,} current files, {summary['delete_markers']:,} delete markers")
+
+
+_OPS = {"usage-refresh": usage_refresh, "billing-check": billing_check, "probe": probe,
+        "storage-summary": storage_summary_op}
 
 
 # --- orchestration ---------------------------------------------------------
 
-def run(kind: str) -> int:
+def run(kind: str, params: dict | None = None) -> int:
     """Run one system operation end to end. Always returns 0 (7.7.3)."""
     if kind not in _OPS:
         print(f"sysop: unknown operation {kind!r}", file=sys.stderr)
         return 2
     cfg = _cfg_from_env()
+    # A silent skip (no Activity record at all) must be decided before any run record
+    # exists -- but an UNEXPECTED failure of the check itself must not crash this
+    # uncaught (run() always returns 0): stash it and replay it inside the op's own
+    # try/except below, so it lands in the same failed-end record an op failure gets
+    # (fix round 1, Minor 3).
+    skip_error = None
+    if kind == "storage-summary":
+        try:
+            if _summary_skip(cfg, params):
+                return 0
+        except Exception as e:                        # noqa: BLE001 — recorded below, not lost
+            skip_error = e
     cache = cfg["CACHE_DIR"]
     run_id = _run_id()
     Path(cache, "logs", "runs", runs.SYSTEM_JOB).mkdir(parents=True, exist_ok=True)
@@ -245,7 +310,9 @@ def run(kind: str) -> int:
             lf.write(f"{_now_iso()} {msg}\n"); lf.flush()
         try:
             log(f"{kind} start")
-            _OPS[kind](cfg, log=log)
+            if skip_error is not None:
+                raise skip_error
+            _OPS[kind](cfg, log=log, **(params or {}))
             log(f"{kind} ok")
         except Exception as e:                      # noqa: BLE001 — any op failure -> failed end
             outcome = "failed"
@@ -267,9 +334,19 @@ def run(kind: str) -> int:
 
 def main(argv) -> int:
     if not argv or argv[0] not in _OPS:
-        print("usage: python3 -m app.engine.sysop usage-refresh|billing-check|probe", file=sys.stderr)
+        print("usage: python3 -m app.engine.sysop usage-refresh|billing-check|probe|"
+              "storage-summary [--job NAME | --bucket B --folder F]", file=sys.stderr)
         return 2
-    return run(argv[0])
+    params = None
+    if argv[0] == "storage-summary":
+        import argparse
+        ap = argparse.ArgumentParser(prog="python3 -m app.engine.sysop storage-summary")
+        ap.add_argument("--job")
+        ap.add_argument("--bucket")
+        ap.add_argument("--folder")
+        a = ap.parse_args(argv[1:])
+        params = {"job": a.job, "bucket": a.bucket, "folder": a.folder}
+    return run(argv[0], params)
 
 
 if __name__ == "__main__":

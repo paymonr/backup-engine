@@ -242,7 +242,7 @@ def test_failed_job_renders_failure_record_and_fix(client, example):
     assert "sig-failure" in body
     assert "AccessDenied: s3:DeleteObjectVersion" in body       # the verbatim errline
     assert "Fix the permission →" in body                       # from errors.classify
-    assert "/setup/destination" in body                         # the fix route
+    assert "/setup/permissions" in body                          # the fix route
     # the prune case adds its first line to the cause (7.1.6 / 5.2)
     assert "the clean-up of old versions was refused" in body
 

@@ -8,14 +8,6 @@ variable "name_prefix" {
   type    = string
   default = "backup-engine"
 }
-variable "noncurrent_version_expiration_days" {
-  type    = number
-  default = 30
-}
-variable "abort_incomplete_multipart_days" {
-  type    = number
-  default = 7
-}
 variable "base_bucket_versioned" {
   type        = bool
   default     = true

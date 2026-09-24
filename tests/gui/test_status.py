@@ -446,7 +446,7 @@ def test_verdict_failed_uses_error_class_sentence(tmp_path):
     # 5.1: the second sentence is the class's `verdict` string, not its cause.
     assert "Amazon refused a delete" in b["verdict"]["h2"]
     assert b["verdict"]["button"]["label"] == "Fix the permission →"
-    assert b["verdict"]["button"]["href"] == "/setup/destination"
+    assert b["verdict"]["button"]["href"] == "/setup/permissions"
 
 
 # =====================================================================

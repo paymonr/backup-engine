@@ -108,6 +108,7 @@ def create_app(config: dict | None = None) -> Flask:
 
     from .routes import bp
     from . import permissions_routes  # noqa: F401 — registers /setup/permissions on bp
+    from . import s3_rules_routes  # noqa: F401 — registers /setup/s3-rules/* on bp
     app.register_blueprint(bp)
     register_error_handlers(app)
     return app

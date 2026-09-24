@@ -329,3 +329,139 @@ def test_billing_cache_round_trips_through_read_billing_cache(tmp_path, monkeypa
 def test_read_billing_cache_absent_is_not_connected(tmp_path):
     from app.gui import estimate_io
     assert estimate_io.read_billing_cache(str(tmp_path)) == {"connected": False}
+
+
+# --- storage-summary (spec 2026-09-23 §4, R-B8) ----------------------------------------------
+
+from app.engine import storage_summary                                  # noqa: E402
+
+_MANAGED = ("S3_BUCKET=my-bucket\nAWS_REGION=us-east-1\n"
+            "BUCKET_ADMIN_ROLE_ARN=arn:aws:iam::1:role/r\nPERMISSIONS_VERSION=4\n")
+_RUNTIME = "AWS_ACCESS_KEY_ID=AKIARUN\nAWS_SECRET_ACCESS_KEY=runsek\n"
+
+
+def _fake_scan(seen):
+    def scan(bucket, folder, **kw):
+        seen.append((bucket, folder, kw["key"], kw["secret"]))
+        return {"v": 1, "scanned_at": "2026-09-23T12:00:00Z", "bucket": bucket, "folder": folder,
+                "noncurrent_by_age_days": [], "noncurrent_by_rank": [], "noncurrent_by_age_rank": [],
+                "noncurrent_versions": 3, "noncurrent_bytes": 1, "delete_markers": 0,
+                "current_objects": 2, "current_bytes": 9}
+    return scan
+
+
+def test_storage_summary_scans_the_jobs_folder_with_the_runtime_key(tmp_path, monkeypatch):
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    seen = []
+    monkeypatch.setattr(sysop.storage_summary, "scan", _fake_scan(seen))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    assert seen == [("my-bucket", "media/movies/", "AKIARUN", "runsek")]
+    assert storage_summary.load(cache, "my-bucket", "media/movies/")["noncurrent_versions"] == 3
+    recs = _system_records(cache)
+    assert [(r["kind"], r["event"]) for r in recs] == [("storage-summary", "start"), ("storage-summary", "end")]
+    assert recs[1]["outcome"] == "ok"
+
+
+def test_refresh_now_scans_the_named_folder(tmp_path, monkeypatch):
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    seen = []
+    monkeypatch.setattr(sysop.storage_summary, "scan", _fake_scan(seen))
+    assert sysop.run("storage-summary", {"bucket": "my-bucket", "folder": "appdata/"}) == 0
+    assert seen[0][:2] == ("my-bucket", "appdata/")
+
+
+def test_storage_summary_is_skipped_silently_below_level_four(tmp_path, monkeypatch):
+    cache, _ = _setup(tmp_path, monkeypatch, secrets=_RUNTIME)            # no level-4 stamp
+    monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("no scan"))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    assert not Path(cache, "state", "_system.runs.jsonl").exists()
+
+
+def test_storage_summary_is_skipped_silently_for_a_custom_s3_endpoint(tmp_path, monkeypatch):
+    # fix round 1, Minor 6: a custom endpoint (S3-compatible, not real AWS) skips the same
+    # silent way as "not managed" -- _summary_target's other early-out.
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED + "S3_ENDPOINT=https://minio.example\n",
+                      secrets=_RUNTIME)
+    monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("no scan"))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    assert not Path(cache, "state", "_system.runs.jsonl").exists()
+
+
+def test_storage_summary_is_skipped_silently_for_an_unknown_job(tmp_path, monkeypatch):
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("no scan"))
+    assert sysop.run("storage-summary", {"job": "ghost"}) == 0
+    assert not Path(cache, "state", "_system.runs.jsonl").exists()
+
+
+def test_an_after_run_scan_skips_a_folder_scanned_minutes_ago(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    storage_summary.save(cache, {"bucket": "my-bucket", "folder": "media/movies/",
+                                 "scanned_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    monkeypatch.setenv("BE_TRIGGER", "scheduled")
+    monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("fresh summary"))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    assert not Path(cache, "state", "_system.runs.jsonl").exists()
+    seen = []
+    monkeypatch.setattr(sysop.storage_summary, "scan", _fake_scan(seen))
+    assert sysop.run("storage-summary", {"bucket": "my-bucket", "folder": "media/movies/"}) == 0 and seen
+    # ^ Refresh now (bucket + folder) always scans
+
+
+def test_an_after_run_scan_of_a_run_now_run_still_skips_a_fresh_folder(tmp_path, monkeypatch):
+    # final fix wave M12: the after-run scan now carries the run's own trigger (a Run now is
+    # "manual") -- whether it's an after-run scan is its --job, not its trigger.
+    from datetime import datetime, timezone
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    storage_summary.save(cache, {"bucket": "my-bucket", "folder": "media/movies/",
+                                 "scanned_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    monkeypatch.setenv("BE_TRIGGER", "manual")
+    monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("fresh summary"))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    assert not Path(cache, "state", "_system.runs.jsonl").exists()
+
+
+def test_an_after_run_scan_records_the_runs_trigger(tmp_path, monkeypatch):
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    monkeypatch.setenv("BE_TRIGGER", "manual")
+    monkeypatch.setattr(sysop.storage_summary, "scan", _fake_scan([]))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    start = [r for r in _system_records(cache) if r["event"] == "start"][0]
+    assert start["trigger"] == "manual"
+
+
+def test_a_failed_scan_is_a_failed_record(tmp_path, monkeypatch):
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+
+    def boom(*a, **k):
+        raise storage_summary.SummaryError("AccessDenied")
+    monkeypatch.setattr(sysop.storage_summary, "scan", boom)
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    end = [r for r in _system_records(cache) if r["event"] == "end"][0]
+    assert end["outcome"] == "failed" and "AccessDenied" in end["error"]
+
+
+def test_an_unexpected_skip_check_failure_is_recorded_not_lost(tmp_path, monkeypatch):
+    # fix round 1, Minor 3: _summary_skip runs before any run record exists (a clean
+    # skip must stay silent -- see test_storage_summary_is_skipped_silently_below_level_four
+    # above), but a BUG in that check itself must land in the SAME failed-end record an
+    # ordinary op failure gets, not crash sysop.run() uncaught (it must always return 0).
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+
+    def boom(cfg, params):
+        raise RuntimeError("jobs.json is corrupt")
+    monkeypatch.setattr(sysop, "_summary_skip", boom)
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    recs = _system_records(cache)
+    assert [(r["kind"], r["event"]) for r in recs] == [("storage-summary", "start"), ("storage-summary", "end")]
+    assert recs[1]["outcome"] == "failed" and "jobs.json is corrupt" in recs[1]["error"]
+
+
+def test_main_parses_the_storage_summary_arguments(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(sysop, "run", lambda kind, params=None: seen.update(kind=kind, params=params) or 0)
+    assert sysop.main(["storage-summary", "--bucket", "b", "--folder", ""]) == 0
+    assert seen == {"kind": "storage-summary", "params": {"job": None, "bucket": "b", "folder": ""}}
+    assert sysop.main(["storage-summary", "--job", "movies"]) == 0
+    assert seen["params"] == {"job": "movies", "bucket": None, "folder": None}

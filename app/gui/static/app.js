@@ -664,6 +664,16 @@
         if (days) days.checked = true;
       }
     }
+    // The newest-N + days option is Plain copy's (an S3 rule shape); snap it to "Keep the last N"
+    // when the type changes away, for the same reason as the tiered snap above.
+    if (t !== "archive") {
+      var nd = form.querySelector('input[name="retention_type"][value="count_days"]');
+      if (nd && nd.checked) {
+        nd.checked = false;
+        var cnt = form.querySelector('input[name="retention_type"][value="count"]');
+        if (cnt) cnt.checked = true;
+      }
+    }
     var rt = curRetention();
     var pk = curPacking();
     var dd = curDedicated();

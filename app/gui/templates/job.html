@@ -390,6 +390,8 @@
           <p class="slabel">What this job costs</p>
           <p class="band-head more"><a class="linklike" href="/cost">Open the full cost view →</a></p>
         </div>
+        {% if tier_note %}<p class="sig-note" data-tier-note style="margin-bottom:var(--sp-3)">Estimate doesn't include moving old versions to a cheaper tier.</p>{% endif %}
+        {% if combined_note %}<p class="sig-note" data-combined-note style="margin-bottom:var(--sp-3)">Estimate counts a Plain copy job that keeps the newest old versions plus a number of days as keeping only those newest versions.</p>{% endif %}
         <div class="grid4" style="margin-bottom:var(--sp-4)">
           <div class="sfig"><span class="k">First bill</span>
             <span class="v">{% if cost.first_bill is not none %}{{ prov(money(cost.first_bill), cost.first_bill_provenance) }}{% else %}—{% endif %}</span>
@@ -443,6 +445,28 @@
           <dt>Storage tier</dt><dd>{{ vocab.CLASS_NAMES.get(cls, cls) }}{% if not is_cold %} — readable the second you ask{% else %} — up to {{ (rjob.warmup.hours_hi if rjob and rjob.warmup else 12) }} hours before a file can be read{% endif %}</dd>
           {% if cost.change_phrase %}<dt>How much changes between runs</dt><dd>{{ cost.change_phrase }} <span class="hint">(an assumption you set, used for every cost figure above)</span></dd>{% endif %}
           <dt>Keep rule</dt><dd>{{ keep_label }}</dd>
+          {% if s3h %}<dt>History in S3</dt><dd data-s3-history>
+            {%- if s3h.state == 'not_managed' -%}S3 rules need the AWS permissions update — <a class="linklike" href="/setup/permissions">Update permissions →</a>
+            {%- elif s3h.state == 'versioning_off' -%}Versioning is off for this bucket — overwritten or deleted files aren't kept.
+              <a class="linklike" href="/setup/storage">S3 rules →</a>
+            {%- elif s3h.state == 'unsupported' -%}
+              {%- if s3h.kind == 'plain' -%}This storage doesn't support S3 rules — Plain copy keeps all old versions
+              {%- else -%}This storage doesn't support S3 rules — an undo window can't be set there
+              {%- endif -%}
+            {%- else -%}
+              {%- if s3h.kind == 'undo' -%}
+                {%- if s3h.days -%}S3 keeps what this job removed for <span class="mono">{{ s3h.days }}</span> more days (the undo window){%- else -%}No undo window{%- endif -%}
+              {%- elif not s3h.days -%}S3 keeps every old version
+              {%- elif s3h.newer and s3h.days > 1 -%}S3 keeps the newest <span class="mono">{{ s3h.newer }}</span> old versions of each file; older ones removed <span class="mono">{{ s3h.days }}</span> days after being replaced
+              {%- elif s3h.newer -%}S3 keeps the newest <span class="mono">{{ s3h.newer }}</span> old versions of each file
+              {%- else -%}S3 keeps old versions <span class="mono">{{ s3h.days }}</span> days
+              {%- endif -%}
+              {%- if s3h.tier %} · moved to {{ s3h.tier.label }} <code>{{ s3h.tier.class }}</code> after <span class="mono">{{ s3h.tier.days }}</span> days{% endif -%}
+              {%- if s3h.waiting %} · a change is waiting for your confirmation{% endif -%}
+              {%- if not s3h.applied %} · not checked yet{% endif %}
+              <a class="linklike" href="/setup/storage">S3 rules →</a>
+              {%- if s3h.console_cap %}{% with cap = s3h.console_cap %}<div class="hint" data-console-cap style="margin-top:var(--sp-1)">{% include "_console_cap.html" %}</div>{% endwith %}{% endif %}
+            {%- endif -%}</dd>{% endif %}
           <dt>When it runs</dt><dd>{{ schedule_desc }}{% if not s.enabled %} — paused{% endif %}</dd>
           <dt>Where it goes</dt><dd class="mono">{{ ident.s3 }} <span class="hint">Set at creation.</span></dd>
           <dt>State</dt><dd>{{ 'Scheduled' if s.enabled else 'Paused' }}</dd>

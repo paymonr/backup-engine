@@ -25,19 +25,26 @@ class ErrorClass:
 
 
 CLASSES: dict[str, ErrorClass] = {
+    # AccessDenied on a version delete/listing. The key no longer deletes old versions at
+    # all (spec 2026-09-23: the bucket's S3 rules remove them), so this never asks the
+    # owner to grant that back -- it points at the permissions update, which brings the
+    # key to what this version uses (e.g. the version listing restores and scans need).
     "iam-version-perms": ErrorClass(
         code="iam-version-perms",
         short="AccessDenied",
-        verdict="Amazon refused a delete — one permission is missing from the key this machine uses.",
-        cause=("Amazon refused a delete. The key this machine uses is missing the permission that lets "
-               "a Plain copy clean up old versions, so every run stops at the same point."),
-        board=("Amazon refused a delete, so every {dow} run stops at the same point. The files are "
-               "copied, but old versions have not been cleaned up since {since}."),
-        fix=("Two ways out: run ./setup.sh on this machine to re-apply the key policy, or add the "
-             "permission by hand in the AWS console (IAM → the backup key → this bucket). Either one "
-             "takes a minute; the next scheduled run then succeeds."),
+        verdict="Amazon refused a delete or a version listing — the key this machine uses doesn't allow it.",
+        cause=("Amazon refused to delete or list old versions of files. Old versions are removed by the "
+               "bucket's S3 rules now, never by the key this machine uses, so a refused delete of an old "
+               "version comes from an earlier version of backup-engine and won't come back. A refused "
+               "listing means the key's permissions are out of date."),
+        board=("Amazon refused a delete or a version listing, so every {dow} run stops at the same point "
+               "(since {since}). Old versions are removed by the bucket's S3 rules now — bring the key's "
+               "permissions up to date."),
+        fix=("Open Setup → AWS permissions and update them: that brings the key this machine uses to "
+             "what this version of backup-engine needs. It never needs to delete old versions itself — "
+             "the bucket's S3 rules do that."),
         fix_label="Fix the permission →",
-        fix_route="/setup/destination",
+        fix_route="/setup/permissions",
         blocker=True,
     ),
     "access-denied": ErrorClass(

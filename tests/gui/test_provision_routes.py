@@ -54,6 +54,15 @@ def converge_calls(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def s3_rules_calls(monkeypatch):
+    """Automated setup applies the S3 rules after the permissions step (spec §7)."""
+    from app.gui import s3_rules
+    calls = []
+    monkeypatch.setattr(s3_rules, "apply_for", lambda cfg, buckets: calls.append(buckets) or [])
+    return calls
+
+
 # --- old /provision* paths 301 to the new /setup/destination* ---------------
 
 @pytest.mark.parametrize("old,new", [
@@ -678,3 +687,8 @@ def test_automated_setup_keeps_the_stamp_converge_wrote(client, dirs, monkeypatc
     be = Path(dirs["config"], "backup.env").read_text()
     assert f"PERMISSIONS_VERSION={permissions.required_level()}" in be
     assert "S3_BUCKET=acme" in be
+
+
+def test_automated_setup_applies_s3_rules_after_permissions(client, monkeypatch, s3_rules_calls):
+    r = _automated(client, monkeypatch, _TOFU_OK)
+    assert r.status_code == 200 and s3_rules_calls == [["acme"]]

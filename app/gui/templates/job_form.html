@@ -29,6 +29,15 @@
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4"/><path d="M4.4 4.4 7.6 7.6M7.6 4.4 4.4 7.6"/></svg></span>
   <div class="body"><span class="label">Not saved</span>{{ errors.get('form') or errors.get('size') }}</div></div>
 {% endif %}
+{% if s3_preview %}
+{# Shortening a Plain copy job's history deletes old versions S3 keeps today (spec 2026-09-23 §3,
+   R-B5): nothing is saved until this is confirmed. Its own form, never nested in the job form. #}
+<div class="card" style="padding:var(--sp-4);margin-bottom:16px" id="s3-history-preview">
+  <p class="measure" style="margin-bottom:var(--sp-3)">This keeps less history than S3 keeps today.
+    Nothing is saved until you confirm — or change the setting below and save again.</p>
+  {% with pvw = s3_preview %}{% include "_s3_preview.html" %}{% endwith %}
+</div>
+{% endif %}
 
 <p class="lbl">{{ 'Edit job' if is_edit else 'New job' }}</p>
 <h1 class="h" style="margin-top:6px">{{ job.name if is_edit else 'What do you want to protect?' }}</h1>
@@ -222,9 +231,13 @@
         <span class="why"><span class="k-delta" data-keep="days">{{ money((ko.get('days') or {}).get('delta_monthly')) }}/mo</span> ·
           <span class="mono" data-keep-points="days">{{ (ko.get('days') or {}).get('points', 0) }}</span> restore points</span></label>
       <label class="radio" for="k-n"><input type="radio" id="k-n" name="retention_type" value="count" {{ 'checked' if fv.retention_type == 'count' }}>
-        <span>Keep the last <input type="number" name="retention_count" value="{{ fv.retention_count }}" style="width:4rem" class="mono"> versions</span>
+        <span>Keep the last <input type="number" name="retention_count" value="{{ fv.retention_count }}"{% if is_edit and fv.type == 'archive' and (fv.retention_count|int(0)) <= 100 %} max="100"{% endif %} style="width:4rem" class="mono"> versions</span>
         <span class="why"><span class="k-delta" data-keep="count">{{ money((ko.get('count') or {}).get('delta_monthly')) }}/mo</span> ·
           <span class="mono" data-keep-points="count">{{ (ko.get('count') or {}).get('points', 0) }}</span> restore points</span></label>
+      <label class="radio" for="k-nd" data-when-type="archive"><input type="radio" id="k-nd" name="retention_type" value="count_days" {{ 'checked' if fv.retention_type == 'count_days' }}>
+        <span>Keep the newest <input type="number" step="any" name="retention_nd_count" value="{{ fv.retention_nd_count }}" style="width:4rem" class="mono"> versions,
+          older ones for <input type="number" step="any" name="retention_nd_days" value="{{ fv.retention_nd_days }}" style="width:4rem" class="mono"> days</span>
+        <span class="why">S3 keeps the newest N old versions indefinitely (even after the file is deleted); older ones go D days after being replaced</span></label>
     </div>
     <p class="sm faint measure" id="keep-consequence" style="margin-top:6px">
       {% if est and est.breakdown.change_rate_pct == 0 %}Nothing gets replaced, so there are no old versions to store —
@@ -236,6 +249,26 @@
         {{ '%.2f'|format(est.breakdown.old_multiplier) }}× your data — <span class="n">{{ money(est.breakdown.versioning) }}</span>
         of the <span class="n">{{ money(est.this_job_monthly) }}</span>. Keeping less also limits how far back you can restore,
         which is worth something at 0% too.{% endif %}</p>
+    {# fix round 1, Minor: honest about whether S3 rules actually apply to this job's bucket
+       (s3_copy = s3_rules.wizard_copy), and the undo-window note names the REAL undo days
+       (storage.json) for an existing job's folder, not a hardcoded 30. #}
+    {% if s3_copy.managed and not s3_copy.unsupported %}
+    <p class="sm faint measure" data-when-type="archive" style="margin-top:6px">Kept by S3 inside AWS — this
+      setting is the folder's S3 rule, so it holds even while this machine is off.
+      <a class="linklike" href="/setup/storage">S3 rules →</a></p>
+    <p class="sm faint measure" data-when-type="versioned versioned-files" style="margin-top:6px">What a run
+      removes stays recoverable in S3 for an undo window — <span class="mono">{{ s3_copy.undo_days }}</span> days unless you change it.
+      <a class="linklike" href="/setup/storage">S3 rules →</a></p>
+    {% if s3_copy.console_cap %}{% with cap = s3_copy.console_cap %}
+    <p class="sm faint measure" data-when-type="{{ s3_copy.console_cap_types }}" data-console-cap style="margin-top:6px">{% include "_console_cap.html" %}</p>
+    {% endwith %}{% endif %}
+    {% elif not s3_copy.managed %}
+    <p class="sm faint measure" data-when-type="archive versioned versioned-files" style="margin-top:6px">S3 rules need the
+      AWS permissions update to keep old versions in AWS — <a class="linklike" href="/setup/permissions">Update permissions →</a></p>
+    {% else %}
+    <p class="sm faint measure" data-when-type="archive versioned versioned-files" style="margin-top:6px">This storage
+      doesn't support S3 rules, so old versions aren't kept there.</p>
+    {% endif %}
     {{ wasrow('retention_type') }}
 
     <!-- type-specific settings (5.8 §3.8) -->
