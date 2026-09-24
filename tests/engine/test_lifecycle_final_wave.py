@@ -176,3 +176,112 @@ def test_a_settings_edit_never_overwrites_an_unreadable_settings_file(cfg):
         lc.save_edit(cfg, edit)
     assert "storage.json" in str(e.value)
     assert Path(cfg["CONFIG_DIR"], "storage.json").read_text() == "{oops"
+
+
+# --- I2: one definition of a "known" folder on every pass ------------------------------------
+
+def _add_job(cfg, name, retention, **kw):
+    jobs = _jobs(cfg)
+    jobs.append(dict({"name": name, "type": "archive", "source": f"media/{name}", "schedule": "0 3 * * *",
+                      "enabled": True, "storage_class": "STANDARD", "retention": retention}, **kw))
+    _write_jobs(cfg, jobs)
+
+
+def _set(cfg, name, retention):
+    jobs = _jobs(cfg)
+    for j in jobs:
+        if j["name"] == name:
+            j["retention"] = retention
+    _write_jobs(cfg, jobs)
+
+
+def _rule_ids(fake, bucket=BASE):
+    return {r["ID"] for r in fake.rules.get(bucket, [])}
+
+
+def test_probe4_a_job_that_ran_after_a_failed_save_sync_waits_for_its_shortened_rule(cfg):
+    _write_jobs(cfg, [])
+    fake = FakeS3()
+    lc.check(cfg, BASE, run=fake)                            # setup's first apply: housekeeping only
+    _add_job(cfg, "tv", {"type": "days", "days": 180})
+    fake.deny_put = True
+    assert lc.check(cfg, BASE, run=fake) == "error"          # the save-time sync failed
+    fake.deny_put = False
+    _ran(cfg, "tv")                                          # ...and the job ran for weeks
+    _set(cfg, "tv", {"type": "days", "days": 7})             # the owner shortens it
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert "backup-engine:media/tv/" not in _rule_ids(fake)  # S3 keeps everything until confirmed
+    _, waiting = lc.outstanding(cfg, BASE)
+    assert [c.folder for c in waiting] == ["media/tv/"]
+    pv = lc.preview(cfg, BASE, {"kind": "confirm"})
+    assert pv.token and [c.folder for c in pv.keeps_less] == ["media/tv/"]
+
+
+def test_a_job_that_ran_without_its_first_rule_ever_applied_waits_for_that_rule_too(cfg):
+    _write_jobs(cfg, [])
+    fake = FakeS3()
+    lc.check(cfg, BASE, run=fake)
+    _add_job(cfg, "tv", {"type": "days", "days": 180})
+    _ran(cfg, "tv")
+    lc.check(cfg, BASE, run=fake)
+    assert "backup-engine:media/tv/" not in _rule_ids(fake)
+    assert [c.folder for c in lc.outstanding(cfg, BASE)[1]] == ["media/tv/"]
+
+
+RUN = "20260924T030000Z-ab12"
+
+
+def _runs(cfg, name, *ids):
+    Path(cfg["CACHE_DIR"], "state", f"{name}.runs.jsonl").write_text(
+        "".join(json.dumps({"v": 1, "id": i, "job": name, "event": "start"}) + "\n" for i in ids))
+
+
+def test_probe3_a_new_jobs_own_first_run_applies_its_first_rule(cfg):
+    _write_jobs(cfg, [])
+    _add_job(cfg, "manga", {"type": "days", "days": 180})
+    _runs(cfg, "manga", RUN)                                 # runs_start wrote it just before the check
+    fake = FakeS3()
+    assert lc.check(cfg, BASE, run=fake, run_id=RUN) == "ok"
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
+    assert lc.outstanding(cfg, BASE) == (False, [])
+
+
+def test_an_earlier_run_still_makes_the_folder_known(cfg):
+    _write_jobs(cfg, [])
+    _add_job(cfg, "manga", {"type": "days", "days": 180})
+    _runs(cfg, "manga", "20260901T030000Z-0000", RUN)       # a paused/aborted earlier run
+    fake = FakeS3()
+    lc.check(cfg, BASE, run=fake, run_id=RUN)
+    assert "backup-engine:media/manga/" not in _rule_ids(fake)
+
+
+def test_an_unreadable_runs_line_counts_as_a_run(cfg):
+    _write_jobs(cfg, [])
+    _add_job(cfg, "manga", {"type": "days", "days": 180})
+    Path(cfg["CACHE_DIR"], "state", "manga.runs.jsonl").write_text("{torn\n")
+    fake = FakeS3()
+    lc.check(cfg, BASE, run=fake, run_id=RUN)
+    assert "backup-engine:media/manga/" not in _rule_ids(fake)
+
+
+def test_without_a_run_id_any_run_record_counts(cfg):
+    _write_jobs(cfg, [])
+    _add_job(cfg, "manga", {"type": "days", "days": 180})
+    _runs(cfg, "manga", RUN)                                 # e.g. the hourly check during a first run
+    fake = FakeS3()
+    lc.check(cfg, BASE, run=fake)
+    assert "backup-engine:media/manga/" not in _rule_ids(fake)
+
+
+def test_the_check_cli_passes_the_runs_id_through(cfg, monkeypatch, capsys):
+    monkeypatch.setenv("CONFIG_DIR", cfg["CONFIG_DIR"])
+    monkeypatch.setenv("CACHE_DIR", cfg["CACHE_DIR"])
+    monkeypatch.setenv("BE_RUN_ID", RUN)
+    seen = {}
+
+    def fake_check(c, b, **kw):
+        seen.update(kw)
+        return "ok"
+    monkeypatch.setattr(lc, "check", fake_check)
+    assert lc.main(["check", "--bucket", BASE]) == 0
+    assert seen.get("run_id") == RUN

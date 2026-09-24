@@ -667,11 +667,14 @@ def want_for(cfg, bucket: str, jobs=None, settings=None) -> RuleSet:
 
 def applied_view(cfg, bucket: str, jobs=None, settings=None) -> tuple[RuleSet | None, RuleSet]:
     """(baseline, want) from files only -- never AWS: what the app last applied (None before
-    the first apply) and what jobs.json + storage.json want now, held folders resolved against
-    that baseline (I1). The one pairing previews, outstanding() and the screens compare, so
-    they always agree with what the pass itself holds."""
+    the first apply), its known folders widened to every folder whose job has run (I2), and
+    what jobs.json + storage.json want now, held folders resolved against that baseline (I1).
+    The one pairing previews, outstanding() and the screens compare, so they always agree
+    with what the pass itself holds."""
+    base, _, cache = _context(cfg)
+    jobs = jobs_io.load(cfg["CONFIG_DIR"]) if jobs is None else jobs
     want = want_for(cfg, bucket, jobs, settings)
-    before = baseline_from_applied(_applied_doc(cfg["CACHE_DIR"], bucket), want)
+    before = known_baseline(baseline_from_applied(_applied_doc(cache, bucket), want), cache, bucket, base, jobs)
     return before, resolve_held(before, want)
 
 
@@ -749,21 +752,55 @@ def baseline_from_live(live_rules: list[dict], want: RuleSet, known: frozenset |
     return RuleSet(rules, want.folders if known is None else known, versioning)
 
 
-def _has_run(cache_dir: str, job: str) -> bool:
+def _has_run(cache_dir: str, job: str, exclude_run: str | None = None) -> bool:
     """R-B2': CACHE_DIR/state/<job>.json (written by backup-job.sh at the end of every run,
-    success or failure -- app/gui/runner.py::read_state) OR CACHE_DIR/state/<job>.runs.jsonl
-    (app/engine/runs.py, appended at the START of a run) -- so a first run still in progress,
-    or one that was only ever paused, counts too (fix round 1, Minor)."""
-    return (Path(cache_dir, "state", f"{job}.json").exists()
-           or Path(cache_dir, "state", f"{job}.runs.jsonl").exists())
+    success or failure -- app/gui/runner.py::read_state) OR a record in
+    CACHE_DIR/state/<job>.runs.jsonl (app/engine/runs.py, appended at the START of a run) -- so
+    a first run still in progress, or one that was only ever paused, counts too (fix round 1,
+    Minor). `exclude_run` (final fix wave I2): the run whose pre-backup check this is --
+    backup-job.sh appends its start record BEFORE the check, yet it hasn't uploaded anything
+    yet, so it never makes its own job's folder known. A line that can't be read counts as a
+    run (the careful side)."""
+    if Path(cache_dir, "state", f"{job}.json").exists():
+        return True
+    try:
+        lines = Path(cache_dir, "state", f"{job}.runs.jsonl").read_text().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            return True
+        if not isinstance(rec, dict) or exclude_run is None or rec.get("id") != exclude_run:
+            return True
+    return False
 
 
-def _known_folders(cache_dir: str, bucket: str, base: str, jobs: list[dict]) -> frozenset:
-    """R-B2': on a FIRST apply, a folder is known only when at least one of its jobs has ever
-    run -- because only then can it have data in S3. A folder whose jobs never ran is a new
-    job's folder: always keeps-more."""
+def _known_folders(cache_dir: str, bucket: str, base: str, jobs: list[dict],
+                   exclude_run: str | None = None) -> frozenset:
+    """R-B2': a folder is known when at least one of its jobs has run before this one --
+    because only then can it have data in S3. A folder whose jobs never ran is a new job's
+    folder: always keeps-more. Final fix wave I2: this holds on EVERY pass (not only a bucket's
+    first apply), unioned with the folders the applied record already knows (R-B2's "never
+    forget") -- see known_baseline()."""
     return frozenset(f.folder for f in folders_for(bucket, base, jobs)
-                     if any(_has_run(cache_dir, j) for j in f.jobs))
+                     if any(_has_run(cache_dir, j, exclude_run) for j in f.jobs))
+
+
+def known_baseline(before: RuleSet | None, cache_dir: str, bucket: str, base: str, jobs: list[dict],
+                   exclude_run: str | None = None) -> RuleSet | None:
+    """An applied baseline whose known folders also include every folder whose job has run
+    before this run (final fix wave I2) -- a job that ran while its own rule never reached S3
+    (a failed save-time sync) has data there, so a first or shortened rule for it keeps less
+    and waits, exactly as on a bucket's first apply."""
+    if before is None:
+        return None
+    known = _known_folders(cache_dir, bucket, base, jobs, exclude_run)
+    return before if known <= before.folders else RuleSet(before.rules, before.folders | known,
+                                                          before.versioning, before.held)
 
 
 def classify(before: RuleSet, after: RuleSet) -> list[Change]:
@@ -1343,12 +1380,13 @@ def _config_error(cache: str, bucket: str, detail: str, stale: bool):
 TAMPERED = "S3 rules were changed outside backup-engine"
 
 
-def _reconcile(cfg, bucket: str, *, run, trigger: str):
+def _reconcile(cfg, bucket: str, *, run, trigger: str, run_id: str | None = None):
     with bucket_lock(cfg["CACHE_DIR"], bucket):
-        return _reconcile_locked(cfg, bucket, run=run, trigger=trigger)
+        return _reconcile_locked(cfg, bucket, run=run, trigger=trigger, run_id=run_id)
 
 
-def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True, expect: str | None = None):
+def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True, expect: str | None = None,
+                      run_id: str | None = None):
     """The pass behind sync(), check() and -- with gated=False -- apply_confirmed().
 
     What it writes is TARGET: what jobs.json + storage.json want (DESIRED: app rules and the
@@ -1448,9 +1486,13 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     # R-B2': on a first apply, a folder is only "known" (able to gate a keeps-less change)
     # once one of its jobs has actually run -- otherwise it is a new job's folder, always
     # keeps-more, no matter what a legacy/console rule already does to that prefix.
-    known = _known_folders(cache, bucket, base, jobs) if first else None
+    # Final fix wave I2: the same definition on EVERY pass -- known = the applied record's folders
+    # (never forgotten, R-B2) plus every folder whose job ran before THIS run (run_id: the pre-
+    # backup check's own run, which hasn't uploaded yet, never counts).
+    known = _known_folders(cache, bucket, base, jobs, run_id) if first else None
     before = (baseline_from_live(live, want, known, versioning=live_ver) if first
-              else baseline_from_applied(doc, want, live_versioning=live_ver))
+              else known_baseline(baseline_from_applied(doc, want, live_versioning=live_ver),
+                                  cache, bucket, base, jobs, run_id))
     want = resolve_held(before, want)          # I1: a folder whose setting can't be read keeps its rule
     if expect is not None and _set_hash(want) != expect:
         stale, gated = True, True             # never write anything unconfirmed (I1)
@@ -1655,15 +1697,17 @@ def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
 
 # --- tamper check -----------------------------------------------------------------------
 
-def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled") -> str:
+def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled",
+          run_id: str | None = None) -> str:
     """Before every backup run (trigger "scheduled") and behind Check now ("manual"):
     the same pass as sync() -- drift from what was applied is restored + alarmed, and
     job settings that haven't reached S3 yet are applied. Never raises: anything
-    unexpected becomes the "error" state."""
+    unexpected becomes the "error" state. `run_id` (I2): the backup run this check runs
+    before (BE_RUN_ID) -- its own start record never makes its job's folder known."""
     try:
         if not managed(cfg["CONFIG_DIR"]):
             return "not_managed"
-        state, _, _, _ = _reconcile(cfg, bucket, run=run, trigger=trigger)
+        state, _, _, _ = _reconcile(cfg, bucket, run=run, trigger=trigger, run_id=run_id)
         return state
     except Exception as e:                                   # noqa: BLE001 — never raise
         try:
@@ -2076,7 +2120,9 @@ def main(argv=None) -> int:
         # O4: backup-job.sh passes BE_TRIGGER, so a Run now records its check as manual.
         trigger = args.trigger if _TRIGGER.fullmatch(args.trigger or "") else "scheduled"
         try:
-            words = _CHECK_WORDS.get(check(cfg, args.bucket, trigger=trigger), "couldn't be checked (see Setup)")
+            words = _CHECK_WORDS.get(check(cfg, args.bucket, trigger=trigger,
+                                           run_id=os.environ.get("BE_RUN_ID") or None),
+                                     "couldn't be checked (see Setup)")
         except Exception as e:                       # noqa: BLE001 — never block a backup
             words = f"couldn't be checked ({type(e).__name__})"
         print(f"S3 rules check · {args.bucket}: {words}")
