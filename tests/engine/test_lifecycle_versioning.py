@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from app.engine import lifecycle as lc
-from tests.engine.test_lifecycle_sync import BASE, FakeS3, cfg  # noqa: F401
+from tests.engine.test_lifecycle_sync import BASE, LEGACY, FakeS3, cfg  # noqa: F401
 
 ROLE_CREDS = {"AWS_ACCESS_KEY_ID": "ASIAROLE", "AWS_SECRET_ACCESS_KEY": "rolesecret", "AWS_SESSION_TOKEN": "roletok"}
 
@@ -370,18 +370,24 @@ def test_a_kill_after_a_confirmed_rules_write_adopts_it_next_pass_instead_of_rev
     assert [c.rule_id for c in waiting] == ["versioning"]         # the suspend still needs fresh confirmation
 
 
+def _inflight(cfg, bucket=BASE):
+    return lc._load_in_flight(cfg["CACHE_DIR"], bucket)
+
+
 def test_a_kill_before_any_put_behaves_normally_next_pass(cfg):
     # (b): the journal is written before the puts -- if the kill lands before either one even
     # starts, live never changed at all, so the next pass just judges normally (nothing to
-    # adopt, the journal is dropped).
+    # adopt, the journal is dropped). Fix round 3, item 1: the journal is its OWN file, never
+    # inside applied.json.
     fake = FailOrKill()
     _confirm_suspend(cfg, fake)
     lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on", "abort_uploads_days": 14}}})
     doc_before = lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
     lc._write_in_flight(cfg["CACHE_DIR"], BASE, doc_before["rules"], doc_before["folders"], "on")
-    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["in_flight"]["versioning"] == "on"
+    assert "in_flight" not in lc.load_applied_doc(cfg["CACHE_DIR"], BASE)     # never touches applied.json
+    assert _inflight(cfg)["versioning"] == "on"
     state = lc.check(cfg, BASE, run=fake)                   # nothing in flight ever landed
-    assert "in_flight" not in lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
+    assert _inflight(cfg) is None
     assert state in ("ok", "restored")
     assert _hk(fake.rules[BASE]) == 14 and fake.versioning[BASE] == "Enabled"
 
@@ -396,7 +402,39 @@ def test_in_flight_present_but_live_tampered_to_something_else_still_alarms(cfg)
     next(r for r in fake.rules[BASE] if r["ID"] == lc.HOUSEKEEPING_ID)["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] = 1
     state = lc.check(cfg, BASE, run=fake)
     assert state == "restored" and _st(cfg)["alarm"]["kind"] == "restored"
-    assert "in_flight" not in lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
+    assert _inflight(cfg) is None
+
+
+def test_a_stale_journal_past_its_ttl_is_never_adopted(cfg):
+    # (b): a journal older than 6 hours is dropped without adoption, judged normally.
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on", "abort_uploads_days": 14}}})
+    doc = lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
+    lc._write_in_flight(cfg["CACHE_DIR"], BASE, doc["rules"], doc["folders"], "on")
+    stale = lc._inflight_path(cfg["CACHE_DIR"], BASE)
+    old = json.loads(stale.read_text())
+    old["written_at"] = "2020-01-01T00:00:00Z"
+    stale.write_text(json.dumps(old))
+    next(r for r in fake.rules[BASE] if r["ID"] == lc.HOUSEKEEPING_ID)["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] = 14
+    state = lc.check(cfg, BASE, run=fake)
+    assert _inflight(cfg) is None                            # dropped, not adopted
+    assert state == "ok" and "alarm" not in _st(cfg)          # rules genuinely match target now anyway
+
+
+def test_a_corrupt_applied_record_is_never_overwritten_by_the_journal(cfg):
+    # item 1: the journal must never create or rewrite the applied record on its own -- only
+    # save_applied does, and only when something in the journal actually matches live. A
+    # corrupt/unreadable applied.json (never valid JSON) reads as None, exactly like no
+    # record at all -- and a pass whose OWN write ALSO fails (nothing lands, nothing matches
+    # the journal either) must leave it exactly as unreadable as it started.
+    fake = FakeS3(deny_put=True)
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    Path(lc._state_dir(cfg["CACHE_DIR"]), f"{BASE}.applied.json").write_text("{not valid json")
+    lc._write_in_flight(cfg["CACHE_DIR"], BASE, [{"ID": lc.HOUSEKEEPING_ID}], ["appdata/"], "on")
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)                          # nothing in the journal matches live; write also fails
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE) is None      # still corrupt/unreadable -> None, never a stub
 
 
 def test_partial_record_then_an_outside_rules_change_keeps_alarming(cfg):
@@ -571,3 +609,113 @@ def test_confirmed_partial_landed_rules_reach_activity(cfg):
     logs = sorted(Path(cfg["CACHE_DIR"], "logs").rglob("*.log"))
     blob = "".join(x.read_text() for x in logs)
     assert "10 days" in blob
+
+
+# --- fix round 3 (re-review of 16035ad..72a52a8) ------------------------------------------------
+# item 1: the journal must never create/rewrite an applied record; N1/N1b: a failed/killed
+# TRUE first apply must still read as a first apply next time, never a false tamper alarm.
+
+class Fake2(FakeS3):
+    """put_rules: None | "fail" (error, nothing landed) | "landed_err" (lands, THEN errors);
+    put_ver: None | "fail"; ver_read: None | "unsupported"."""
+    put_rules = None
+    put_ver = None
+    ver_read = None
+
+    def __call__(self, args, **kw):
+        if self.put_rules and args[:2] == ["s3api", "put-bucket-lifecycle-configuration"]:
+            if self.put_rules == "landed_err":
+                super().__call__(args, **kw)
+            else:
+                self.calls.append(list(args))
+            return SimpleNamespace(returncode=254, stdout="", stderr="RequestTimeout")
+        if self.put_ver and args[:2] == ["s3api", "put-bucket-versioning"]:
+            self.calls.append(list(args))
+            return SimpleNamespace(returncode=254, stdout="", stderr="RequestTimeout")
+        if self.ver_read and args[:2] == ["s3api", "get-bucket-versioning"]:
+            self.calls.append(list(args))
+            return SimpleNamespace(returncode=254, stdout="", stderr="An error occurred (MethodNotAllowed)")
+        return super().__call__(args, **kw)
+
+
+def test_n1_true_first_apply_rules_put_failure_stays_a_first_apply(cfg):
+    fake = Fake2({BASE: json.loads(json.dumps(LEGACY))})
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE) is None
+    fake.put_rules = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE) is None      # never a bare {"rules": []} stub
+    fake.put_rules = None
+    state = lc.check(cfg, BASE, run=fake)
+    _, waiting = lc.outstanding(cfg, BASE)
+    assert state == "ok" and "alarm" not in _st(cfg), "false tamper alarm on the pass after a failed first apply"
+    assert waiting == []
+    ids = {r["ID"] for r in fake.rules[BASE]}
+    assert "backstop-appdata" not in ids and "backstop-media" not in ids   # legacy backstops replaced
+
+
+def test_n1b_true_first_apply_killed_before_any_put(cfg, monkeypatch):
+    fake = Fake2({BASE: json.loads(json.dumps(LEGACY))})
+
+    def boom(*a, **k):
+        raise Killed()
+    monkeypatch.setattr(lc, "write_rules", boom)
+    with pytest.raises(Killed):
+        lc.sync(cfg, BASE, run=fake)
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE) is None      # never a bare {"rules": []} stub
+    monkeypatch.undo()
+    state = lc.check(cfg, BASE, run=fake)
+    assert state == "ok" and "alarm" not in _st(cfg)
+    ids = {r["ID"] for r in fake.rules[BASE]}
+    assert "backstop-appdata" not in ids and "backstop-media" not in ids
+
+
+@pytest.mark.parametrize("console_change", [False, True])
+def test_n2_confirmed_landed_but_errored_put_is_adopted(cfg, console_change):
+    # a confirmed undo 30->10 whose rules put LANDED but reported an error (timeout); in the
+    # True case, a console rule ALSO changed (the fingerprint moved) in the same pass.
+    fake = Fake2()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings",
+                               "settings": {"version": 1, "buckets": {BASE: {"folders": {"appdata/": {"undo_days": 10}}}}}})
+    if console_change:
+        fake.rules[BASE].append({"ID": "my-console-rule", "Status": "Enabled", "Filter": {"Prefix": "x/"},
+                                 "Transitions": [{"Days": 30, "StorageClass": "GLACIER"}]})
+    fake.put_rules = "landed_err"
+    with pytest.raises(lc.LifecycleError):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}      # DID land despite the reported error
+    fake.put_rules = None
+    state = lc.check(cfg, BASE, run=fake)
+    alarm = _st(cfg).get("alarm") or {}
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}, "confirmed, landed write reverted"
+    assert alarm.get("kind") in (None, "console_rule")
+    assert state in ("ok", "console_rule")
+
+
+def test_n3_ok_with_versioning_unmanaged_does_not_heal_a_versioning_alarm(cfg):
+    fake = Fake2()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    fake.versioning[BASE] = "Suspended"                         # outside suspend
+    fake.put_ver = "fail"
+    assert lc.check(cfg, BASE, run=fake) == "not_restored"
+    assert _st(cfg)["alarm"]["kind"] == "not_restored"
+    fake.put_ver, fake.ver_read = None, "unsupported"
+    lc.check(cfg, BASE, run=fake)
+    assert _st(cfg)["alarm"]["kind"] == "not_restored", "alarm healed although versioning still suspended"
+
+
+def test_n7_seeded_rules_put_failure_keeps_o1_note(cfg):
+    fake = Fake2(versioning={BASE: "Suspended"})
+    fake.rules[BASE] = [{"ID": "my-console-rule", "Status": "Enabled", "Filter": {"Prefix": ""},
+                         "Expiration": {"Days": 5}}]
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    fake.put_rules = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)
+    fake.put_rules = None
+    lc.check(cfg, BASE, run=fake)
+    blob = "".join(x.read_text() for x in sorted(Path(cfg["CACHE_DIR"], "logs").rglob("*.log")))
+    assert "Kept as it is" in blob
