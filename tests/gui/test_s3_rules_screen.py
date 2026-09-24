@@ -17,7 +17,7 @@ JOBS = [
      "retention": {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}},
 ]
 # Captured before any test patches them (the integrated tests put them back).
-REAL = {n: getattr(lifecycle, n) for n in ("role_creds", "read_rules", "write_rules",
+REAL = {n: getattr(lifecycle, n) for n in ("role_creds", "read_rules", "read_lifecycle", "write_rules",
                                            "read_versioning", "write_versioning")}
 
 

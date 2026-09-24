@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runs
-from ..gui import config_io, jobs_io, permissions, provision
+from ..gui import config_io, jobs_io, permissions, provision, vocab
 
 APP_PREFIX = "backup-engine:"
 HOUSEKEEPING_ID = APP_PREFIX + "housekeeping"
@@ -29,6 +29,12 @@ DEFAULT_UNDO_DAYS = 30
 DEFAULT_ABORT_DAYS = 7
 MAX_NEWER = 100
 SETTINGS_FILE = "storage.json"
+
+# Cheaper tier for old versions (spec §1, Phase C).
+TIER_CLASSES = ("GLACIER_IR", "DEEP_ARCHIVE")
+TIER_MIN_STORAGE_DAYS = {"GLACIER_IR": 90, "DEEP_ARCHIVE": 180}   # S3's minimum storage duration
+MIN_TIER_DAYS = 1
+MIN_SIZE_DEFAULT = "all_storage_classes_128K"                     # S3's default for small objects
 
 
 @dataclass(frozen=True)
@@ -164,6 +170,18 @@ def undo_days(bset: dict, folder: str) -> int:
     return _pos_int((bset["folders"].get(folder) or {}).get("undo_days"), DEFAULT_UNDO_DAYS)
 
 
+def folder_tier(bset: dict, folder: str) -> dict | None:
+    """A folder's cheaper tier for old versions (storage.json folders[<folder>].tier), or None."""
+    t = (bset["folders"].get(folder) or {}).get("tier")
+    if not isinstance(t, dict) or t.get("class") not in TIER_CLASSES:
+        return None
+    try:
+        days = int(t.get("after_days"))
+    except (TypeError, ValueError):
+        return None
+    return {"class": t["class"], "after_days": days} if days >= MIN_TIER_DAYS else None
+
+
 # --- rules ----------------------------------------------------------------------
 
 def _rule(folder: str, **actions) -> dict:
@@ -195,6 +213,35 @@ def housekeeping_rule(bset: dict) -> dict:
     return r
 
 
+def with_tier(folder: str, rule: dict | None, tier: dict | None) -> dict | None:
+    """A folder rule plus its cheaper tier for old versions (or a tier-only rule when the folder
+    keeps everything). A tier that can't move anything before S3 removes it (after_days >= the
+    expiry days) is left off: S3 rejects that rule, and leaving the move off keeps more."""
+    if not tier:
+        return rule
+    d, _n = expiry(rule)
+    if tier["after_days"] >= d:
+        return rule
+    t = [{"NoncurrentDays": tier["after_days"], "StorageClass": tier["class"]}]
+    return {**rule, "NoncurrentVersionTransitions": t} if rule else _rule(folder, NoncurrentVersionTransitions=t)
+
+
+def tier_error(tier: dict | None, rule: dict | None) -> str | None:
+    """Owner words for a tier the editor must refuse (spec error table), else None."""
+    if not tier:
+        return None
+    if tier.get("class") not in TIER_CLASSES:
+        return "Pick Glacier Instant Retrieval or Deep Archive."
+    days = tier.get("after_days")
+    if not isinstance(days, int) or days < MIN_TIER_DAYS:
+        return f"Move old versions after {_days(MIN_TIER_DAYS)} or more."
+    d, _n = expiry(rule)
+    if days >= d:
+        return (f"Old versions must move before S3 removes them — move them before {int(d)} days, "
+                "or keep them longer.")
+    return None
+
+
 def notes_for(bucket: str, base: str, jobs: list[dict]) -> list[str]:
     """Owner-facing notes on folders whose rule isn't the job's own setting."""
     return [f.note for f in folders_for(bucket, base, jobs) if f.note]
@@ -205,6 +252,7 @@ def desired_rules(bucket: str, base: str, jobs: list[dict], settings: dict) -> l
     rules = []
     for f in folders_for(bucket, base, jobs):
         r = plain_rule(f.folder, f.retention) if f.kind == "plain" else undo_rule(f.folder, undo_days(bset, f.folder))
+        r = with_tier(f.folder, r, folder_tier(bset, f.folder))
         if r:
             rules.append(r)
     rules.append(housekeeping_rule(bset))
@@ -442,20 +490,42 @@ def expiry(rule) -> tuple[float, int]:
     return _nce_pair(nce, 1)
 
 
+def tier_of(rule) -> tuple[str, int] | None:
+    """(storage class, days after being replaced) of a rule's earliest old-version move, or None."""
+    r = rule or {}
+    if r.get("Status") == "Disabled":
+        return None
+    ts = _as_list(r.get("NoncurrentVersionTransitions")) + _as_list(r.get("NoncurrentVersionTransition"))
+    if not ts:
+        return None
+    t = min(ts, key=lambda x: int(x.get("NoncurrentDays", 0) or 0))
+    return str(t.get("StorageClass", "")), int(t.get("NoncurrentDays", 0) or 0)
+
+
+def tier_keeps_less(before, after) -> bool:
+    """A tier added, moved earlier or switched to another class keeps less (spec §2)."""
+    bt, at = tier_of(before), tier_of(after)
+    return at is not None and (bt is None or at[0] != bt[0] or at[1] < bt[1])
+
+
 def keeps_less(before, after) -> bool:
-    """True when `after` can remove an old version `before` keeps: it removes sooner, or it
-    protects fewer newest versions (a removed newest-N limit protects none). Exact for S3's
-    NoncurrentVersionExpiration; a removed limit keeps more."""
+    """True when `after` can remove an old version `before` keeps (it removes sooner, or
+    protects fewer newest versions), or moves old versions to a cheaper tier sooner."""
     bd, bn = expiry(before)
     ad, an = expiry(after)
-    return ad != math.inf and (ad < bd or an < bn)
+    return (ad != math.inf and (ad < bd or an < bn)) or tier_keeps_less(before, after)
 
 
 def _keeps_words(rule) -> str:
+    """The "what happens to old versions" phrase, including any cheaper-tier move -- shares
+    _old_version_words with describe() (fix round 1, Minor) so the non-tier wording never
+    drifts between the two; only the tier suffix is new here."""
     d, n = expiry(rule)
-    if d == math.inf:
-        return "every old version kept"
-    return _old_version_words(d, n)
+    words = "every old version kept" if d == math.inf else _old_version_words(d, n)
+    t = tier_of(rule)
+    if t:
+        words += f"; moved to {vocab.CLASS_NAMES.get(t[0], t[0])} {_days(t[1])} after being replaced"
+    return words
 
 
 def _change_words(rid: str, before, after) -> str:
@@ -735,7 +805,9 @@ def _fail(creds, stderr: str) -> LifecycleError:
     return LifecycleError(kind, detail)
 
 
-def read_rules(bucket: str, creds: dict, region: str, *, run=provision._run_aws) -> list[dict]:
+def read_lifecycle(bucket: str, creds: dict, region: str, *, run=provision._run_aws) -> tuple[list[dict], str | None]:
+    """The bucket's lifecycle rules and its TransitionDefaultMinimumObjectSize (None when S3 or
+    this aws CLI doesn't report one). NoSuchLifecycleConfiguration -> no rules."""
     cp = _call(run, creds, region, ["s3api", "get-bucket-lifecycle-configuration",
                                     "--bucket", bucket, "--output", "json"])
     if cp.returncode == 0:
@@ -743,16 +815,28 @@ def read_rules(bucket: str, creds: dict, region: str, *, run=provision._run_aws)
             data = json.loads(cp.stdout or "{}")
         except ValueError:
             raise LifecycleError("aws", "unreadable lifecycle response")
-        rules = data.get("Rules") if isinstance(data, dict) else None
-        return list(rules) if isinstance(rules, list) else []
+        data = data if isinstance(data, dict) else {}
+        rules, size = data.get("Rules"), data.get("TransitionDefaultMinimumObjectSize")
+        return (list(rules) if isinstance(rules, list) else []), (size if isinstance(size, str) else None)
     if "NoSuchLifecycleConfiguration" in (cp.stderr or ""):
-        return []
+        return [], None
     raise _fail(creds, cp.stderr)
 
 
-def write_rules(bucket: str, rules: list[dict], creds: dict, region: str, *, run=provision._run_aws) -> None:
-    cp = _call(run, creds, region, ["s3api", "put-bucket-lifecycle-configuration", "--bucket", bucket,
-                                    "--lifecycle-configuration", json.dumps({"Rules": rules})])
+def read_rules(bucket: str, creds: dict, region: str, *, run=provision._run_aws) -> list[dict]:
+    return read_lifecycle(bucket, creds, region, run=run)[0]
+
+
+def write_rules(bucket: str, rules: list[dict], creds: dict, region: str, *, run=provision._run_aws,
+                min_size: str | None = None) -> None:
+    """Put the whole configuration (S3 replaces it). A small-object setting the owner chose
+    (anything but S3's default) is passed back so a put never resets it (#9); the app never
+    sets one itself."""
+    args = ["s3api", "put-bucket-lifecycle-configuration", "--bucket", bucket,
+            "--lifecycle-configuration", json.dumps({"Rules": rules})]
+    if min_size and min_size != MIN_SIZE_DEFAULT:
+        args += ["--transition-default-minimum-object-size", min_size]
+    cp = _call(run, creds, region, args)
     if cp.returncode != 0:
         raise _fail(creds, cp.stderr)
 
@@ -1158,7 +1242,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     stale = False
     try:
         creds = role_creds(config_dir, region, run=run)
-        live = read_rules(bucket, creds, region, run=run)
+        live, min_size = read_lifecycle(bucket, creds, region, run=run)
     except LifecycleError as e:
         set_status(cache, bucket, _err_state(e), e.detail)
         return _err_state(e), None, e, stale
@@ -1272,7 +1356,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     _write_in_flight(cache, bucket, target, folders, record_ver)          # fix round 2, (b)
     try:
         if not rules_in_step:
-            write_rules(bucket, merge(live, target), creds, region, run=run)
+            write_rules(bucket, merge(live, target), creds, region, run=run, min_size=min_size)
             rules_written = True
         if not ver_in_step:
             write_versioning(bucket, target_ver, creds, region, run=run)
@@ -1625,10 +1709,11 @@ def _summary_fresh(summary: dict | None) -> bool:
 def _needs_typed(change: Change, imp: dict | None, fresh: bool) -> bool:
     """Typed confirmation whenever the change deletes anything -- or might: no summary yet, or
     one older than SUMMARY_STALE_DAYS (spec error table: "Summary missing or old", fix round 1
-    I2) -- or suspends versioning."""
+    I2) -- suspends versioning, or moves history to a cheaper tier (spec §3's tier damage
+    warning: minimum storage charge, small objects untouched, hours-and-money restores)."""
     if change.folder is None:
         return change.rule_id == "versioning"
-    return imp is None or not fresh or imp["versions"] > 0
+    return imp is None or not fresh or imp["versions"] > 0 or tier_keeps_less(change.before, change.after)
 
 
 def preview(cfg, bucket: str, edit: dict) -> Preview:
@@ -1679,7 +1764,9 @@ def preview(cfg, bucket: str, edit: dict) -> Preview:
         summary = storage_summary.load(cache, bucket, c.folder)
         fresh[c.rule_id] = _summary_fresh(summary)
         impacts[c.rule_id] = (dict(storage_summary.impact(summary, c.before, c.after),
-                                   scanned_at=summary.get("scanned_at")) if summary else None)
+                                   scanned_at=summary.get("scanned_at"),
+                                   moved=storage_summary.moved(summary, c.before, c.after))
+                              if summary else None)
     needs_typed = any(_needs_typed(c, impacts.get(c.rule_id), fresh.get(c.rule_id, False)) for c in less)
     token = None
     if own:

@@ -221,3 +221,23 @@ def impact(summary: dict, old_rule, new_rule) -> dict:
             size += b
             oldest = age if oldest is None else max(oldest, age)
     return {"versions": versions, "bytes": size, "oldest_age_days": oldest}
+
+
+def moved(summary: dict, old_rule, new_rule) -> dict:
+    """Old versions `new_rule` moves to its cheaper tier that `old_rule` didn't (and that the
+    new rule doesn't remove first): {"versions", "bytes"}. Objects under S3's minimum size for
+    a move are counted too -- the preview says they stay where they are."""
+    nt = lifecycle.tier_of(new_rule)
+    if nt is None:
+        return {"versions": 0, "bytes": 0}
+    ot = lifecycle.tier_of(old_rule)
+    nd, nn = lifecycle.expiry(new_rule)
+    versions = size = 0
+    for age, rank, n, b in summary.get("noncurrent_by_age_rank") or []:
+        if age < nt[1] or (age >= nd and rank > nn):
+            continue
+        if ot is not None and ot[0] == nt[0] and age >= ot[1]:
+            continue
+        versions += n
+        size += b
+    return {"versions": versions, "bytes": size}

@@ -109,10 +109,10 @@ def test_a_malformed_plain_copy_job_keeps_everything_and_the_check_still_runs(cf
 
 
 @pytest.mark.parametrize("with_applied,target,exc", [
-    (False, "read_rules", RuntimeError("boom")),
+    (False, "read_lifecycle", RuntimeError("boom")),
     (False, "save_applied", OSError(28, "No space left on device")),
     (False, "desired_rules", ValueError("bad")),
-    (True, "read_rules", RuntimeError("boom")),
+    (True, "read_lifecycle", RuntimeError("boom")),
     (True, "write_rules", OSError(28, "No space left on device")),
     (True, "_change_lines", KeyError("x")),
 ])
@@ -133,7 +133,7 @@ def test_check_never_raises_even_when_the_status_file_cannot_be_written(cfg, mon
     def boom(*a, **k):
         raise OSError(30, "Read-only file system")
     monkeypatch.setattr(lc, "set_status", boom)
-    monkeypatch.setattr(lc, "read_rules", boom)
+    monkeypatch.setattr(lc, "read_lifecycle", boom)
     assert lc.check(cfg, BASE, run=FakeS3()) == "error"
 
 

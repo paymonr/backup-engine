@@ -204,3 +204,14 @@ def test_impact_is_exact_for_days_newest_and_both():
     both = {"NoncurrentVersionExpiration": {"NoncurrentDays": 20, "NewerNoncurrentVersions": 1}}
     assert ss.impact(s, None, both) == {"versions": 0, "bytes": 0, "oldest_age_days": None}
     assert ss.impact(s, _days(3), None) == {"versions": 0, "bytes": 0, "oldest_age_days": None}
+
+
+def test_moved_counts_what_a_tier_newly_moves():
+    s = _scan()                                              # old versions aged 1, 3 and 13 days
+    tier = {"NoncurrentVersionTransitions": [{"NoncurrentDays": 3, "StorageClass": "DEEP_ARCHIVE"}]}
+    assert ss.moved(s, None, tier) == {"versions": 2, "bytes": 150}
+    earlier = {"NoncurrentVersionTransitions": [{"NoncurrentDays": 1, "StorageClass": "DEEP_ARCHIVE"}]}
+    assert ss.moved(s, tier, earlier) == {"versions": 1, "bytes": 1000}          # only the newly reached one
+    removed_first = dict(tier, NoncurrentVersionExpiration={"NoncurrentDays": 10})
+    assert ss.moved(s, None, removed_first) == {"versions": 1, "bytes": 100}      # age 13 is removed instead
+    assert ss.moved(s, tier, None) == {"versions": 0, "bytes": 0}

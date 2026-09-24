@@ -316,7 +316,7 @@ def test_check_now_with_a_malformed_job_redirects_not_500(client, cfg, monkeypat
     from app.gui import provision
     fake = FakeS3()
     monkeypatch.setattr(provision, "_run_aws", fake)
-    monkeypatch.setattr(lifecycle, "read_rules", lambda b, c, r, **k: fake.rules.get(b, []))
+    monkeypatch.setattr(lifecycle, "read_lifecycle", lambda b, c, r, **k: (fake.rules.get(b, []), None))
     monkeypatch.setattr(lifecycle, "write_rules", lambda b, rules, c, r, **k: fake.rules.__setitem__(b, rules))
     monkeypatch.setattr(lifecycle, "role_creds", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "S"})
     monkeypatch.setattr(lifecycle, "read_versioning", lambda b, c, r, **k: "on")
