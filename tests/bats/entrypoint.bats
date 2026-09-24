@@ -38,7 +38,7 @@ EOF
   grep -q "^0 4 \* \* 0 .*backup-job.sh movies$" "$CACHE_DIR/crontab"
   grep -q "^0 3 \* \* \* .*backup-job.sh appdata$" "$CACHE_DIR/crontab"
   ! grep -q "scratch" "$CACHE_DIR/crontab"
-  grep -qx '17 \* \* \* \* python3 -m app.engine.lifecycle check-all' "$CACHE_DIR/crontab"
+  grep -qx '17 \* \* \* \* timeout 900 python3 -m app.engine.lifecycle check-all' "$CACHE_DIR/crontab"
   [ "$(wc -l <"$CACHE_DIR/crontab")" -eq 3 ]
 }
 

@@ -124,10 +124,11 @@ main() {
   # S3 rules tamper check (spec 2026-09-23 §2): the app's lifecycle rules for this job's
   # bucket must still be what it applied; drift is restored + alarmed. Never blocks the run:
   # a failure only warns, and `timeout` (coreutils, in the image) cuts off a hung AWS endpoint
-  # or a long wait on the bucket's state lock. The pass can now make up to 5 aws calls
-  # (assume-role, get/put lifecycle rules, get/put versioning), each with its own 10s connect
-  # + 30s read timeout -- 5 x (10 + 30) = 200s worst case before the CLI's own retries even
-  # start, so the outer budget is 240s, not 180 (fix round 2, (f)). LIFECYCLE_CMD/
+  # or a long wait on the bucket's state lock. The pass makes up to 5 aws calls (assume-role,
+  # get/put lifecycle rules, get/put versioning), each with its own 10s connect + 30s read
+  # timeout and at most 2 attempts (AWS_MAX_ATTEMPTS=2, standard retry mode -- final fix wave
+  # M1), so one hung call can't eat the whole 240s budget by itself; when the budget does run
+  # out, the check's SIGTERM handler records "timed out" for the bucket. LIFECYCLE_CMD/
   # LIFECYCLE_TIMEOUT are test seams.
   # shellcheck disable=SC2086  # LIFECYCLE_CMD is a command line, split on purpose
   timeout "${LIFECYCLE_TIMEOUT:-240}" ${LIFECYCLE_CMD:-python3 -m app.engine.lifecycle} \

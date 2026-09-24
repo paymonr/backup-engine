@@ -181,11 +181,12 @@ def _write_atomic(path: Path, text: str) -> None:
 
 
 @contextmanager
-def _flock(path: Path):
-    """An exclusive fcntl lock held for the block (released on exit or process death)."""
+def _flock(path: Path, blocking: bool = True):
+    """An exclusive fcntl lock held for the block (released on exit or process death).
+    blocking=False raises BlockingIOError instead of waiting (the SIGTERM handler, M1)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        fcntl.flock(fh, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         try:
             yield
         finally:
@@ -988,7 +989,20 @@ def _timed(run):
     return lambda args, **kw: run([*args, *_AWS_TIMEOUTS], **kw)
 
 
-def role_creds(config_dir: str, region: str, *, run=provision._run_aws) -> dict:
+# Final fix wave M1: the CLI's own retries on top of those timeouts -- legacy mode's default of
+# 5 attempts lets ONE hung call take minutes; two attempts in standard mode bound it, so the
+# pass's handful of calls stays inside the pre-backup check's `timeout` (and check-all's).
+_AWS_RETRY_ENV = {"AWS_MAX_ATTEMPTS": "2", "AWS_RETRY_MODE": "standard"}
+
+
+def _run_aws(args, *, region, key, secret, session_token=None):
+    """lifecycle's own aws runner: provision's credential env plus the bounded retries above."""
+    env = provision._aws_env(region, key, secret, session_token)
+    env.update(_AWS_RETRY_ENV)
+    return subprocess.run(["aws", *args], env=env, capture_output=True, text=True)
+
+
+def role_creds(config_dir: str, region: str, *, run=_run_aws) -> dict:
     from .sysop import _runtime_key      # local import: sysop is heavy and imports gui modules
     key, secret = _runtime_key(config_dir)
     try:
@@ -1010,7 +1024,7 @@ def _fail(creds, stderr: str) -> LifecycleError:
     return LifecycleError(kind, detail)
 
 
-def read_lifecycle(bucket: str, creds: dict, region: str, *, run=provision._run_aws) -> tuple[list[dict], str | None]:
+def read_lifecycle(bucket: str, creds: dict, region: str, *, run=_run_aws) -> tuple[list[dict], str | None]:
     """The bucket's lifecycle rules and its TransitionDefaultMinimumObjectSize (None when S3 or
     this aws CLI doesn't report one). NoSuchLifecycleConfiguration -> no rules."""
     cp = _call(run, creds, region, ["s3api", "get-bucket-lifecycle-configuration",
@@ -1029,7 +1043,7 @@ def read_lifecycle(bucket: str, creds: dict, region: str, *, run=provision._run_
 
 
 MIN_SIZE_FLAG = "--transition-default-minimum-object-size"
-# Probed once per `run` (production has exactly one: provision._run_aws) -- [(run, supported)],
+# Probed once per `run` (production has exactly one: lifecycle's own _run_aws) -- [(run, supported)],
 # a list rather than a dict keyed by id(run) so a garbage-collected run object's id can never be
 # reused and silently hand back a stale answer (fix round 1, #9 controller ruling).
 _MIN_SIZE_PROBED: list = []
@@ -1053,7 +1067,7 @@ def _min_size_supported(run, creds, region) -> bool:
     return supported
 
 
-def write_rules(bucket: str, rules: list[dict], creds: dict, region: str, *, run=provision._run_aws,
+def write_rules(bucket: str, rules: list[dict], creds: dict, region: str, *, run=_run_aws,
                 min_size: str | None = None) -> None:
     """Put the whole configuration (S3 replaces it). A small-object setting the owner chose
     (anything but S3's default) is passed back so a put never resets it (#9) -- but only when
@@ -1077,7 +1091,7 @@ _VER_WORDS = {"on": "on", "suspended": "suspended", "never": "never turned on"}
 VERSIONING_STATES = ("on", "suspended")            # the only states the app itself ever stores/writes
 
 
-def read_versioning(bucket: str, creds: dict, region: str, *, run=provision._run_aws) -> str:
+def read_versioning(bucket: str, creds: dict, region: str, *, run=_run_aws) -> str:
     """"on" | "suspended" | "never" -- a bucket that was never versioned reports no Status."""
     cp = _call(run, creds, region, ["s3api", "get-bucket-versioning", "--bucket", bucket, "--output", "json"])
     if cp.returncode != 0:
@@ -1089,7 +1103,7 @@ def read_versioning(bucket: str, creds: dict, region: str, *, run=provision._run
     return _VERSIONING.get(status, "never")
 
 
-def write_versioning(bucket: str, state: str, creds: dict, region: str, *, run=provision._run_aws) -> None:
+def write_versioning(bucket: str, state: str, creds: dict, region: str, *, run=_run_aws) -> None:
     # fix round 1, Minor: never silently send Suspended for a bad `state` -- a caller bug
     # must surface as a bug, not as an unintended suspend.
     if state not in VERSIONING_STATES:
@@ -1141,8 +1155,8 @@ def bucket_lock(cache_dir: str, bucket: str):
     return _flock(Path(_state_dir(cache_dir), f"{bucket}.lock"))
 
 
-def _status_lock(cache_dir: str):
-    return _flock(Path(_state_dir(cache_dir), "_status.lock"))
+def _status_lock(cache_dir: str, blocking: bool = True):
+    return _flock(Path(_state_dir(cache_dir), "_status.lock"), blocking)
 
 
 def _applied_doc(cache_dir: str, bucket: str) -> dict | None:
@@ -1344,7 +1358,7 @@ _FROM_DISK = object()          # set_status's default: read the prior alarm from
 
 
 def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm: dict | None = None, *,
-               ver_managed: bool = True, prior_alarm=_FROM_DISK) -> None:
+               ver_managed: bool = True, prior_alarm=_FROM_DISK, blocking: bool = True) -> None:
     """state: ok | error | unsupported | restored | not_restored. An `alarm` (restored |
     not_restored | console_rule) survives later clean checks until the owner
     acknowledges it; a new one is merged with any still open (merge_alarms). A pass that
@@ -1369,7 +1383,7 @@ def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm:
     guess would let a merely-provisional "not_restored" (severity 3) permanently outrank and
     erase a genuinely open, lower-severity alarm (e.g. "console_rule", severity 2) that was
     there first, even once the true outcome turns out milder than the guess."""
-    with _status_lock(cache_dir):                # buckets share this file: read-modify-write locked
+    with _status_lock(cache_dir, blocking):      # buckets share this file: read-modify-write locked
         data = load_status(cache_dir)
         prev = data.get(bucket) or {}
         prev_alarm = prev.get("alarm") if prior_alarm is _FROM_DISK else prior_alarm
@@ -1435,9 +1449,34 @@ def _config_error(cache: str, bucket: str, detail: str, stale: bool):
 TAMPERED = "S3 rules were changed outside backup-engine"
 
 
+# The bucket a check/sync pass is working on in THIS process (final fix wave M1) -- what the
+# CLI's SIGTERM handler records as timed out when `timeout` kills the pass.
+_ACTIVE: dict = {"cache": None, "bucket": None}
+TIMED_OUT = "the check timed out before it finished — try Check now"
+
+
 def _reconcile(cfg, bucket: str, *, run, trigger: str, run_id: str | None = None):
-    with bucket_lock(cfg["CACHE_DIR"], bucket):
-        return _reconcile_locked(cfg, bucket, run=run, trigger=trigger, run_id=run_id)
+    _ACTIVE.update(cache=cfg["CACHE_DIR"], bucket=bucket)
+    try:
+        with bucket_lock(cfg["CACHE_DIR"], bucket):      # waiting for the lock counts as checking
+            return _reconcile_locked(cfg, bucket, run=run, trigger=trigger, run_id=run_id)
+    finally:
+        _ACTIVE.update(cache=None, bucket=None)
+
+
+def _on_term(signum, frame):
+    """The lifecycle CLI's SIGTERM handler (M1: `timeout` around check / check-all): record
+    state "error" (timed out) for the bucket being checked, then exit -- the SystemExit unwinds
+    through subprocess.run (which kills a hung aws child) and releases every lock. The status
+    lock is only TRIED: if this process already holds it (killed inside set_status), recording
+    is skipped rather than deadlocking against itself. Any open alarm stays (set_status keeps it)."""
+    cache, bucket = _ACTIVE.get("cache"), _ACTIVE.get("bucket")
+    if cache and bucket:
+        try:
+            set_status(cache, bucket, "error", TIMED_OUT, blocking=False)
+        except Exception:                                    # noqa: BLE001 -- busy lock, unwritable dir
+            pass
+    raise SystemExit(128 + int(signum))
 
 
 def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True, expect: str | None = None,
@@ -1720,7 +1759,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     return headline("ok"), SyncResult(bucket, True, lines, headline("ok"), waiting), None, stale
 
 
-def sync(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "manual") -> SyncResult:
+def sync(cfg, bucket: str, *, run=_run_aws, trigger: str = "manual") -> SyncResult:
     """Apply the desired app rules to `bucket` (console rules kept) -- job save/delete,
     setup. Rules changed outside backup-engine since the last apply are alarmed, not
     silently absorbed. Raises LifecycleError on failure (after recording it)."""
@@ -1732,7 +1771,7 @@ def sync(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "manual") -
     return res
 
 
-def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
+def sync_all(cfg, *, run=_run_aws) -> list[SyncResult]:
     base, _, _ = _context(cfg)
     jobs = jobs_io.load(cfg["CONFIG_DIR"])
     results, errors = [], []
@@ -1752,7 +1791,7 @@ def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
 
 # --- tamper check -----------------------------------------------------------------------
 
-def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled",
+def check(cfg, bucket: str, *, run=_run_aws, trigger: str = "scheduled",
           run_id: str | None = None) -> str:
     """Before every backup run (trigger "scheduled"), the hourly check-all, and behind Check
     now ("manual"): the same pass as sync() -- drift from what was applied is restored +
@@ -2161,7 +2200,7 @@ def preview(cfg, bucket: str, edit: dict) -> Preview:
     return Preview(bucket, token, changes, less, own, impacts, needs_typed, edit)
 
 
-def apply_confirmed(cfg, token: str, typed: str, *, run=provision._run_aws) -> SyncResult:
+def apply_confirmed(cfg, token: str, typed: str, *, run=_run_aws) -> SyncResult:
     """The owner confirmed a preview: re-check it, save its edit, and write the proposed rules
     WITHOUT the gate, under the bucket lock (R-B4) -- the token is read once inside that lock
     (strict single use: an already-consumed token is stale), and the final write is re-checked
@@ -2266,6 +2305,9 @@ def main(argv=None) -> int:
     sub.add_parser("check-all")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     cfg = _cfg_from_env()
+    if args.cmd in ("check", "check-all"):
+        import signal
+        signal.signal(signal.SIGTERM, _on_term)             # M1: a killed check says so
     if args.cmd == "check":
         # O4: backup-job.sh passes BE_TRIGGER, so a Run now records its check as manual.
         trigger = args.trigger if _TRIGGER.fullmatch(args.trigger or "") else "scheduled"

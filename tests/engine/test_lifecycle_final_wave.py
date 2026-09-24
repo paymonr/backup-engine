@@ -504,3 +504,88 @@ def test_a_job_save_sync_never_notifies(cfg, sent):
     _tamper(fake)
     assert lc.sync(cfg, BASE, run=fake).state == "restored"      # the owner is right there (a flash)
     assert sent == []
+
+
+# --- M1: one hung call can't eat the budget; a killed check says so -------------------------
+
+def test_lifecycle_aws_calls_retry_at_most_once_in_standard_mode(monkeypatch):
+    import subprocess
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(cmd=cmd, env=kw.get("env"))
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    lc._run_aws(["s3api", "get-bucket-versioning"], region="us-east-1", key="AK", secret="SK", session_token="T")
+    assert seen["cmd"][0] == "aws"
+    assert seen["env"]["AWS_MAX_ATTEMPTS"] == "2" and seen["env"]["AWS_RETRY_MODE"] == "standard"
+    assert seen["env"]["AWS_ACCESS_KEY_ID"] == "AK" and seen["env"]["AWS_SESSION_TOKEN"] == "T"
+
+
+@pytest.mark.parametrize("fn", ["role_creds", "read_lifecycle", "write_rules", "read_versioning",
+                                "write_versioning", "sync", "sync_all", "check", "apply_confirmed"])
+def test_every_lifecycle_entry_point_defaults_to_the_lifecycle_runner(fn):
+    assert getattr(lc, fn).__kwdefaults__["run"] is lc._run_aws
+
+
+def test_a_killed_check_records_that_it_timed_out(cfg):
+    import signal
+    lc._ACTIVE.update(cache=cfg["CACHE_DIR"], bucket=BASE)
+    try:
+        with pytest.raises(SystemExit):
+            lc._on_term(signal.SIGTERM, None)
+    finally:
+        lc._ACTIVE.update(cache=None, bucket=None)
+    st = _status(cfg)
+    assert st["state"] == "error" and "timed out" in st["detail"]
+
+
+def test_a_kill_while_the_status_file_is_locked_never_deadlocks(cfg):
+    import signal
+    import threading
+    done = []
+
+    def term():
+        try:
+            lc._on_term(signal.SIGTERM, None)
+        except SystemExit:
+            done.append(True)
+    lc._ACTIVE.update(cache=cfg["CACHE_DIR"], bucket=BASE)
+    try:
+        with lc._status_lock(cfg["CACHE_DIR"]):            # e.g. killed inside set_status
+            t = threading.Thread(target=term)
+            t.start()
+            t.join(5)
+            assert not t.is_alive() and done == [True]
+    finally:
+        lc._ACTIVE.update(cache=None, bucket=None)
+
+
+def test_a_kill_between_checks_records_nothing(cfg):
+    import signal
+    with pytest.raises(SystemExit):
+        lc._on_term(signal.SIGTERM, None)
+    assert _status(cfg) == {}
+
+
+def test_the_cli_check_killed_by_timeout_records_timed_out(cfg, tmp_path):
+    # End to end through the real CLI: a stand-in `aws` (never the real one) that hangs, and
+    # `timeout` sending SIGTERM -- the handler records the state for the bucket being checked.
+    import os
+    import subprocess
+    import sys
+    import time
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "aws").write_text("#!/bin/sh\nexec sleep 30\n")
+    (bin_dir / "aws").chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CONFIG_DIR=cfg["CONFIG_DIR"],
+               CACHE_DIR=cfg["CACHE_DIR"], APPRISE_URLS="")
+    start = time.monotonic()
+    cp = subprocess.run(["timeout", "3", sys.executable, "-m", "app.engine.lifecycle", "check", "--bucket", BASE],
+                        env=env, capture_output=True, text=True, cwd=Path(__file__).resolve().parents[2])
+    assert time.monotonic() - start < 20
+    assert cp.returncode != 0
+    st = _status(cfg)
+    assert st["state"] == "error" and "timed out" in st["detail"]

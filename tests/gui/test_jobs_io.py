@@ -579,7 +579,9 @@ def test_render_crontab_adds_the_hourly_s3_rules_check_after_the_jobs(tmp_path):
     jobs_io.upsert(cfg, _job(name="movies", schedule="0 4 * * 0", enabled=True), source_root=root)
     text = jobs_io.render_crontab(cfg, str(tmp_path / "cache"), "/app/scripts", dry_run=True, source_root=root)
     assert text.splitlines()[-1] == jobs_io.S3_RULES_CHECK_LINE
-    assert jobs_io.S3_RULES_CHECK_LINE == "17 * * * * python3 -m app.engine.lifecycle check-all"
+    # final fix wave M1: under `timeout` -- a hung check-all is cut off (its SIGTERM handler
+    # records "timed out" for the bucket it was on) well before the next hour's run
+    assert jobs_io.S3_RULES_CHECK_LINE == "17 * * * * timeout 900 python3 -m app.engine.lifecycle check-all"
 
 
 def test_render_crontab_without_jobs_stays_empty(tmp_path):

@@ -19,8 +19,10 @@ _RETENTION_TYPES = ("keep_all", "days", "count", "tiered")
 
 # The hourly S3 rules tamper check (spec 2026-09-23, R-B9). entrypoint.sh:emit_crontab prints
 # the SAME line under the same condition (at least one scheduled job) -- crontab_stale
-# compares the two renders byte for byte.
-S3_RULES_CHECK_LINE = "17 * * * * python3 -m app.engine.lifecycle check-all"
+# compares the two renders byte for byte. Under `timeout` (final fix wave M1): a hung check-all
+# is cut off long before the next hour's -- its SIGTERM handler records "timed out" for the
+# bucket it was on.
+S3_RULES_CHECK_LINE = "17 * * * * timeout 900 python3 -m app.engine.lifecycle check-all"
 
 def valid_name(s: str) -> bool:
     return bool(JOB_NAME_RE.match(s or "")) and s not in (".", "..")

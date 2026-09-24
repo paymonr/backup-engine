@@ -44,7 +44,7 @@ emit_crontab() {
   # caught between backup runs too. Same line + same condition as jobs_io.render_crontab
   # (S3_RULES_CHECK_LINE) -- crontab_stale compares the two renders byte for byte.
   if [ -s "$ct" ]; then
-    printf '%s\n' '17 * * * * python3 -m app.engine.lifecycle check-all' >>"$ct"
+    printf '%s\n' '17 * * * * timeout 900 python3 -m app.engine.lifecycle check-all' >>"$ct"
   fi
   log_info "wrote crontab:"; cat "$ct"
 }
