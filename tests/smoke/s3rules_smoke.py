@@ -36,7 +36,8 @@
 #   S6  versioning: never-versioned bucket; suspend through typed confirmation; back on via sync
 #   S7  tamper on real S3: an outside edit is restored + alarmed; a console rule is kept + alarmed
 #   S8  killed between the put and the record: the write journal is adopted, nothing re-written
-#   S9  the local `help` probe for --transition-default-minimum-object-size (no credentials)
+#   S9  the local CLI-support probe for --transition-default-minimum-object-size
+#       (`--generate-cli-skeleton input`, no credentials)
 #   S10 storage summary on real object versions, paged 2 at a time; impact of shorter rules
 #   S11 (skipped) the Verify version-delete probe -- exercised by the permissions Verify
 #   S12 (opt-in, SMOKE_TOFU=1) tofu init + validate of the shipped OpenTofu module
@@ -166,14 +167,17 @@ def _bucket_of(args) -> str | None:
     return None
 
 
-def _is_help(args) -> bool:
+def _is_local(args) -> bool:
+    """`aws s3api <op> help` or `aws s3api <op> --generate-cli-skeleton ...` (the app's CLI-support
+    probe): answered by the CLI itself, never sent to AWS -- as long as it names no bucket."""
     args = list(args)
-    return len(args) >= 3 and args[2] == "help" and "--bucket" not in args and "--cli-input-json" not in args
+    return (len(args) >= 3 and (args[2] == "help" or "--generate-cli-skeleton" in args)
+            and "--bucket" not in args and "--cli-input-json" not in args)
 
 
 class SafetyGuard:
     """Every aws call passes verdict() first. Allowed: `aws --version`, a local `aws s3api <op>
-    help`, ANY s3api call on one of this run's scratch buckets, and on any other bucket only
+    help` / `--generate-cli-skeleton`, ANY s3api call on one of this run's scratch buckets, and on any other bucket only
     get-bucket-lifecycle-configuration / get-bucket-versioning / get-bucket-location. Anything
     else -- a mutating call (create-*, put-*, delete-*, restore-object, ...) or even another read
     on a live bucket, a call with no bucket, another service -- raises SafetyGuardViolation."""
@@ -191,7 +195,7 @@ class SafetyGuard:
         service, op = _op_of(args)
         if service is None:
             return None if op == "--version" else f"aws {op}: not a call this test makes"
-        if service == "s3api" and _is_help(args):
+        if service == "s3api" and _is_local(args):
             return None
         if service != "s3api":
             return f"aws {service} {op}: only s3api calls are allowed"
@@ -240,7 +244,7 @@ class Recorder:
         args = list(args)
         service, op = _op_of(args)
         key = kw.get("key") or ""
-        entry = {"n": len(self.calls) + 1, "label": self.label, "op": op, "help": _is_help(args),
+        entry = {"n": len(self.calls) + 1, "label": self.label, "op": op, "local": _is_local(args),
                  "args": [self.scrub(a) for a in args],
                  "as": "admin" if key and key == self.admin_key else ("no credentials" if not key else "OTHER KEY"),
                  "token": bool(kw.get("session_token"))}
@@ -260,7 +264,7 @@ class Recorder:
 def _with_session_token(run, key: str, token: str | None):
     """storage_summary.scan (and so sysop.storage_summary_op) passes only key/secret -- the runtime
     key has no session token. With temporary admin keys, add the token to calls made AS the admin
-    key; calls with no key at all (the local help probe, --version) stay credential-free."""
+    key; calls with no key at all (the local CLI-support probe, --version) stay credential-free."""
     if not token:
         return run
 
@@ -337,7 +341,7 @@ PLAN = [
     ("S6", "Versioning", "s6_versioning"),
     ("S7", "Tamper on real S3", "s7_tamper"),
     ("S8", "Killed between write and record", "s8_kill"),
-    ("S9", "aws-cli help probe (small-object threshold flag)", "s9_probe"),
+    ("S9", "aws-cli support probe (small-object threshold flag)", "s9_probe"),
     ("S10", "Storage summary on real S3", "s10_summary"),
     ("S11", "Verify probe dry check", "s11_verify"),
     ("S12", "OpenTofu init + validate", "s12_tofu"),
@@ -521,7 +525,7 @@ class Smoke:
         return lifecycle.load_status(self.cfg["CACHE_DIR"]).get(bucket) or {}
 
     def config_puts(self, start: int) -> list[dict]:
-        return [c for c in self.rec.calls[start:] if c["op"] in CONFIG_PUT_OPS and not c["help"]]
+        return [c for c in self.rec.calls[start:] if c["op"] in CONFIG_PUT_OPS and not c["local"]]
 
     def check(self, bucket: str, run=None) -> str:
         return lifecycle.check(self.cfg, bucket, run=run or self.R, trigger="manual")
@@ -867,7 +871,7 @@ class Smoke:
 
         def killer(args, **kw):
             cp = self.R(args, **kw)
-            if list(args)[:2] == ["s3api", "put-bucket-lifecycle-configuration"] and not _is_help(args) \
+            if list(args)[:2] == ["s3api", "put-bucket-lifecycle-configuration"] and not _is_local(args) \
                     and cp.returncode == 0:
                 raise SystemExit(137)          # as if `timeout` killed the pass right after the put
             return cp
@@ -911,7 +915,8 @@ class Smoke:
             lifecycle._MIN_SIZE_PROBED[:] = [(r, s) for r, s in lifecycle._MIN_SIZE_PROBED if r is not probe_run]
         took = time.monotonic() - t0
         calls = self.rec.calls[start:]
-        o.expect(len(calls) == 1 and calls[0]["args"] == ["s3api", "put-bucket-lifecycle-configuration", "help"],
+        o.expect(len(calls) == 1 and calls[0]["args"] == ["s3api", "put-bucket-lifecycle-configuration",
+                                                           "--generate-cli-skeleton", "input"],
                  f"the probe made {[c['args'] for c in calls]}")
         o.expect(all(c["as"] == "no credentials" and not c["token"] for c in calls),
                  "the probe was given credentials")
@@ -924,9 +929,9 @@ class Smoke:
             env_words = "no credentials passed (runner isn't the aws CLI: environment not inspected)"
         rc = calls[0].get("rc") if calls else None
         if rc not in (0, None):
-            o.note(f"`help` exited rc={rc}: {calls[0].get('out', '')[:300]}")
+            o.note(f"`--generate-cli-skeleton input` exited rc={rc}: {calls[0].get('out', '')[:300]}")
         o.summary = (f"--transition-default-minimum-object-size {'IS' if supported else 'is NOT'} supported by "
-                     f"this aws CLI ({self.aws_version}); help rc={rc}; {took:.1f}s; {env_words}")
+                     f"this aws CLI ({self.aws_version}); skeleton rc={rc}; {took:.1f}s; {env_words}")
 
     def s10_summary(self, o: Outcome) -> None:
         base, cfg, folder = self.base, self.cfg, F_PLAIN180

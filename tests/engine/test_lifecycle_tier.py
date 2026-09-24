@@ -191,23 +191,35 @@ def test_an_overlapping_legacy_expiry_that_kills_a_live_tier_does_not_hide_a_rea
     assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 30}
 
 
+SKELETON = ["s3api", "put-bucket-lifecycle-configuration", "--generate-cli-skeleton", "input"]
+# What Alpine's aws-cli (no help docs shipped) answers to `... help` -- smoke test run 1, #9.
+_NO_HELP_DOCS = ("\n[Errno 2] No such file or directory: "
+                 "'/usr/lib/python3.12/site-packages/awscli/topics/../data/topics/global_synopsis.rst'\n")
+
+
 class _SizedS3(FakeS3):
     """FakeS3 whose lifecycle configuration also reports the bucket's minimum-object-size
-    setting, and whose `... help` probe reports whether this fake aws CLI understands
-    --transition-default-minimum-object-size (fix round 1, #9)."""
-    def __init__(self, *a, min_size=None, flag_supported=True, help_fails=False, **k):
+    setting, and whose aws CLI answers the `--generate-cli-skeleton input` probe with the put's
+    input shape -- listing TransitionDefaultMinimumObjectSize only when it understands
+    --transition-default-minimum-object-size (fix round 1, #9). Like Alpine's aws-cli it ships no
+    help docs: `... help` always fails (settle-fix item 6)."""
+    def __init__(self, *a, min_size=None, flag_supported=True, probe_fails=False, **k):
         super().__init__(*a, **k)
-        self.min_size, self.flag_supported, self.help_fails = min_size, flag_supported, help_fails
-        self.help_calls = 0
+        self.min_size, self.flag_supported, self.probe_fails = min_size, flag_supported, probe_fails
+        self.probe_calls = 0
 
     def __call__(self, args, **kw):
         if args[:3] == ["s3api", "put-bucket-lifecycle-configuration", "help"]:
-            self.help_calls += 1
-            if self.help_fails:
-                return SimpleNamespace(returncode=255, stdout="", stderr="unknown command")
-            text = ("--transition-default-minimum-object-size (string)\n" if self.flag_supported
-                    else "some other help text\n")
-            return SimpleNamespace(returncode=0, stdout=text, stderr="")
+            return SimpleNamespace(returncode=255, stdout="", stderr=_NO_HELP_DOCS)
+        if args == SKELETON:
+            self.probe_calls += 1
+            if self.probe_fails:
+                return SimpleNamespace(returncode=252, stdout="", stderr="Unknown options: --generate-cli-skeleton")
+            shape = {"Bucket": "", "ChecksumAlgorithm": "CRC32", "LifecycleConfiguration": {"Rules": []},
+                     "ExpectedBucketOwner": ""}
+            if self.flag_supported:
+                shape["TransitionDefaultMinimumObjectSize"] = "varies_by_storage_class"
+            return SimpleNamespace(returncode=0, stdout=json.dumps(shape, indent=4), stderr="")
         cp = super().__call__(args, **kw)
         if args[:2] == ["s3api", "get-bucket-lifecycle-configuration"] and cp.returncode == 0 and self.min_size:
             data = json.loads(cp.stdout)
@@ -240,14 +252,14 @@ def test_the_flag_is_never_sent_when_this_aws_cli_doesnt_support_it(cfg):
                              "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 3}}]},
                     min_size="varies_by_storage_class", flag_supported=False)
     lc.sync(cfg, BASE, run=fake)
-    assert fake.help_calls == 1
+    assert fake.probe_calls == 1
     assert all("--transition-default-minimum-object-size" not in c for c in fake.puts())
 
 
 def test_a_failed_probe_counts_as_unsupported(cfg):
     fake = _SizedS3({BASE: [{"ID": "x", "Status": "Enabled", "Filter": {"Prefix": "logs/"},
                              "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 3}}]},
-                    min_size="varies_by_storage_class", help_fails=True)
+                    min_size="varies_by_storage_class", probe_fails=True)
     lc.sync(cfg, BASE, run=fake)
     assert all("--transition-default-minimum-object-size" not in c for c in fake.puts())
 
@@ -257,10 +269,10 @@ def test_the_probe_runs_at_most_once_per_run(cfg):
     lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
     _tiered(cfg, DA30)
     lc.sync(cfg, BASE, run=fake)                              # first write with a tier -- probes once
-    assert fake.help_calls == 1
+    assert fake.probe_calls == 1
     _tiered(cfg, {"class": "DEEP_ARCHIVE", "after_days": 60})  # a further tier change -- another write
     lc.sync(cfg, BASE, run=fake)
-    assert fake.help_calls == 1                                # still just the one probe for this run
+    assert fake.probe_calls == 1                               # still just the one probe for this run
 
 
 def test_an_owner_words_note_when_the_cli_cant_control_small_objects(cfg):

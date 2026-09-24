@@ -14,8 +14,12 @@
 #   * delete-bucket refuses a bucket with any version or delete marker left (BucketNotEmpty);
 #   * optional read-after-write lag: the next `lag_reads` GETs after a config put return the
 #     previous configuration (S3 bucket configuration is eventually consistent).
+#   * like Alpine's aws-cli (no help docs shipped): `... help` fails; `--generate-cli-skeleton
+#     input` prints the put's input shape, with TransitionDefaultMinimumObjectSize only when the CLI
+#     knows the flag (cli_has_flag).
 # It also polices the test: every call must carry exactly the admin credentials (or none at all
-# for `--version` / `help`), and any mutating call on a live bucket is refused and recorded.
+# for `--version` / `help` / `--generate-cli-skeleton`), and any mutating call on a live bucket is
+# refused and recorded.
 from __future__ import annotations
 
 import json
@@ -34,6 +38,9 @@ _READ_OPS = {"get-bucket-lifecycle-configuration", "get-bucket-versioning", "get
 _CLASSES = {"STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "GLACIER", "DEEP_ARCHIVE", "GLACIER_IR"}
 MIN_SIZE_FLAG = "--transition-default-minimum-object-size"
 AWS_VERSION = "aws-cli/2.15.57 Python/3.12.3 Linux/6.6.0 source/x86_64.alpine.3 prompt/off"
+# what that CLI answers to `aws s3api <op> help` (smoke test run 1): Alpine ships no help docs
+NO_HELP_DOCS = ("\n[Errno 2] No such file or directory: "
+                "'/usr/lib/python3.12/site-packages/awscli/topics/../data/topics/global_synopsis.rst'\n")
 
 
 def _ok(stdout="") -> SimpleNamespace:
@@ -64,11 +71,11 @@ class _Bucket:
 
 
 class FakeAWS:
-    def __init__(self, *, region: str, creds: dict, live: dict | None = None, help_has_flag: bool = False,
+    def __init__(self, *, region: str, creds: dict, live: dict | None = None, cli_has_flag: bool = False,
                  lag_reads: int = 0, fail=None, interrupt=None, clock=None, mangle_get=None):
         self.region = region
         self.creds = dict(creds)
-        self.help_has_flag = help_has_flag
+        self.cli_has_flag = cli_has_flag
         self.lag_reads = lag_reads
         self.fail = fail                      # (op, bucket, args) -> (code, message) | None
         self.interrupt = interrupt            # (op, bucket, args) -> bool: raise KeyboardInterrupt once
@@ -123,10 +130,18 @@ class FakeAWS:
         if service == "s3api" and len(pos) >= 3 and pos[2] == "help":
             if key or secret or session_token:
                 self.cred_errors.append(args)
-            text = f"{op}\n\nDESCRIPTION\n  Creates a new lifecycle configuration ...\n\nSYNOPSIS\n  {op}\n  --bucket <value>\n"
-            if self.help_has_flag:
-                text += f"  [{MIN_SIZE_FLAG} <value>]\n\nOPTIONS\n  {MIN_SIZE_FLAG} (string)\n"
-            return _ok(text)
+            return SimpleNamespace(returncode=255, stdout="", stderr=NO_HELP_DOCS)
+        if service == "s3api" and "--generate-cli-skeleton" in opts and bucket is None:
+            if key or secret or session_token:
+                self.cred_errors.append(args)
+            if opts["--generate-cli-skeleton"] != "input" or op != "put-bucket-lifecycle-configuration":
+                self.unknown.append(args)
+                return _err("InvalidAction", op or "?", "fake: unsupported skeleton")
+            shape = {"Bucket": "", "ChecksumAlgorithm": "CRC32",
+                     "LifecycleConfiguration": {"Rules": [{"ID": "", "Status": "Enabled"}]}, "ExpectedBucketOwner": ""}
+            if self.cli_has_flag:
+                shape["TransitionDefaultMinimumObjectSize"] = "varies_by_storage_class"
+            return _ok(json.dumps(shape, indent=4) + "\n")
         want_token = self.creds.get("AWS_SESSION_TOKEN") or None
         if (key, secret, session_token or None) != (self.creds["AWS_ACCESS_KEY_ID"],
                                                     self.creds["AWS_SECRET_ACCESS_KEY"], want_token):
@@ -239,7 +254,7 @@ class FakeAWS:
     # --- lifecycle -------------------------------------------------------------------------------
 
     def _put_bucket_lifecycle_configuration(self, bucket, opts, flags, args):
-        if MIN_SIZE_FLAG in opts and not self.help_has_flag:
+        if MIN_SIZE_FLAG in opts and not self.cli_has_flag:
             return SimpleNamespace(returncode=252, stdout="",
                                    stderr=f"\nUnknown options: {MIN_SIZE_FLAG}, {opts[MIN_SIZE_FLAG]}\n")
         try:

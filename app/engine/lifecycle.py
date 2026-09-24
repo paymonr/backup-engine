@@ -1025,7 +1025,7 @@ _AWS_RETRY_ENV = {"AWS_MAX_ATTEMPTS": "2", "AWS_RETRY_MODE": "standard"}
 
 def _run_aws(args, *, region, key, secret, session_token=None):
     """lifecycle's own aws runner: provision's credential env plus the bounded retries above.
-    No key (the local `help` probe, P7) -> no credentials in the environment at all, not even
+    No key (the local CLI-support probe, P7) -> no credentials in the environment at all, not even
     ones inherited from the container's."""
     env = provision._aws_env(region, key, secret, session_token)
     if not key:
@@ -1082,20 +1082,27 @@ MIN_SIZE_FLAG = "--transition-default-minimum-object-size"
 _MIN_SIZE_PROBED: list = []
 
 
+MIN_SIZE_FIELD = "TransitionDefaultMinimumObjectSize"
+
+
 def _min_size_supported(run, region) -> bool:
     """Whether this process's aws CLI understands --transition-default-minimum-object-size
     (added to botocore ~September 2024; Alpine 3.20's pinned aws-cli, 2.15.57, predates it).
-    Probed with a local `help` call -- no AWS reached, no bucket needed, and run with NO
-    credentials at all in its environment (parked P7: _run_aws strips them when given none) --
-    and cached; a failed probe counts as unsupported (the safe direction: never send the flag,
-    S3's own default already applies)."""
+    Probed with `put-bucket-lifecycle-configuration --generate-cli-skeleton input`: the put's
+    input shape as JSON, built from the CLI's own API model -- no AWS reached, no bucket needed,
+    no help docs needed (settle-fix item 6: Alpine's aws-cli ships none, so `help` always failed
+    and the flag was never sent), and run with NO credentials at all in its environment (parked
+    P7: _run_aws strips them when given none). Supported = the skeleton is a JSON object with a
+    TransitionDefaultMinimumObjectSize key. Cached; any failure counts as unsupported (the safe
+    direction: never send the flag, S3's own default already applies)."""
     for cached_run, supported in _MIN_SIZE_PROBED:
         if cached_run is run:
             return supported
     try:
-        cp = run(["s3api", "put-bucket-lifecycle-configuration", "help"], region=region, key="", secret="",
-                 session_token=None)
-        supported = cp.returncode == 0 and MIN_SIZE_FLAG in (cp.stdout or "")
+        cp = run(["s3api", "put-bucket-lifecycle-configuration", "--generate-cli-skeleton", "input"],
+                 region=region, key="", secret="", session_token=None)
+        shape = json.loads(cp.stdout or "") if cp.returncode == 0 else None
+        supported = isinstance(shape, dict) and MIN_SIZE_FIELD in shape
     except Exception:                        # noqa: BLE001 -- a probe must never crash a sync
         supported = False
     _MIN_SIZE_PROBED.append((run, supported))

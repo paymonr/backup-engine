@@ -776,17 +776,34 @@ def test_m2_order_when_a_tamper_could_not_be_restored(cfg, monkeypatch):
     assert seen and all(k == "not_restored" and named for k, named in seen)
 
 
-# --- P7: the aws-cli `help` probe runs with no credentials in its environment ------------------
+# --- P7: the aws-cli support probe runs with no credentials in its environment -----------------
+# (settle-fix item 6: `--generate-cli-skeleton input`, not `help` -- Alpine's aws-cli ships no docs)
 
-def test_the_help_probe_passes_no_credentials():
+def test_the_cli_support_probe_passes_no_credentials():
     seen = []
 
     def run(args, *, region, key, secret, session_token=None):
         from types import SimpleNamespace
         seen.append((list(args), key, secret, session_token))
-        return SimpleNamespace(returncode=0, stdout=lc.MIN_SIZE_FLAG + " (string)", stderr="")
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"Bucket": "", "TransitionDefaultMinimumObjectSize":
+                                                                "varies_by_storage_class"}), stderr="")
     assert lc._min_size_supported(run, "us-east-1") is True
-    assert seen == [(["s3api", "put-bucket-lifecycle-configuration", "help"], "", "", None)]
+    assert seen == [(["s3api", "put-bucket-lifecycle-configuration", "--generate-cli-skeleton", "input"],
+                     "", "", None)]
+
+
+@pytest.mark.parametrize("rc,stdout", [
+    (0, "TransitionDefaultMinimumObjectSize is mentioned, but this isn't the JSON skeleton"),
+    (0, json.dumps({"Bucket": "", "LifecycleConfiguration": {"Rules": []}})),        # an older CLI's shape
+    (0, json.dumps(["TransitionDefaultMinimumObjectSize"])),
+    (252, json.dumps({"TransitionDefaultMinimumObjectSize": "x"})),
+])
+def test_the_cli_support_probe_counts_anything_but_the_field_in_the_skeleton_as_unsupported(rc, stdout):
+    from types import SimpleNamespace
+
+    def run(args, *, region, key, secret, session_token=None):
+        return SimpleNamespace(returncode=rc, stdout=stdout, stderr="")
+    assert lc._min_size_supported(run, "us-east-1") is False
 
 
 def test_the_lifecycle_runner_strips_every_credential_when_given_none(monkeypatch):
@@ -798,7 +815,8 @@ def test_the_lifecycle_runner_strips_every_credential_when_given_none(monkeypatc
     envs = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: envs.append(kw["env"]) or
                         SimpleNamespace(returncode=0, stdout="", stderr=""))
-    lc._run_aws(["s3api", "put-bucket-lifecycle-configuration", "help"], region="us-east-1", key="", secret="")
+    lc._run_aws(["s3api", "put-bucket-lifecycle-configuration", "--generate-cli-skeleton", "input"],
+                region="us-east-1", key="", secret="")
     env = envs[0]
     assert not any(k in env for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"))
     assert "leaksecret" not in json.dumps(env)

@@ -130,7 +130,7 @@ def test_the_flow_really_exercises_the_app(tmp_path, live_config):
     fake = _fake()
     s, _ = _run(tmp_path, live_config, fake)
     puts = [json.loads(c["args"][c["args"].index("--lifecycle-configuration") + 1])["Rules"]
-            for c in fake.ops("put-bucket-lifecycle-configuration") if "help" not in c["args"]]
+            for c in fake.ops("put-bucket-lifecycle-configuration") if "--lifecycle-configuration" in c["args"]]
     flat = [r for rules in puts for r in rules]
     assert any(r.get("NoncurrentVersionTransitions") == [{"NoncurrentDays": 179, "StorageClass": "DEEP_ARCHIVE"}]
                for r in flat)
@@ -142,8 +142,9 @@ def test_the_flow_really_exercises_the_app(tmp_path, live_config):
     pages = [c for c in fake.ops("list-object-versions")
              if json.loads(c["args"][c["args"].index("--cli-input-json") + 1]).get("MaxKeys") == 2]
     assert len(pages) >= 8                         # the op's scan + the aged scan, 2 per page
-    helps = [c for c in fake.calls if "help" in c["args"]]
-    assert helps and all(c["anon"] and c["token"] is None for c in helps)
+    probes = [c for c in fake.calls if "--generate-cli-skeleton" in c["args"]]
+    assert probes and all(c["anon"] and c["token"] is None for c in probes)
+    assert not [c for c in fake.calls if "help" in c["args"]]              # Alpine's CLI has no help docs
     create = [c["args"] for c in fake.ops("create-bucket")]
     assert all("LocationConstraint=eu-west-2" in a for a in create)
     s10 = next(o for o in s.results if o.cid == "S10")
@@ -171,11 +172,18 @@ def test_lagging_s3_reads_are_waited_out(tmp_path, live_config):
 
 
 def test_a_cli_that_knows_the_min_size_flag_is_reported(tmp_path, live_config):
-    fake = _fake(help_has_flag=True)
+    # the fake's `help` fails like Alpine's (no docs) -- the skeleton probe still sees the flag
+    fake = _fake(cli_has_flag=True)
     s, _ = _run(tmp_path, live_config, fake)
     assert s.exit_code == 0
     s9 = next(o for o in s.results if o.cid == "S9")
     assert "IS supported" in s9.summary
+
+
+def test_a_cli_without_the_min_size_flag_is_reported(tmp_path, live_config):
+    s, _ = _run(tmp_path, live_config, _fake())
+    s9 = next(o for o in s.results if o.cid == "S9")
+    assert s9.status == "PASS" and "is NOT supported" in s9.summary and "skeleton rc=0" in s9.summary
 
 
 # --- failures, interrupts, the guard: cleanup always runs ------------------------------------------
@@ -334,11 +342,14 @@ def test_guard_allows_anything_on_scratch_buckets_and_the_local_calls():
     g, base = _guard()
     assert g.verdict(["--version"]) is None
     assert g.verdict(["s3api", "put-bucket-lifecycle-configuration", "help"]) is None
+    assert g.verdict(["s3api", "put-bucket-lifecycle-configuration", "--generate-cli-skeleton", "input"]) is None
     for b in (base, base + "-ded", base + "-nv"):
         assert g.verdict(["s3api", "put-bucket-lifecycle-configuration", "--bucket", b, "--x", "y"]) is None
         assert g.verdict(["s3api", "delete-bucket", "--bucket", b]) is None
         assert g.verdict(["s3api", "list-object-versions", "--cli-input-json", json.dumps({"Bucket": b})]) is None
     assert g.verdict(["s3api", "put-bucket-lifecycle-configuration", "help", "--bucket", LIVE])   # not a help call
+    assert g.verdict(["s3api", "put-bucket-lifecycle-configuration", "--generate-cli-skeleton", "input",
+                      "--bucket", LIVE])                                                          # not local either
 
 
 def test_guard_refuses_to_treat_live_or_odd_names_as_scratch():
@@ -361,7 +372,7 @@ def test_scratch_names_stay_within_63_characters():
 
 # --- S9 with the real runner, S12 opt-in, preflight -------------------------------------------------
 
-def test_the_help_probe_runs_the_real_runner_with_no_credentials_in_its_env(monkeypatch):
+def test_the_cli_support_probe_runs_the_real_runner_with_no_credentials_in_its_env(monkeypatch):
     """S9's environment inspection, through lifecycle's REAL aws runner -- with a fake subprocess
     module underneath, so nothing is executed."""
     seen = []
@@ -370,7 +381,8 @@ def test_the_help_probe_runs_the_real_runner_with_no_credentials_in_its_env(monk
         @staticmethod
         def run(cmd, **kw):
             seen.append((cmd, dict(kw["env"])))
-            return SimpleNamespace(returncode=0, stdout="SYNOPSIS\n  [--transition-default-minimum-object-size <value>]\n",
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"Bucket": "",
+                                                                    "TransitionDefaultMinimumObjectSize": ""}),
                                    stderr="")
     monkeypatch.setattr(lifecycle, "subprocess", FakeSubprocess)
     for k, v in CREDS.items():
@@ -381,7 +393,8 @@ def test_the_help_probe_runs_the_real_runner_with_no_credentials_in_its_env(monk
     fake_smoke = SimpleNamespace(R=rec, rec=rec, region="eu-west-2", aws_version="aws-cli/2.x")
     smoke.Smoke.s9_probe(fake_smoke, o)
     assert o.fails == [] and "IS supported" in o.summary and "no credentials in its environment" in o.summary
-    assert len(seen) == 1 and seen[0][0][:3] == ["aws", "s3api", "put-bucket-lifecycle-configuration"]
+    assert len(seen) == 1 and seen[0][0][:5] == ["aws", "s3api", "put-bucket-lifecycle-configuration",
+                                                 "--generate-cli-skeleton", "input"]
     assert not {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"} & set(seen[0][1])
     assert lifecycle.subprocess is FakeSubprocess            # put back
 
@@ -531,7 +544,7 @@ sys.exit(cp.returncode)
 def test_the_whole_run_through_lifecycles_real_aws_runner(tmp_path, live_config, monkeypatch):
     """execute() with its DEFAULT runner (lifecycle._run_aws, a real subprocess per call) against an
     `aws` stub: proves the argv/env plumbing the box will use -- JSON args survive the command line,
-    every call carries the admin keys, and the help probe's process has no credential variable at
+    every call carries the admin keys, and the CLI-support probe's process has no credential variable at
     all. PATH is ONLY the stub, and AWS_ENDPOINT_URL points at a closed local port, so no real aws
     CLI could reach AWS even if one were somehow found."""
     import pickle
@@ -557,7 +570,7 @@ def test_the_whole_run_through_lifecycles_real_aws_runner(tmp_path, live_config,
     state = pickle.loads((tmp_path / "state.pickle").read_bytes())
     assert state["cred_errors"] == [] and state["live_mutations"] == [] and state["unknown"] == []
     assert not [b for b in state["buckets"] if "-s3smoke-" in b] and set(state["deleted"]) == set(s.created)
-    anon = [(a, env) for a, env in state["envlog"] if a == ["--version"] or "help" in a]
+    anon = [(a, env) for a, env in state["envlog"] if a == ["--version"] or "--generate-cli-skeleton" in a]
     assert anon and all(env == [] for _, env in anon)          # no credential variable AT ALL
     assert all(env for a, env in state["envlog"] if (a, env) not in anon)
     s9 = next(o for o in s.results if o.cid == "S9")
