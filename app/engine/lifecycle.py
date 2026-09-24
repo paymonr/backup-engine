@@ -1863,6 +1863,13 @@ def _save_edit_unlocked(cfg, edit: dict) -> None:
         jobs_io.render_crontab(config_dir, cfg["CACHE_DIR"], _scripts_dir(cfg), source_root=source_root)
     new = edit.get("settings")
     if isinstance(new, dict):
+        # final fix wave I1: the edit was built on the GUI's fail-safe reading (the defaults,
+        # when the file can't be read) -- never let it silently replace the owner's own file.
+        try:
+            load_settings_strict(config_dir)
+        except SettingsFileError:
+            raise ValueError("The S3 rules settings file (storage.json) can't be read — fix or remove it "
+                             "before changing S3 rules.")
         buckets = new.get("buckets")
         save_settings(config_dir, {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}})
 

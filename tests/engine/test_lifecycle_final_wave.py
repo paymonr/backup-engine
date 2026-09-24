@@ -165,3 +165,14 @@ def test_an_unreadable_history_setting_is_held_through_a_confirmed_apply(cfg):
     lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
     assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
     assert _live(fake, "backup-engine:appdata/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 7}
+
+
+def test_a_settings_edit_never_overwrites_an_unreadable_settings_file(cfg):
+    # The GUI reads storage.json fail-safe (defaults); saving an edit built on those defaults
+    # would silently replace the owner's (hand-fixable) file -- refused, like jobs.json's.
+    Path(cfg["CONFIG_DIR"], "storage.json").write_text("{oops")
+    edit = {"kind": "settings", "settings": {"version": 1, "buckets": {BASE: {"abort_uploads_days": 9}}}}
+    with pytest.raises(ValueError) as e:
+        lc.save_edit(cfg, edit)
+    assert "storage.json" in str(e.value)
+    assert Path(cfg["CONFIG_DIR"], "storage.json").read_text() == "{oops"
