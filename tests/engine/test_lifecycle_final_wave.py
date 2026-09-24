@@ -638,3 +638,24 @@ def test_current_file_transitions_use_owner_words_for_the_class():
     assert not any("DEEP_ARCHIVE" in w or "GLACIER_IR" in w for w in words)
     assert lc.destructive_actions({"Status": "Enabled", "Transitions": [{"Days": 3}]}) == [
         "moves current files to another class after 3 days"]
+
+
+# --- M9: a (hand-edited) dedicated job whose bucket IS the base bucket isn't dedicated ---------
+
+def _job(name, typ, **kw):
+    return dict({"name": name, "type": typ, "source": f"media/{name}", "schedule": "0 3 * * *",
+                 "enabled": True, "storage_class": "STANDARD",
+                 "retention": {"type": "days", "days": 7} if typ == "archive" else None}, **kw)
+
+
+def test_a_dedicated_job_on_the_base_bucket_gets_its_folder_not_a_whole_bucket_rule():
+    jobs = [_job("tv", "archive", dedicated=True, bucket=BASE),
+            dict(_job("snap", "versioned", dedicated=True, bucket=BASE),
+                 retention={"type": "tiered", "keep": {"last": 3}})]
+    folders = {f.folder: f for f in lc.folders_for(BASE, BASE, jobs)}
+    assert set(folders) == {"media/tv/", "appdata/"}
+    ids = {r["ID"] for r in lc.desired_rules(BASE, BASE, jobs, {})}
+    assert "backup-engine:bucket" not in ids and "backup-engine:media/tv/" in ids
+    assert lc.buckets_for(BASE, jobs) == [BASE]
+    assert lc.folder_of_job(BASE, jobs, "tv") == (BASE, "media/tv/")
+    assert lc.folder_of_job(BASE, jobs, "snap") == (BASE, "appdata/")

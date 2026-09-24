@@ -80,7 +80,7 @@ def folders_for(bucket: str, base: str, jobs: list[dict]) -> list[Folder]:
     snapshot_jobs: list[str] = []
     for j in sorted(jobs, key=lambda j: str(j.get("name", ""))):
         name, typ = j.get("name", ""), j.get("type")
-        if j.get("dedicated") and j.get("bucket"):
+        if is_dedicated(j, base):
             if j["bucket"] != bucket:
                 continue
             folder = ""
@@ -112,9 +112,17 @@ def folders_for(bucket: str, base: str, jobs: list[dict]) -> list[Folder]:
     return sorted(out, key=lambda f: f.folder)
 
 
+def is_dedicated(job: dict, base: str) -> bool:
+    """A job with its own bucket. A (hand-edited) "dedicated" job whose bucket IS the base bucket
+    is not (final fix wave M9): its data lands in the base bucket's own media/<job>/ or appdata/
+    (backup-job.sh writes <bucket>/media/<job>, restic <bucket>/appdata), so it gets that folder's
+    rule -- never a whole-bucket rule on the shared bucket."""
+    return bool(job.get("dedicated") and job.get("bucket") and job["bucket"] != base)
+
+
 def buckets_for(base: str, jobs: list[dict]) -> list[str]:
     """The base bucket first, then each dedicated bucket (sorted, unique)."""
-    extra = sorted({j["bucket"] for j in jobs if j.get("dedicated") and j.get("bucket")} - {base})
+    extra = sorted({j["bucket"] for j in jobs if is_dedicated(j, base)})
     return [base, *extra] if base else extra
 
 
@@ -953,7 +961,7 @@ def folder_of_job(base: str, jobs: list[dict], name: str) -> tuple[str, str] | N
     job = next((j for j in jobs if j.get("name") == name), None)
     if job is None:
         return None
-    bucket = job["bucket"] if job.get("dedicated") and job.get("bucket") else base
+    bucket = job["bucket"] if is_dedicated(job, base) else base
     f = next((f for f in folders_for(bucket, base, jobs) if name in f.jobs), None)
     return (bucket, f.folder) if f else None
 
@@ -1128,7 +1136,7 @@ def versioning_intent(bucket: str, base: str, jobs: list[dict], settings: dict, 
     back off, so the app never writes versioning for a bucket nothing backs up to)."""
     job = None
     if bucket != base:
-        job = next((j for j in jobs if j.get("dedicated") and j.get("bucket") == bucket), None)
+        job = next((j for j in jobs if is_dedicated(j, base) and j.get("bucket") == bucket), None)
         if job is None:
             return None
     raw = ((settings or {}).get("buckets") or {}).get(bucket)
