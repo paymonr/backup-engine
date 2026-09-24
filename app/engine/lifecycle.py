@@ -1033,8 +1033,9 @@ def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm:
     report "ok" rather than "restored". Fix round 3, item 3: an "ok" pass never heals an open
     alarm that's about VERSIONING when this pass couldn't even check versioning
     (`ver_managed=False`, an unsupported storage) -- "ok" here only means the rules half is
-    settled, not that the still-suspended-outside versioning is back the way it was. A
-    "restored" pass, or one whose alarm is about rules only, still heals unconditionally.
+    settled, not that the still-suspended-outside versioning is back the way it was. Fix round
+    4, item 6: the same holds for a "restored" pass -- restoring the rules half says nothing
+    about versioning it never read. An alarm about rules only still heals on either.
 
     `prior_alarm` (fix round 3, item 6): by default this call's own "before" state is read
     straight off disk, as always -- but a caller that ALREADY wrote its own provisional alarm
@@ -1049,8 +1050,8 @@ def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm:
         prev = data.get(bucket) or {}
         prev_alarm = prev.get("alarm") if prior_alarm is _FROM_DISK else prior_alarm
         heals = (isinstance(prev_alarm, dict) and prev_alarm.get("kind") == "not_restored"
-                and (state == "restored"
-                     or (state == "ok" and (ver_managed or not _alarm_mentions_versioning(prev_alarm)))))
+                and state in ("ok", "restored")
+                and (ver_managed or not _alarm_mentions_versioning(prev_alarm)))
         if heals:
             prev_alarm = dict(prev_alarm, kind="restored")
         entry = {"state": state, "checked_at": _now_iso(), "detail": detail}

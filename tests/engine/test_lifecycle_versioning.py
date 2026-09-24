@@ -870,3 +870,25 @@ def test_a_console_rule_that_changes_between_failing_first_apply_passes_is_noted
     lc.check(cfg, BASE, run=fake)
     lc.check(cfg, BASE, run=fake)
     assert _o1_notes(cfg) == 2                                          # once per distinct set of console rules
+
+
+# item 6 (N3's sibling): a "restored" pass on storage that doesn't report versioning (that half
+# unmanaged) restores the rules but never checked versioning -- it must not heal an open
+# not_restored alarm about versioning, exactly like an "ok" pass (N3).
+def test_n3_restored_with_versioning_unmanaged_does_not_heal_a_versioning_alarm(cfg):
+    fake = Fake2()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    fake.versioning[BASE] = "Suspended"                             # outside suspend...
+    fake.put_ver = "fail"
+    assert lc.check(cfg, BASE, run=fake) == "not_restored"          # ...not put back
+    fake.put_ver, fake.ver_read = None, "unsupported"               # versioning can't even be read now
+    fake.rules[BASE] = [r for r in fake.rules[BASE] if r["ID"] != "backup-engine:appdata/"]   # rules changed too
+    assert lc.check(cfg, BASE, run=fake) == "restored"              # the rules half is put back
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 30} and _ver(fake) == "Suspended"
+    alarm = _st(cfg)["alarm"]
+    assert alarm["kind"] == "not_restored", "a restored rules half healed an alarm about unchecked versioning"
+    assert "versioning: was on, now suspended" in alarm["lines"] and any("appdata/" in ln for ln in alarm["lines"])
+    fake.ver_read = None                                            # versioning readable again
+    assert lc.check(cfg, BASE, run=fake) == "restored" and _ver(fake) == "Enabled"
+    assert _st(cfg)["alarm"]["kind"] == "restored"                  # now it really is back
