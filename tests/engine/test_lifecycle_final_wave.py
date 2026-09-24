@@ -3,6 +3,7 @@
 # config, one definition of a "known" folder, no versioning write for a bucket no job uses,
 # guided-manual console rules in the first-apply baseline, and alarm notifications.
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -504,6 +505,26 @@ def test_a_job_save_sync_never_notifies(cfg, sent):
     _tamper(fake)
     assert lc.sync(cfg, BASE, run=fake).state == "restored"      # the owner is right there (a flash)
     assert sent == []
+
+
+# post-wave review, minor 3: no test may shell out to the real `apprise` binary. This test
+# patches NOTHING of its own -- it relies solely on the top-level autouse fixture
+# (tests/conftest.py) to protect a call that (accidentally, e.g. via the container's own
+# APPRISE_URLS) would otherwise fire a real notification.
+def test_no_test_ever_shells_out_to_the_real_apprise_binary(cfg, monkeypatch, tmp_path):
+    log = tmp_path / "apprise-calls.log"
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "apprise"
+    stub.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("APPRISE_URLS", "json://localhost")
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    _tamper(fake)
+    assert lc.check(cfg, BASE, run=fake) == "restored"
+    assert not log.exists()
 
 
 # --- M1: one hung call can't eat the budget; a killed check says so -------------------------
