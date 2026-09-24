@@ -94,6 +94,50 @@ def _outstanding(cfg, buckets: list[str]) -> tuple[bool, int]:
         return False, 0
 
 
+def console_cap_words(cap: dict) -> str:
+    """Owner words for a console rule that removes old versions sooner than the app's rule
+    (lifecycle.console_caps; final fix wave I4) -- the Setup row's sentence. The job page and
+    wizard render the same words from _console_cap.html with the numbers in mono spans."""
+    if cap["newest"] and cap["days"] > 1:
+        what = (f"keeps only the newest {cap['newest']} old versions of each file and removes the rest "
+                f"after {cap['days']} days")
+    elif cap["newest"]:
+        what = f"keeps only the newest {cap['newest']} old versions of each file"
+    else:
+        what = f"removes old versions after {cap['days']} days"
+    return (f"A rule you added in the AWS console ({cap['id']}) {what} — delete it there to keep the "
+            "longer history")
+
+
+def _folder_cap(cfg, bucket: str, folder: str, want) -> dict | None:
+    """The first console rule (from the last read of the bucket's rules, live.json -- never
+    AWS) that removes `folder`'s old versions sooner than the app's own rule for it wants."""
+    live = lifecycle.load_live(cfg["CACHE_DIR"], bucket)
+    if not live:
+        return None
+    caps = lifecycle.console_caps(live["rules"], folder, want.rules.get(lifecycle.rule_id(folder)))
+    return caps[0] if caps else None
+
+
+def _console_cap(cfg, buckets: list[str]) -> dict | None:
+    """The first app folder, on any bucket, whose history a console rule cuts short (files
+    only; any error reads as none -- a GET never 500s on this)."""
+    from . import jobs_io
+    try:
+        base = config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_BUCKET", "").strip()
+        jobs = jobs_io.load(cfg["CONFIG_DIR"])
+        ctx = {"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}
+        for b in buckets:
+            _before, want = lifecycle.applied_view(ctx, b, jobs)
+            for f in lifecycle.folders_for(b, base, jobs):
+                cap = _folder_cap(cfg, b, f.folder, want)
+                if cap:
+                    return cap
+    except Exception:                                        # noqa: BLE001
+        return None
+    return None
+
+
 def setup_row(cfg) -> dict | None:
     config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
     if not config_io.is_provisioned(config_dir):
@@ -131,6 +175,8 @@ def setup_row(cfg) -> dict | None:
     elif waiting:
         row.update(state="warn", fix_url="/setup/storage",
                    sentence=f"{waiting} change{'' if waiting == 1 else 's'} waiting for your confirmation")
+    elif cap := _console_cap(cfg, buckets):
+        row.update(state="warn", fix_url="/setup/storage", sentence=console_cap_words(cap))
     elif "unsupported" in states:
         row.update(state="warn", sentence="This storage doesn't support S3 rules — Plain copy keeps all old versions")
     elif "error" in states:
@@ -719,7 +765,8 @@ def job_history(cfg, job: dict) -> dict | None:
         waiting = before is not None and any(c.folder == folder and c.kind == lifecycle.KEEPS_LESS
                                              for c in lifecycle.classify(before, want))
         return {"state": "ok", "kind": kind, "days": None if d == math.inf else d, "newer": n or None,
-                "waiting": waiting, "applied": before is not None, "tier": _tier_view(rule)}
+                "waiting": waiting, "applied": before is not None, "tier": _tier_view(rule),
+                "console_cap": _folder_cap(cfg, bucket, folder, want)}
     except Exception:                                        # noqa: BLE001 — a GET never 500s on this
         return None
 
@@ -734,7 +781,7 @@ def wizard_copy(cfg, job: dict | None) -> dict:
     for a job that isn't saved yet)."""
     config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
     out = {"managed": lifecycle.managed(config_dir), "unsupported": False,
-           "undo_days": lifecycle.DEFAULT_UNDO_DAYS}
+           "undo_days": lifecycle.DEFAULT_UNDO_DAYS, "console_cap": None, "console_cap_types": "archive"}
     if not out["managed"]:
         return out
     try:
@@ -748,6 +795,17 @@ def wizard_copy(cfg, job: dict | None) -> dict:
         if target is not None:
             bset = lifecycle.bucket_settings(settings, target[0])
             out["undo_days"] = lifecycle.undo_days(bset, target[1])
+            # final fix wave I4: a console rule cutting this job's own history short
+            _before, want = lifecycle.applied_view({"CONFIG_DIR": config_dir, "CACHE_DIR": cache},
+                                                   target[0], jobs, settings)
+            out["console_cap"] = _folder_cap(cfg, target[0], target[1], want)
+            out["console_cap_types"] = job.get("type") or "archive"
+        else:
+            # a new job's folder doesn't exist yet: any console rule covering ALL of media/ will
+            # apply to a new Plain copy job's folder too
+            live = lifecycle.load_live(cache, base)
+            caps = lifecycle.console_caps(live["rules"], "media/", None, covering=True) if live else []
+            out["console_cap"] = caps[0] if caps else None
     except Exception:                                        # noqa: BLE001 — a GET never 500s on this
         pass
     return out

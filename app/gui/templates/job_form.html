@@ -259,6 +259,9 @@
     <p class="sm faint measure" data-when-type="versioned versioned-files" style="margin-top:6px">What a run
       removes stays recoverable in S3 for an undo window — <span class="mono">{{ s3_copy.undo_days }}</span> days unless you change it.
       <a class="linklike" href="/setup/storage">S3 rules →</a></p>
+    {% if s3_copy.console_cap %}{% with cap = s3_copy.console_cap %}
+    <p class="sm faint measure" data-when-type="{{ s3_copy.console_cap_types }}" data-console-cap style="margin-top:6px">{% include "_console_cap.html" %}</p>
+    {% endwith %}{% endif %}
     {% elif not s3_copy.managed %}
     <p class="sm faint measure" data-when-type="archive versioned versioned-files" style="margin-top:6px">S3 rules need the
       AWS permissions update to keep old versions in AWS — <a class="linklike" href="/setup/permissions">Update permissions →</a></p>

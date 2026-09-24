@@ -464,6 +464,7 @@
               {%- if s3h.waiting %} · a change is waiting for your confirmation{% endif -%}
               {%- if not s3h.applied %} · not checked yet{% endif %}
               <a class="linklike" href="/setup/storage">S3 rules →</a>
+              {%- if s3h.console_cap %}{% with cap = s3h.console_cap %}<div class="hint" data-console-cap style="margin-top:var(--sp-1)">{% include "_console_cap.html" %}</div>{% endwith %}{% endif %}
             {%- endif -%}</dd>{% endif %}
           <dt>When it runs</dt><dd>{{ schedule_desc }}{% if not s.enabled %} — paused{% endif %}</dd>
           <dt>Where it goes</dt><dd class="mono">{{ ident.s3 }} <span class="hint">Set at creation.</span></dd>

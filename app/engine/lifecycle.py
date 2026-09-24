@@ -479,6 +479,38 @@ def console_rules(rules: list[dict]) -> list[tuple[str, dict]]:
     return [(k, r) for k, _h, r in _console_entries(rules)]
 
 
+def _plain_prefix(rule: dict) -> str | None:
+    """The prefix of a rule whose filter is ONLY a prefix (or empty: the whole bucket; or S3's
+    older top-level Prefix form), else None -- a tag or size filter narrows it to some files."""
+    f = _norm(rule).get("Filter")
+    if not isinstance(f, dict) or set(f) - {"Prefix"}:
+        return None
+    p = f.get("Prefix", "")
+    return p if isinstance(p, str) else None
+
+
+def console_caps(live_rules: list[dict], folder: str, app_rule: dict | None, *,
+                 covering: bool = False) -> list[dict]:
+    """Enabled console rules that remove old versions in `folder` sooner than `app_rule` (the
+    app's own rule for it; None = keep everything) would -- S3 applies the shorter expiry where
+    rules overlap, so the app's longer history silently doesn't happen there (final fix wave
+    I4). Overlap is either way round (a rule on part of the folder still removes some of it);
+    `covering` only counts rules whose prefix covers all of `folder` (a new job's future
+    folder). [{"id", "days", "newest"}] -- the words are the caller's."""
+    bd, bn = expiry(app_rule)
+    out = []
+    for key, r in console_rules(live_rules):
+        if r.get("Status") == "Disabled" or not isinstance(r.get("NoncurrentVersionExpiration"), dict):
+            continue
+        prefix = rule_prefix(r)
+        if not (folder.startswith(prefix) or (not covering and prefix.startswith(folder))):
+            continue
+        d, n = expiry(r)
+        if d != math.inf and (d < bd or n < bn):
+            out.append({"id": key, "days": int(d), "newest": n})
+    return out
+
+
 def rule_prefix(rule: dict) -> str:
     f = _norm(rule).get("Filter") or {}
     if not isinstance(f, dict):
@@ -734,6 +766,22 @@ def baseline_from_live(live_rules: list[dict], want: RuleSet, known: frozenset |
     what was just read live -- the baseline's own versioning."""
     by_folder: dict[str, dict] = {}
     housekeeping = None
+    # final fix wave I4: an enabled CONSOLE rule whose filter is a plain prefix covering a folder
+    # removes that folder's old versions today too (a guided-manual install's own 30-day rules) --
+    # so it's part of what S3 does now. Only the plain-prefix ones: a tag/size filter only
+    # touches some files, so skipping it under-approximates (never hides a keeps-less change).
+    # Console rules go in first, so an incomparable pair keeps the app/legacy rule (_stricter).
+    for r in live_rules:
+        if is_app_rule(r) or not isinstance(r, dict) or r.get("Status") == "Disabled":
+            continue
+        prefix = _plain_prefix(r)
+        n = _norm(r)
+        actions = {k: n[k] for k in _NONCURRENT if k in n}
+        if prefix is None or not actions:
+            continue
+        for folder in sorted(want.folders):
+            if folder.startswith(prefix):
+                by_folder[folder] = _stricter(by_folder.get(folder), _rule(folder, **actions))
     for r in live_rules:
         if not is_app_rule(r) or r.get("Status") == "Disabled":
             continue

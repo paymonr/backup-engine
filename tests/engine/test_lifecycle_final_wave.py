@@ -312,3 +312,79 @@ def test_a_bucket_no_job_uses_has_no_versioning_intent(stored):
     assert lc.versioning_intent(DED, BASE, [], settings) is None
     assert lc.desired(DED, BASE, [], settings).versioning is None
     assert lc.versioning_intent(BASE, BASE, [], {}) == "on"            # the base bucket always has one
+
+
+# --- I4: guided-manual installs' own console rules ---------------------------------------------
+
+GUIDED = [{"ID": "expire-media", "Status": "Enabled", "Filter": {"Prefix": "media/"},
+           "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+           "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}},
+          {"ID": "expire-appdata", "Status": "Enabled", "Filter": {"Prefix": "appdata/"},
+           "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+           "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}]
+
+
+def _guided_jobs(cfg):
+    _write_jobs(cfg, [
+        {"name": "photos", "type": "archive", "source": "media/photos", "schedule": "0 3 * * *",
+         "enabled": True, "storage_class": "STANDARD", "retention": {"type": "keep_all"}},
+        {"name": "manga", "type": "archive", "source": "media/manga", "schedule": "0 3 * * *",
+         "enabled": True, "storage_class": "STANDARD", "retention": {"type": "days", "days": 180}},
+        {"name": "appdata_backups", "type": "versioned", "source": "appdata", "schedule": "0 5 * * *",
+         "enabled": True, "storage_class": "STANDARD",
+         "retention": {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}}])
+    _ran(cfg, "photos", "manga", "appdata_backups")
+
+
+def test_probe6_a_guided_installs_console_rules_count_in_the_first_apply_baseline(cfg):
+    _guided_jobs(cfg)
+    fake = FakeS3({BASE: json.loads(json.dumps(GUIDED))})
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert lc.outstanding(cfg, BASE) == (False, [])          # not a wall of confirmations
+    assert fake.rules[BASE][:2] == GUIDED                    # console rules kept byte-for-byte
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
+    assert "backup-engine:media/photos/" not in _rule_ids(fake)
+    assert _live(fake, "backup-engine:appdata/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 30}
+
+
+def _base(live, folders=(M,), known=None):
+    want = lc.RuleSet({}, frozenset(folders))
+    return lc.baseline_from_live(live, want, known)
+
+
+def test_only_a_plain_prefix_covering_the_folder_counts():
+    tag = dict(GUIDED[0], ID="tagged", Filter={"And": {"Prefix": "media/", "Tags": [{"Key": "k", "Value": "v"}]}})
+    size = dict(GUIDED[0], ID="small", Filter={"ObjectSizeGreaterThan": 10})
+    inner = dict(GUIDED[0], ID="inner", Filter={"Prefix": "media/manga/sub/"})
+    off = dict(GUIDED[0], ID="off", Status="Disabled")
+    other = dict(GUIDED[0], ID="other", Filter={"Prefix": "media/tv/"})
+    assert _base([tag, size, inner, off, other]).rules == {}
+    whole = dict(GUIDED[0], ID="whole", Filter={"Prefix": ""})
+    old_form = {k: v for k, v in GUIDED[0].items() if k != "Filter"} | {"ID": "old", "Prefix": "media/"}
+    for rule in (GUIDED[0], whole, old_form):
+        assert _base([rule]).rules["backup-engine:media/manga/"]["NoncurrentVersionExpiration"] == {
+            "NoncurrentDays": 30}
+
+
+def test_the_stricter_of_a_console_and_a_legacy_rule_is_the_baseline():
+    console = dict(GUIDED[0], NoncurrentVersionExpiration={"NoncurrentDays": 10})
+    rules = _base([console] + LEGACY).rules
+    assert rules["backup-engine:media/manga/"]["NoncurrentVersionExpiration"] == {"NoncurrentDays": 10}
+
+
+def test_console_caps_name_a_console_rule_that_removes_versions_sooner_than_the_apps():
+    rule180 = lc.plain_rule(M, {"type": "days", "days": 180})
+    assert lc.console_caps(GUIDED, M, rule180) == [{"id": "expire-media", "days": 30, "newest": 0}]
+    assert lc.console_caps(GUIDED, M, None) == [{"id": "expire-media", "days": 30, "newest": 0}]
+    assert lc.console_caps(GUIDED, M, lc.plain_rule(M, {"type": "days", "days": 30})) == []
+    assert lc.console_caps(GUIDED, M, lc.plain_rule(M, {"type": "days", "days": 7})) == []
+    newest = dict(GUIDED[0], NoncurrentVersionExpiration={"NoncurrentDays": 90, "NewerNoncurrentVersions": 3})
+    assert lc.console_caps([newest], M, rule180) == [{"id": "expire-media", "days": 90, "newest": 3}]
+    off = dict(GUIDED[0], Status="Disabled")
+    assert lc.console_caps([off], M, rule180) == []
+    inner = dict(GUIDED[0], Filter={"Prefix": "media/manga/sub/"})
+    assert lc.console_caps([inner], M, rule180)              # overlaps part of the folder: still a cap
+    assert lc.console_caps([inner], "media/", None, covering=True) == []
+    assert lc.console_caps(GUIDED, "media/", None, covering=True)
+    app = lc.plain_rule(M, {"type": "days", "days": 1})
+    assert lc.console_caps([app], M, rule180) == []          # the app's own rules never count

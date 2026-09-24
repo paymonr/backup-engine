@@ -162,6 +162,18 @@ def test_the_screen_shows_each_folder_and_what_s3_keeps(client, cfg):
     assert 'Old versions for <span class="mono">180</span> days' in body
     assert 'Undo window <span class="mono">30</span> days' in body
     assert "manga · Plain copy" in body and "appdata_backups · Snapshot backup" in body
+    # final fix wave I4: the fixture's console rule trims media/ at 60 days -- shorter than manga's
+    # 180 -- so the status line says so instead of "in place"
+    assert 'data-s3-state="warn"' in body and "Check now" in body
+    assert "A rule you added in the AWS console (trim-media) removes old versions after 60 days" in body
+
+
+def test_the_status_line_is_ok_when_no_console_rule_cuts_history_short(client, cfg):
+    _applied(cfg)
+    applied = lifecycle.load_applied(cfg["CACHE_DIR"], BASE)
+    lifecycle.save_live(cfg["CACHE_DIR"], BASE, [CONSOLE_RULE, *applied])
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "ok")
+    body = client.get("/setup/storage").get_data(as_text=True)
     assert 'data-s3-state="ok"' in body and "Check now" in body
 
 

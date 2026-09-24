@@ -110,6 +110,14 @@ yourself), replicate what the module does:
    through its bucket-admin role (Setup → AWS permissions sets that up). Until it does, the bucket
    simply keeps every old version — the safe direction. Rules you do add in the console are kept
    as they are (see [How history is kept](#how-history-is-kept)).
+
+   > **Upgrading a guided-manual install?** Earlier versions of this step told you to add your own
+   > 30-day noncurrent-version rules on `appdata/` and `media/`. backup-engine never modifies or
+   > removes a rule you added, and S3 always applies the *shorter* expiry where rules overlap — so
+   > those rules keep cutting every job's history to 30 days. After the AWS permissions update
+   > (level 4), **delete those hand-added lifecycle rules in the AWS console** (S3 → your bucket →
+   > Management → Lifecycle rules); the `backup-engine:*` rules replace them. Setup, the job page and
+   > the job wizard say so while such a rule is still cutting a job's history short.
 3. **Create an IAM policy** scoped to just this bucket and just the two prefixes — object actions
    only, no bucket-configuration permissions:
 
