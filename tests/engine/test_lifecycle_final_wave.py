@@ -388,3 +388,119 @@ def test_console_caps_name_a_console_rule_that_removes_versions_sooner_than_the_
     assert lc.console_caps(GUIDED, "media/", None, covering=True)
     app = lc.plain_rule(M, {"type": "days", "days": 1})
     assert lc.console_caps([app], M, rule180) == []          # the app's own rules never count
+
+
+# --- I5: an alarm leaves the GUI -- the app's own notification, once per alarm ---------------
+
+@pytest.fixture
+def sent(cfg, monkeypatch):
+    out = []
+    monkeypatch.setattr(lc, "_send_notification", lambda urls, title, body: out.append((urls, title, body)) or True)
+    env = Path(cfg["CONFIG_DIR"], "backup.env")
+    env.write_text(env.read_text() + "APPRISE_URLS=ntfy://example/topic tgram://x\n")
+    return out
+
+
+def _applied_bucket(cfg, fake):
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+
+
+def _tamper(fake):
+    _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] = {"NoncurrentDays": 1}
+
+
+def test_a_restored_tamper_is_notified_once(cfg, sent):
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    _tamper(fake)
+    assert lc.check(cfg, BASE, run=fake) == "restored"
+    assert len(sent) == 1
+    urls, title, body = sent[0]
+    assert urls == ["ntfy://example/topic", "tgram://x"]
+    assert "changed outside backup-engine" in title and "restored" in title and BASE in title
+    assert "media/manga/" in body
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert len(sent) == 1
+
+
+def test_a_not_restored_alarm_is_notified_once_while_it_persists(cfg, sent):
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    _tamper(fake)
+    fake.deny_put = True
+    assert lc.check(cfg, BASE, run=fake) == "not_restored"
+    assert lc.check(cfg, BASE, run=fake) == "not_restored"
+    assert len(sent) == 1 and "NOT restored" in sent[0][1]
+
+
+def test_a_new_console_rule_is_notified_once(cfg, sent):
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    fake.rules[BASE].append({"ID": "wipe", "Status": "Enabled", "Filter": {"Prefix": ""}, "Expiration": {"Days": 1}})
+    assert lc.check(cfg, BASE, run=fake) == "console_rule"
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert len(sent) == 1
+    assert "could delete or move backups" in sent[0][1] and "wipe" in sent[0][2]
+    assert "left it in place" in sent[0][2]
+
+
+def test_an_acknowledged_alarm_that_happens_again_is_notified_again(cfg, sent):
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    _tamper(fake)
+    lc.check(cfg, BASE, run=fake)
+    lc.acknowledge(cfg["CACHE_DIR"])
+    _tamper(fake)
+    assert lc.check(cfg, BASE, run=fake) == "restored"
+    assert len(sent) == 2
+
+
+def test_a_failed_send_never_fails_the_check(cfg, monkeypatch):
+    env = Path(cfg["CONFIG_DIR"], "backup.env")
+    env.write_text(env.read_text() + "APPRISE_URLS=ntfy://example/topic\n")
+
+    def boom(*a, **k):
+        raise OSError("no apprise here")
+    monkeypatch.setattr(lc, "_send_notification", boom)
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    _tamper(fake)
+    assert lc.check(cfg, BASE, run=fake) == "restored"
+
+
+def test_the_real_sender_never_raises(monkeypatch):
+    import subprocess
+
+    def boom(*a, **k):
+        raise FileNotFoundError("apprise")
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert lc._send_notification(["x://y"], "t", "b") is False
+
+
+def test_nothing_is_sent_without_apprise_urls(cfg, monkeypatch):
+    monkeypatch.delenv("APPRISE_URLS", raising=False)
+    monkeypatch.setattr(lc, "_send_notification", lambda *a: pytest.fail("no target configured"))
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    _tamper(fake)
+    assert lc.check(cfg, BASE, run=fake) == "restored"
+
+
+def test_the_container_env_is_used_when_backup_env_has_no_apprise_urls(cfg, monkeypatch):
+    out = []
+    monkeypatch.setattr(lc, "_send_notification", lambda urls, t, b: out.append(urls) or True)
+    monkeypatch.setenv("APPRISE_URLS", "json://env/x")
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    _tamper(fake)
+    lc.check(cfg, BASE, run=fake)
+    assert out == [["json://env/x"]]
+
+
+def test_a_job_save_sync_never_notifies(cfg, sent):
+    fake = FakeS3()
+    _applied_bucket(cfg, fake)
+    _tamper(fake)
+    assert lc.sync(cfg, BASE, run=fake).state == "restored"      # the owner is right there (a flash)
+    assert sent == []

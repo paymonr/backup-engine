@@ -248,6 +248,12 @@ unsupported); Board blocker for tamper; Activity labels "S3 rules update" and "s
 - Residual stolen-key reach after this feature: shorten rules / suspend versioning via the role
   (tamper-alarmed, delayed ~1 day by S3), and empty `<base>-*` dedicated buckets via the teardown
   permission (pre-existing; "make teardown admin-only" goes to the backlog).
+- Alarms leave the GUI (final fix wave I5): when a check — before a backup run, the hourly
+  check-all, or **Check now** — ends `restored`, `not_restored` or `console_rule`, the app's
+  existing notification (Apprise, `APPRISE_URLS`, the same channel as a failed backup) is sent once
+  per alarm; a failed send never fails the check. Residual: a new or changed **console** rule that
+  can delete or move backups is alarmed and notified, but never modified or removed by
+  backup-engine (console rules are the owner's — see §1) — the owner removes it in the AWS console.
 
 ## 7. Removals and setup changes
 

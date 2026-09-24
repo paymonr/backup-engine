@@ -218,10 +218,13 @@ days, leftover delete markers cleared). It never creates a rule that expires or 
 files, and the backup key itself can't permanently delete old versions.
 
 Rules you add yourself in the AWS console are always kept exactly as they are. The app's own rules
-are checked before every backup run (and by **Check now** on Setup): if they were changed outside
-backup-engine they are put back and flagged on the Board until you acknowledge it, and a new console
-rule that could delete or move backups is flagged the same way (but left in place — you may have
-meant it). On a non-AWS endpoint without lifecycle support, Plain copy keeps every old version.
+are checked before every backup run, every hour, and by **Check now** on Setup: if they were changed
+outside backup-engine they are put back and flagged on the Board until you acknowledge it, and a new
+console rule that could delete or move backups is flagged the same way (but left in place — you may
+have meant it). Each such alarm is also sent once through your notifications (`APPRISE_URLS`, the
+same channel as a failed backup). backup-engine never modifies or removes a console rule — one that
+can delete or move backups stays until you remove it in the AWS console. On a non-AWS endpoint
+without lifecycle support, Plain copy keeps every old version.
 
 A cold storage class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for **archive** and
 **versioned-files** jobs — both store plain objects. For **versioned** (restic) jobs a cold class is

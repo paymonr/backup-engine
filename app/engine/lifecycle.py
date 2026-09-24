@@ -12,6 +12,7 @@ import math
 import os
 import re
 import secrets
+import subprocess
 import threading
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -1753,22 +1754,113 @@ def sync_all(cfg, *, run=provision._run_aws) -> list[SyncResult]:
 
 def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled",
           run_id: str | None = None) -> str:
-    """Before every backup run (trigger "scheduled") and behind Check now ("manual"):
-    the same pass as sync() -- drift from what was applied is restored + alarmed, and
-    job settings that haven't reached S3 yet are applied. Never raises: anything
-    unexpected becomes the "error" state. `run_id` (I2): the backup run this check runs
-    before (BE_RUN_ID) -- its own start record never makes its job's folder known."""
+    """Before every backup run (trigger "scheduled"), the hourly check-all, and behind Check
+    now ("manual"): the same pass as sync() -- drift from what was applied is restored +
+    alarmed, and job settings that haven't reached S3 yet are applied. An alarm this leaves
+    open goes out through the app's own notification, once (final fix wave I5). Never raises:
+    anything unexpected becomes the "error" state. `run_id` (I2): the backup run this check
+    runs before (BE_RUN_ID) -- its own start record never makes its job's folder known."""
     try:
         if not managed(cfg["CONFIG_DIR"]):
             return "not_managed"
         state, _, _, _ = _reconcile(cfg, bucket, run=run, trigger=trigger, run_id=run_id)
-        return state
     except Exception as e:                                   # noqa: BLE001 — never raise
         try:
             set_status(cfg["CACHE_DIR"], bucket, "error", f"the check stopped unexpectedly ({type(e).__name__})")
         except Exception:                                    # noqa: BLE001 — state dir unwritable
             pass
         return "error"
+    notify_alarm(cfg, bucket, state)
+    return state
+
+
+# --- notifications (final fix wave I5) --------------------------------------------------------
+# The app's existing channel -- Apprise, the same `apprise -t <title> -b <body> $APPRISE_URLS`
+# that scripts/lib/common.sh `notify failure` sends (backup.env's APPRISE_URLS, else the
+# container's) -- once per alarm: keyed on what the open alarm says (kind, rules, lines), not
+# its time, so a not-restored alarm re-raised by every check while it persists goes out once;
+# acknowledging it starts afresh. A residual it can't close: a console rule that can delete or
+# move backups is alarmed and notified but never modified or removed (spec §6).
+
+_ALARM_STATES = ("restored", "not_restored", "console_rule")
+_APPRISE_TIMEOUT_S = 30
+
+
+def _notified_path(cache_dir: str, bucket: str) -> Path:
+    return Path(_state_dir(cache_dir), f"{bucket}.notified.json")
+
+
+def _notify_urls(config_dir: str) -> list[str]:
+    env = config_io.read_backup_env(config_dir)
+    raw = env["APPRISE_URLS"] if "APPRISE_URLS" in env else os.environ.get("APPRISE_URLS", "")
+    return raw.split()
+
+
+def _send_notification(urls: list[str], title: str, body: str) -> bool:
+    """One Apprise send; False on any failure (never raises -- a check must not fail on it)."""
+    try:
+        cp = subprocess.run(["apprise", "-t", title, "-b", body, *urls], capture_output=True, text=True,
+                            timeout=_APPRISE_TIMEOUT_S)
+        return cp.returncode == 0
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
+def _alarm_key(alarm: dict) -> str:
+    payload = {"kind": alarm.get("kind"), "rules": sorted(alarm.get("rules") or []),
+               "lines": list(alarm.get("lines") or [])}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _alarm_message(bucket: str, alarm: dict) -> tuple[str, str]:
+    kind = alarm.get("kind")
+    lines = [str(x) for x in (alarm.get("lines") or [])][:10]
+    if kind == "console_rule":
+        title = f"backup-engine: a new S3 rule could delete or move backups · {bucket}"
+        tail = ["backup-engine left it in place — check it in the AWS console."]
+    else:
+        word = "NOT restored" if kind == "not_restored" else "restored"
+        title = f"backup-engine: S3 rules were changed outside backup-engine — {word} · {bucket}"
+        tail = ["Setup → S3 rules has the details."]
+    if alarm.get("rules") and kind != "console_rule":
+        tail.insert(0, "A new S3 rule could delete or move backups: " + ", ".join(alarm["rules"]))
+    return title, "\n".join(lines + tail)
+
+
+def notify_alarm(cfg, bucket: str, state: str) -> None:
+    """After a check: send the bucket's open alarm once (I5). Never raises."""
+    try:
+        cache = cfg["CACHE_DIR"]
+        alarm = (load_status(cache).get(bucket) or {}).get("alarm")
+        path = _notified_path(cache, bucket)
+        if not isinstance(alarm, dict):
+            try:
+                path.unlink()                                # nothing open: the next alarm is new
+            except OSError:
+                pass
+            return
+        if state not in _ALARM_STATES:
+            return
+        key = _alarm_key(alarm)
+        try:
+            if json.loads(path.read_text()).get("key") == key:
+                return
+        except (OSError, ValueError, AttributeError):
+            pass
+        urls = _notify_urls(cfg["CONFIG_DIR"])
+        if not urls:
+            return
+        title, body = _alarm_message(bucket, alarm)
+        ok = False
+        try:
+            ok = bool(_send_notification(urls, title, body))
+        except Exception:                                    # noqa: BLE001
+            ok = False
+        # once per alarm: a failed send isn't retried by every later check (that would stall each
+        # pre-backup check on a broken target) -- the alarm itself stays on the Board regardless
+        _write_atomic(path, json.dumps({"key": key, "at": _now_iso(), "sent": ok}))
+    except Exception:                                        # noqa: BLE001
+        pass
 
 
 def acknowledge(cache_dir: str, bucket: str | None = None, seen: str | None = None) -> None:
@@ -1782,7 +1874,11 @@ def acknowledge(cache_dir: str, bucket: str | None = None, seen: str | None = No
             alarm = entry.get("alarm")
             newest = (alarm.get("latest") or alarm.get("at") or "") if isinstance(alarm, dict) else ""
             if seen is None or newest <= seen:
-                entry.pop("alarm", None)
+                if entry.pop("alarm", None) is not None:
+                    try:                                     # I5: the next alarm is notified afresh
+                        _notified_path(cache_dir, b).unlink()
+                    except OSError:
+                        pass
         _write_atomic(_status_path(cache_dir), json.dumps(data, indent=2, sort_keys=True))
 
 
