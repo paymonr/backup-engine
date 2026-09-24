@@ -731,9 +731,25 @@ def test_lengthening_plain_copy_history_saves_as_usual(client, cfg, monkeypatch)
 
 
 def test_before_the_first_check_the_wizard_saves_and_the_pass_holds_it(client, cfg, monkeypatch):
-    seen = []
-    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: seen.append(b) or [])
-    assert _save_manga(client, retention_days="30").status_code in (302, 303) and seen == [[BASE]]
+    # fix round 1: prove the pass ACTUALLY holds it, not just that apply_for was called --
+    # wire the real engine onto a FakeS3 that already has the live (pre-app) 180-day rule, the
+    # way a bucket looks the first time backup-engine ever checks it (probe P1b).
+    import functools
+    from tests.engine.test_lifecycle_sync import FakeS3
+    for name, fn in REAL.items():
+        monkeypatch.setattr(lifecycle, name, fn)
+    want = lifecycle.desired(BASE, BASE, JOBS, {})
+    fake = FakeS3({BASE: list(want.rules.values())})
+    Path(cfg["CACHE_DIR"], "state", "manga.json").write_text("{}")            # manga has run -> known folder
+    Path(cfg["CACHE_DIR"], "state", "appdata_backups.json").write_text("{}")
+    monkeypatch.setattr(lifecycle, "sync", functools.partial(lifecycle.sync, run=fake))
+    r = _save_manga(client, retention_days="30")
+    assert r.status_code in (302, 303)
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 30}
+    manga = next(x for x in fake.rules[BASE] if x["ID"] == "backup-engine:media/manga/")
+    assert manga["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}    # the pass HOLDS it
+    _, waiting = lifecycle.outstanding({"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}, BASE)
+    assert any(c.folder == "media/manga/" for c in waiting)
 
 
 def test_confirming_the_wizard_preview_saves_the_job_and_applies(client, cfg, monkeypatch):
@@ -799,3 +815,247 @@ def test_the_job_page_mentions_a_change_waiting_for_confirmation(client, cfg):
     jobs[0]["retention"] = {"type": "days", "days": 30}
     Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
     assert "a change is waiting for your confirmation" in client.get("/jobs/manga").get_data(as_text=True)
+
+
+# --- fix round 1 (task-17-fix1.md) --------------------------------------------------------------
+
+# --- I1: a race-stale confirm (apply_confirmed raises AFTER already saving the job) ------------
+
+def test_a_race_stale_confirm_after_save_shows_as_waiting_not_a_lost_change(client, cfg, monkeypatch):
+    _applied(cfg)
+    _summary(cfg)
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: pytest.fail("job_save never reaches this"))
+    body = _save_manga(client, retention_days="30").get_data(as_text=True)
+    tok = _token(body)
+
+    def racy(c, token, typed, **kw):
+        # Simulates apply_confirmed's own race outcome: the job save landed (its own
+        # _save_edit_unlocked), then the final reconcile found the S3 rules had moved and
+        # refused to write past the gate -- PreviewError("stale", _STALE_RACE) AFTER the save.
+        t = lifecycle.load_preview(c["CACHE_DIR"], token)
+        lifecycle._save_edit_unlocked(c, t["edit"])
+        raise lifecycle.PreviewError("stale", lifecycle._STALE_RACE)
+    monkeypatch.setattr(lifecycle, "apply_confirmed", racy)
+    r = client.post("/jobs/history/confirm", data={"csrf": _csrf(client), "token": tok,
+                                                    "typed": BASE, "name": "manga"})
+    assert r.status_code in (302, 303) and r.headers["Location"].endswith("/jobs/manga")
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 30}
+    warn = _flashes(client).get("warning", "")
+    assert "S3 rules changed since your preview" in warn
+    assert "Save the job again" not in warn                 # that advice can't work -- it's saved
+
+
+def test_an_unsaved_stale_preview_keeps_the_save_again_advice_and_the_edit_form(client, cfg):
+    # The ordinary (before-save, single-use-token-reused) stale case is unaffected by I1's fix:
+    # nothing was saved, so "save the job again" is still the right advice, and the edit form
+    # (not the job page) is still where that resave happens.
+    r = client.post("/jobs/history/confirm", data={"csrf": _csrf(client), "token": "x" * 24,
+                                                    "typed": BASE, "name": "manga"})
+    assert r.status_code in (302, 303) and r.headers["Location"].endswith("/jobs/manga/edit")
+    warn = _flashes(client).get("warning", "")
+    assert "Save the job again" in warn
+
+
+def test_a_lifecycle_error_on_the_wizard_path_leaves_the_change_waiting(client, cfg, monkeypatch):
+    import functools
+    from tests.engine.test_lifecycle_sync import FakeS3
+    for name, fn in REAL.items():
+        monkeypatch.setattr(lifecycle, name, fn)
+    _applied(cfg)
+    _summary(cfg)
+    fake = FakeS3({BASE: json.loads(json.dumps(lifecycle.load_applied(cfg["CACHE_DIR"], BASE)))}, deny_put=True)
+    monkeypatch.setattr(lifecycle, "apply_confirmed", functools.partial(lifecycle.apply_confirmed, run=fake))
+    body = _save_manga(client, retention_days="30").get_data(as_text=True)
+    r = client.post("/jobs/history/confirm", data={"csrf": _csrf(client), "token": _token(body),
+                                                    "typed": BASE, "name": "manga"})
+    assert r.status_code in (302, 303) and r.headers["Location"].endswith("/jobs/manga")
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 30}
+    manga = next(x for x in fake.rules[BASE] if x["ID"] == "backup-engine:media/manga/")
+    assert manga["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}     # S3 unchanged
+    _, waiting = lifecycle.outstanding({"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}, BASE)
+    assert any(c.folder == "media/manga/" for c in waiting)
+
+
+def test_a_wrong_typed_name_on_confirm_re_previews_with_the_error_not_a_bounce(client, cfg):
+    _applied(cfg)
+    _summary(cfg)
+    body = _save_manga(client, retention_days="30").get_data(as_text=True)
+    tok = _token(body)
+    r = client.post("/jobs/history/confirm", data={"csrf": _csrf(client), "token": tok,
+                                                    "typed": "nope", "name": "manga"})
+    body2 = r.get_data(as_text=True)
+    assert r.status_code == 200 and 'id="s3-history-preview"' in body2
+    assert "Type the bucket name" in body2
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 180}  # still unsaved
+    assert 'name="retention_days" value="30"' in body2          # the wizard form still carries the entry
+    new_tok = _token(body2)
+    assert new_tok and new_tok != tok                           # a fresh token; the old one is spent
+    assert client.post("/jobs/history/confirm", data={"csrf": _csrf(client), "token": tok,
+                                                       "typed": BASE, "name": "manga"}
+                       ).headers["Location"].endswith("/jobs/manga/edit")  # the old token really is gone
+
+
+def test_run_now_is_carried_through_the_preview_and_honoured_after_confirm(client, cfg, monkeypatch):
+    import functools
+    from tests.engine.test_lifecycle_sync import FakeS3
+    from app.gui import runner as runner_mod
+    for name, fn in REAL.items():
+        monkeypatch.setattr(lifecycle, name, fn)
+    _applied(cfg)
+    _summary(cfg)
+    fake = FakeS3({BASE: json.loads(json.dumps(lifecycle.load_applied(cfg["CACHE_DIR"], BASE)))})
+    monkeypatch.setattr(lifecycle, "apply_confirmed", functools.partial(lifecycle.apply_confirmed, run=fake))
+    triggered = []
+    monkeypatch.setattr(runner_mod, "trigger_job", lambda scripts_dir, name: triggered.append(name))
+    body = _save_manga(client, retention_days="30", run_now="1").get_data(as_text=True)
+    assert 'name="run_now" value="1"' in body
+    r = client.post("/jobs/history/confirm", data={"csrf": _csrf(client), "token": _token(body),
+                                                    "typed": BASE, "name": "manga", "run_now": "1"})
+    assert r.status_code in (302, 303)
+    assert triggered == ["manga"]
+
+
+# --- I2: "History in S3" reflects versioning being off ------------------------------------------
+
+def test_the_job_page_says_versioning_is_off_for_a_suspended_base_bucket(client, cfg):
+    from tests.gui.test_vocabulary import forbidden_hits, mono_violations
+    settings = {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}}
+    Path(cfg["CONFIG_DIR"], "storage.json").write_text(json.dumps(settings))
+    body = client.get("/jobs/manga").get_data(as_text=True)          # Plain copy
+    assert "Versioning is off for this bucket" in body
+    line = re.search(r"<dd data-s3-history>.*?</dd>", body, re.S).group(0)
+    assert forbidden_hits(line) == [] and mono_violations(line) == []
+    body = client.get("/jobs/appdata_backups").get_data(as_text=True)  # Snapshot backup (undo)
+    assert "Versioning is off for this bucket" in body
+
+
+def test_the_job_page_says_versioning_is_off_for_a_dedicated_unversioned_bucket(client, cfg):
+    ded = f"{BASE}-vault"
+    Path(cfg["SOURCE_ROOT"], "media", "vault").mkdir(parents=True)
+    jobs = [*JOBS, {"name": "vault", "type": "archive", "source": "media/vault", "schedule": "0 6 * * *",
+                    "enabled": True, "storage_class": "STANDARD", "dedicated": True, "bucket": ded,
+                    "bucket_versioned": False, "retention": {"type": "days", "days": 90}}]
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    body = client.get("/jobs/vault").get_data(as_text=True)
+    assert "Versioning is off for this bucket" in body
+
+
+def test_the_job_page_unsupported_message_differs_by_job_type(client, cfg):
+    _applied(cfg)
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "unsupported", "no lifecycle")
+    body = client.get("/jobs/manga").get_data(as_text=True)               # Plain copy
+    assert "Plain copy keeps all old versions" in body
+    body = client.get("/jobs/appdata_backups").get_data(as_text=True)     # Snapshot backup (undo)
+    assert "an undo window can't be set there" in body
+
+
+# --- I3: the combined option's number inputs carry no client-side constraints -------------------
+
+def test_the_combined_options_number_inputs_carry_no_client_side_constraints(client, cfg):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    for name in ("retention_nd_count", "retention_nd_days"):
+        tag = re.search(rf'<input type="number"[^>]*name="{name}"[^>]*>', body).group(0)
+        assert "min=" not in tag and "max=" not in tag and "disabled" not in tag
+        assert 'step="any"' in tag
+
+
+# --- Minors -----------------------------------------------------------------------------------
+
+def test_the_combined_options_wizard_copy_is_accurate(client, cfg):
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert "indefinitely" in body and "even after the file is deleted" in body
+
+
+def test_the_job_page_combined_option_reuses_old_version_words(client, cfg):
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "count", "count": 10, "days": 30}
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    _applied(cfg, jobs=jobs)
+    body = client.get("/jobs/manga").get_data(as_text=True)
+    assert 'older ones removed <span class="mono">30</span> days after being replaced' in body
+
+
+def test_the_wizard_undo_note_shows_the_real_undo_days(client, cfg):
+    settings = {"version": 1, "buckets": {BASE: {"folders": {"appdata/": {"undo_days": 14}}}}}
+    Path(cfg["CONFIG_DIR"], "storage.json").write_text(json.dumps(settings))
+    body = client.get("/jobs/appdata_backups/edit").get_data(as_text=True)
+    assert 'undo window — <span class="mono">14</span> days' in body
+    # a brand new (unsaved) job has no folder yet -- the default window, not a stale override
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert 'undo window — <span class="mono">30</span> days' in body
+
+
+def test_the_wizard_s3_copy_note_is_honest_when_not_managed(client, cfg):
+    Path(cfg["CONFIG_DIR"], "backup.env").write_text(f"S3_BUCKET={BASE}\nAWS_REGION=us-east-1\n")
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert "Kept by S3 inside AWS" not in body
+    assert "AWS permissions update" in body
+
+
+def test_the_wizard_s3_copy_note_is_honest_when_unsupported(client, cfg):
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "unsupported", "no lifecycle")
+    body = client.get("/jobs/new").get_data(as_text=True)
+    assert "Kept by S3 inside AWS" not in body
+    assert "doesn't support S3 rules" in body
+
+
+def test_the_keep_rule_label_includes_days_for_the_combined_form(client, cfg):
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "count", "count": 10, "days": 30}
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    body = client.get("/jobs/manga").get_data(as_text=True)
+    assert "Keep the newest 10, older ones 30 days" in body
+
+
+def test_count_days_is_rejected_for_a_snapshot_backup(client, cfg, monkeypatch):
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: pytest.fail("never reached: refused"))
+    r = client.post("/jobs", data={"csrf": _csrf(client), "name": "appdata_backups", "type": "versioned",
+                                   "source": "appdata", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+                                   "enabled": "1", "retention_type": "count_days",
+                                   "retention_nd_count": "10", "retention_nd_days": "30"})
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200 and "only valid for Plain copy" in body
+    assert jobs_io.get(cfg["CONFIG_DIR"], "appdata_backups")["retention"]["type"] == "tiered"  # unchanged
+
+
+def test_a_new_job_on_an_applied_baseline_never_previews(client, cfg, monkeypatch):
+    _applied(cfg)
+    _summary(cfg)
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: [])
+    Path(cfg["SOURCE_ROOT"], "media", "comics").mkdir(parents=True)
+    r = _save_manga(client, name="comics", source="media/comics", retention_days="1")
+    assert r.status_code in (302, 303) and 's3-history-preview' not in r.get_data(as_text=True)
+
+
+def test_combined_to_combined_edits_gate_only_when_shortening(client, cfg, monkeypatch):
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "count", "count": 10, "days": 30}
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    _applied(cfg, jobs=jobs)
+    _summary(cfg)
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: [])
+
+    def pv(**fields):
+        r = _save_manga(client, retention_type="count_days", **fields)
+        return r.status_code, ('s3-history-preview' in r.get_data(as_text=True))
+    assert pv(retention_nd_count="10", retention_nd_days="60") == (302, False)    # more days: lengthens
+    assert pv(retention_nd_count="5", retention_nd_days="30") == (200, True)      # fewer kept: shortens
+    assert pv(retention_nd_count="20", retention_nd_days="10") == (200, True)     # far fewer days: shortens
+
+
+def test_when_preview_itself_blows_up_the_save_goes_through_and_the_pass_holds_it(client, cfg, monkeypatch):
+    import functools
+    from tests.engine.test_lifecycle_sync import FakeS3
+    for name, fn in REAL.items():
+        monkeypatch.setattr(lifecycle, name, fn)
+    _applied(cfg)
+    fake = FakeS3({BASE: json.loads(json.dumps(lifecycle.load_applied(cfg["CACHE_DIR"], BASE)))})
+    monkeypatch.setattr(lifecycle, "sync", functools.partial(lifecycle.sync, run=fake))
+    monkeypatch.setattr(lifecycle, "preview", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    r = _save_manga(client, retention_days="30")
+    assert r.status_code in (302, 303)
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 30}
+    manga = next(x for x in fake.rules[BASE] if x["ID"] == "backup-engine:media/manga/")
+    assert manga["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}     # S3 untouched
+    _, waiting = lifecycle.outstanding({"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}, BASE)
+    assert any(c.folder == "media/manga/" for c in waiting)

@@ -117,7 +117,12 @@ def _normalize_retention(job: dict, typ: str) -> dict:
         out = {"type": "count", "count": c}
         # Plain copy's combined S3 form (spec 2026-09-23 §1): keep the newest N old
         # versions; older ones go D days after being replaced. Absent/blank = D of 1.
+        # It's Plain copy's own S3-rule shape -- reject it for any other engine (fix
+        # round 1, I-adjacent Minor), the same way tiered is rejected for non-versioned.
         if r.get("days") not in (None, ""):
+            if typ != "archive":
+                raise ValueError("keeping a number of days for the newest versions is only "
+                                 "valid for Plain copy jobs")
             try:
                 d = int(r["days"])
             except (TypeError, ValueError):

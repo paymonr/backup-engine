@@ -235,9 +235,9 @@
         <span class="why"><span class="k-delta" data-keep="count">{{ money((ko.get('count') or {}).get('delta_monthly')) }}/mo</span> ·
           <span class="mono" data-keep-points="count">{{ (ko.get('count') or {}).get('points', 0) }}</span> restore points</span></label>
       <label class="radio" for="k-nd" data-when-type="archive"><input type="radio" id="k-nd" name="retention_type" value="count_days" {{ 'checked' if fv.retention_type == 'count_days' }}>
-        <span>Keep the newest <input type="number" name="retention_nd_count" value="{{ fv.retention_nd_count }}" style="width:4rem" class="mono"> versions,
-          older ones for <input type="number" name="retention_nd_days" value="{{ fv.retention_nd_days }}" style="width:4rem" class="mono"> days</span>
-        <span class="why">S3 keeps the newest ones as long as the file exists; older ones go the given days after being replaced</span></label>
+        <span>Keep the newest <input type="number" step="any" name="retention_nd_count" value="{{ fv.retention_nd_count }}" style="width:4rem" class="mono"> versions,
+          older ones for <input type="number" step="any" name="retention_nd_days" value="{{ fv.retention_nd_days }}" style="width:4rem" class="mono"> days</span>
+        <span class="why">S3 keeps the newest N old versions indefinitely (even after the file is deleted); older ones go D days after being replaced</span></label>
     </div>
     <p class="sm faint measure" id="keep-consequence" style="margin-top:6px">
       {% if est and est.breakdown.change_rate_pct == 0 %}Nothing gets replaced, so there are no old versions to store —
@@ -249,12 +249,23 @@
         {{ '%.2f'|format(est.breakdown.old_multiplier) }}× your data — <span class="n">{{ money(est.breakdown.versioning) }}</span>
         of the <span class="n">{{ money(est.this_job_monthly) }}</span>. Keeping less also limits how far back you can restore,
         which is worth something at 0% too.{% endif %}</p>
+    {# fix round 1, Minor: honest about whether S3 rules actually apply to this job's bucket
+       (s3_copy = s3_rules.wizard_copy), and the undo-window note names the REAL undo days
+       (storage.json) for an existing job's folder, not a hardcoded 30. #}
+    {% if s3_copy.managed and not s3_copy.unsupported %}
     <p class="sm faint measure" data-when-type="archive" style="margin-top:6px">Kept by S3 inside AWS — this
       setting is the folder's S3 rule, so it holds even while this machine is off.
       <a class="linklike" href="/setup/storage">S3 rules →</a></p>
     <p class="sm faint measure" data-when-type="versioned versioned-files" style="margin-top:6px">What a run
-      removes stays recoverable in S3 for an undo window — 30 days unless you change it.
+      removes stays recoverable in S3 for an undo window — <span class="mono">{{ s3_copy.undo_days }}</span> days unless you change it.
       <a class="linklike" href="/setup/storage">S3 rules →</a></p>
+    {% elif not s3_copy.managed %}
+    <p class="sm faint measure" data-when-type="archive versioned versioned-files" style="margin-top:6px">S3 rules need the
+      AWS permissions update to keep old versions in AWS — <a class="linklike" href="/setup/permissions">Update permissions →</a></p>
+    {% else %}
+    <p class="sm faint measure" data-when-type="archive versioned versioned-files" style="margin-top:6px">This storage
+      doesn't support S3 rules, so old versions aren't kept there.</p>
+    {% endif %}
     {{ wasrow('retention_type') }}
 
     <!-- type-specific settings (5.8 §3.8) -->

@@ -8,7 +8,7 @@ from urllib.parse import quote
 from flask import abort, current_app, flash, jsonify, redirect, render_template, request, url_for
 
 from ..engine import lifecycle
-from . import config_io, jobs_io, ops, s3_rules, security
+from . import config_io, jobs_io, ops, routes, runner, s3_rules, security
 from .routes import bp
 
 
@@ -187,7 +187,10 @@ def _app_folders(cfg) -> set[tuple[str, str]]:
 @bp.post("/jobs/history/confirm")
 def job_history_confirm():
     """R-B5: the wizard's preview confirmed -- save the job and apply its S3 rule
-    (apply_confirmed), then what any job save does after (crontab, flashes)."""
+    (apply_confirmed), then what any job save does after (flashes, run_now). No crontab
+    render here (fix round 1, Minor): apply_confirmed's own save (_save_edit_unlocked)
+    already renders it whenever the job was actually saved -- before that, nothing changed
+    to render for."""
     _csrf_or_400()
     cfg = current_app.config
     token, typed = request.form.get("token", ""), request.form.get("typed", "")
@@ -195,22 +198,55 @@ def job_history_confirm():
     name = ((t.get("edit") or {}).get("job") or {}).get("name") or request.form.get("name", "")
     if not jobs_io.valid_name(name):
         abort(400, description="That job name isn't valid.")
-    back = f"/jobs/{name}/edit" if jobs_io.get(cfg["CONFIG_DIR"], name) else "/jobs/new"
+    existing = jobs_io.get(cfg["CONFIG_DIR"], name)
+    back = f"/jobs/{name}/edit" if existing else "/jobs/new"
     try:
         res = lifecycle.apply_confirmed(cfg, token, typed)
     except lifecycle.PreviewError as e:
+        # A wrong/empty typed name (fix round 1, Minor): re-preview with a FRESH token (the old
+        # one is discarded) and show the error inline, the same way the S3 rules screen's own
+        # /setup/storage/apply does -- not a bounce to the edit form, which would silently drop
+        # what the owner was confirming.
+        if e.kind == "typed" and t.get("bucket") and t.get("edit"):
+            try:
+                pv = lifecycle.preview(cfg, t["bucket"], t["edit"])
+            except lifecycle.PreviewError:
+                pv = None
+            if pv is not None and pv.token:
+                lifecycle.discard_preview(cfg["CACHE_DIR"], token)
+                hidden = {"name": name}
+                if request.form.get("run_now"):
+                    hidden["run_now"] = "1"
+                pvw = s3_rules.preview_view(cfg, pv, action="/jobs/history/confirm", hidden=hidden,
+                                            cancel=f"/jobs/{name}" if existing else "/jobs/new", error=e.message)
+                # The form shows what the owner was actually trying to save (the pending edit's
+                # own job, exactly as posted -- string values, _saved_form_values coerces them
+                # for display same as it does a real saved job), not the still-unchanged saved
+                # job -- so re-typing the bucket name doesn't also look like their entry reverted.
+                pending_job = (t.get("edit") or {}).get("job")
+                fv = routes._saved_form_values(pending_job if isinstance(pending_job, dict) else existing) \
+                    if (pending_job or existing) else routes._fresh_form_values()
+                return routes._render_job_form(cfg, job=existing, fv=fv, s3_preview=pvw)
+        # I1 (fix round 1): apply_confirmed can raise "stale" AFTER already saving the job --
+        # the race-lost write (lifecycle._STALE_RACE, matched by identity, not by kind, since
+        # both the before-save and after-save cases share kind "stale"). The "save the job
+        # again" advice only makes sense for the UNSAVED kinds (stale before save/typed/
+        # invalid); for the after-save race the job already IS the new value, so this goes to
+        # the job page instead, where "a change is waiting for your confirmation" shows it.
+        if e.message == lifecycle._STALE_RACE:
+            flash(e.message, "warning")
+            return redirect(url_for("gui.job_page", name=name))
         flash(f"{e.message} Save the job again to see a fresh preview.", "warning")
         return redirect(back)
     except lifecycle.LifecycleError as e:
-        jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
-                               source_root=cfg["SOURCE_ROOT"])
         flash(f"Saved {name}, but S3 couldn't be updated ({s3_rules.why(e.kind)}) — the change waits for "
               "your confirmation in Setup → S3 rules.", "warning")
         return redirect(url_for("gui.job_page", name=name))
-    jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"], source_root=cfg["SOURCE_ROOT"])
     if res.lines:
         flash("S3 rules updated: " + "; ".join(res.lines[:3]) + (" …" if len(res.lines) > 3 else ""), "success")
     flash(f"Saved {name}.", "success")
+    if request.form.get("run_now"):
+        runner.trigger_job(cfg["SCRIPTS_DIR"], name)
     return redirect(url_for("gui.job_page", name=name))
 
 

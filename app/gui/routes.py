@@ -112,7 +112,11 @@ def _keep_rule_label(job) -> str:
         if t == "days":
             return f"Kept for {int(r.get('days', 0))} days"
         if t == "count":
-            return f"Keep the last {int(r.get('count', 0))}"
+            n = int(r.get('count', 0))
+            if r.get("days"):
+                # The combined "newest N + days" shape (spec 2026-09-23 §1, fix round 1 Minor).
+                return f"Keep the newest {n}, older ones {int(r['days'])} days"
+            return f"Keep the last {n}"
         if t == "tiered":
             return _tiered_label(r.get("keep") or {})
     if job.get("type") == "versioned" and isinstance(job.get("keep"), dict):
@@ -2154,6 +2158,7 @@ def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
         blockers=blockers, unacked=unacked, acknowledged=sorted(ack),
         diff=diff, saved_typical=saved_typical, saved_cmp=saved_cmp, bucket=bucket,
         dedicated_ok=_dedicated_ok(cfg), s3_preview=s3_preview, refresh_ok=s3_rules.refresh_ok(cfg),
+        s3_copy=s3_rules.wizard_copy(cfg, job),
         csrf=security.issue_csrf()), status_code
 
 
@@ -2402,7 +2407,8 @@ def job_save():
             job["mirror"] = bool(f.get("mirror"))
         # R-B5: shortening a Plain copy job's history deletes old versions S3 keeps today --
         # show the preview instead of saving; its confirm POST saves the job and applies.
-        s3_preview = s3_rules.history_gate(cfg, job)
+        # run_now (fix round 1, Minor) rides along so a confirmed save still runs the job.
+        s3_preview = s3_rules.history_gate(cfg, job, run_now=bool(f.get("run_now")))
         if s3_preview is not None:
             return _render_job_form(cfg, job=existing, fv=fv, s3_preview=s3_preview)
         jobs_io.upsert(cfg["CONFIG_DIR"], job, source_root=cfg["SOURCE_ROOT"])

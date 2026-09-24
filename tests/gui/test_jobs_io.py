@@ -681,3 +681,17 @@ def test_count_retention_days_must_be_positive(bad):
     from app.gui.jobs_io import _normalize_retention
     with pytest.raises(ValueError):
         _normalize_retention({"retention": {"type": "count", "count": 5, "days": bad}}, "archive")
+
+
+def test_count_with_days_rejected_for_non_archive(tmp_path):
+    # fix round 1 (Task 17): the combined "newest N + days" shape is Plain copy's own
+    # S3-rule concept -- reject it for other engines, like tiered is rejected for
+    # non-versioned (test_tiered_only_for_versioned above).
+    t = {"type": "count", "count": 10, "days": 30}
+    with pytest.raises(ValueError):
+        _val(_base(type="versioned", source="appdata", retention=t), tmp_path)
+    with pytest.raises(ValueError):
+        _val(_base(type="versioned-files", retention=t), tmp_path)
+    # A plain count (no days) is unaffected -- that's pre-existing, unrelated behavior.
+    assert _val(_base(type="versioned", source="appdata",
+                      retention={"type": "count", "count": 5}), tmp_path) == {"type": "count", "count": 5}

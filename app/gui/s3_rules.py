@@ -551,11 +551,13 @@ def preview_view(cfg, pv, *, action: str = "/setup/storage/apply", hidden: dict 
 
 # --- the wizard (R-B5) and the job page (spec §5) ----------------------------------------------
 
-def history_gate(cfg, job: dict) -> dict | None:
+def history_gate(cfg, job: dict, *, run_now: bool = False) -> dict | None:
     """R-B5: when saving a Plain copy job would keep less history than S3 keeps today for ITS
     folder, the preview (view model, with a token) to show instead of saving. None = save as
     usual: it keeps more, S3 rules aren't managed, nothing was applied yet (the pass then
-    holds it), or anything unexpected -- a save is never blocked by this."""
+    holds it), or anything unexpected -- a save is never blocked by this. `run_now` (fix round
+    1, Minor) carries "Save and run it now" through the preview -- its confirm route re-reads
+    `hidden["run_now"]` and triggers the run after a successful confirm."""
     from . import jobs_io
     if job.get("type") != "archive":
         return None
@@ -577,12 +579,18 @@ def history_gate(cfg, job: dict) -> dict | None:
     if target is None or not any(c.folder == target[1] for c in pv.keeps_less):
         lifecycle.discard_preview(cfg["CACHE_DIR"], pv.token)
         return None
-    return preview_view(cfg, pv, action="/jobs/history/confirm", hidden={"name": job["name"]},
+    hidden = {"name": job["name"]}
+    if run_now:
+        hidden["run_now"] = "1"
+    return preview_view(cfg, pv, action="/jobs/history/confirm", hidden=hidden,
                         cancel=f"/jobs/{job['name']}" if jobs_io.valid_name(job.get("name", "")) else "/")
 
 
 def job_history(cfg, job: dict) -> dict | None:
-    """The job page's "History in S3" line (spec §5) -- state files only."""
+    """The job page's "History in S3" line (spec §5) -- state files only. `versioning_off` (fix
+    round 1, I2) takes priority over the rule figures: with versioning suspended (a bucket-wide
+    choice, Task 16) or a dedicated bucket that was never versioned, S3 keeps nothing regardless
+    of what any rule says, so showing the rule's days/count would be a straight lie."""
     config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
     if not config_io.is_provisioned(config_dir):
         return None
@@ -594,17 +602,48 @@ def job_history(cfg, job: dict) -> dict | None:
         if target is None:
             return None
         bucket, folder = target
-        if (lifecycle.load_status(cache).get(bucket) or {}).get("state") == "unsupported":
-            return {"state": "unsupported"}
+        kind = next(f.kind for f in lifecycle.folders_for(bucket, base, jobs) if f.folder == folder)
         ctx = {"CONFIG_DIR": config_dir, "CACHE_DIR": cache}
         want = lifecycle.want_for(ctx, bucket, jobs, settings)
+        if want.versioning != "on":
+            return {"state": "versioning_off", "kind": kind}
+        if (lifecycle.load_status(cache).get(bucket) or {}).get("state") == "unsupported":
+            return {"state": "unsupported", "kind": kind}
         before = lifecycle.baseline_from_applied(lifecycle.load_applied_doc(cache, bucket), want)
         rule = (before.rules if before is not None else want.rules).get(lifecycle.rule_id(folder))
         d, n = lifecycle.expiry(rule)
-        kind = next(f.kind for f in lifecycle.folders_for(bucket, base, jobs) if f.folder == folder)
         waiting = before is not None and any(c.folder == folder and c.kind == lifecycle.KEEPS_LESS
                                              for c in lifecycle.classify(before, want))
         return {"state": "ok", "kind": kind, "days": None if d == math.inf else d, "newer": n or None,
                 "waiting": waiting, "applied": before is not None}
     except Exception:                                        # noqa: BLE001 — a GET never 500s on this
         return None
+
+
+def wizard_copy(cfg, job: dict | None) -> dict:
+    """The wizard's "Kept by S3"/undo-window note (spec §3, fix round 1 Minor): whether S3
+    rules actually apply to this job's bucket (else a short honest note instead of "Kept by S3
+    inside AWS"), and the REAL undo days (storage.json) for an existing Snapshot/File history
+    job's own folder -- not the hardcoded default. Files only, safe before/while editing --
+    `job` is the SAVED job (None on create, or a job with no target yet: the base bucket's own
+    state and the default undo window stand in, since no folder-specific override could exist
+    for a job that isn't saved yet)."""
+    config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+    out = {"managed": lifecycle.managed(config_dir), "unsupported": False,
+           "undo_days": lifecycle.DEFAULT_UNDO_DAYS}
+    if not out["managed"]:
+        return out
+    try:
+        base, jobs, settings = _context(cfg)
+        target = (lifecycle.folder_of_job(base, jobs, job["name"])
+                 if job and job.get("name") else None)
+        bucket = target[0] if target else base
+        if (lifecycle.load_status(cache).get(bucket) or {}).get("state") == "unsupported":
+            out["unsupported"] = True
+            return out
+        if target is not None:
+            bset = lifecycle.bucket_settings(settings, target[0])
+            out["undo_days"] = lifecycle.undo_days(bset, target[1])
+    except Exception:                                        # noqa: BLE001 — a GET never 500s on this
+        pass
+    return out
