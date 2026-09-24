@@ -5,6 +5,29 @@ resumed after a break. Design items follow the brainstorming → spec → plan f
 
 ---
 
+## S3 rules — SHIPPED (merged + deployed 2026-09-24, level 4 live); parked items
+Spec `specs/2026-09-23-s3-rules-design.md`, plan `plans/2026-09-23-s3-rules.md`, decision log
+`specs/2026-09-23-s3-rules-rulings.md`. Real-AWS smoke test (`tests/smoke/`, run via `tools/unraid/smoke-build.sh`)
+passed. Parked (all non-blocking):
+- **Split `app/engine/lifecycle.py`** (~2,000+ lines) as a pure move — rules model / state files / the pass /
+  previews / CLI — with `lifecycle` re-exporting names so tests' `lc.*` references keep working.
+- **Undo window isn't priced** for Snapshot/File history jobs that keep a number of days: the frozen model's only
+  day-window input is the job's own days, so a non-default undo window reaches just the comparison curves
+  (spec §10 partly met). "Newest N + days" is estimated as newest N (the cost screens say so).
+- **Newer aws-cli in the image:** Alpine 3.20's aws-cli 2.15.57 can't send `TransitionDefaultMinimumObjectSize`
+  (the app never sends it; S3's default applies — files under 128 KB aren't moved to the cheaper tier).
+- **Teardown admin-only** (security): the bucket-admin role can still empty/delete `<base>-*` dedicated buckets.
+- Display-only fail-safe reads: with an unreadable `storage.json`, the job page / impact line / wizard can still
+  show a change as "waiting" that Setup and the S3 rules screen suppress (nothing is written).
+- The wizard's undo-days hint uses the base bucket's folder for a dedicated job (non-default settings only).
+- Accepted trade-offs (documented, no action): an outside change that exactly restores the pre-write state
+  within 15 min of the app's own write is alarmed only after the window; an outside suspend matching a
+  confirmed-but-unlanded suspend within 6 h is adopted; an errored-but-landed confirmed put that also carried a
+  keeps-more part, then a stale read, sends the confirmed part back to "waiting".
+- Follow-ups: confirm the first storage summary after a nightly run; remove the smoke image/dir from the box.
+
+---
+
 ## Check & update AWS permissions — parked items (branch permissions-converge, 2026-09-22)
 Built via SDD (Tasks 1–16; spec `specs/2026-09-22-permissions-converge-design.md` + its addendum). The final
 security review found PolicyGrant + the extra-buckets policy made the runtime key escalatable to account admin;
