@@ -1,0 +1,67 @@
+{#- The side editor (spec §5, layout B): only the fields the picked row has. "Preview change"
+    posts; a change that keeps more applies at once, one that keeps less shows the preview. -#}
+<p class="slabel">{{ ed.title }}</p>
+<p class="hint" style="margin-top:var(--sp-1)"><span class="mono">{{ ed.where }}</span> · <span class="mono">{{ ed.bucket }}</span></p>
+{% if ed.error %}
+<div class="sig sig-failure" data-flash="failure" style="margin-top:var(--sp-3)">
+  <span class="glyph" aria-hidden="true"></span><div class="body">{{ ed.error }}</div>
+</div>
+{% endif %}
+<form method="post" action="/setup/storage/preview" id="s3-editor" style="margin-top:var(--sp-3)">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="key" value="{{ ed.key }}">
+  {% if ed.kind == 'plain' %}
+  <p class="hint">This is also {{ ed.job }}'s history setting — the same value is saved to the job.</p>
+  <p class="lbl" style="margin-top:var(--sp-3)">Keep old versions</p>
+  <label class="radio"><input type="radio" name="keep" value="days" {{ 'checked' if ed.keep == 'days' }}>
+    <span>for <input type="number" min="1" name="days" value="{{ ed.days }}" class="mono" style="width:5rem"> days after being replaced</span></label>
+  <label class="radio"><input type="radio" name="keep" value="count" {{ 'checked' if ed.keep == 'count' }}>
+    <span>the newest <input type="number" min="1" max="100" name="count" value="{{ ed.count }}" class="mono" style="width:4rem"> of each file</span></label>
+  <label class="radio"><input type="radio" name="keep" value="both" {{ 'checked' if ed.keep == 'both' }}>
+    <span>both — the newest of each file, and older ones for the days above</span></label>
+  <label class="radio"><input type="radio" name="keep" value="all" {{ 'checked' if ed.keep == 'all' }}>
+    <span>forever — every old version</span></label>
+  {% elif ed.kind == 'undo' %}
+  <p class="hint">What {{ ed.jobs|join(', ') }} already removed stays recoverable in S3 this long.</p>
+  <label class="fld" for="s3-undo" style="margin-top:var(--sp-3)">Undo window</label>
+  <span><input type="number" min="1" id="s3-undo" name="undo_days" value="{{ ed.undo_days }}" class="mono" style="width:5rem"> days</span>
+  {% else %}
+  <label class="fld" for="s3-abort" style="margin-top:var(--sp-3)">Clear abandoned uploads after</label>
+  <span><input type="number" min="1" id="s3-abort" name="abort_days" value="{{ ed.abort_days }}" class="mono" style="width:5rem"> days</span>
+  <label class="radio" style="margin-top:var(--sp-3)"><input type="checkbox" name="markers" value="1" {{ 'checked' if ed.markers }}>
+    <span>Clear leftover delete markers</span></label>
+  {% endif %}
+  {% if ed.kind != 'bucket' %}
+  <p class="hint" id="s3-impact" aria-live="polite" style="margin-top:var(--sp-3)">{% if ed.summary_at %}Nothing S3 keeps today would be removed · as of <span class="stamp">{{ ed.summary_at }}</span>{% else %}No storage summary for this folder yet — Refresh now for exact figures.{% endif %}</p>
+  {% endif %}
+  <div class="actions" style="margin-top:var(--sp-4)">
+    <button type="submit" class="btn btn-primary">Preview change</button>
+    <a class="btn" href="/setup/storage">Cancel</a>
+  </div>
+</form>
+{% if ed.kind != 'bucket' and refresh_ok %}
+<form method="post" action="/setup/storage/refresh" style="margin-top:var(--sp-2)">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="bucket" value="{{ ed.bucket }}">
+  <input type="hidden" name="folder" value="{{ ed.folder }}">
+  <input type="hidden" name="key" value="{{ ed.key }}">
+  <button type="submit" class="btn btn-sm">Refresh now</button>
+</form>
+{% endif %}
+<script>
+// Live impact line (spec §5): re-read from the stored summary as values change. GET, files only.
+(function () {
+  var form = document.getElementById("s3-editor"), line = document.getElementById("s3-impact");
+  if (!form || !line || !window.fetch) return;
+  var t = null;
+  function update() {
+    var q = new URLSearchParams(new FormData(form));
+    q.delete("csrf");
+    fetch("/setup/storage/impact.json?" + q.toString()).then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j.line) line.textContent = j.line; }).catch(function () {});
+  }
+  function later() { clearTimeout(t); t = setTimeout(update, 250); }
+  form.addEventListener("input", later);
+  form.addEventListener("change", later);
+})();
+</script>

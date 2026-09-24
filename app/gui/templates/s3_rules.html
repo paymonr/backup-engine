@@ -103,6 +103,12 @@
           <div class="body"><span class="label">Waiting for your confirmation</span>
             <ul style="margin-top:var(--sp-2)">{% for w in b.waiting %}<li>{{ w }}</li>{% endfor %}</ul>
             <p style="margin-top:var(--sp-2)">S3 keeps the current rule until you confirm.</p>
+            <form method="post" action="/setup/storage/preview" style="margin-top:var(--sp-3)">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="key" value="{{ b.name }}|*">
+              <input type="hidden" name="what" value="waiting">
+              <button type="submit" class="btn btn-sm">Review and confirm…</button>
+            </form>
           </div>
         </div>
         {% endif %}
@@ -110,10 +116,14 @@
       {% endfor %}
     </div>
     <aside class="card" style="padding:var(--sp-4)" aria-label="Change a rule" id="s3-side">
+      {% if pvw %}{% include "_s3_preview.html" %}
+      {% elif ed %}{% include "_s3_editor.html" %}
+      {% else %}
       <p class="slabel">Change a rule</p>
       <p class="hint" style="margin-top:var(--sp-2)">Pick <strong>Change…</strong> on a row. A change that
         keeps more applies at once; one that keeps less first shows what S3 would remove and asks you
         to confirm.</p>
+      {% endif %}
     </aside>
   </div>
   {% endif %}

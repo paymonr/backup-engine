@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from flask import abort, current_app, flash, redirect, render_template, request, url_for
+from flask import abort, current_app, flash, jsonify, redirect, render_template, request, url_for
 
 from ..engine import lifecycle
 from . import config_io, jobs_io, ops, s3_rules, security
@@ -28,11 +28,98 @@ def _back() -> str:
     return "/setup/storage" if request.form.get("back") == "storage" else url_for("gui.setup_page")
 
 
+def _refresh_ok(cfg) -> bool:
+    """Whether the editor/preview may offer Refresh now: only when S3 rules are managed here
+    and this isn't a custom S3 endpoint -- /setup/storage/refresh (Task 12) refuses both with
+    a warning, so the button is never offered when it would just bounce (Task 15 context)."""
+    return (lifecycle.managed(cfg["CONFIG_DIR"])
+           and not config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_ENDPOINT", "").strip())
+
+
+def _screen(*, key: str = "", error: str | None = None, pvw: dict | None = None):
+    cfg = current_app.config
+    v = s3_rules.screen(cfg)
+    ed = s3_rules.editor(cfg, key, error=error) if (v["managed"] and not pvw) else None
+    return render_template("s3_rules.html", v=v, ed=ed, pvw=pvw, csrf=security.issue_csrf(),
+                           refresh_ok=_refresh_ok(cfg) if v["managed"] else False)
+
+
 @bp.get("/setup/storage")
 def setup_storage():
-    """S3 rules (spec §5): state files only -- no AWS call on GET."""
-    return render_template("s3_rules.html", v=s3_rules.screen(current_app.config), ed=None, pvw=None,
-                           csrf=security.issue_csrf())
+    """S3 rules (spec §5): state files only -- no AWS call on GET. ?edit=<bucket>|<folder> opens
+    the side editor (<bucket>|* = bucket-wide)."""
+    return _screen(key=request.args.get("edit", ""))
+
+
+@bp.get("/setup/storage/impact.json")
+def setup_storage_impact():
+    """The side editor's live impact line: files only (the stored summary), never AWS."""
+    return jsonify(s3_rules.impact_line(current_app.config, request.args))
+
+
+@bp.post("/setup/storage/preview")
+def setup_storage_preview():
+    """Preview change (spec §3): keeps more -> saved and applied now; keeps less -> the preview."""
+    _csrf_or_400()
+    if _unprovisioned():
+        return redirect(url_for("gui.setup_page"))
+    cfg = current_app.config
+    key = request.form.get("key", "")
+    try:
+        bucket, edit = s3_rules.edit_from_form(cfg, request.form)
+    except ValueError as e:
+        return _screen(key=key, error=str(e))
+    try:
+        pv = lifecycle.preview(cfg, bucket, edit)
+    except lifecycle.PreviewError as e:
+        flash(e.message, "warning")
+        return redirect(_storage_url("" if edit["kind"] == "confirm" else key))
+    if pv.token is None:
+        if edit["kind"] == "confirm":
+            flash("Nothing is waiting for your confirmation.", "note")
+            return redirect("/setup/storage")
+        try:
+            lifecycle.save_edit(cfg, edit)
+        except ValueError as e:
+            return _screen(key=key, error=str(e))
+        flash("Saved — this keeps more, so S3 applies it now.", "success")
+        for category, msg in s3_rules.apply_for(cfg, [bucket]):
+            flash(msg, category)
+        return redirect("/setup/storage")
+    return _screen(pvw=s3_rules.preview_view(cfg, pv, hidden={"key": key}, cancel=_storage_url(key)))
+
+
+@bp.post("/setup/storage/apply")
+def setup_storage_apply():
+    """Apply a previewed change (R-B4): token + typed bucket name; stale -> Preview again."""
+    _csrf_or_400()
+    if _unprovisioned():
+        return redirect(url_for("gui.setup_page"))
+    cfg = current_app.config
+    token, typed, key = (request.form.get("token", ""), request.form.get("typed", ""),
+                         request.form.get("key", ""))
+    try:
+        res = lifecycle.apply_confirmed(cfg, token, typed)
+    except lifecycle.PreviewError as e:
+        t = lifecycle.load_preview(cfg["CACHE_DIR"], token) if e.kind == "typed" else None
+        if t is not None:
+            try:
+                pv = lifecycle.preview(cfg, t["bucket"], t["edit"])
+            except lifecycle.PreviewError:
+                pv = None
+            if pv is not None and pv.token:
+                lifecycle.discard_preview(cfg["CACHE_DIR"], token)
+                return _screen(pvw=s3_rules.preview_view(cfg, pv, hidden={"key": key},
+                                                         cancel=_storage_url(key), error=e.message))
+        flash(e.message, "warning")
+        return redirect(_storage_url(key))
+    except lifecycle.LifecycleError as e:
+        flash(f"Saved, but S3 couldn't be updated ({s3_rules.why(e.kind)}) — the change still waits "
+              "for your confirmation here.", "warning")
+        return redirect("/setup/storage")
+    shown = "; ".join(res.lines[:3]) + (" …" if len(res.lines) > 3 else "")
+    flash(f"Confirmed — S3 rules updated{': ' + shown if shown else '.'}", "success")
+    return redirect("/setup/storage")
 
 
 @bp.post("/setup/s3-rules/check")

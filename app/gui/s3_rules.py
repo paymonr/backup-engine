@@ -3,7 +3,9 @@
 # status built from state files (no AWS on render).
 from __future__ import annotations
 
-from ..engine import lifecycle
+import math
+
+from ..engine import lifecycle, storage_summary
 from . import config_io, permissions, vocab
 
 _WHY = {"role": "couldn't use the bucket-admin role", "aws": "AWS refused the change",
@@ -271,3 +273,216 @@ def screen(cfg) -> dict:
                    "checked_human": _human_time(row.get("verified_at"))}
     v["buckets"] = [_bucket_view(ctx, b, base, jobs, settings) for b in buckets]
     return v
+
+
+# --- the side editor, impact line and preview (spec §3, §5 layout B) -----------------------------
+
+_DAYS_MSG = "Enter a whole number of days, 1 or more."
+_COUNT_MSG = f"S3 can keep 1 to {lifecycle.MAX_NEWER} old versions per file."
+
+
+def why(kind: str) -> str:
+    return _WHY.get(kind, kind)
+
+
+def _days(n) -> str:
+    return f"{n} day" if n == 1 else f"{n} days"
+
+
+def _human_bytes(b) -> str:
+    for lim, unit, dec in ((2 ** 40, "TB", 2), (2 ** 30, "GB", 2), (2 ** 20, "MB", 1)):
+        if b >= lim:
+            return f"{b / lim:.{dec}f} {unit}"
+    return f"{int(b)} B"
+
+
+def _whole(v, msg: str) -> int:
+    try:
+        n = int(str(v).strip())
+    except (TypeError, ValueError):
+        raise ValueError(msg)
+    if n < 1:
+        raise ValueError(msg)
+    return n
+
+
+def _context(cfg):
+    from . import jobs_io
+    config_dir = cfg["CONFIG_DIR"]
+    base = config_io.read_backup_env(config_dir).get("S3_BUCKET", "").strip()
+    return base, jobs_io.load(config_dir), lifecycle.load_settings(config_dir)
+
+
+def editor(cfg, key: str | None, *, error: str | None = None) -> dict | None:
+    """The side editor for one row (layout B): only the fields that row has."""
+    if not key or "|" not in key:
+        return None
+    base, jobs, settings = _context(cfg)
+    bucket, _, folder = key.partition("|")
+    if bucket not in lifecycle.buckets_for(base, jobs):
+        return None
+    bset = lifecycle.bucket_settings(settings, bucket)
+    ed = {"key": key, "bucket": bucket, "folder": folder, "error": error}
+    if folder == "*":
+        ed.update(kind="bucket", title="Bucket-wide", where="whole bucket",
+                  abort_days=bset["abort_uploads_days"], markers=bset["delete_marker_cleanup"])
+        return ed
+    f = next((x for x in lifecycle.folders_for(bucket, base, jobs) if x.folder == folder), None)
+    if f is None:
+        return None
+    summary = storage_summary.load(cfg["CACHE_DIR"], bucket, folder)
+    ed.update(where=folder or "whole bucket", jobs=list(f.jobs),
+              summary_at=_human_time((summary or {}).get("scanned_at")))
+    if f.kind == "plain":
+        r = f.retention or {"type": "keep_all"}
+        keep = {"keep_all": "all", "days": "days"}.get(r.get("type"), "both" if r.get("days") else "count")
+        ed.update(kind="plain", title=f"{f.jobs[0]} · Plain copy", job=f.jobs[0], keep=keep,
+                  days=r.get("days") or 180, count=r.get("count") or 10)
+    else:
+        ed.update(kind="undo", title=f"{', '.join(f.jobs)} · undo window",
+                  undo_days=lifecycle.undo_days(bset, folder))
+    return ed
+
+
+def retention_from_editor(form) -> dict:
+    """The Plain copy editor's keep choice as a job history setting (spec §1 shapes)."""
+    keep = form.get("keep")
+    if keep == "all":
+        return {"type": "keep_all"}
+    if keep == "days":
+        return {"type": "days", "days": _whole(form.get("days"), _DAYS_MSG)}
+    if keep in ("count", "both"):
+        n = _whole(form.get("count"), _COUNT_MSG)
+        if n > lifecycle.MAX_NEWER:
+            raise ValueError(_COUNT_MSG)
+        r = {"type": "count", "count": n}
+        if keep == "both":
+            r["days"] = _whole(form.get("days"), _DAYS_MSG)
+        return r
+    raise ValueError("Pick how long S3 keeps old versions.")
+
+
+def _bucket_entry(settings: dict, bucket: str) -> dict:
+    b = settings["buckets"].get(bucket)
+    b = dict(b) if isinstance(b, dict) else {}
+    settings["buckets"][bucket] = b
+    return b
+
+
+def _folder_entry(settings: dict, bucket: str, folder: str) -> dict:
+    b = _bucket_entry(settings, bucket)
+    fs = dict(b["folders"]) if isinstance(b.get("folders"), dict) else {}
+    b["folders"] = fs
+    e = dict(fs[folder]) if isinstance(fs.get(folder), dict) else {}
+    fs[folder] = e
+    return e
+
+
+def edit_from_form(cfg, form) -> tuple[str, dict]:
+    """The editor's (or the waiting list's) POST as a lifecycle edit: (bucket, edit).
+    Raises ValueError with owner words on a bad value -- nothing is previewed then."""
+    base, jobs, settings = _context(cfg)
+    bucket, _, folder = (form.get("key") or "").partition("|")
+    if bucket not in lifecycle.buckets_for(base, jobs):
+        raise ValueError("That bucket isn't one of backup-engine's.")
+    if form.get("what") == "waiting":
+        return bucket, {"kind": "confirm"}
+    if folder == "*":
+        b = _bucket_entry(settings, bucket)
+        b["abort_uploads_days"] = _whole(form.get("abort_days"), "Clear abandoned uploads after 1 day or more.")
+        b["delete_marker_cleanup"] = bool(form.get("markers"))
+        return bucket, {"kind": "settings", "settings": settings}
+    f = next((x for x in lifecycle.folders_for(bucket, base, jobs) if x.folder == folder), None)
+    if f is None:
+        raise ValueError("That folder isn't one of backup-engine's.")
+    if f.kind == "undo":
+        _folder_entry(settings, bucket, folder)["undo_days"] = _whole(form.get("undo_days"), _DAYS_MSG)
+        return bucket, {"kind": "settings", "settings": settings}
+    job = next(j for j in jobs if j.get("name") == f.jobs[0])
+    return bucket, {"kind": "job", "job": dict(job, retention=retention_from_editor(form))}
+
+
+def impact_line(cfg, args) -> dict:
+    """The live impact line (GET, files only): what the editor's values would remove that S3
+    keeps today, from the stored summary."""
+    from . import jobs_io
+    try:
+        bucket, edit = edit_from_form(cfg, args)
+    except ValueError as e:
+        return {"line": str(e)}
+    folder = (args.get("key") or "").partition("|")[2]
+    if folder == "*" or edit["kind"] == "confirm":
+        return {"line": ""}
+    try:
+        jobs, settings = lifecycle.edited(jobs_io.load(cfg["CONFIG_DIR"]), lifecycle.load_settings(cfg["CONFIG_DIR"]),
+                                          edit, source_root=cfg.get("SOURCE_ROOT"))
+    except lifecycle.PreviewError as e:
+        return {"line": e.message}
+    ctx = {"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}
+    want = lifecycle.want_for(ctx, bucket, jobs, settings)
+    before = lifecycle.baseline_from_applied(lifecycle.load_applied_doc(cfg["CACHE_DIR"], bucket), want)
+    if before is None:
+        return {"line": "Not checked yet — press Check now first."}
+    summary = storage_summary.load(cfg["CACHE_DIR"], bucket, folder)
+    if summary is None:
+        return {"line": "No storage summary for this folder yet — Refresh now for exact figures."}
+    rid = lifecycle.rule_id(folder)
+    imp = storage_summary.impact(summary, before.rules.get(rid), want.rules.get(rid))
+    when = _human_time(summary.get("scanned_at")) or "the last scan"
+    if not imp["versions"]:
+        line = f"Nothing S3 keeps today would be removed · as of {when}"
+    else:
+        line = (f"S3 would permanently delete about {imp['versions']:,} old versions "
+                f"({_human_bytes(imp['bytes'])}) within about a day · as of {when}")
+    return {"line": line, "versions": imp["versions"], "bytes": imp["bytes"]}
+
+
+def damage_notes(change, kind: str | None) -> list[str]:
+    """Spec §3's damage warnings for one keeps-less change, in words."""
+    if change.folder is None:
+        return []
+    bd, bn = lifecycle.expiry(change.before)
+    ad, an = lifecycle.expiry(change.after)
+    notes = []
+    if kind == "undo" and ad != math.inf:
+        was = _days(int(bd)) if bd != math.inf else "being kept for good"
+        notes.append(f"Data these jobs already deleted will be unrecoverable after {_days(int(ad))} "
+                     f"instead of {was}.")
+    if an:
+        notes.append(f"Files with more than {an} old versions lose the oldest ones.")
+    elif bn and ad != math.inf:
+        notes.append("The newest old versions of each file are no longer protected — they go by age like the rest.")
+    return notes
+
+
+def _impact_view(imp: dict) -> dict:
+    from datetime import datetime, timedelta
+    scanned = imp.get("scanned_at")
+    oldest = None
+    try:
+        if imp.get("oldest_age_days") is not None and scanned:
+            at = datetime.fromisoformat(scanned.replace("Z", "+00:00")) - timedelta(days=imp["oldest_age_days"])
+            oldest = at.strftime("%d %b")
+    except ValueError:
+        oldest = None
+    return {"zero": imp["versions"] == 0, "versions": f"{imp['versions']:,}", "bytes": _human_bytes(imp["bytes"]),
+            "oldest": oldest, "as_of": _human_time(scanned)}
+
+
+def preview_view(cfg, pv, *, action: str = "/setup/storage/apply", hidden: dict | None = None,
+                 cancel: str = "/setup/storage", error: str | None = None) -> dict:
+    """The preview component's view model (spec §3): every change in words; for one that keeps
+    less, what S3 would permanently delete and the damage warnings."""
+    base, jobs, _settings = _context(cfg)
+    kinds = {f.folder: f.kind for f in lifecycle.folders_for(pv.bucket, base, jobs)}
+    rows = []
+    for c in pv.changes:
+        less = c.kind == lifecycle.KEEPS_LESS
+        imp = pv.impacts.get(c.rule_id) if less else None
+        rows.append({"words": c.words, "less": less, "impact": _impact_view(imp) if imp else None,
+                     "no_summary": less and c.folder is not None and imp is None,
+                     "notes": damage_notes(c, kinds.get(c.folder)) if less else [],
+                     "refresh": ({"bucket": pv.bucket, "folder": c.folder}
+                                 if less and c.folder is not None else None)})
+    return {"bucket": pv.bucket, "token": pv.token, "needs_typed": pv.needs_typed, "rows": rows,
+            "action": action, "hidden": dict(hidden or {}), "cancel": cancel, "error": error}

@@ -1,10 +1,11 @@
 # tests/gui/test_s3_rules_screen.py — the S3 rules screen and its actions (spec 2026-09-23 §3, §5).
 import json
+import re
 from pathlib import Path
 
 import pytest
 from app.engine import lifecycle, runs, storage_summary
-from app.gui import config_io, create_app, ops
+from app.gui import config_io, create_app, jobs_io, ops, s3_rules
 
 BASE = "unraid-backup-123456789012"
 JOBS = [
@@ -227,3 +228,166 @@ def test_the_screen_obeys_the_vocabulary_and_mono_laws(client, cfg):
     Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
     body = client.get("/setup/storage").get_data(as_text=True)
     assert forbidden_hits(body) == [] and mono_violations(body) == []
+
+
+# --- the side editor, preview and apply (Task 15) ------------------------------------------------
+
+GIB = 1024 ** 3
+
+
+def _summary(cfg, folder="media/manga/"):
+    storage_summary.save(cfg["CACHE_DIR"], {
+        "v": 1, "scanned_at": "2026-09-23T05:00:00Z", "bucket": BASE, "folder": folder,
+        "noncurrent_by_age_days": [[10, 5, 500], [100, 3, 3 * GIB]], "noncurrent_by_rank": [[1, 8, 3 * GIB + 500]],
+        "noncurrent_by_age_rank": [[10, 1, 5, 500], [100, 1, 3, 3 * GIB]],
+        "noncurrent_versions": 8, "noncurrent_bytes": 3 * GIB + 500, "delete_markers": 0,
+        "current_objects": 8, "current_bytes": 1})
+
+
+def _token(body):
+    return re.search(r'name="token" value="([^"]+)"', body).group(1)
+
+
+def _preview(client, **fields):
+    data = {"csrf": _csrf(client), "key": f"{BASE}|media/manga/"}
+    data.update(fields)
+    return client.post("/setup/storage/preview", data=data)
+
+
+def test_change_opens_the_side_editor_for_that_row_only(client, cfg):
+    _applied(cfg)
+    _summary(cfg)
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    assert 'id="s3-editor"' in body and 'name="keep" value="days" checked' in body
+    assert "This is also manga's history setting" in body
+    assert 'name="undo_days"' not in body and 'name="abort_days"' not in body
+    body = client.get(f"/setup/storage?edit={BASE}|appdata/").get_data(as_text=True)
+    assert 'name="undo_days" value="30"' in body and 'name="keep"' not in body
+    body = client.get(f"/setup/storage?edit={BASE}|*").get_data(as_text=True)
+    assert 'name="abort_days" value="7"' in body and 'name="markers" value="1" checked' in body
+
+
+def test_an_unknown_row_shows_no_editor(client, cfg):
+    _applied(cfg)
+    assert 'id="s3-editor"' not in client.get(f"/setup/storage?edit={BASE}|logs/").get_data(as_text=True)
+    assert 'id="s3-editor"' not in client.get("/setup/storage?edit=other-bucket|*").get_data(as_text=True)
+
+
+def test_the_live_impact_line_reads_the_summary(client, cfg):
+    _applied(cfg)
+    _summary(cfg)
+    j = client.get(f"/setup/storage/impact.json?key={BASE}|media/manga/&keep=days&days=30").get_json()
+    assert j["versions"] == 3 and "3.00 GB" in j["line"] and "permanently delete" in j["line"]
+    assert client.get(f"/setup/storage/impact.json?key={BASE}|media/manga/&keep=days&days=365").get_json()["versions"] == 0
+    j = client.get(f"/setup/storage/impact.json?key={BASE}|media/manga/&keep=count&count=500").get_json()
+    assert "1 to 100" in j["line"]
+
+
+def test_a_change_that_keeps_more_is_saved_and_applied_at_once(client, cfg, monkeypatch):
+    _applied(cfg)
+    applied = []
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: applied.append(b) or [("success", "S3 rules updated: x")])
+    assert _preview(client, keep="days", days="365").status_code in (302, 303)
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "this keeps more, so S3 applies it now" in body and applied == [[BASE]]
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 365}
+
+
+def test_a_bucket_wide_change_is_saved_to_storage_json(client, cfg, monkeypatch):
+    _applied(cfg)
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: [])
+    r = client.post("/setup/storage/preview", data={"csrf": _csrf(client), "key": f"{BASE}|*", "abort_days": "3"})
+    assert r.status_code in (302, 303)
+    b = lifecycle.bucket_settings(lifecycle.load_settings(cfg["CONFIG_DIR"]), BASE)
+    assert b["abort_uploads_days"] == 3 and b["delete_marker_cleanup"] is False
+
+
+def test_a_change_that_keeps_less_shows_the_preview_and_saves_nothing(client, cfg):
+    _applied(cfg)
+    _summary(cfg)
+    r = _preview(client, keep="days", days="30")
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200 and "Preview — nothing has changed yet" in body
+    assert 'permanently delete about <span class="mono">3</span> old versions' in body
+    assert '<span class="mono">3.00 GB</span>' in body and "oldest from" in body
+    assert f'placeholder="{BASE}"' in body and 'name="token"' in body
+    assert 'action="/setup/storage/refresh"' in body                        # Refresh now beside the figures
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 180}
+
+
+def test_an_undo_window_preview_says_what_becomes_unrecoverable(client, cfg):
+    _applied(cfg)
+    body = client.post("/setup/storage/preview", data={"csrf": _csrf(client), "key": f"{BASE}|appdata/",
+                                                        "undo_days": "7"}).get_data(as_text=True)
+    assert "Data these jobs already deleted will be unrecoverable after 7 days instead of 30 days." in body
+    assert "No storage summary for this folder yet" in body
+
+
+def test_an_invalid_value_is_a_form_error(client, cfg):
+    _applied(cfg)
+    body = _preview(client, keep="count", count="500").get_data(as_text=True)
+    assert "S3 can keep 1 to 100 old versions per file" in body and 'id="s3-editor"' in body
+
+
+def test_apply_without_the_bucket_name_shows_the_preview_again(client, cfg):
+    _applied(cfg)
+    _summary(cfg)
+    body = _preview(client, keep="days", days="30").get_data(as_text=True)
+    r = client.post("/setup/storage/apply", data={"csrf": _csrf(client), "token": _token(body),
+                                                   "typed": "nope", "key": f"{BASE}|media/manga/"})
+    assert r.status_code == 200 and f"Type the bucket name {BASE} exactly to confirm." in r.get_data(as_text=True)
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 180}
+
+
+def test_a_stale_preview_says_preview_again(client, cfg):
+    _applied(cfg)
+    r = client.post("/setup/storage/apply", data={"csrf": _csrf(client), "token": "x" * 24, "typed": BASE,
+                                                   "key": f"{BASE}|media/manga/"}, follow_redirects=True)
+    assert "That preview is out of date" in r.get_data(as_text=True)
+
+
+def test_apply_end_to_end_saves_the_job_and_writes_the_rule(client, cfg, monkeypatch):
+    import functools
+    from tests.engine.test_lifecycle_sync import FakeS3
+    for name, fn in REAL.items():
+        monkeypatch.setattr(lifecycle, name, fn)
+    _applied(cfg)
+    _summary(cfg)
+    fake = FakeS3({BASE: json.loads(json.dumps(lifecycle.load_applied(cfg["CACHE_DIR"], BASE)))})
+    monkeypatch.setattr(lifecycle, "apply_confirmed", functools.partial(lifecycle.apply_confirmed, run=fake))
+    body = _preview(client, keep="days", days="30").get_data(as_text=True)
+    r = client.post("/setup/storage/apply", data={"csrf": _csrf(client), "token": _token(body), "typed": BASE,
+                                                   "key": f"{BASE}|media/manga/"}, follow_redirects=True)
+    assert "Confirmed — S3 rules updated" in r.get_data(as_text=True)
+    manga = next(x for x in fake.rules[BASE] if x["ID"] == "backup-engine:media/manga/")
+    assert manga["NoncurrentVersionExpiration"] == {"NoncurrentDays": 30}
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 30}
+
+
+def test_waiting_changes_can_be_reviewed_and_confirmed(client, cfg):
+    _applied(cfg)
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "days", "days": 30}
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    assert 'name="what" value="waiting"' in client.get("/setup/storage").get_data(as_text=True)
+    body = client.post("/setup/storage/preview", data={"csrf": _csrf(client), "key": f"{BASE}|*",
+                                                        "what": "waiting"}).get_data(as_text=True)
+    assert "Preview — nothing has changed yet" in body and "old versions removed 30 days" in body
+
+
+def test_editor_posts_require_csrf(client):
+    assert client.post("/setup/storage/preview", data={"key": f"{BASE}|*"}).status_code == 400
+    assert client.post("/setup/storage/apply", data={"token": "x" * 24}).status_code == 400
+
+
+def test_the_editor_and_preview_obey_the_vocabulary_and_mono_laws(client, cfg):
+    from tests.gui.test_vocabulary import forbidden_hits, mono_violations
+    _applied(cfg)
+    _summary(cfg)
+    pages = [client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True),
+             client.get(f"/setup/storage?edit={BASE}|appdata/").get_data(as_text=True),
+             client.get(f"/setup/storage?edit={BASE}|*").get_data(as_text=True),
+             _preview(client, keep="both", count="5", days="30").get_data(as_text=True),
+             _preview(client, keep="days", days="30").get_data(as_text=True)]
+    for body in pages:
+        assert forbidden_hits(body) == [] and mono_violations(body) == []
