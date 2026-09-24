@@ -797,3 +797,17 @@ def test_outstanding_invents_nothing_from_an_unreadable_config(cfg):
     assert lc.outstanding(cfg, BASE) == (False, [])
     Path(cfg["CONFIG_DIR"], "jobs.json").write_text("{not json")
     assert lc.outstanding(cfg, BASE) == (False, [])
+
+
+def test_an_edit_carrying_settings_saves_nothing_when_the_settings_file_is_unreadable(cfg, tmp_path):
+    # A Plain copy editor edit carries the job AND storage.json (its tier): refusing the settings
+    # half must not leave the job half already saved.
+    src = tmp_path / "src"
+    (src / "media" / "manga").mkdir(parents=True)
+    cfg = dict(cfg, SOURCE_ROOT=str(src), SCRIPTS_DIR="/app/scripts")
+    Path(cfg["CONFIG_DIR"], "storage.json").write_text("{oops")
+    before = Path(cfg["CONFIG_DIR"], "jobs.json").read_text()
+    job = dict(_jobs(cfg)[0], retention={"type": "days", "days": 365})
+    with pytest.raises(ValueError):
+        lc.save_edit(cfg, {"kind": "job", "job": job, "settings": {"version": 1, "buckets": {}}})
+    assert Path(cfg["CONFIG_DIR"], "jobs.json").read_text() == before

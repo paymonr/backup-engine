@@ -2125,20 +2125,22 @@ def _save_edit_unlocked(cfg, edit: dict) -> None:
     if not _valid_edit_shape(edit):
         raise ValueError(_BAD_EDIT)
     config_dir = cfg["CONFIG_DIR"]
-    job = edit.get("job")
-    if isinstance(job, dict):
-        source_root = _source_root(cfg)
-        jobs_io.upsert(config_dir, job, source_root=source_root)
-        jobs_io.render_crontab(config_dir, cfg["CACHE_DIR"], _scripts_dir(cfg), source_root=source_root)
     new = edit.get("settings")
     if isinstance(new, dict):
         # final fix wave I1: the edit was built on the GUI's fail-safe reading (the defaults,
         # when the file can't be read) -- never let it silently replace the owner's own file.
+        # Checked BEFORE the job half is saved, so a refusal never leaves half an edit saved.
         try:
             load_settings_strict(config_dir)
         except SettingsFileError:
             raise ValueError("The S3 rules settings file (storage.json) can't be read — fix or remove it "
                              "before changing S3 rules.")
+    job = edit.get("job")
+    if isinstance(job, dict):
+        source_root = _source_root(cfg)
+        jobs_io.upsert(config_dir, job, source_root=source_root)
+        jobs_io.render_crontab(config_dir, cfg["CACHE_DIR"], _scripts_dir(cfg), source_root=source_root)
+    if isinstance(new, dict):
         buckets = new.get("buckets")
         save_settings(config_dir, {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}})
 
@@ -2346,16 +2348,12 @@ def main(argv=None) -> int:
     cfg = _cfg_from_env()
     if args.cmd in ("check", "check-all"):
         import signal
-        signal.signal(signal.SIGTERM, _on_term)             # M1: a killed check says so
-    if args.cmd == "check":
-        # O4: backup-job.sh passes BE_TRIGGER, so a Run now records its check as manual.
-        trigger = args.trigger if _TRIGGER.fullmatch(args.trigger or "") else "scheduled"
-        print(_check_line(cfg, args.bucket, trigger, os.environ.get("BE_RUN_ID") or None))
-        return 0
-    if args.cmd == "check-all":
-        for line in check_all_lines(cfg):
-            print(line)
-        return 0
+        previous = signal.signal(signal.SIGTERM, _on_term)  # M1: a killed check says so
+        try:
+            return _main_check(cfg, args)
+        finally:
+            if previous is not None:                        # None: not installed from Python
+                signal.signal(signal.SIGTERM, previous)
     try:
         results = [sync(cfg, args.bucket)] if args.bucket else sync_all(cfg)
     except LifecycleError as e:
@@ -2363,6 +2361,17 @@ def main(argv=None) -> int:
         return 1
     for r in results:
         print(f"S3 rules · {r.bucket}: {'updated' if r.changed else 'already in step'}")
+    return 0
+
+
+def _main_check(cfg, args) -> int:
+    if args.cmd == "check":
+        # O4: backup-job.sh passes BE_TRIGGER, so a Run now records its check as manual.
+        trigger = args.trigger if _TRIGGER.fullmatch(args.trigger or "") else "scheduled"
+        print(_check_line(cfg, args.bucket, trigger, os.environ.get("BE_RUN_ID") or None))
+        return 0
+    for line in check_all_lines(cfg):
+        print(line)
     return 0
 
 
