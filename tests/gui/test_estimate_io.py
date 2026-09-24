@@ -843,3 +843,11 @@ def test_wizard_estimate_all_zero_tiered_does_not_raise_and_blocks(tmp_path):
     r = _wiz(_cfg(tmp_path, []), keep_last="0", keep_daily="0", keep_weekly="0", keep_monthly="0")
     assert "all_zero_tiered" in {b["code"] for b in r["blockers"]}
     assert r["this_job_monthly"] >= 0
+
+
+# --- Task 17: the wizard's combined "newest N + days" option (spec 2026-09-23 §1) ---------------
+
+def test_retention_from_form_maps_the_plain_copy_combined_option():
+    from app.gui.estimate_io import retention_from_form
+    assert retention_from_form({"retention_type": "count_days", "retention_nd_count": "10",
+                                "retention_nd_days": "30"}) == {"type": "count", "count": "10", "days": "30"}

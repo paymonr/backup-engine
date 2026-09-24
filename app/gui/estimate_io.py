@@ -246,6 +246,10 @@ def retention_from_form(params: Mapping, *, default_type: str = "days") -> dict:
         return {"type": "keep_all"}
     if t == "count":
         return {"type": "count", "count": params.get("retention_count", "5")}
+    if t == "count_days":
+        # Plain copy's combined S3 form (spec 2026-09-23 §1): newest N kept, older ones D days.
+        return {"type": "count", "count": params.get("retention_nd_count", "10"),
+                "days": params.get("retention_nd_days", "30")}
     if t == "tiered":
         return {"type": "tiered", "keep": {k: params.get(f"keep_{k}", "0")
                                             for k in ("last", "daily", "weekly", "monthly")}}

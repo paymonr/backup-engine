@@ -184,6 +184,36 @@ def _app_folders(cfg) -> set[tuple[str, str]]:
     return {(b, f.folder) for b in lifecycle.buckets_for(base, jobs) for f in lifecycle.folders_for(b, base, jobs)}
 
 
+@bp.post("/jobs/history/confirm")
+def job_history_confirm():
+    """R-B5: the wizard's preview confirmed -- save the job and apply its S3 rule
+    (apply_confirmed), then what any job save does after (crontab, flashes)."""
+    _csrf_or_400()
+    cfg = current_app.config
+    token, typed = request.form.get("token", ""), request.form.get("typed", "")
+    t = lifecycle.load_preview(cfg["CACHE_DIR"], token) or {}
+    name = ((t.get("edit") or {}).get("job") or {}).get("name") or request.form.get("name", "")
+    if not jobs_io.valid_name(name):
+        abort(400, description="That job name isn't valid.")
+    back = f"/jobs/{name}/edit" if jobs_io.get(cfg["CONFIG_DIR"], name) else "/jobs/new"
+    try:
+        res = lifecycle.apply_confirmed(cfg, token, typed)
+    except lifecycle.PreviewError as e:
+        flash(f"{e.message} Save the job again to see a fresh preview.", "warning")
+        return redirect(back)
+    except lifecycle.LifecycleError as e:
+        jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"],
+                               source_root=cfg["SOURCE_ROOT"])
+        flash(f"Saved {name}, but S3 couldn't be updated ({s3_rules.why(e.kind)}) — the change waits for "
+              "your confirmation in Setup → S3 rules.", "warning")
+        return redirect(url_for("gui.job_page", name=name))
+    jobs_io.render_crontab(cfg["CONFIG_DIR"], cfg["CACHE_DIR"], cfg["SCRIPTS_DIR"], source_root=cfg["SOURCE_ROOT"])
+    if res.lines:
+        flash("S3 rules updated: " + "; ".join(res.lines[:3]) + (" …" if len(res.lines) > 3 else ""), "success")
+    flash(f"Saved {name}.", "success")
+    return redirect(url_for("gui.job_page", name=name))
+
+
 @bp.post("/setup/storage/refresh")
 def setup_storage_refresh():
     """Refresh now (spec §4): a detached storage summary of one app folder (progress in Activity).

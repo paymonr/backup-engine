@@ -443,6 +443,21 @@
           <dt>Storage tier</dt><dd>{{ vocab.CLASS_NAMES.get(cls, cls) }}{% if not is_cold %} — readable the second you ask{% else %} — up to {{ (rjob.warmup.hours_hi if rjob and rjob.warmup else 12) }} hours before a file can be read{% endif %}</dd>
           {% if cost.change_phrase %}<dt>How much changes between runs</dt><dd>{{ cost.change_phrase }} <span class="hint">(an assumption you set, used for every cost figure above)</span></dd>{% endif %}
           <dt>Keep rule</dt><dd>{{ keep_label }}</dd>
+          {% if s3h %}<dt>History in S3</dt><dd data-s3-history>
+            {%- if s3h.state == 'not_managed' -%}S3 rules need the AWS permissions update — <a class="linklike" href="/setup/permissions">Update permissions →</a>
+            {%- elif s3h.state == 'unsupported' -%}This storage doesn't support S3 rules — Plain copy keeps all old versions
+            {%- else -%}
+              {%- if s3h.kind == 'undo' -%}
+                {%- if s3h.days -%}S3 keeps what this job removed for <span class="mono">{{ s3h.days }}</span> more days (the undo window){%- else -%}No undo window{%- endif -%}
+              {%- elif not s3h.days -%}S3 keeps every old version
+              {%- elif s3h.newer and s3h.days > 1 -%}S3 keeps the newest <span class="mono">{{ s3h.newer }}</span> old versions of each file; older ones <span class="mono">{{ s3h.days }}</span> days
+              {%- elif s3h.newer -%}S3 keeps the newest <span class="mono">{{ s3h.newer }}</span> old versions of each file
+              {%- else -%}S3 keeps old versions <span class="mono">{{ s3h.days }}</span> days
+              {%- endif -%}
+              {%- if s3h.waiting %} · a change is waiting for your confirmation{% endif -%}
+              {%- if not s3h.applied %} · not checked yet{% endif %}
+              <a class="linklike" href="/setup/storage">S3 rules →</a>
+            {%- endif -%}</dd>{% endif %}
           <dt>When it runs</dt><dd>{{ schedule_desc }}{% if not s.enabled %} — paused{% endif %}</dd>
           <dt>Where it goes</dt><dd class="mono">{{ ident.s3 }} <span class="hint">Set at creation.</span></dd>
           <dt>State</dt><dd>{{ 'Scheduled' if s.enabled else 'Paused' }}</dd>

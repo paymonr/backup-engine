@@ -254,7 +254,8 @@ def job_page(name):
         restore=_restore_band_ctx(cfg, job_def, rec),
         sibling_cold=_sibling_cold(cfg, job_def),
         dowdate=lambda iso: _dow_date(iso, tz),
-        schedule_desc=schedule_desc, csrf=security.issue_csrf())
+        schedule_desc=schedule_desc, csrf=security.issue_csrf(),
+        s3h=s3_rules.job_history(cfg, job_def))
 
 
 @bp.get("/jobs/<name>/progress.json")
@@ -1948,7 +1949,8 @@ _CLASS_WAS = {c: f"{estimate_io._CLASS_PLAIN[c]} · {c}" for c in jobs_io.STORAG
 _CHANGE_WAS = {0: "Nothing — files only get added (0%)", 1: "A little — rare replacements (~1%)",
                10: "Some — regular edits (~10%)", 30: "A lot — churny (~30%)"}
 _RETENTION_WAS = {"keep_all": "Keep everything", "tiered": "Thin them out over time",
-                  "days": "Keep for N days", "count": "Keep the last N versions"}
+                  "days": "Keep for N days", "count": "Keep the last N versions",
+                  "count_days": "Keep the newest N, older ones for N days"}
 
 
 def _edit_diff(saved, fv, saved_typical, current_typical):
@@ -2020,6 +2022,7 @@ def _fresh_form_values():
     return {"type": "versioned", "source": "", "storage_class": "STANDARD",
             "schedule": "0 5 * * *", "enabled": "1", "name": "",
             "retention_type": "tiered", "retention_days": "180", "retention_count": "30",
+            "retention_nd_count": "10", "retention_nd_days": "30",
             "keep_last": "3", "keep_daily": "7", "keep_weekly": "4", "keep_monthly": "6",
             "change_rate_pct": "1", "change_rate_touched": "", "packing": "",
             "pack_member_gb": "0.05", "mirror": "0", "size_gb": "", "file_count": "",
@@ -2036,6 +2039,8 @@ def _saved_form_values(job):
     fv = _fresh_form_values()
     ret = job.get("retention") or {}
     rtype = ret.get("type") or _RETENTION_DEFAULT_BY_TYPE.get(job.get("type"), "days")
+    if rtype == "count" and ret.get("days"):
+        rtype = "count_days"                  # Plain copy's newest N + days (spec 2026-09-23 §1)
     keep = _keep_defaults(job)
     a = job.get("assumptions") or {}
     m = job.get("measured") or {}
@@ -2047,6 +2052,8 @@ def _saved_form_values(job):
         "retention_type": rtype,
         "retention_days": str(ret.get("days", 180)) if rtype == "days" else "180",
         "retention_count": str(ret.get("count", 30)) if rtype == "count" else "30",
+        "retention_nd_count": str(ret.get("count", 10)) if rtype == "count_days" else "10",
+        "retention_nd_days": str(ret.get("days", 30)) if rtype == "count_days" else "30",
         "keep_last": str(keep["last"]), "keep_daily": str(keep["daily"]),
         "keep_weekly": str(keep["weekly"]), "keep_monthly": str(keep["monthly"]),
         "change_rate_pct": _g(a.get("change_rate_pct"), "0"), "change_rate_touched": "1",
@@ -2092,7 +2099,7 @@ def _form_values_from_request(f):
 
 
 def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
-                     status_code=200, acknowledged=None):
+                     status_code=200, acknowledged=None, s3_preview=None):
     """Server-render the wizard (create or edit), computing the initial figures from
     the frozen model so the page is honest with JS off (spec 5.8 §8). Reused by
     GET /jobs/new, /jobs/<name>/edit, the POST re-render paths and the recalc path."""
@@ -2146,7 +2153,7 @@ def _render_job_form(cfg, *, job, fv, errors=None, jobsfile_error=None,
         price_stamp=price_stamp, errors=errors or {}, jobsfile_error=jobsfile_error,
         blockers=blockers, unacked=unacked, acknowledged=sorted(ack),
         diff=diff, saved_typical=saved_typical, saved_cmp=saved_cmp, bucket=bucket,
-        dedicated_ok=_dedicated_ok(cfg),
+        dedicated_ok=_dedicated_ok(cfg), s3_preview=s3_preview, refresh_ok=s3_rules.refresh_ok(cfg),
         csrf=security.issue_csrf()), status_code
 
 
@@ -2295,9 +2302,10 @@ def job_save():
 
     # Write path only (never on load), and BEFORE the dedicated-bucket create below, so
     # a refused save touches no AWS. A non-number is left to jobs_io's validation.
-    if engine == "archive" and f.get("retention_type") == "count":
+    if engine == "archive" and f.get("retention_type") in ("count", "count_days"):
+        field = "retention_count" if f.get("retention_type") == "count" else "retention_nd_count"
         try:
-            over = int(f.get("retention_count", "")) > lifecycle.MAX_NEWER
+            over = int(f.get(field, "")) > lifecycle.MAX_NEWER
         except (TypeError, ValueError):
             over = False
         if over:
@@ -2392,6 +2400,11 @@ def job_save():
             job["retention_days"] = f.get("retention_days", "90")
         if engine == "archive":
             job["mirror"] = bool(f.get("mirror"))
+        # R-B5: shortening a Plain copy job's history deletes old versions S3 keeps today --
+        # show the preview instead of saving; its confirm POST saves the job and applies.
+        s3_preview = s3_rules.history_gate(cfg, job)
+        if s3_preview is not None:
+            return _render_job_form(cfg, job=existing, fv=fv, s3_preview=s3_preview)
         jobs_io.upsert(cfg["CONFIG_DIR"], job, source_root=cfg["SOURCE_ROOT"])
     except jobs_io.JobsFileError as e:
         # Corrupt jobs.json (5.8 §8): a 200 RE-RENDER with the sig-failure and every

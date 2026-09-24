@@ -547,3 +547,64 @@ def preview_view(cfg, pv, *, action: str = "/setup/storage/apply", hidden: dict 
                                  if less and c.folder is not None else None)})
     return {"bucket": pv.bucket, "token": pv.token, "needs_typed": pv.needs_typed, "rows": rows,
             "action": action, "hidden": dict(hidden or {}), "cancel": cancel, "error": error}
+
+
+# --- the wizard (R-B5) and the job page (spec §5) ----------------------------------------------
+
+def history_gate(cfg, job: dict) -> dict | None:
+    """R-B5: when saving a Plain copy job would keep less history than S3 keeps today for ITS
+    folder, the preview (view model, with a token) to show instead of saving. None = save as
+    usual: it keeps more, S3 rules aren't managed, nothing was applied yet (the pass then
+    holds it), or anything unexpected -- a save is never blocked by this."""
+    from . import jobs_io
+    if job.get("type") != "archive":
+        return None
+    try:
+        base, jobs, _settings = _context(cfg)
+        bucket = job_buckets(cfg, job)[0]
+        target = lifecycle.folder_of_job(base, [j for j in jobs if j.get("name") != job.get("name")] + [job],
+                                         job.get("name"))
+        # A reduced ctx like preview()'s other callers, but WITH SOURCE_ROOT: preview() ->
+        # edited() -> jobs_io.validate() checks the source folder exists on disk, so without it
+        # this would 404 the folder and (invalid) skip the gate instead of raising it.
+        pv = lifecycle.preview({"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"],
+                                "SOURCE_ROOT": cfg.get("SOURCE_ROOT")}, bucket,
+                               {"kind": "job", "job": job})
+    except Exception:                                        # noqa: BLE001 — a save is never blocked by this
+        return None
+    if not pv.token:
+        return None
+    if target is None or not any(c.folder == target[1] for c in pv.keeps_less):
+        lifecycle.discard_preview(cfg["CACHE_DIR"], pv.token)
+        return None
+    return preview_view(cfg, pv, action="/jobs/history/confirm", hidden={"name": job["name"]},
+                        cancel=f"/jobs/{job['name']}" if jobs_io.valid_name(job.get("name", "")) else "/")
+
+
+def job_history(cfg, job: dict) -> dict | None:
+    """The job page's "History in S3" line (spec §5) -- state files only."""
+    config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
+    if not config_io.is_provisioned(config_dir):
+        return None
+    if not lifecycle.managed(config_dir):
+        return {"state": "not_managed"}
+    try:
+        base, jobs, settings = _context(cfg)
+        target = lifecycle.folder_of_job(base, jobs, job.get("name"))
+        if target is None:
+            return None
+        bucket, folder = target
+        if (lifecycle.load_status(cache).get(bucket) or {}).get("state") == "unsupported":
+            return {"state": "unsupported"}
+        ctx = {"CONFIG_DIR": config_dir, "CACHE_DIR": cache}
+        want = lifecycle.want_for(ctx, bucket, jobs, settings)
+        before = lifecycle.baseline_from_applied(lifecycle.load_applied_doc(cache, bucket), want)
+        rule = (before.rules if before is not None else want.rules).get(lifecycle.rule_id(folder))
+        d, n = lifecycle.expiry(rule)
+        kind = next(f.kind for f in lifecycle.folders_for(bucket, base, jobs) if f.folder == folder)
+        waiting = before is not None and any(c.folder == folder and c.kind == lifecycle.KEEPS_LESS
+                                             for c in lifecycle.classify(before, want))
+        return {"state": "ok", "kind": kind, "days": None if d == math.inf else d, "newer": n or None,
+                "waiting": waiting, "applied": before is not None}
+    except Exception:                                        # noqa: BLE001 — a GET never 500s on this
+        return None
