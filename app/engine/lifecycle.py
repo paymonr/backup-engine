@@ -13,7 +13,7 @@ import os
 import re
 import secrets
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -862,7 +862,7 @@ def _reconcile(cfg, bucket: str, *, run, trigger: str):
         return _reconcile_locked(cfg, bucket, run=run, trigger=trigger)
 
 
-def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True):
+def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True, expect: str | None = None):
     """The pass behind sync(), check() and -- with gated=False -- apply_confirmed().
 
     What it writes is TARGET: what jobs.json + storage.json want (DESIRED) gated against the
@@ -878,9 +878,18 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     alarmed ("console_rule") and never touched; the status/alarm is always written before
     the fingerprint moves (M2). A first apply seeds longer legacy undo windows (R-B6) and
     names the console rules that can already delete or move backups (O1).
-    Returns (state, SyncResult | None, LifecycleError | None); state is what was recorded
-    (ok | restored | not_restored | error | unsupported), or "console_rule" when this pass
-    raised that alarm and the app's own rules are ok/restored."""
+
+    `expect` (apply_confirmed only, fix round 1 I1): the exact target the owner previewed and
+    confirmed (_set_hash). Checked right here, against WANT as this pass just (re-)read it off
+    disk -- the one authoritative re-check, since jobs.json/storage.json can change between
+    apply_confirmed's own pre-check and this read (job writers don't take the bucket lock).
+    A mismatch forces `gated` on for this pass -- the write becomes the ordinary GATED one, so
+    nothing unconfirmed is EVER written ungated -- and is reported back via the 4th return value
+    so apply_confirmed can tell the owner nothing that keeps less applied.
+
+    Returns (state, SyncResult | None, LifecycleError | None, expect_stale: bool); state is what
+    was recorded (ok | restored | not_restored | error | unsupported), or "console_rule" when
+    this pass raised that alarm and the app's own rules are ok/restored."""
     config_dir = cfg["CONFIG_DIR"]
     base, region, cache = _context(cfg)
     jobs = jobs_io.load(config_dir)                          # under the lock: never a stale list
@@ -888,17 +897,20 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     doc = _applied_doc(cache, bucket)
     applied = load_applied(cache, bucket)
     stored_fp = load_console_fingerprint(cache, bucket) if applied is not None else None
+    stale = False
     try:
         creds = role_creds(config_dir, region, run=run)
         live = read_rules(bucket, creds, region, run=run)
     except LifecycleError as e:
         set_status(cache, bucket, _err_state(e), e.detail)
-        return _err_state(e), None, e
+        return _err_state(e), None, e, stale
 
     first = applied is None
     if first:
         seed_undo_days(config_dir, bucket, live, folders_for(bucket, base, jobs))     # R-B6 (#7)
     want = want_for(cfg, bucket, jobs, load_settings(config_dir))
+    if expect is not None and _set_hash(want) != expect:
+        stale, gated = True, True             # never write anything unconfirmed (I1)
     # R-B2': on a first apply, a folder is only "known" (able to gate a keeps-less change)
     # once one of its jobs has actually run -- otherwise it is a new job's folder, always
     # keeps-more, no matter what a legacy/console rule already does to that prefix.
@@ -943,7 +955,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         if console_note:
             runs.record_system(cache, kind="s3-rules", summary=f"S3 rules checked · {bucket}",
                                lines=console_note, trigger=trigger)
-        return headline("ok"), SyncResult(bucket, False, [], headline("ok"), waiting), None
+        return headline("ok"), SyncResult(bucket, False, [], headline("ok"), waiting), None, stale
     tampered = applied is not None and app_rules_differ(live, applied)
     tamper_lines = _change_lines(applied, live) if tampered else []
     try:
@@ -953,14 +965,14 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
             status(_err_state(e), e.detail)
             if applied is not None and stored_fp != live_fp:
                 save_applied(cache, bucket, applied, console=live_fp, folders=old_folders)   # alarm once
-            return _err_state(e), None, e
+            return _err_state(e), None, e, stale
         status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
         if stored_fp != live_fp:
             save_applied(cache, bucket, applied, console=live_fp, folders=old_folders)
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
                            lines=[*tamper_lines, e.detail], outcome="failed", error=e.detail,
                            trigger=trigger)
-        return "not_restored", None, e
+        return "not_restored", None, e, stale
     lines = _change_lines(live, target) + ([detail] if detail else []) + waiting_lines + console_note
     if tampered:
         status("restored", detail, {"kind": "restored", "at": _now_iso(), "lines": tamper_lines})
@@ -968,12 +980,12 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         also = ["Your latest job settings were applied too."] if app_rules_differ(applied, target) else []
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — restored · {bucket}",
                            lines=[*tamper_lines, *also, *waiting_lines], trigger=trigger)
-        return headline("restored"), SyncResult(bucket, True, lines, headline("restored"), waiting), None
+        return headline("restored"), SyncResult(bucket, True, lines, headline("restored"), waiting), None, stale
     status("ok", detail)
     save_applied(cache, bucket, target, console=live_fp, folders=folders)
     runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines,
                        trigger=trigger)
-    return headline("ok"), SyncResult(bucket, True, lines, headline("ok"), waiting), None
+    return headline("ok"), SyncResult(bucket, True, lines, headline("ok"), waiting), None, stale
 
 
 def sync(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "manual") -> SyncResult:
@@ -982,7 +994,7 @@ def sync(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "manual") -
     silently absorbed. Raises LifecycleError on failure (after recording it)."""
     if not managed(cfg["CONFIG_DIR"]):
         raise LifecycleError("not_managed", "S3 rules need the AWS permissions update")
-    _, res, err = _reconcile(cfg, bucket, run=run, trigger=trigger)
+    _, res, err, _ = _reconcile(cfg, bucket, run=run, trigger=trigger)
     if err is not None:
         raise err
     return res
@@ -1016,7 +1028,7 @@ def check(cfg, bucket: str, *, run=provision._run_aws, trigger: str = "scheduled
     try:
         if not managed(cfg["CONFIG_DIR"]):
             return "not_managed"
-        state, _, _ = _reconcile(cfg, bucket, run=run, trigger=trigger)
+        state, _, _, _ = _reconcile(cfg, bucket, run=run, trigger=trigger)
         return state
     except Exception as e:                                   # noqa: BLE001 — never raise
         try:
@@ -1044,14 +1056,19 @@ def acknowledge(cache_dir: str, bucket: str | None = None, seen: str | None = No
 # --- previews and typed confirmation (spec §3, ruling R-B4) ------------------------------------
 
 PREVIEW_TTL_S = 3600
+SUMMARY_STALE_DAYS = 7             # fix round 1 I2: a summary this old counts as missing
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
 _STALE = "That preview is out of date — preview the change again."
+_STALE_RACE = ("Saved — but the S3 rules changed since your preview, so nothing that keeps "
+               "less was applied. Confirm what's waiting.")
 
 
 class PreviewError(Exception):
     """kind: not_managed | not_checked (nothing applied yet) | stale (token missing, older
-    than an hour, or jobs/settings changed since) | typed (bucket name not typed) | invalid
-    (the edit can't be saved). `message` is owner words."""
+    than an hour, jobs/settings/the applied rules changed since, or a race landed between the
+    re-check and the write) | typed (bucket name not typed, or not a string) | invalid (the
+    edit can't be saved -- the token is KEPT so the owner can fix the cause and retry).
+    `message` is owner words."""
     def __init__(self, kind: str, message: str):
         super().__init__(message)
         self.kind, self.message = kind, message
@@ -1062,7 +1079,8 @@ class Preview:
     bucket: str
     token: str | None                 # None: nothing keeps less -- save + sync directly
     changes: list                     # every Change the write would make vs what S3 was given
-    keeps_less: list                  # the Changes that need the owner's confirmation
+    keeps_less: list                  # the Changes that need confirmation: this edit's own + already waiting
+    own: list                         # the keeps-less changes caused by THIS edit alone (fix round 1)
     impacts: dict                     # rule_id -> {versions, bytes, oldest_age_days, scanned_at} | None
     needs_typed: bool                 # the bucket name must be typed to apply
     edit: dict
@@ -1108,8 +1126,19 @@ def _prune_previews(cache_dir: str) -> None:
             pass
 
 
-def _inputs_hash(config_dir: str) -> str:
-    """jobs.json + storage.json exactly as they are on disk -- any save in between goes stale."""
+def _source_root(cfg) -> str:
+    return cfg.get("SOURCE_ROOT") or os.environ.get("SOURCE_ROOT", "/backup/media")
+
+
+def _scripts_dir(cfg) -> str:
+    return cfg.get("SCRIPTS_DIR") or os.environ.get("SCRIPTS_DIR", "/app/scripts")
+
+
+def _inputs_hash(config_dir: str, cache_dir: str, bucket: str) -> str:
+    """jobs.json + storage.json + this bucket's applied record (rules, folders) exactly as
+    they are on disk -- any save, or apply, in between goes stale. The applied record guards
+    ABA: jobs.json/storage.json can change and change back to the exact same bytes while an
+    apply moved the baseline in between (fix round 1, Minor)."""
     h = hashlib.sha256()
     for name in (jobs_io.JOBS_FILE, SETTINGS_FILE):
         try:
@@ -1117,6 +1146,8 @@ def _inputs_hash(config_dir: str) -> str:
         except OSError:
             pass
         h.update(b"\0")
+    doc = _applied_doc(cache_dir, bucket) or {}
+    h.update(json.dumps({"rules": doc.get("rules"), "folders": doc.get("folders")}, sort_keys=True).encode())
     return h.hexdigest()
 
 
@@ -1125,56 +1156,108 @@ def _set_hash(rs: RuleSet) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def edited(jobs: list[dict], settings: dict, edit: dict) -> tuple[list[dict], dict]:
-    """jobs + settings as they will be once `edit` is saved."""
-    if not isinstance(edit, dict) or edit.get("kind") not in ("job", "settings", "confirm"):
+def _validated_job(job: dict, existing: list[dict], source_root: str) -> dict:
+    """Normalize a job edit exactly as jobs_io.upsert's validate() will -- name trimmed,
+    retention/defaults normalized, its created_at preserved from any prior job of the same
+    (normalized) name -- so the preview's target is computed from the job as it will really
+    be saved (fix round 1, I1 root fix). Raises ValueError, same as validate()."""
+    name = str(job.get("name", "")).strip()
+    prior = next((j for j in existing if j.get("name") == name), None)
+    job = dict(job)
+    if prior is not None and jobs_io._parse_iso(prior.get("created_at")) is not None:
+        job["created_at"] = prior["created_at"]
+    elif jobs_io._parse_iso(job.get("created_at")) is None:
+        job["created_at"] = jobs_io._now_iso()
+    return jobs_io.validate(job, source_root)
+
+
+def edited(jobs: list[dict], settings: dict, edit: dict, *, source_root: str | None = None) \
+        -> tuple[list[dict], dict]:
+    """jobs + settings as they will be once `edit` is saved -- the job normalized exactly as
+    jobs_io.upsert will (fix round 1, I1). Enforces kind<->payload: "job" needs `job`,
+    "settings" needs `settings` and no `job`, "confirm" carries neither -- otherwise
+    PreviewError("invalid") (fix round 1, Minor)."""
+    if not isinstance(edit, dict):
         raise PreviewError("invalid", "That change couldn't be read — try again.")
-    job = edit.get("job")
+    kind, job, new = edit.get("kind"), edit.get("job"), edit.get("settings")
+    ok = ((kind == "job" and isinstance(job, dict))
+          or (kind == "settings" and isinstance(new, dict) and job is None)
+          or (kind == "confirm" and job is None and new is None))
+    if not ok:
+        raise PreviewError("invalid", "That change couldn't be read — try again.")
     if isinstance(job, dict):
+        try:
+            job = _validated_job(job, jobs, source_root or os.environ.get("SOURCE_ROOT", "/backup/media"))
+        except ValueError as e:
+            raise PreviewError("invalid", str(e))
         jobs = [j for j in jobs if j.get("name") != job.get("name")] + [job]
-    new = edit.get("settings")
     if isinstance(new, dict):
         buckets = new.get("buckets")
         settings = {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}}
     return jobs, settings
 
 
-def save_edit(cfg, edit: dict) -> None:
-    """Save an edit: the job through jobs_io's normal write path (validated -- raises
-    ValueError -- and with the crontab re-rendered so it stays in step, exactly like
-    routes.py's job_save), then storage.json, held under its own lock (settings_lock) so
-    a concurrent writer -- e.g. seed_undo_days from a sync/check pass -- never interleaves
-    with this write."""
+def _save_edit_unlocked(cfg, edit: dict) -> None:
+    """The writes behind save_edit -- job via jobs_io (validated -- raises ValueError -- and
+    with the crontab re-rendered so it stays in step, exactly like routes.py's job_save), then
+    storage.json -- WITHOUT taking settings_lock. For apply_confirmed, which already holds it
+    for the whole check-then-save window: flock locks are per open file description, so a
+    second open()+flock of the same lock file in this process would block forever (fix round
+    1, Minor)."""
     config_dir = cfg["CONFIG_DIR"]
     job = edit.get("job")
     if isinstance(job, dict):
-        source_root = cfg.get("SOURCE_ROOT") or os.environ.get("SOURCE_ROOT", "/backup/media")
+        source_root = _source_root(cfg)
         jobs_io.upsert(config_dir, job, source_root=source_root)
-        scripts_dir = cfg.get("SCRIPTS_DIR") or os.environ.get("SCRIPTS_DIR", "/app/scripts")
-        jobs_io.render_crontab(config_dir, cfg["CACHE_DIR"], scripts_dir, source_root=source_root)
+        jobs_io.render_crontab(config_dir, cfg["CACHE_DIR"], _scripts_dir(cfg), source_root=source_root)
     new = edit.get("settings")
     if isinstance(new, dict):
         buckets = new.get("buckets")
-        with settings_lock(config_dir):
-            save_settings(config_dir, {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}})
+        save_settings(config_dir, {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}})
 
 
-def _needs_typed(change: Change, imp: dict | None) -> bool:
-    """Typed confirmation whenever the change deletes anything -- or might: no summary yet
-    (spec error table) -- or suspends versioning."""
+def save_edit(cfg, edit: dict) -> None:
+    """Save an edit standalone (a keeps-more edit: the caller saves it and syncs, no preview
+    needed) -- storage.json under settings_lock. apply_confirmed uses _save_edit_unlocked
+    instead, taking the lock itself around the whole check-then-save window."""
+    if isinstance(edit.get("settings"), dict):
+        with settings_lock(cfg["CONFIG_DIR"]):
+            _save_edit_unlocked(cfg, edit)
+    else:
+        _save_edit_unlocked(cfg, edit)
+
+
+def _summary_fresh(summary: dict | None) -> bool:
+    from . import storage_summary                 # local: storage_summary imports lifecycle
+    scanned = storage_summary.scanned_at(summary) if summary else None
+    return scanned is not None and (datetime.now(timezone.utc) - scanned).total_seconds() \
+        <= SUMMARY_STALE_DAYS * 86400
+
+
+def _needs_typed(change: Change, imp: dict | None, fresh: bool) -> bool:
+    """Typed confirmation whenever the change deletes anything -- or might: no summary yet, or
+    one older than SUMMARY_STALE_DAYS (spec error table: "Summary missing or old", fix round 1
+    I2) -- or suspends versioning."""
     if change.folder is None:
         return change.rule_id == "versioning"
-    return imp is None or imp["versions"] > 0
+    return imp is None or not fresh or imp["versions"] > 0
 
 
 def preview(cfg, bucket: str, edit: dict) -> Preview:
     """What saving `edit` would change in `bucket`'s rules, vs what S3 was last given. Files
-    only -- never AWS. Writes a token only when something keeps less."""
+    only -- never AWS. Writes a token whenever the edit itself causes a keeps-less change, or
+    (a "confirm" edit) whenever anything is already waiting; `keeps_less` always lists every
+    keeps-less change the write would make (this edit's own, `own`, plus anything already
+    waiting) -- since the confirmed write is ungated, the owner sees exactly what's written."""
     from . import storage_summary                 # local: storage_summary imports lifecycle
     config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
     if not managed(config_dir):
         raise PreviewError("not_managed", "S3 rules need the AWS permissions update first.")
-    jobs, settings = edited(jobs_io.load(config_dir), load_settings(config_dir), edit)
+    source_root = _source_root(cfg)
+    jobs, settings = edited(jobs_io.load(config_dir), load_settings(config_dir), edit, source_root=source_root)
+    base = _context(cfg)[0]
+    if bucket not in buckets_for(base, jobs):
+        raise PreviewError("invalid", f"{bucket!r} isn't one of this install's buckets.")
     want = want_for(cfg, bucket, jobs, settings)
     before = baseline_from_applied(_applied_doc(cache, bucket), want)
     if before is None:
@@ -1182,54 +1265,82 @@ def preview(cfg, bucket: str, edit: dict) -> Preview:
                                           "press Check now first.")
     changes = classify(before, want)
     less = [c for c in changes if c.kind == KEEPS_LESS]
+    if edit.get("kind") == "confirm":
+        own = less                                 # confirming IS resolving whatever's outstanding
+    else:
+        current_want = want_for(cfg, bucket)       # jobs.json + storage.json exactly as they are now
+        already = {c.rule_id for c in classify(before, current_want) if c.kind == KEEPS_LESS}
+        own = [c for c in less if c.rule_id not in already]
     impacts: dict[str, dict | None] = {}
+    fresh: dict[str, bool] = {}
     for c in less:
         if c.folder is None:
             continue
         summary = storage_summary.load(cache, bucket, c.folder)
+        fresh[c.rule_id] = _summary_fresh(summary)
         impacts[c.rule_id] = (dict(storage_summary.impact(summary, c.before, c.after),
                                    scanned_at=summary.get("scanned_at")) if summary else None)
-    needs_typed = any(_needs_typed(c, impacts.get(c.rule_id)) for c in less)
+    needs_typed = any(_needs_typed(c, impacts.get(c.rule_id), fresh.get(c.rule_id, False)) for c in less)
     token = None
-    if less:
+    if own:
         _prune_previews(cache)
         token = secrets.token_urlsafe(18)
         _write_atomic(_pending_path(cache, token), json.dumps({
             "token": token, "bucket": bucket, "edit": edit, "target_hash": _set_hash(want),
-            "inputs_hash": _inputs_hash(config_dir), "created_at": _now_iso(), "needs_typed": needs_typed}))
-    return Preview(bucket, token, changes, less, impacts, needs_typed, edit)
+            "inputs_hash": _inputs_hash(config_dir, cache, bucket), "created_at": _now_iso(),
+            "needs_typed": needs_typed}))
+    return Preview(bucket, token, changes, less, own, impacts, needs_typed, edit)
 
 
 def apply_confirmed(cfg, token: str, typed: str, *, run=provision._run_aws) -> SyncResult:
     """The owner confirmed a preview: re-check it, save its edit, and write the proposed rules
-    WITHOUT the gate, under the bucket lock (R-B4)."""
+    WITHOUT the gate, under the bucket lock (R-B4) -- the token is read once inside that lock
+    (strict single use: an already-consumed token is stale), and the final write is re-checked
+    against the previewed target from inside the same reconcile pass that reads jobs.json/
+    storage.json, so a race that lands between this function's own pre-check and that read can
+    never ride along ungated (fix round 1, I1)."""
     config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
     if not managed(config_dir):
         raise PreviewError("not_managed", "S3 rules need the AWS permissions update first.")
-    t = load_preview(cache, token)
-    if t is None or not isinstance(t.get("bucket"), str):
+    if not isinstance(typed, str):
+        raise PreviewError("typed", "Type the bucket name to confirm.")
+    pre = load_preview(cache, token)
+    if pre is None or not isinstance(pre.get("bucket"), str):
         raise PreviewError("stale", _STALE)
-    created = _parse_iso(t.get("created_at"))
-    if created is None or (datetime.now(timezone.utc) - created).total_seconds() > PREVIEW_TTL_S:
-        discard_preview(cache, token)
-        raise PreviewError("stale", _STALE)
-    bucket = t["bucket"]
-    if t.get("needs_typed") and (typed or "").strip() != bucket:
-        raise PreviewError("typed", f"Type the bucket name {bucket} exactly to confirm.")
+    bucket = pre["bucket"]
     with bucket_lock(cache, bucket):
-        jobs, settings = edited(jobs_io.load(config_dir), load_settings(config_dir), t.get("edit"))
-        if (_inputs_hash(config_dir) != t.get("inputs_hash")
-                or _set_hash(want_for(cfg, bucket, jobs, settings)) != t.get("target_hash")):
+        t = load_preview(cache, token)             # re-read inside the lock: strict single use
+        if t is None or t.get("bucket") != bucket:
+            raise PreviewError("stale", _STALE)
+        created = _parse_iso(t.get("created_at"))
+        if created is None or (datetime.now(timezone.utc) - created).total_seconds() > PREVIEW_TTL_S:
             discard_preview(cache, token)
             raise PreviewError("stale", _STALE)
-        try:
-            save_edit(cfg, t["edit"])
-        except ValueError as e:                  # jobs_io.JobsFileError is a ValueError too
-            raise PreviewError("invalid", str(e))
-        discard_preview(cache, token)
-        _, res, err = _reconcile_locked(cfg, bucket, run=run, trigger="manual", gated=False)
+        if t.get("needs_typed") and typed.strip() != bucket:
+            raise PreviewError("typed", f"Type the bucket name {bucket} exactly to confirm.")
+        edit = t.get("edit")
+        # order: bucket lock (outer, already held) -> settings lock -> status lock (taken
+        # transiently inside _reconcile_locked, after this block) (fix round 1, Minor).
+        lock = settings_lock(config_dir) if isinstance(edit, dict) and isinstance(edit.get("settings"), dict) \
+            else nullcontext()
+        with lock:
+            jobs, settings = edited(jobs_io.load(config_dir), load_settings(config_dir), edit,
+                                    source_root=_source_root(cfg))
+            if (_inputs_hash(config_dir, cache, bucket) != t.get("inputs_hash")
+                    or _set_hash(want_for(cfg, bucket, jobs, settings)) != t.get("target_hash")):
+                discard_preview(cache, token)
+                raise PreviewError("stale", _STALE)
+            try:
+                _save_edit_unlocked(cfg, edit)
+            except ValueError as e:                  # jobs_io.JobsFileError is a ValueError too
+                raise PreviewError("invalid", str(e))   # token kept: fix the cause and retry
+            discard_preview(cache, token)
+        _, res, err, race_stale = _reconcile_locked(cfg, bucket, run=run, trigger="manual", gated=False,
+                                                    expect=t.get("target_hash"))
     if err is not None:
         raise err
+    if race_stale:
+        raise PreviewError("stale", _STALE_RACE)
     return res
 
 

@@ -43,8 +43,11 @@ def _token_path(cfg, token):
     return Path(cfg["CACHE_DIR"], "state", "lifecycle", "pending", f"{token}.json")
 
 
-def test_a_change_that_keeps_more_needs_no_token(pcfg):
+def test_a_change_that_keeps_more_needs_no_token(pcfg, monkeypatch):
     cfg, fake = pcfg
+    def boom(*a, **k):
+        raise AssertionError("preview must never reach AWS")
+    monkeypatch.setattr(lc.provision, "_run_aws", boom)     # fix round 1: make this able to fail
     calls = len(fake.calls)
     pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 365}))
     assert pv.token is None and pv.keeps_less == [] and [c.kind for c in pv.changes] == [lc.KEEPS_MORE]
@@ -120,6 +123,7 @@ def test_a_preview_goes_stale_after_an_hour(pcfg):
     with pytest.raises(lc.PreviewError) as e:
         lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
     assert e.value.kind == "stale"
+    assert not p.exists()                                 # the expired token file is deleted
 
 
 @pytest.mark.parametrize("token", ["", "../../etc/passwd", "nope"])
@@ -181,8 +185,231 @@ def test_a_job_edit_that_fails_validation_saves_nothing(pcfg):
     cfg, fake = pcfg
     edit = _manga_edit(cfg, {"type": "days", "days": 30})
     pv = lc.preview(cfg, BASE, edit)
+    before = Path(cfg["CONFIG_DIR"], "jobs.json").read_bytes()
     Path(cfg["SOURCE_ROOT"], "media", "manga").rmdir()    # the source vanished since
     puts = len(fake.puts())
     with pytest.raises(lc.PreviewError) as e:
         lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
     assert e.value.kind == "invalid" and len(fake.puts()) == puts
+    assert Path(cfg["CONFIG_DIR"], "jobs.json").read_bytes() == before
+    assert lc.load_preview(cfg["CACHE_DIR"], pv.token) is not None   # kept on invalid: fix it and retry
+
+
+# --- fix round 1 (task-13-fix1.md) -----------------------------------------------------------
+
+def test_i1_a_concurrent_change_after_the_check_is_caught_before_the_write(pcfg, monkeypatch):
+    """I1(a): _reconcile_locked re-reads jobs.json itself; a job save that lands in the window
+    between apply_confirmed's own pre-check and that re-read must never ride along ungated."""
+    cfg, fake = pcfg
+    settings = lc.load_settings(cfg["CONFIG_DIR"])
+    settings["buckets"][BASE] = {"folders": {"appdata/": {"undo_days": 7}}}
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": settings})
+    real = lc.discard_preview
+    def sneak_in(cache, token):
+        real(cache, token)
+        _set_manga(cfg, {"type": "days", "days": 30})   # a concurrent job save lands right here
+    monkeypatch.setattr(lc, "discard_preview", sneak_in)
+    with pytest.raises(lc.PreviewError) as e:
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert e.value.kind == "stale"
+    # nothing that keeps less was written -- both stay at their old, longer rule
+    assert _live(fake, "backup-engine:appdata/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 30}
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
+    # but the settings edit itself WAS saved
+    assert lc.load_settings(cfg["CONFIG_DIR"])["buckets"][BASE]["folders"]["appdata/"]["undo_days"] == 7
+
+
+def test_i1_a_job_edit_normalizes_the_name_like_jobs_io_will(pcfg):
+    """I1(b): edited() must normalize a job edit (e.g. trim the name) exactly as jobs_io.upsert's
+    validate() will, so the preview's target is computed from the job as it will really be saved."""
+    cfg, fake = pcfg
+    _summary(cfg)
+    job = next(j for j in _jobs(cfg) if j["name"] == "manga")
+    edit = {"kind": "job", "job": dict(job, name="manga ", retention={"type": "days", "days": 30})}
+    pv = lc.preview(cfg, BASE, edit)
+    assert M in [c.folder for c in pv.keeps_less]        # the real folder, name trimmed like upsert will
+    lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 30}
+    assert [j["name"] for j in _jobs(cfg)].count("manga") == 1
+    assert next(j for j in _jobs(cfg) if j["name"] == "manga")["retention"] == {"type": "days", "days": 30}
+
+
+def test_i2_an_old_summary_still_needs_the_typed_name(pcfg):
+    cfg, _ = pcfg
+    storage_summary.save(cfg["CACHE_DIR"], {
+        "v": 1, "scanned_at": (datetime.now(timezone.utc) - timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "bucket": BASE, "folder": M, "noncurrent_by_age_days": [], "noncurrent_by_rank": [],
+        "noncurrent_by_age_rank": [], "noncurrent_versions": 0, "noncurrent_bytes": 0,
+        "delete_markers": 0, "current_objects": 0, "current_bytes": 0})
+    pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 30}))
+    assert pv.impacts["backup-engine:media/manga/"]["versions"] == 0
+    assert pv.needs_typed is True                          # 8 days old: counts as missing
+
+
+def test_i2_a_one_day_old_summary_does_not_need_the_typed_name(pcfg):
+    cfg, _ = pcfg
+    storage_summary.save(cfg["CACHE_DIR"], {
+        "v": 1, "scanned_at": (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "bucket": BASE, "folder": M, "noncurrent_by_age_days": [], "noncurrent_by_rank": [],
+        "noncurrent_by_age_rank": [], "noncurrent_versions": 0, "noncurrent_bytes": 0,
+        "delete_markers": 0, "current_objects": 0, "current_bytes": 0})
+    pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 30}))
+    assert pv.impacts["backup-engine:media/manga/"]["versions"] == 0
+    assert pv.needs_typed is False
+
+
+def test_preview_rejects_a_bucket_that_is_not_this_installs(pcfg):
+    cfg, _ = pcfg
+    with pytest.raises(lc.PreviewError) as e:
+        lc.preview(cfg, "not-a-real-bucket", {"kind": "confirm"})
+    assert e.value.kind == "invalid"
+
+
+def test_own_waiting_split_a_keeps_more_edit_leaves_a_waiting_change_untouched(pcfg):
+    """A keeps-more edit must not silently grab a token for an unrelated change that's
+    already waiting -- Task 15's route runs a GATED sync when token is None, which leaves
+    a waiting item waiting rather than writing it."""
+    cfg, fake = pcfg
+    _set_manga(cfg, {"type": "days", "days": 30})
+    lc.sync(cfg, BASE, run=fake)                          # manga waits (gated)
+    settings = lc.load_settings(cfg["CONFIG_DIR"])
+    settings["buckets"][BASE] = {"folders": {"appdata/": {"undo_days": 60}}}   # unrelated: keeps more
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": settings})
+    assert pv.token is None
+    assert M in [c.folder for c in pv.keeps_less]         # still shown -- informational
+
+
+def test_own_waiting_split_a_keeps_less_edit_gets_a_token_and_lists_both(pcfg):
+    cfg, fake = pcfg
+    _set_manga(cfg, {"type": "days", "days": 30})
+    lc.sync(cfg, BASE, run=fake)                          # manga waits
+    settings = lc.load_settings(cfg["CONFIG_DIR"])
+    settings["buckets"][BASE] = {"folders": {"appdata/": {"undo_days": 7}}}
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": settings})
+    assert pv.token is not None
+    assert sorted(c.folder for c in pv.keeps_less) == ["appdata/", M]
+    assert [c.folder for c in pv.own] == ["appdata/"]
+
+
+def test_an_s3_failure_after_the_save_still_saved_and_leaves_it_waiting(pcfg):
+    from types import SimpleNamespace
+    cfg, fake = pcfg
+    _summary(cfg)
+    pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 30}))
+    def boom(args, **kw):
+        if "put-bucket-lifecycle-configuration" in args:
+            return SimpleNamespace(returncode=255, stdout="", stderr="AccessDenied")
+        return fake(args, **kw)
+    with pytest.raises(lc.LifecycleError):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=boom)
+    assert next(j for j in _jobs(cfg) if j["name"] == "manga")["retention"] == {"type": "days", "days": 30}
+    assert lc.load_preview(cfg["CACHE_DIR"], pv.token) is None
+    waiting_state, waiting = lc.outstanding(cfg, BASE)
+    assert [c.folder for c in waiting] == [M]
+
+
+def test_a_storage_json_change_makes_the_preview_stale(pcfg):
+    cfg, fake = pcfg
+    settings = lc.load_settings(cfg["CONFIG_DIR"])
+    settings["buckets"][BASE] = {"folders": {"appdata/": {"undo_days": 7}}}
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": settings})
+    other = lc.load_settings(cfg["CONFIG_DIR"])
+    other["buckets"][f"{BASE}-other"] = {"folders": {}}      # an unrelated settings write lands in between
+    lc.save_settings(cfg["CONFIG_DIR"], other)
+    with pytest.raises(lc.PreviewError) as e:
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert e.value.kind == "stale"
+
+
+def test_aba_an_applied_change_between_preview_and_confirm_is_caught(pcfg):
+    """jobs.json ends up byte-identical to what it was at preview time, but the applied
+    baseline moved in between (a concurrent sync) -- a byte-only hash would miss this."""
+    cfg, fake = pcfg
+    _summary(cfg)
+    pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 30}))
+    _set_manga(cfg, {"type": "days", "days": 200})
+    lc.sync(cfg, BASE, run=fake)                          # moves the applied baseline to 200
+    _set_manga(cfg, {"type": "days", "days": 180})        # jobs.json back to its original bytes
+    with pytest.raises(lc.PreviewError) as e:
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert e.value.kind == "stale"
+
+
+def test_needs_typed_false_applies_without_typing(pcfg):
+    cfg, fake = pcfg
+    _summary(cfg)                                          # nothing older than 100 days
+    pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 150}))
+    assert pv.needs_typed is False
+    res = lc.apply_confirmed(cfg, pv.token, "", run=fake)   # no typing needed
+    assert res.changed is True
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 150}
+
+
+def test_typed_must_be_a_string(pcfg):
+    cfg, fake = pcfg
+    pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 30}))
+    with pytest.raises(lc.PreviewError) as e:
+        lc.apply_confirmed(cfg, pv.token, ["x"], run=fake)
+    assert e.value.kind == "typed"
+
+
+@pytest.mark.parametrize("edit", [
+    {"kind": "job"},                                            # job kind needs a job
+    {"kind": "job", "job": "nope"},
+    {"kind": "settings"},                                       # settings kind needs settings
+    {"kind": "settings", "settings": "nope"},
+    {"kind": "settings", "job": {"name": "x"}, "settings": {}}, # settings kind must carry no job
+    {"kind": "confirm", "job": {"name": "x"}},                  # confirm carries neither
+    {"kind": "confirm", "settings": {}},
+    {"kind": "bogus"},
+    "not-a-dict",
+])
+def test_edited_enforces_kind_and_payload(pcfg, edit):
+    cfg, _ = pcfg
+    with pytest.raises(lc.PreviewError) as e:
+        lc.preview(cfg, BASE, edit)
+    assert e.value.kind == "invalid"
+
+
+def test_save_edit_takes_settings_lock_and_renders_the_crontab(pcfg, monkeypatch):
+    cfg, _ = pcfg
+    lock_calls = []
+    real_lock = lc.settings_lock
+    def spy_lock(config_dir):
+        lock_calls.append(1)
+        return real_lock(config_dir)
+    monkeypatch.setattr(lc, "settings_lock", spy_lock)
+    settings = lc.load_settings(cfg["CONFIG_DIR"])
+    settings["buckets"][BASE] = {"folders": {"appdata/": {"undo_days": 14}}}
+    lc.save_edit(cfg, {"kind": "settings", "settings": settings})
+    assert lock_calls == [1]
+    assert lc.load_settings(cfg["CONFIG_DIR"])["buckets"][BASE]["folders"]["appdata/"]["undo_days"] == 14
+
+    render_calls = []
+    real_render = lc.jobs_io.render_crontab
+    def spy_render(*a, **k):
+        render_calls.append((a, k))
+        return real_render(*a, **k)
+    monkeypatch.setattr(lc.jobs_io, "render_crontab", spy_render)
+    job = next(j for j in _jobs(cfg) if j["name"] == "manga")
+    lc.save_edit(cfg, {"kind": "job", "job": dict(job, retention={"type": "days", "days": 200})})
+    assert len(render_calls) == 1
+
+
+def test_apply_confirmed_takes_settings_lock_exactly_once_for_a_settings_edit(pcfg, monkeypatch):
+    """flock is per open file description: taking settings_lock twice in the same process
+    (once in apply_confirmed's check-then-save window, again inside save_edit) would
+    self-deadlock -- save_edit must use the unlocked inner path when the caller already
+    holds the lock."""
+    cfg, fake = pcfg
+    settings = lc.load_settings(cfg["CONFIG_DIR"])
+    settings["buckets"][BASE] = {"folders": {"appdata/": {"undo_days": 7}}}
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": settings})
+    lock_calls = []
+    real_lock = lc.settings_lock
+    def spy_lock(config_dir):
+        lock_calls.append(1)
+        return real_lock(config_dir)
+    monkeypatch.setattr(lc, "settings_lock", spy_lock)
+    lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert lock_calls == [1]
