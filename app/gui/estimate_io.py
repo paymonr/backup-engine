@@ -149,12 +149,15 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override,
         retention_type, retention_count, retention_days = "keep_all", 0, None
     else:  # "days"
         retention_type, retention_count, retention_days = "days", 0, policy["days"]
-    if undo_days is not None and engine in _UNDO_ENGINES:
-        # M6 (spec §10): what a Snapshot/File history run removes stays in S3 for the folder's
-        # undo window -- a "days" policy's old data lives its own window PLUS that; the other
-        # policies have their own model paths (tiered/count/keep_all), where the undo window
-        # replaces the scenario's fixed fallback (it feeds the comparison curves).
-        retention_days = retention_days + undo_days if retention_type == "days" else undo_days
+    if undo_days is not None and engine in _UNDO_ENGINES and retention_type != "days":
+        # M6 (spec §10): a "days" policy IS its own S3 window already -- identical treatment
+        # to Plain copy, read directly by the model -- so the undo window NEVER adds to it
+        # (post-wave fix; the wave's "own days + undo" double-counted and moved default-
+        # settings estimates, which the frozen model must never do). tiered/count/keep_all
+        # have their own model paths that don't consume this field for the estimate itself;
+        # here it only replaces the scenario's fixed fallback for whichever of them (tiered)
+        # feeds it into the projection's comparison curves (no_versioning / rolling_30).
+        retention_days = undo_days
     o = override or {}
     return JobInputs(
         name=job["name"], engine=engine,

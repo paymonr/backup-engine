@@ -116,12 +116,14 @@ def test_versioned_files_job_maps_to_versioned_cost_profile(tmp_path):
     j = by["docs"]
     assert j.engine == "versioned-files"
     assert j.storage_class == "DEEP_ARCHIVE"
-    assert j.versioning_retention_days == 45 + 30          # its own 45 days + the 30-day S3 undo window (M6)
+    # M6 fix: a "days" policy is its own S3 window, like Plain copy -- the undo window is
+    # never added on top (post-wave fix; the wave's 45+30 double-counted it).
+    assert j.versioning_retention_days == 45
 
 def test_versioned_files_default_retention_when_missing(tmp_path):
     job = {k: v for k, v in VFJOB.items() if k != "retention_days"}
     by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [job]), SRC))
-    assert by["docs"].versioning_retention_days == 90 + 30   # + the S3 undo window (M6)
+    assert by["docs"].versioning_retention_days == 90
 
 def test_versioned_files_size_from_cached_usage_media_prefix(tmp_path):
     # versioned-files jobs live under media/<job>/ in S3 (their own per-job
@@ -271,7 +273,8 @@ def test_wizard_estimate_returns_projection_and_breakdown(tmp_path):
               "upload_onetime", "lockin_onetime", "change_rate_pct", "retention_days"):
         assert k in r["breakdown"]
     assert r["breakdown"]["lockin_onetime"] > 0          # DEEP_ARCHIVE has a minimum
-    assert r["breakdown"]["retention_days"] == 180 + 30   # a File history job: + the S3 undo window (M6)
+    # M6 fix: a File history "days" job's own window, unaffected by the undo window.
+    assert r["breakdown"]["retention_days"] == 180
 
 def test_wizard_estimate_static_versions_are_minority_of_bill(tmp_path):
     # ~1% churn: old-version storage should be a small fraction of base storage.
@@ -887,11 +890,14 @@ def _storage(cfg_dir, folders, bucket="unraid-backup-123"):
         bucket: {"folders": {f: {"undo_days": d} for f, d in folders.items()}}}}))
 
 
-def test_file_history_days_carries_its_folders_undo_window(tmp_path):
+def test_file_history_days_keeps_its_own_window_unaffected_by_the_undo_window(tmp_path):
+    # Post-wave fix: a "days" policy IS its own S3 window, identical treatment to Plain
+    # copy -- the undo window never touches it, default or not. (The wave's 45+30 double-
+    # counted the two and moved default-settings estimates, which is not allowed.)
     cfg = _cfg(tmp_path, [VFJOB], env=BASE_ENV)
-    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["docs"].versioning_retention_days == 45 + 30
+    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["docs"].versioning_retention_days == 45
     _storage(cfg, {"media/docs/": 60})
-    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["docs"].versioning_retention_days == 45 + 60
+    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["docs"].versioning_retention_days == 45
 
 
 def test_snapshot_jobs_take_the_undo_window_instead_of_the_fixed_scenario_value(tmp_path):
@@ -908,20 +914,79 @@ def test_a_dedicated_snapshot_jobs_undo_window_is_its_buckets(tmp_path):
     assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["vault"].versioning_retention_days == 21
 
 
-def test_an_unreadable_settings_file_estimates_with_the_default_undo_window(tmp_path):
-    cfg = _cfg(tmp_path, [VFJOB], env=BASE_ENV)
+def test_an_unreadable_settings_file_estimates_the_tiered_fallback_with_the_default_undo_window(tmp_path):
+    # Only a job whose retention has no window of its own (tiered here) reads the undo
+    # window at all -- and falls back to its default (30) when storage.json can't be read.
+    cfg = _cfg(tmp_path, [VJOB], env=BASE_ENV)
     pathlib.Path(cfg, "storage.json").write_text("{oops")
-    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["docs"].versioning_retention_days == 45 + 30
+    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["appdata"].versioning_retention_days == 30
 
 
-def test_the_wizard_prices_a_new_file_history_job_with_the_undo_window(tmp_path):
+def test_a_non_default_undo_window_changes_only_the_s3_noncurrent_input(tmp_path):
+    # Changing the folder's undo window moves the tiered job's versioning_retention_days
+    # (the model's S3-noncurrent input) and nothing else -- a "days"-type job sharing the
+    # same folder prices identically to the no-storage.json baseline.
+    from app.estimator.model import estimate as _estimate
+    snap_days = {"name": "snap", "type": "versioned", "source": "snap",
+                 "schedule": "0 3 * * *", "enabled": True, "storage_class": "STANDARD",
+                 "retention": {"type": "days", "days": 45}}
+    cfg = _cfg(tmp_path, [VJOB, snap_days], env=BASE_ENV)
+    prices = _prices()
+    baseline = _by_name(estimate_io.scenario_from_jobs(cfg, SRC))
+    base_price = _estimate(estimate_io.scenario_from_jobs(cfg, SRC), prices).jobs["snap"]
+    assert baseline["appdata"].versioning_retention_days == 30       # default undo fallback
+    assert baseline["snap"].versioning_retention_days == 45          # its own days
+
+    _storage(cfg, {"appdata/": 14})
+    by = _by_name(estimate_io.scenario_from_jobs(cfg, SRC))
+    changed_price = _estimate(estimate_io.scenario_from_jobs(cfg, SRC), prices).jobs["snap"]
+
+    assert by["appdata"].versioning_retention_days == 14             # moved with the folder's undo window
+    assert by["snap"].versioning_retention_days == 45                # untouched
+    assert (base_price.storage, base_price.versioning, base_price.ingest_monthly,
+            base_price.rotation_monthly) == (changed_price.storage, changed_price.versioning,
+                                              changed_price.ingest_monthly, changed_price.rotation_monthly)
+
+
+def test_the_wizard_prices_a_new_file_history_job_with_its_own_days(tmp_path):
     from app.estimator.prices import load_prices
     cfg = _cfg(tmp_path, [], env=BASE_ENV)
     r = estimate_io.wizard_estimate({"name": "docs", "type": "versioned-files", "source": "docs",
                                      "schedule": "0 2 * * *", "storage_class": "STANDARD",
                                      "retention_type": "days", "retention_days": "45"},
                                     cfg, SRC, load_prices("us-east-1"))
-    assert r["breakdown"]["retention_days"] == 45 + 30
+    assert r["breakdown"]["retention_days"] == 45
+
+
+def test_default_settings_match_e8a176e_ground_truth(tmp_path):
+    # Ground truth computed by running e8a176e's app/gui/estimate_io.py directly against
+    # these exact two jobs (git archive e8a176e; no storage.json -- default undo=30, a
+    # no-op for "days" policies either way). Pins the post-wave fix to the numbers the
+    # ground-truth-audited model produced before the M6 wave's undo-window double-count.
+    from app.estimator.prices import load_prices
+    from app.estimator.model import estimate as _estimate
+    snap = {"name": "snap", "type": "versioned", "source": "snap",
+            "schedule": "0 3 * * *", "enabled": True, "storage_class": "STANDARD",
+            "retention": {"type": "days", "days": 45}}
+    docs = {"name": "docs", "type": "versioned-files", "source": "docs",
+            "schedule": "0 2 * * *", "enabled": True, "storage_class": "DEEP_ARCHIVE",
+            "retention_days": 45}
+    cfg = _cfg(tmp_path, [snap, docs], env="AWS_REGION=us-east-1\n")
+    by = _by_name(estimate_io.scenario_from_jobs(cfg, SRC))
+    assert by["snap"].versioning_retention_days == 45
+    assert by["docs"].versioning_retention_days == 45
+
+    params = {"snap_change_rate_pct": "10", "docs_change_rate_pct": "10"}
+    scn = estimate_io.scenario_from_params(params, cfg, SRC)
+    prices = load_prices("us-east-1")
+    est = _estimate(scn, prices)
+
+    def _monthly(li):
+        return round(li.storage + li.versioning + li.ingest_monthly + li.rotation_monthly, 4)
+
+    assert _monthly(est.jobs["snap"]) == 2.5452     # e8a176e ground truth
+    assert _monthly(est.jobs["docs"]) == 0.5284     # e8a176e ground truth
+    assert round(est.monthly_total, 4) == 3.0736    # e8a176e ground truth
 
 
 def test_newest_n_plus_days_is_noted_as_estimated_as_newest_n(tmp_path):
