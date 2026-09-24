@@ -135,8 +135,13 @@ def setup_storage_apply():
         flash(e.message, "warning")
         return redirect(_storage_url(key))
     except lifecycle.LifecycleError as e:
-        flash(f"Saved, but S3 couldn't be updated ({s3_rules.why(e.kind)}) — the change still waits "
-              "for your confirmation here.", "warning")
+        if getattr(e, "rules_applied", False):
+            # final fix wave M5: the rules half landed; only the versioning put failed
+            flash(f"Confirmed — the S3 rules were applied, but versioning couldn't be changed "
+                  f"({s3_rules.why(e.kind)}). Anything still waiting is listed here.", "warning")
+        else:
+            flash(f"Saved, but S3 couldn't be updated ({s3_rules.why(e.kind)}) — the change still waits "
+                  "for your confirmation here.", "warning")
         return redirect("/setup/storage")
     shown = "; ".join(res.lines[:3]) + (" …" if len(res.lines) > 3 else "")
     flash(f"Confirmed — S3 rules updated{': ' + shown if shown else '.'}", "success")
@@ -239,8 +244,12 @@ def job_history_confirm():
         flash(f"{e.message} Save the job again to see a fresh preview.", "warning")
         return redirect(back)
     except lifecycle.LifecycleError as e:
-        flash(f"Saved {name}, but S3 couldn't be updated ({s3_rules.why(e.kind)}) — the change waits for "
-              "your confirmation in Setup → S3 rules.", "warning")
+        if getattr(e, "rules_applied", False):
+            flash(f"Saved {name} — its S3 rules were applied, but versioning couldn't be changed "
+                  f"({s3_rules.why(e.kind)}). Setup → S3 rules lists anything still waiting.", "warning")
+        else:
+            flash(f"Saved {name}, but S3 couldn't be updated ({s3_rules.why(e.kind)}) — the change waits for "
+                  "your confirmation in Setup → S3 rules.", "warning")
         return redirect(url_for("gui.job_page", name=name))
     if res.lines:
         flash("S3 rules updated: " + "; ".join(res.lines[:3]) + (" …" if len(res.lines) > 3 else ""), "success")

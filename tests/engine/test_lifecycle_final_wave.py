@@ -589,3 +589,39 @@ def test_the_cli_check_killed_by_timeout_records_timed_out(cfg, tmp_path):
     assert cp.returncode != 0
     st = _status(cfg)
     assert st["state"] == "error" and "timed out" in st["detail"]
+
+
+# --- M5: a confirmed apply whose rules landed but whose versioning put failed says so ---------
+
+class _NoVersioningPut(FakeS3):
+    def __call__(self, args, **kw):
+        if args[:2] == ["s3api", "put-bucket-versioning"]:
+            self.calls.append(list(args))
+            from types import SimpleNamespace
+            return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:PutBucketVersioning")
+        return super().__call__(args, **kw)
+
+
+def test_a_partial_confirmed_apply_marks_the_error_rules_applied(cfg):
+    _ran(cfg, "manga", "appdata_backups")
+    fake = _NoVersioningPut()
+    lc.check(cfg, BASE, run=fake)
+    settings = {"version": 1, "buckets": {BASE: {"versioning": "suspended",
+                                                 "folders": {"appdata/": {"undo_days": 7}}}}}
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": settings})
+    with pytest.raises(lc.LifecycleError) as e:
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert e.value.rules_applied is True
+    assert _live(fake, "backup-engine:appdata/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 7}
+
+
+def test_a_failed_apply_that_wrote_nothing_is_not_marked_rules_applied(cfg):
+    _ran(cfg, "manga", "appdata_backups")
+    fake = FakeS3()
+    lc.check(cfg, BASE, run=fake)
+    settings = {"version": 1, "buckets": {BASE: {"folders": {"appdata/": {"undo_days": 7}}}}}
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": settings})
+    fake.deny_put = True
+    with pytest.raises(lc.LifecycleError) as e:
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert getattr(e.value, "rules_applied", False) is False

@@ -153,3 +153,38 @@ def test_a_suspend_says_what_it_does_not_that_it_removes_history(client, cfg):
     assert 'name="typed"' in body
     assert GUARD not in body
     assert "This stops S3 keeping old versions in this bucket from now on." in body
+
+
+# --- M5: the partial-apply flash --------------------------------------------------------------
+
+def _pending(cfg, monkeypatch, err):
+    monkeypatch.setattr(lifecycle, "apply_confirmed", lambda *a, **k: (_ for _ in ()).throw(err))
+
+
+def test_rules_applied_but_versioning_failed_says_so(client, cfg, monkeypatch):
+    err = lifecycle.LifecycleError("aws", "AccessDenied")
+    err.rules_applied = True
+    _pending(cfg, monkeypatch, err)
+    token = _csrf(client)
+    r = client.post("/setup/storage/apply", data={"csrf": token, "token": "t" * 24, "typed": BASE})
+    assert r.status_code in (302, 303)
+    text = " ".join(_flashes(client).values())
+    assert "S3 rules were applied" in text and "versioning couldn't be changed" in text
+    assert "still waits" not in text
+
+
+def test_a_failed_apply_that_wrote_nothing_still_waits(client, cfg, monkeypatch):
+    _pending(cfg, monkeypatch, lifecycle.LifecycleError("aws", "AccessDenied"))
+    token = _csrf(client)
+    client.post("/setup/storage/apply", data={"csrf": token, "token": "t" * 24, "typed": BASE})
+    assert "the change still waits" in " ".join(_flashes(client).values())
+
+
+def test_the_wizard_confirm_says_so_too(client, cfg, monkeypatch):
+    err = lifecycle.LifecycleError("aws", "AccessDenied")
+    err.rules_applied = True
+    _pending(cfg, monkeypatch, err)
+    token = _csrf(client)
+    client.post("/jobs/history/confirm", data={"csrf": token, "token": "t" * 24, "typed": BASE, "name": "manga"})
+    text = " ".join(_flashes(client).values())
+    assert "S3 rules were applied" in text and "versioning couldn't be changed" in text

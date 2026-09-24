@@ -966,6 +966,9 @@ class LifecycleError(Exception):
     def __init__(self, kind: str, detail: str = ""):
         super().__init__(f"s3 rules: {kind}")
         self.kind, self.detail = kind, detail
+        # final fix wave M5: True when the rules half DID reach S3 before this failure (the
+        # versioning put failed) -- the caller can say the rules applied, not "nothing changed".
+        self.rules_applied = False
 
 
 _UNSUPPORTED = ("NotImplemented", "MethodNotAllowed")
@@ -1679,6 +1682,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         if not ver_in_step:
             write_versioning(bucket, target_ver, creds, region, run=run)
     except LifecycleError as e:
+        e.rules_applied = rules_written                        # M5: say what DID land
         if rules_written:
             # fix round 1, I1: the rules half reached S3 even though this pass overall failed
             # (the versioning write) -- record it (folders union, the OLD applied versioning:
