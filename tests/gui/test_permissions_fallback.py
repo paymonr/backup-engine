@@ -304,3 +304,19 @@ def test_the_version_probe_names_a_key_no_job_can_own():
     # "~" is outside the job-name charset, so the probe can never touch a real job's folder.
     assert "~" in permissions.VERSION_PROBE_PREFIX
     assert not jobs_io.valid_name(permissions.VERSION_PROBE_PREFIX.split("/")[1])
+
+
+# Parked P3 (T10): the Verify version-delete probe's other-error branch -- an aws failure that
+# isn't AccessDenied proves nothing either way: not ok, "try Verify again", secret scrubbed.
+def test_the_version_delete_probe_on_another_error_asks_to_verify_again():
+    from types import SimpleNamespace
+    from app.gui import permissions
+
+    def run(args, *, region, key, secret):
+        assert args[:2] == ["s3api", "delete-object"] and "--version-id" in args
+        return SimpleNamespace(returncode=255, stdout="",
+                               stderr=f"Could not connect to the endpoint URL (key {key} secret {secret})")
+    p = permissions._version_delete_probe(bucket="b", region="us-east-1", key="AKIAPROBE",
+                                          secret="s3cr3tvalue", run=run)
+    assert p.ok is False and "try Verify again" in p.hint
+    assert "s3cr3tvalue" not in p.detail and "Could not connect" in p.detail
