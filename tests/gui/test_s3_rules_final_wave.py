@@ -252,3 +252,31 @@ def test_the_readme_describes_how_history_is_kept_now():
 def test_the_opentofu_readme_mentions_the_hourly_check():
     text = re.sub(r"\s+", " ", (REPO / "opentofu" / "README.md").read_text())
     assert "before every backup run and every hour" in text
+
+
+# --- M10: before the first check, the overview doesn't claim S3 already does it -----------------
+
+def _row(body, key):
+    return re.search(rf'<tr data-row="{re.escape(key)}">.*?</tr>', body, re.S).group(0)
+
+
+def test_before_the_first_check_the_overview_labels_the_rules_after_the_first_check(client, cfg):
+    body = client.get("/setup/storage").get_data(as_text=True)
+    row = _row(body, f"{BASE}|media/manga/")
+    assert 'Old versions for <span class="mono">180</span> days' in row
+    assert "after the first check" in row
+
+
+def test_before_the_first_apply_the_overview_shows_what_s3_does_now_when_it_was_read(client, cfg):
+    legacy = [{"ID": "backstop-media", "Status": "Enabled", "Filter": {"Prefix": "media/"},
+               "NoncurrentVersionExpiration": {"NoncurrentDays": 30}}]
+    _live(cfg, legacy)
+    row = _row(client.get("/setup/storage").get_data(as_text=True), f"{BASE}|media/manga/")
+    assert 'Old versions for <span class="mono">30</span> days' in row
+    assert "after the first check" not in row
+
+
+def test_once_applied_the_overview_has_no_first_check_label(client, cfg):
+    _applied(cfg)
+    row = _row(client.get("/setup/storage").get_data(as_text=True), f"{BASE}|media/manga/")
+    assert "after the first check" not in row

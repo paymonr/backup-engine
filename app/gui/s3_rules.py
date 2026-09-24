@@ -278,7 +278,16 @@ def console_view(rules: list[dict], folders) -> list[dict]:
 def _bucket_view(cfg, bucket: str, base: str, jobs: list[dict], settings: dict) -> dict:
     cache = cfg["CACHE_DIR"]
     before, want = lifecycle.applied_view(cfg, bucket, jobs, settings)
-    shown = before.rules if before is not None else want.rules      # what S3 was last given
+    live = lifecycle.load_live(cache, bucket)
+    # What S3 was last given. Before the first apply (final fix wave M10): what S3 does now, when
+    # a check has read it (its app/legacy/console rules mapped to folders) -- else what the jobs
+    # want, labelled "after the first check" so it never reads as already in force.
+    if before is not None:
+        shown, first_pending = before.rules, False
+    elif live:
+        shown, first_pending = lifecycle.baseline_from_live(live["rules"], want).rules, False
+    else:
+        shown, first_pending = want.rules, True
     waiting = ({c.rule_id: c for c in lifecycle.classify(before, want) if c.kind == lifecycle.KEEPS_LESS}
                if before is not None else {})
     types = {j.get("name"): j.get("type") for j in jobs}
@@ -298,10 +307,10 @@ def _bucket_view(cfg, bucket: str, base: str, jobs: list[dict], settings: dict) 
                      "kind": f.kind, "jobs": list(f.jobs), "type": vocab.TYPE_NAMES.get(types.get(f.jobs[0]), ""),
                      "keeps": {"days": None if d == float("inf") else d, "newer": n or None},
                      "waiting": w.words.split(": ", 1)[-1] if w else None, "note": f.note,
+                     "first_pending": first_pending,
                      "tier": _tier_view(rule),
                      "tier_off": (_tier_off_words(set_tier, lifecycle._folder_storage_class(jobs, f.jobs))
                                   if set_tier and lifecycle.tier_of(want.rules.get(rid)) is None else None)})
-    live = lifecycle.load_live(cache, bucket)
     live_versioning = (live or {}).get("versioning")
     # fix round 1, Minor: neutral chip styling when versioning is suspended/never-on BY THE
     # OWNER'S CHOICE (it matches the current intent and nothing is waiting) -- warning only

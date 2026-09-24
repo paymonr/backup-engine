@@ -74,7 +74,7 @@
             <tr data-row="{{ r.key }}">
               <td style="text-align:left" class="mono">{{ r.where }}</td>
               <td style="text-align:left">{{ r.jobs|join(', ') }} · {{ r.type }}</td>
-              <td style="text-align:left">{{ keeps(r.keeps, r.kind) }}
+              <td style="text-align:left">{{ keeps(r.keeps, r.kind) }}{% if r.first_pending %} <span class="hint">· after the first check</span>{% endif %}
                 {% if r.waiting %}<div class="hint" style="margin-top:var(--sp-1)">Waiting for your confirmation: {{ r.waiting }}</div>{% endif %}
                 {% if r.note %}<div class="hint" style="margin-top:var(--sp-1)">{{ r.note }}</div>{% endif %}</td>
               <td style="text-align:left">{% if r.tier %}{{ r.tier.label }} <code>{{ r.tier.class }}</code> after <span class="mono">{{ r.tier.days }}</span> days{% else %}—{% endif %}
