@@ -683,3 +683,73 @@ def test_the_check_line_words(cfg, monkeypatch, state, words):
     assert lc._check_line(cfg, BASE, "scheduled") == f"S3 rules check · {BASE}: {words}"
     monkeypatch.setattr(lc, "check", lambda *a, **k: (_ for _ in ()).throw(KeyError("x")))
     assert lc._check_line(cfg, BASE, "scheduled") == f"S3 rules check · {BASE}: couldn't be checked (KeyError)"
+
+
+# --- P4: status/alarm on disk before the fingerprint moves, on the failed-write paths too -------
+
+HOSTILE = {"ID": "x", "Filter": {"Prefix": ""}, "Expiration": {"Days": 1},
+           "NoncurrentVersionExpiration": {"NoncurrentDays": 1}}
+
+
+def _watch_saves(cfg, monkeypatch, *, kinds):
+    """Wrap save_applied: whenever it records a fingerprint that includes the hostile console
+    rule, the status file must ALREADY carry an alarm of one of `kinds` naming it (M2)."""
+    real, seen = lc.save_applied, []
+
+    def spy(cache, bucket, rules, console=None, **kw):
+        if console and "x" in console:
+            alarm = (lc.load_status(cache).get(bucket) or {}).get("alarm") or {}
+            seen.append((alarm.get("kind"), "x" in (alarm.get("rules") or [])))
+        return real(cache, bucket, rules, console=console, **kw)
+    monkeypatch.setattr(lc, "save_applied", spy)
+    return seen
+
+
+def _base(cfg, fake):
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+
+
+def test_m2_order_when_rules_restored_but_the_versioning_put_fails(cfg, monkeypatch):
+    fake = _NoVersioningPut()
+    _base(cfg, fake)
+    _tamper(fake)
+    fake.versioning[BASE] = "Suspended"                       # changed outside too
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    seen = _watch_saves(cfg, monkeypatch, kinds=("not_restored",))
+    assert lc.check(cfg, BASE, run=fake) == "not_restored"
+    assert seen and all(k == "not_restored" and named for k, named in seen)
+
+
+def test_m2_order_when_rules_applied_but_the_versioning_put_fails(cfg, monkeypatch):
+    fake = _NoVersioningPut(versioning={BASE: "Suspended"})
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}})
+    _base(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on"}}})
+    _set_manga(cfg, {"type": "days", "days": 365})           # keeps more: rules written
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    seen = _watch_saves(cfg, monkeypatch, kinds=("console_rule",))
+    assert lc.check(cfg, BASE, run=fake) == "error"
+    assert seen and all(k == "console_rule" and named for k, named in seen)
+
+
+def test_m2_order_when_nothing_could_be_written(cfg, monkeypatch):
+    fake = FakeS3()
+    _base(cfg, fake)
+    _set_manga(cfg, {"type": "days", "days": 365})
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    fake.deny_put = True
+    seen = _watch_saves(cfg, monkeypatch, kinds=("console_rule",))
+    assert lc.check(cfg, BASE, run=fake) == "error"
+    assert seen and all(k == "console_rule" and named for k, named in seen)
+
+
+def test_m2_order_when_a_tamper_could_not_be_restored(cfg, monkeypatch):
+    fake = FakeS3()
+    _base(cfg, fake)
+    _tamper(fake)
+    fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
+    fake.deny_put = True
+    seen = _watch_saves(cfg, monkeypatch, kinds=("not_restored",))
+    assert lc.check(cfg, BASE, run=fake) == "not_restored"
+    assert seen and all(k == "not_restored" and named for k, named in seen)
