@@ -1275,12 +1275,13 @@ def _pre_write(rules: list[dict] | None, versioning: str | None, at: str) -> dic
 
 
 def _recent_writes(*lists) -> list[dict]:
-    """The settle entries (of any of `lists`) still inside SETTLE_S, oldest first, each once."""
+    """The settle entries (of any of `lists`) still inside SETTLE_S, oldest first, each once. One
+    dated in the future (the clock stepped back since) is dropped: it must never widen the window."""
     now, out, seen = datetime.now(timezone.utc), [], set()
     for entries in lists:
         for e in entries if isinstance(entries, list) else []:
             t = _parse_iso(e.get("written_at")) if isinstance(e, dict) else None
-            if t is None or (now - t).total_seconds() >= SETTLE_S:
+            if t is None or t > now or (now - t).total_seconds() >= SETTLE_S:
                 continue
             key = json.dumps(e, sort_keys=True)
             if key not in seen:
@@ -1296,6 +1297,12 @@ def _settles_rules(entries: list[dict], live: list[dict]) -> bool:
 
 def _settles_ver(entries: list[dict], live_ver: str | None) -> bool:
     return live_ver is not None and any(e.get("versioning") == live_ver for e in entries)
+
+
+def _candidates(entries) -> list[dict]:
+    """Settle entries of writes that were made (or may have been: a kill) -- not of a put that
+    REPORTED an error (marked "errored", round 2 M4: those only keep their own journal)."""
+    return [e for e in entries if not e.get("errored")]
 
 
 def save_applied(cache_dir: str, bucket: str, rules: list[dict], console: dict | None = None,
@@ -1384,11 +1391,13 @@ class _JournalView:
     """What _resolve_in_flight found (settle-fix): per half, whether live is still the state from
     BEFORE the journal's write (S3 settling -- the journal is kept, neither adopted nor dropped);
     `journal` is that kept journal (None when nothing settles); `entries` are the journal's settle
-    entries, carried into whatever this pass records."""
+    entries, carried into whatever this pass records; `held` (round 2 M4): kept only because live is
+    still the state from before a put that reported an error -- no baseline, no suppressed write."""
     rules: bool = False
     versioning: bool = False
     journal: dict | None = None
     entries: tuple = ()
+    held: bool = False
 
 
 def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_ver: str | None,
@@ -1425,13 +1434,20 @@ def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_
         else None
     folders = doc.get("folders") if isinstance(doc, dict) and isinstance(doc.get("folders"), list) else None
     console = doc.get("console") if isinstance(doc, dict) and isinstance(doc.get("console"), dict) else None
-    entries = _recent_writes(inf.get("previous"))
+    recent = _recent_writes(inf.get("previous"))
+    entries = _candidates(recent)
+    errored = [e for e in recent if e.get("errored")]
     adopt_rules = not app_rules_differ(live, inf.get("rules") or [])
     adopt_ver = ver_managed and versioning_matches(live_ver, inf.get("versioning"))
     settle_rules = not adopt_rules and _settles_rules(entries, live)
     settle_ver = ver_managed and not adopt_ver and _settles_ver(entries, live_ver)
-    keep = settle_rules or settle_ver
-    view = _JournalView(settle_rules, settle_ver, inf if keep else None, tuple(entries))
+    # round 2 M4: live still the state from before a put that REPORTED an error (it may have
+    # landed anyway): the journal is held for a fresh read to adopt -- but it's no baseline and
+    # suppresses no write, so a put that really failed is still retried at once.
+    held = ((not adopt_rules and not settle_rules and _settles_rules(errored, live))
+            or (ver_managed and not adopt_ver and not settle_ver and _settles_ver(errored, live_ver)))
+    keep = settle_rules or settle_ver or held
+    view = _JournalView(settle_rules, settle_ver, inf if keep else None, tuple(entries), held)
     adopted = False
     if adopt_rules:
         applied, folders, adopted = inf.get("rules") or [], sorted(inf.get("folders") or []), True
@@ -1712,7 +1728,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     # recorded), so the gate can never write the old rule over a confirmed change still
     # propagating. A target that moved on since (a keeps-more edit, the owner's confirmed apply)
     # is still written. Anything else is judged exactly as before.
-    settle = _recent_writes(doc.get("previous") if isinstance(doc, dict) else None, list(jview.entries))
+    settle = _candidates(_recent_writes(doc.get("previous") if isinstance(doc, dict) else None, list(jview.entries)))
     rules_settling = jview.rules or (applied is not None and app_rules_differ(live, applied)
                                      and _settles_rules(settle, live))
     ver_settling = jview.versioning or (ver_managed and applied_ver is not None
@@ -1720,7 +1736,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
                                         and _settles_ver(settle, live_ver))
     settling = rules_settling or ver_settling
     eff_doc = doc
-    if jview.journal is not None:
+    if jview.rules or jview.versioning:
         eff_doc = dict(doc) if isinstance(doc, dict) else {}
         if jview.rules:
             eff_doc["rules"] = jview.journal.get("rules") or []
@@ -1800,11 +1816,15 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     def headline(state):
         return "console_rule" if console_alarm and state in ("ok", "restored") else state
 
-    rules_in_step = not app_rules_differ(eff_live, target) and not any(r.get("ID") in LEGACY_IDS for r in eff_live)
+    # round 2 I2: the owner's confirm (ungated) always rewrites a half a kept journal still has
+    # settling -- its put may never have reached S3, and "Confirmed" must mean written.
+    rules_in_step = (not app_rules_differ(eff_live, target) and not any(r.get("ID") in LEGACY_IDS for r in eff_live)
+                     and (gated or not jview.rules))
     # fix round 1, Minor: when this pass can't manage versioning at all (unsupported storage),
     # it's never out of step and never tampered -- `record_ver` (what applied.json gets) stays
     # whatever was last actually confirmed applied, never a target we never verified.
-    ver_in_step = True if not ver_managed else versioning_matches(eff_live_ver, target_ver)
+    ver_in_step = True if not ver_managed else (versioning_matches(eff_live_ver, target_ver)
+                                                and (gated or not jview.versioning))
     journal_ver = target_ver if ver_managed else applied_ver
     # settle-fix: a journal half still settling that this pass doesn't write stays the journal's
     # -- kept for the next pass, and never recorded as applied from what counted as landed here.
@@ -1812,13 +1832,16 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     keep_journal = keep_rules or keep_ver
     record_rules = applied if keep_rules else target
     record_ver = applied_ver if keep_ver else journal_ver
+    # round 2 I1: ...and with the rules the record's own folders -- a new job's folder is known only
+    # once its rule is recorded (else, once the journal drops, its first rule would wait, R-B2).
+    rec_folders = old_folders if keep_rules else folders
     if rules_in_step and ver_in_step:
         status("ok", detail)                     # M2: the alarm is on disk before the fingerprint moves
-        if not keep_journal:
+        if not (keep_journal or jview.held):
             _delete_in_flight(cache, bucket)      # defensive: _resolve_in_flight already did this
         if record_rules is not None and (first or app_rules_differ(applied, record_rules) or stored_fp != live_fp
-                                         or old_folders != folders or applied_ver != record_ver):
-            save_applied(cache, bucket, record_rules, console=live_fp, folders=folders, versioning=record_ver,
+                                         or old_folders != rec_folders or applied_ver != record_ver):
+            save_applied(cache, bucket, record_rules, console=live_fp, folders=rec_folders, versioning=record_ver,
                          carry=jview.entries)
         if console_note:
             runs.record_system(cache, kind="s3-rules", summary=f"S3 rules checked · {bucket}",
@@ -1868,8 +1891,14 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         # but no longer offers the state from before a half whose put failed as a settle candidate
         # (else the next pass would take S3's real, unchanged state for settling and not retry).
         landed = _pre_write(eff_live, None, now) if rules_written else None
+        # round 2 M4: ...kept as an "errored" entry instead, for the half whose put raised (only
+        # that journal is held by it -- never a baseline, never carried, never a suppressed retry)
+        tried_ver = not ver_in_step and (rules_in_step or rules_written)
+        failed = _pre_write(None if rules_in_step or rules_written else eff_live,
+                            eff_live_ver if tried_ver else None, now)
+        errored = [dict(failed, errored=True)] if len(failed) > 1 else []
         _write_in_flight(cache, bucket, target, folders, journal_ver,
-                         previous=_recent_writes(settle, [landed] if landed else []), at=now)
+                         previous=_recent_writes(settle, [landed] if landed else [], errored), at=now)
         if rules_written:
             # fix round 1, I1: the rules half reached S3 even though this pass overall failed
             # (the versioning write) -- record it (folders union, the OLD applied versioning:
@@ -1933,13 +1962,14 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
                            lines=[*tamper_lines, e.detail, *console_note], outcome="failed", error=e.detail,
                            trigger=trigger)
         return "not_restored", None, e, stale
-    lines = (_change_lines(eff_live, target) + ([] if ver_in_step else [f"now: versioning {_VER_WORDS[target_ver]}"])
+    lines = (_change_lines(live if not gated and jview.rules else eff_live, target)
+             + ([] if ver_in_step else [f"now: versioning {_VER_WORDS[target_ver]}"])
              + ([detail] if detail else []) + waiting_lines + console_note)
     if tampered:
         status("restored", detail, {"kind": "restored", "at": _now_iso(), "lines": tamper_lines},
               prior_alarm=true_prior_alarm)
         if record_rules is not None:
-            save_applied(cache, bucket, record_rules, console=live_fp, folders=folders, versioning=record_ver,
+            save_applied(cache, bucket, record_rules, console=live_fp, folders=rec_folders, versioning=record_ver,
                          wrote=wrote, carry=jview.entries)
         if not keep_journal:
             _delete_in_flight(cache, bucket)          # definitively recorded -- the journal's job is done
@@ -1950,7 +1980,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         return headline("restored"), SyncResult(bucket, True, lines, headline("restored"), waiting), None, stale
     status("ok", detail)
     if record_rules is not None:
-        save_applied(cache, bucket, record_rules, console=live_fp, folders=folders, versioning=record_ver,
+        save_applied(cache, bucket, record_rules, console=live_fp, folders=rec_folders, versioning=record_ver,
                      wrote=wrote, carry=jview.entries)
     if not keep_journal:
         _delete_in_flight(cache, bucket)              # definitively recorded -- the journal's job is done

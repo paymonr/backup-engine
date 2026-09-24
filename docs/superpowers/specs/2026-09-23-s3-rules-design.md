@@ -166,8 +166,9 @@ journal `<bucket>.inflight.json` carries the same). For 15 minutes after such a 
 (rules / versioning) equal to that pre-write state is "S3 still applying the last change": not
 tampering, no alarm or notification, nothing written back, the journal kept (it counts as landed
 for that pass's gate only, so an old rule is never written over a confirmed change), status `ok`
-with that detail. A change made since (a keeps-more edit, a confirmed apply) is still written. A
-put that reported an error is not a settle candidate (it is retried at once). Accepted cost:
+with that detail. A change made since (a keeps-more edit, a confirmed apply) is still written, and
+the owner's confirm always rewrites a half a kept journal still has settling. A put that reported
+an error is no settle candidate (it is retried at once); its journal just waits for a fresh read. Accepted cost:
 someone who puts back exactly the pre-write state inside the window is alarmed and restored only
 once the window has passed.
 

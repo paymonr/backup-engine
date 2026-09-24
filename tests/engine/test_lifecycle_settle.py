@@ -348,7 +348,8 @@ def test_a_rules_put_that_failed_is_retried_by_the_next_check_not_taken_for_sett
         lc.sync(cfg, BASE, run=fake)                                  # the job save's own sync fails
     assert _journal_file(cfg).exists()                                # kept: an errored put may still land
     inf = json.loads(_journal_file(cfg).read_text())                  # ...but what it replaced is no settle
-    assert not [e for e in inf.get("previous", []) if any(r["ID"] == MANGA for r in e.get("rules") or [])]
+    replaced = [e for e in inf.get("previous", []) if any(r["ID"] == MANGA for r in e.get("rules") or [])]
+    assert [e.get("errored") for e in replaced] == [True]             # candidate: only marked "errored" (M4)
     fake.deny_put = False
     assert lc.check(cfg, BASE, run=fake) == "ok"
     assert _manga(fake.rules[BASE]) == 365 and lc.SETTLING not in _st(cfg)["detail"]
@@ -361,7 +362,8 @@ def test_a_versioning_put_that_failed_is_retried_by_the_next_check_not_taken_for
     with pytest.raises(lc.LifecycleError):
         lc.sync(cfg, BASE, run=fake)                                  # rules land, the versioning put fails
     inf = json.loads(_journal_file(cfg).read_text())
-    assert all("versioning" not in e for e in inf["previous"])        # only what landed stays a candidate
+    assert all("versioning" not in e for e in inf["previous"] if not e.get("errored"))  # only what landed is a
+    assert [e["versioning"] for e in inf["previous"] if e.get("errored")] == ["never"]  # candidate (M4: marked)
     assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["previous"][-1].get("rules") is not None
     fake.put_ver = None
     assert lc.check(cfg, BASE, run=fake) == "ok"
@@ -400,3 +402,154 @@ def test_an_adopted_journals_pre_write_state_is_still_settling_afterwards(cfg, s
     puts = len(fake.puts())
     assert lc.check(cfg, BASE, run=fake) == "ok" and _settling(cfg)
     assert len(fake.puts()) == puts and sent == []
+
+
+# --- settle fix round 2 -------------------------------------------------------------------------
+
+def _add_newjob(cfg, days=30):
+    """A new Plain copy job (it has never run: its folder is new -- its first rule keeps more)."""
+    p = Path(cfg["CONFIG_DIR"], "jobs.json")
+    data = json.loads(p.read_text())
+    data["jobs"].append({"name": "newjob", "type": "archive", "source": "media/newjob", "schedule": "0 3 * * *",
+                         "enabled": True, "storage_class": "STANDARD", "retention": {"type": "days", "days": days}})
+    p.write_text(json.dumps(data))
+
+
+NEWJOB = "backup-engine:media/newjob/"
+
+
+def _newjob_days(rules):
+    r = next((r for r in rules if r["ID"] == NEWJOB), None)
+    return r and r["NoncurrentVersionExpiration"]["NoncurrentDays"]
+
+
+def _killed(*a, **k):
+    raise Killed()
+
+
+# I1 (a): a settling pass must never record a new job's folder as known without its rule -- once
+# the window passes, that rule would read as keeps-less and wait for a confirmation (breaks R-B2).
+def test_a_new_jobs_sync_killed_before_its_put_never_leaves_its_rule_waiting(cfg, sent, monkeypatch):
+    fake = FakeS3()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    _add_newjob(cfg)
+    with monkeypatch.context() as m:
+        m.setattr(lc, "write_rules", _killed)
+        with pytest.raises(Killed):
+            lc.sync(cfg, BASE, run=fake)                              # the job save's sync, killed before its put
+    assert lc.check(cfg, BASE, run=fake) == "ok" and _settling(cfg)   # inside the window: S3 may be settling
+    assert "media/newjob/" not in lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["folders"]
+    _age_writes(cfg)
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert _newjob_days(fake.rules[BASE]) == 30 and lc.outstanding(cfg, BASE) == (False, [])
+    assert "alarm" not in _st(cfg) and sent == []
+
+
+# I1 (b): the same through a FAILED put and one stale read of an earlier write's pre-write state.
+def test_a_new_jobs_failed_put_then_a_stale_older_read_never_leaves_its_rule_waiting(cfg, sent):
+    fake = FakeS3()
+    _job_saved_to_365(cfg, fake)
+    at_180 = fake.before_put[(BASE, "rules")]
+    _add_newjob(cfg)
+    fake.deny_put = True
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)                                  # the new job's put fails
+    fake.deny_put = False
+    fake.stale_next("rules", 1, old=at_180)
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert lc.check(cfg, BASE, run=fake) == "ok"                      # fresh
+    assert _newjob_days(fake.rules[BASE]) == 30 and lc.outstanding(cfg, BASE) == (False, [])
+    assert "alarm" not in _st(cfg) and sent == []
+
+
+# I2: the owner confirming again inside the window, after a confirmed put was killed before it
+# reached S3, rewrites the half the journal still has settling -- never "Confirmed" with nothing written.
+def test_re_confirming_a_killed_confirmed_rules_change_inside_the_window_applies_it(cfg, sent, monkeypatch):
+    fake = FakeS3()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings",
+                               "settings": {"version": 1, "buckets": {BASE: {"folders": {"appdata/": {"undo_days": 10}}}}}})
+    with monkeypatch.context() as m:
+        m.setattr(lc, "write_rules", _killed)
+        with pytest.raises(Killed):
+            lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 30} and _journal_file(cfg).exists()
+    again = lc.preview(cfg, BASE, {"kind": "confirm"})
+    assert again.token
+    res = lc.apply_confirmed(cfg, again.token, BASE, run=fake)
+    assert res.changed and _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}
+    assert _appd(_applied(cfg)) == {"NoncurrentDays": 10} and not _journal_file(cfg).exists()
+    assert lc.outstanding(cfg, BASE) == (False, []) and "alarm" not in _st(cfg)
+
+
+def test_re_confirming_a_killed_confirmed_suspend_inside_the_window_applies_it(cfg, sent, monkeypatch):
+    fake = FakeS3()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings",
+                               "settings": {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}}})
+    with monkeypatch.context() as m:
+        m.setattr(lc, "write_versioning", _killed)
+        with pytest.raises(Killed):
+            lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert _ver(fake) == "Enabled" and _journal_file(cfg).exists()
+    again = lc.preview(cfg, BASE, {"kind": "confirm"})
+    res = lc.apply_confirmed(cfg, again.token, BASE, run=fake)
+    assert res.changed and _ver(fake) == "Suspended"
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["versioning"] == "suspended"
+    assert not _journal_file(cfg).exists() and lc.outstanding(cfg, BASE) == (False, [])
+
+
+# M3: a write dated in the future (the clock stepped back) never widens the window.
+def test_a_write_dated_in_the_future_is_not_a_settle_candidate(cfg, sent):
+    fake = FakeS3()
+    _job_saved_to_365(cfg, fake)
+    _age_writes(cfg, -3600)                                           # the clock went back an hour since
+    _live(fake, MANGA)["NoncurrentVersionExpiration"] = {"NoncurrentDays": 180}    # the exact pre-write rules
+    assert lc.check(cfg, BASE, run=fake) == "restored"
+    assert _manga(fake.rules[BASE]) == 365 and _st(cfg)["alarm"]["kind"] == "restored"
+
+
+# M4: a confirmed put that reported an error yet landed, then a stale read of the state before it:
+# never reverted (the journal waits for a fresh read) -- while a put that really failed is still
+# retried at once (test_a_*_put_that_failed_is_retried_*).
+def test_a_confirmed_put_that_errored_but_landed_then_a_stale_read_is_never_reverted(cfg, sent):
+    fake = Fake2()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings",
+                               "settings": {"version": 1, "buckets": {BASE: {"folders": {"appdata/": {"undo_days": 10}}}}}})
+    fake.put_rules = "landed_err"
+    with pytest.raises(lc.LifecycleError):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    fake.put_rules = None
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}         # it DID land
+    fake.stale_next("rules", 1)
+    puts = len(fake.puts())
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert len(fake.puts()) == puts and _journal_file(cfg).exists() and "alarm" not in _st(cfg)
+    assert lc.check(cfg, BASE, run=fake) == "ok"                      # fresh: adopted, never reverted
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10} and _appd(_applied(cfg)) == {"NoncurrentDays": 10}
+    assert len(fake.puts()) == puts and not _journal_file(cfg).exists() and "alarm" not in _st(cfg) and sent == []
+
+
+def test_a_confirmed_suspend_that_errored_but_landed_then_a_stale_read_is_never_reverted(cfg, sent):
+    fake = Fake2()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings",
+                               "settings": {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}}})
+    fake.put_ver = "landed_err"
+    with pytest.raises(lc.LifecycleError):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    fake.put_ver = None
+    assert _ver(fake) == "Suspended"
+    fake.stale_next("versioning", 1)
+    vputs = len(_vputs(fake))
+    assert lc.check(cfg, BASE, run=fake) == "ok" and _journal_file(cfg).exists()
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert _ver(fake) == "Suspended" and len(_vputs(fake)) == vputs
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["versioning"] == "suspended"
+    assert "alarm" not in _st(cfg) and sent == []
