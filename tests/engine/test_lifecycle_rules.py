@@ -199,7 +199,7 @@ def test_console_fingerprint_ignores_app_rules_and_s3_formatting():
     ({"NoncurrentVersionExpiration": {"NoncurrentDays": 3}}, ["removes old versions 3 days after being replaced"]),
     ({"NoncurrentVersionExpiration": {"NoncurrentDays": 3, "NewerNoncurrentVersions": 2}},
      ["removes old versions 3 days after being replaced (newest 2 kept)"]),
-    ({"Transitions": [{"Days": 30, "StorageClass": "GLACIER"}]}, ["moves current files to GLACIER after 30 days"]),
+    ({"Transitions": [{"Days": 30, "StorageClass": "GLACIER"}]}, ["moves current files to Glacier after 30 days"]),
     ({"NoncurrentVersionTransitions": [{"NoncurrentDays": 5, "StorageClass": "DEEP_ARCHIVE"}]},
      ["moves old versions to Deep Archive 5 days after being replaced"]),   # fix round 1, M4: owner words
     ({"Expiration": {"ExpiredObjectDeleteMarker": True}}, []),
@@ -228,7 +228,7 @@ def test_describe_names_what_a_tampered_app_rule_now_does():
     r["Transitions"] = [{"Days": 0, "StorageClass": "GLACIER"}]
     words = lc.describe(r)
     assert "expires current files 1 day after they're written" in words
-    assert "moves current files to GLACIER after 0 days" in words
+    assert "moves current files to Glacier after 0 days" in words
     assert lc.describe(dict(lc.plain_rule("media/m/", {"type": "days", "days": 180}), Status="Disabled")) == \
         "media/m/: switched off"
     assert lc.describe({"ID": "backup-engine:x", "Status": "Enabled", "Filter": {"Prefix": "x/"}}) == "x/: no actions"
@@ -245,7 +245,7 @@ def test_one_day_reads_as_a_day():
     rule = {"ID": "r", "Filter": {"Prefix": ""},
             "NoncurrentVersionTransitions": [{"NoncurrentDays": 1, "StorageClass": "GLACIER"}],
             "Transitions": [{"Days": 1, "StorageClass": "GLACIER"}]}
-    assert lc.destructive_actions(rule) == ["moves current files to GLACIER after 1 day",
+    assert lc.destructive_actions(rule) == ["moves current files to Glacier after 1 day",
                                             "moves old versions to Glacier 1 day after being replaced"]
 
 

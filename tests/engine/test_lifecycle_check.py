@@ -292,7 +292,7 @@ def test_a_changed_console_rule_that_becomes_destructive_alarms(cfg):
     rule = next(r for r in fake.rules[BASE] if r["ID"] == "abort-uploads")
     rule["Transitions"] = [{"Days": 0, "StorageClass": "DEEP_ARCHIVE"}]
     assert lc.check(cfg, BASE, run=fake) == "console_rule"
-    assert "moves current files to DEEP_ARCHIVE" in _s3_rule_logs(cfg)[-1]
+    assert "moves current files to Deep Archive" in _s3_rule_logs(cfg)[-1]
 
 
 def test_an_existing_console_rule_is_not_alarmed_on_first_apply(cfg):

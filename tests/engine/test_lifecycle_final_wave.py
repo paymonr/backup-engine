@@ -625,3 +625,16 @@ def test_a_failed_apply_that_wrote_nothing_is_not_marked_rules_applied(cfg):
     with pytest.raises(lc.LifecycleError) as e:
         lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
     assert getattr(e.value, "rules_applied", False) is False
+
+
+# --- M8: a console rule moving CURRENT files names the class in owner words ----------------------
+
+def test_current_file_transitions_use_owner_words_for_the_class():
+    rule = {"ID": "cold", "Status": "Enabled", "Filter": {"Prefix": ""},
+            "Transitions": [{"Days": 30, "StorageClass": "DEEP_ARCHIVE"}, {"Days": 5, "StorageClass": "GLACIER_IR"}]}
+    words = lc.destructive_actions(rule)
+    assert "moves current files to Deep Archive after 30 days" in words
+    assert "moves current files to Glacier Instant Retrieval after 5 days" in words
+    assert not any("DEEP_ARCHIVE" in w or "GLACIER_IR" in w for w in words)
+    assert lc.destructive_actions({"Status": "Enabled", "Transitions": [{"Days": 3}]}) == [
+        "moves current files to another class after 3 days"]

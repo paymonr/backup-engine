@@ -441,7 +441,8 @@ def destructive_actions(rule: dict) -> list[str]:
     for t in _as_list(rule.get("Transitions")) + _as_list(rule.get("Transition")):
         when = (f"after {_days(t['Days'])}" if "Days" in t else
                 f"on {str(t['Date'])[:10]}" if "Date" in t else "")
-        out.append(f"moves current files to {t.get('StorageClass', 'another class')} {when}".rstrip())
+        cls = t.get("StorageClass") or "another class"           # owner words (final fix wave M8)
+        out.append(f"moves current files to {_storage_words(cls)} {when}".rstrip())
     for t in (_as_list(rule.get("NoncurrentVersionTransitions"))
               + _as_list(rule.get("NoncurrentVersionTransition"))):
         cls = t.get("StorageClass") or "another class"           # owner words (fix round 1, M4)
