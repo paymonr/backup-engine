@@ -344,8 +344,10 @@ def desired_rules(bucket: str, base: str, jobs: list[dict], settings: dict) -> l
 
 
 def is_app_rule(rule: dict) -> bool:
-    rid = (rule or {}).get("ID", "")
-    return rid.startswith(APP_PREFIX) or rid in LEGACY_IDS
+    """A rule backup-engine made. Anything that isn't a rule at all -- a hand-edited applied
+    record's stray entry (final fix wave M11) -- is never one, and never crashes the reader."""
+    rid = rule.get("ID", "") if isinstance(rule, dict) else ""
+    return isinstance(rid, str) and (rid.startswith(APP_PREFIX) or rid in LEGACY_IDS)
 
 
 def merge(live_rules: list[dict], app_rules: list[dict]) -> list[dict]:

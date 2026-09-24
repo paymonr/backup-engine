@@ -280,3 +280,30 @@ def test_once_applied_the_overview_has_no_first_check_label(client, cfg):
     _applied(cfg)
     row = _row(client.get("/setup/storage").get_data(as_text=True), f"{BASE}|media/manga/")
     assert "after the first check" not in row
+
+
+# --- M11: a hand-edited applied record never 500s the S3 rules screen ---------------------------
+
+def _hand_edited_applied(cfg, rules):
+    p = Path(cfg["CACHE_DIR"], "state", "lifecycle", f"{BASE}.applied.json")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"rules": rules, "folders": ["media/manga/", "appdata/"]}))
+
+
+@pytest.mark.parametrize("junk", ["x", 5, None, ["nested"], {"ID": 7}])
+def test_a_non_dict_rule_in_the_applied_record_never_500s(client, cfg, junk):
+    good = lifecycle.plain_rule("media/manga/", {"type": "days", "days": 180})
+    _hand_edited_applied(cfg, [junk, good])
+    for url in ("/setup/storage", "/setup", f"/setup/storage?edit={BASE}|media/manga/", "/jobs/manga"):
+        assert client.get(url).status_code == 200, url
+
+
+def test_a_bucket_whose_view_cant_be_built_shows_a_warning_row(client, cfg, monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("hand-edited")
+    monkeypatch.setattr(s3_rules, "_bucket_view", boom)
+    r = client.get("/setup/storage")
+    body = html.unescape(r.get_data(as_text=True))
+    assert r.status_code == 200
+    assert f'data-bucket="{BASE}"' in body
+    assert "This bucket's saved S3 rules record couldn't be read — press Check now." in body

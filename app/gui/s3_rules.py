@@ -361,8 +361,17 @@ def screen(cfg) -> dict:
     v["status"] = {"level": "blocker" if alarm else ("ok" if row.get("state") == "ok" else "warn"),
                    "sentence": row.get("sentence", ""), "checked_at": row.get("verified_at"),
                    "checked_human": _human_time(row.get("verified_at"))}
-    v["buckets"] = [_bucket_view(ctx, b, base, jobs, settings) for b in buckets]
+    v["buckets"] = [_safe_bucket_view(ctx, b, base, jobs, settings) for b in buckets]
     return v
+
+
+def _safe_bucket_view(ctx, bucket: str, base: str, jobs: list[dict], settings: dict) -> dict:
+    """final fix wave M11: one bucket whose state files can't be made sense of (a hand-edited
+    applied.json, say) shows a warning card -- the screen never 500s over it."""
+    try:
+        return _bucket_view(ctx, bucket, base, jobs, settings)
+    except Exception:                                        # noqa: BLE001 — a GET never 500s on this
+        return {"name": bucket, "dedicated": bucket != base, "broken": True}
 
 
 # --- the side editor, impact line and preview (spec §3, §5 layout B) -----------------------------

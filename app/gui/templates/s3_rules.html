@@ -56,6 +56,15 @@
   <div class="jobgrid" style="margin-top:var(--sp-6)">
     <div class="stack">
       {% for b in v.buckets %}
+      {% if b.broken %}
+      <div class="card" style="padding:var(--sp-4)" data-bucket="{{ b.name }}">
+        <p class="slabel">{{ 'Dedicated bucket' if b.dedicated else 'Shared bucket' }} · <span class="mono">{{ b.name }}</span></p>
+        <div class="sig sig-warning" style="margin-top:var(--sp-3)" data-broken="{{ b.name }}">
+          <span class="glyph" aria-hidden="true"></span>
+          <div class="body">This bucket's saved S3 rules record couldn't be read — press Check now.</div>
+        </div>
+      </div>
+      {% else %}
       <div class="card" style="padding:var(--sp-4)" data-bucket="{{ b.name }}">
         <p class="slabel">{{ 'Dedicated bucket' if b.dedicated else 'Shared bucket' }} · <span class="mono">{{ b.name }}</span>
           {% if b.versioning %}&nbsp;<span class="tok {{ 'tok-ok' if b.versioning_ok else 'tok-overdue' }}">versioning {{ {'on': 'on', 'suspended': 'suspended', 'never': 'never turned on'}[b.versioning] }}</span>{% endif %}</p>
@@ -119,6 +128,7 @@
         </div>
         {% endif %}
       </div>
+      {% endif %}
       {% endfor %}
     </div>
     <aside class="card" style="padding:var(--sp-4)" aria-label="Change a rule" id="s3-side">
