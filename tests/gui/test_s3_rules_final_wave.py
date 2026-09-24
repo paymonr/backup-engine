@@ -210,3 +210,15 @@ def test_cost_screens_note_the_combined_form(client, cfg):
 
 def test_no_combined_note_without_the_combined_form(client, cfg):
     assert COMBINED not in client.get("/cost").get_data(as_text=True)
+
+
+# --- P6: a hand-made job with an unreadable history setting never 500s the job page / Costs ----
+
+def test_the_job_page_and_costs_survive_an_unreadable_history_setting(client, cfg):
+    jobs = json.loads(json.dumps(JOBS))
+    jobs.append({"name": "odd", "type": "versioned-files", "source": "media/odd", "schedule": "0 3 * * *",
+                 "enabled": True, "storage_class": "STANDARD",
+                 "retention": {"type": "count", "count": 5, "days": 30}})
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    assert client.get("/jobs/odd").status_code == 200
+    assert client.get("/cost").status_code == 200

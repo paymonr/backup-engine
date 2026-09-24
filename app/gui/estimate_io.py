@@ -125,7 +125,13 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override,
     # e.g. archive -> {"type": "days", "days": 180} -- so a raw/unvalidated job
     # dict, like a saved one, maps consistently). Reused here rather than
     # re-reading `keep`/`retention_days` directly.
-    policy = jobs_io._normalize_retention(job, engine)
+    try:
+        policy = jobs_io._normalize_retention(job, engine)
+    except ValueError:
+        # Parked P6 (T17): a hand-edited setting that can't be read (e.g. the combined form on a
+        # non-Plain-copy job) never 500s the job page / Costs -- priced as keeping everything,
+        # the upper bound (like folders_for, which holds the folder's current S3 rule).
+        policy = {"type": "keep_all"}
     keep_tiers = {}
     if policy["type"] == "tiered":
         # A restic tiered keep policy is modelled NATIVELY (app.estimator.tiered):

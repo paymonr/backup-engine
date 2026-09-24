@@ -932,3 +932,14 @@ def test_newest_n_plus_days_is_noted_as_estimated_as_newest_n(tmp_path):
     assert estimate_io.combined_in_use(cfg, job=VJOB) is False
     (tmp_path / "b").mkdir()
     assert estimate_io.combined_in_use(_cfg(tmp_path / "b", [AJOB])) is False
+
+
+# Parked P6 (T17): a hand-made job whose history setting can't be read never 500s a cost page
+@pytest.mark.parametrize("job", [
+    {**AJOB, "retention": {"type": "count", "count": "x"}},
+    {**VFJOB, "retention": {"type": "count", "count": 5, "days": 30}},        # combined form on File history
+    {**AJOB, "retention": {"type": "nope"}},
+])
+def test_an_unreadable_history_setting_is_estimated_as_keep_everything(tmp_path, job):
+    by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [job]), SRC))
+    assert by[job["name"]].retention_type == "keep_all"
