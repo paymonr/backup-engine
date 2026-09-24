@@ -1,4 +1,5 @@
 # tests/engine/test_lifecycle_preview.py — preview + typed confirmation (spec 2026-09-23 §3, R-B4).
+import fcntl
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,13 +31,23 @@ def _manga_edit(cfg, retention):
     return {"kind": "job", "job": dict(job, retention=retention)}
 
 
+def _iso(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _summary(cfg, folder=M):
+    """A fresh (right-now) summary -- fix round 2, Important 1: scanned_at must be relative to
+    the test's own clock, not a hard-coded calendar date, or this goes stale (and the tests
+    that depend on it start failing) once SUMMARY_STALE_DAYS elapses for real. Returns the
+    scanned_at it wrote, so callers can assert against the exact same value."""
+    scanned_at = _iso(datetime.now(timezone.utc))
     storage_summary.save(cfg["CACHE_DIR"], {
-        "v": 1, "scanned_at": "2026-09-23T05:00:00Z", "bucket": BASE, "folder": folder,
+        "v": 1, "scanned_at": scanned_at, "bucket": BASE, "folder": folder,
         "noncurrent_by_age_days": [[10, 5, 500], [100, 3, 300]], "noncurrent_by_rank": [[1, 8, 800]],
         "noncurrent_by_age_rank": [[10, 1, 5, 500], [100, 1, 3, 300]],
         "noncurrent_versions": 8, "noncurrent_bytes": 800, "delete_markers": 0,
         "current_objects": 8, "current_bytes": 8000})
+    return scanned_at
 
 
 def _token_path(cfg, token):
@@ -44,10 +55,18 @@ def _token_path(cfg, token):
 
 
 def test_a_change_that_keeps_more_needs_no_token(pcfg, monkeypatch):
+    """fix round 2, Minor 3: monkeypatching lc.provision._run_aws has NO effect on anything --
+    sync()/check()'s `run=provision._run_aws` default is bound at *definition* time, and
+    preview() doesn't even take a `run` at all -- so that alone can never catch a regression.
+    Patch the functions AWS-reaching code actually calls by name (looked up at call time, so a
+    module-level monkeypatch reaches them) instead: role_creds/read_rules/write_rules cover
+    sync()/check() (both funnel through _reconcile_locked), and check() itself is patched too
+    in case preview() were ever made to call it directly."""
     cfg, fake = pcfg
     def boom(*a, **k):
         raise AssertionError("preview must never reach AWS")
-    monkeypatch.setattr(lc.provision, "_run_aws", boom)     # fix round 1: make this able to fail
+    for name in ("role_creds", "read_rules", "write_rules", "check"):
+        monkeypatch.setattr(lc, name, boom)
     calls = len(fake.calls)
     pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 365}))
     assert pv.token is None and pv.keeps_less == [] and [c.kind for c in pv.changes] == [lc.KEEPS_MORE]
@@ -56,13 +75,13 @@ def test_a_change_that_keeps_more_needs_no_token(pcfg, monkeypatch):
 
 def test_a_preview_that_deletes_asks_for_the_bucket_name(pcfg):
     cfg, _ = pcfg
-    _summary(cfg)
+    scanned_at = _summary(cfg)
     pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 30}))
     (c,) = pv.keeps_less
     assert c.folder == M and pv.needs_typed is True and pv.token
     imp = pv.impacts[c.rule_id]
     assert (imp["versions"], imp["bytes"], imp["oldest_age_days"], imp["scanned_at"]) == \
-        (3, 300, 100, "2026-09-23T05:00:00Z")
+        (3, 300, 100, scanned_at)
     tok = json.loads(_token_path(cfg, pv.token).read_text())
     assert tok["bucket"] == BASE and tok["edit"]["kind"] == "job" and tok["needs_typed"] is True
 
@@ -400,7 +419,10 @@ def test_apply_confirmed_takes_settings_lock_exactly_once_for_a_settings_edit(pc
     """flock is per open file description: taking settings_lock twice in the same process
     (once in apply_confirmed's check-then-save window, again inside save_edit) would
     self-deadlock -- save_edit must use the unlocked inner path when the caller already
-    holds the lock."""
+    holds the lock. fix round 2, Minor 5: assert the lock is actually HELD while the save
+    runs, not just acquired-and-released once -- a fresh, independent, NON-BLOCKING
+    (LOCK_NB) flock attempt on the same lock file must fail while _save_edit_unlocked is
+    in flight; LOCK_NB means a regression fails the assertion instead of hanging."""
     cfg, fake = pcfg
     settings = lc.load_settings(cfg["CONFIG_DIR"])
     settings["buckets"][BASE] = {"folders": {"appdata/": {"undo_days": 7}}}
@@ -411,5 +433,91 @@ def test_apply_confirmed_takes_settings_lock_exactly_once_for_a_settings_edit(pc
         lock_calls.append(1)
         return real_lock(config_dir)
     monkeypatch.setattr(lc, "settings_lock", spy_lock)
+    lock_path = Path(cfg["CONFIG_DIR"], f".{lc.SETTINGS_FILE}.lock")
+    probe = {}
+    real_unlocked = lc._save_edit_unlocked
+    def probe_while_saving(cfg_, edit):
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)   # non-blocking: never hangs
+                probe["got_it"] = True                           # would mean the lock was NOT held
+                fcntl.flock(fh, fcntl.LOCK_UN)
+            except BlockingIOError:
+                probe["got_it"] = False                          # the real lock was held -- correct
+        return real_unlocked(cfg_, edit)
+    monkeypatch.setattr(lc, "_save_edit_unlocked", probe_while_saving)
     lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
     assert lock_calls == [1]
+    assert probe.get("got_it") is False
+
+
+# --- fix round 2 (task-13-fix2.md) -----------------------------------------------------------
+
+def test_only_the_target_hash_differing_is_enough_to_go_stale(pcfg):
+    """Minor 4: isolate the target_hash check from the inputs_hash check -- change ONLY the
+    token's stored target_hash (leave the on-disk jobs.json/storage.json/applied record
+    exactly as they were at preview time, so inputs_hash still matches) and confirm that
+    alone is enough to raise stale and write nothing."""
+    cfg, fake = pcfg
+    pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 30}))
+    p = _token_path(cfg, pv.token)
+    tok = json.loads(p.read_text())
+    tok["target_hash"] = "not-the-real-hash"
+    p.write_text(json.dumps(tok))
+    puts = len(fake.puts())
+    with pytest.raises(lc.PreviewError) as e:
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert e.value.kind == "stale"
+    assert len(fake.puts()) == puts
+    assert next(j for j in _jobs(cfg) if j["name"] == "manga")["retention"] == {"type": "days", "days": 180}
+
+
+@pytest.mark.parametrize("edit", [
+    {"kind": "job"},
+    {"kind": "job", "job": "nope"},
+    {"kind": "settings"},
+    {"kind": "settings", "settings": "nope"},
+    {"kind": "settings", "job": {"name": "x"}, "settings": {}},
+    {"kind": "confirm", "job": {"name": "x"}},
+    {"kind": "confirm", "settings": {}},
+    {"kind": "bogus"},
+    "not-a-dict",
+])
+def test_save_edit_enforces_kind_and_payload(pcfg, edit):
+    """Minor 2: save_edit is a public, standalone entry point (Task 15's keeps-more-edit
+    caller uses it directly, without going through edited()/preview() first) and must enforce
+    the same kind<->payload shape edited() does."""
+    cfg, _ = pcfg
+    before = Path(cfg["CONFIG_DIR"], "jobs.json").read_bytes()
+    with pytest.raises(ValueError):
+        lc.save_edit(cfg, edit)
+    assert Path(cfg["CONFIG_DIR"], "jobs.json").read_bytes() == before
+
+
+def test_own_counts_an_edit_that_further_tightens_an_already_waiting_rule(pcfg):
+    """Minor 6: manga is already waiting (baseline 180, current on-disk 30, gated); an edit
+    that tightens it FURTHER, to 10, must still count as `own` -- the edit alters that very
+    rule relative to what's on disk right now -- and get a token, even though the rule was
+    already keeps-less without the edit."""
+    cfg, fake = pcfg
+    _set_manga(cfg, {"type": "days", "days": 30})
+    lc.sync(cfg, BASE, run=fake)                          # manga waits: baseline 180, current 30
+    pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 10}))   # tightens further
+    assert pv.token is not None
+    assert [c.folder for c in pv.own] == [M]
+    lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert _live(fake, "backup-engine:media/manga/")["NoncurrentVersionExpiration"] == {"NoncurrentDays": 10}
+
+
+def test_own_still_excludes_an_unrelated_waiting_rule_the_edit_never_touches(pcfg):
+    """Regression guard for the Minor 6 fix: the pure "keeps-more edit with something else
+    already waiting" case (own round 1's own test) must still get no token."""
+    cfg, fake = pcfg
+    _set_manga(cfg, {"type": "days", "days": 30})
+    lc.sync(cfg, BASE, run=fake)                          # manga waits (gated)
+    settings = lc.load_settings(cfg["CONFIG_DIR"])
+    settings["buckets"][BASE] = {"folders": {"appdata/": {"undo_days": 60}}}   # unrelated: keeps more
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": settings})
+    assert pv.token is None
+    assert M in [c.folder for c in pv.keeps_less]         # still shown -- informational

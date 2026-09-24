@@ -1171,20 +1171,31 @@ def _validated_job(job: dict, existing: list[dict], source_root: str) -> dict:
     return jobs_io.validate(job, source_root)
 
 
+_BAD_EDIT = "That change couldn't be read — try again."
+
+
+def _valid_edit_shape(edit) -> bool:
+    """kind<->payload: "job" needs `job`, "settings" needs `settings` and no `job`, "confirm"
+    carries neither. Shared by edited() (raises PreviewError) and save_edit()/
+    _save_edit_unlocked() (raises ValueError) -- fix round 2, Minor 2: save_edit is a public,
+    standalone entry point (a keeps-more edit's caller uses it directly, without going through
+    edited()/preview() first) and must enforce the same shape."""
+    if not isinstance(edit, dict):
+        return False
+    kind, job, new = edit.get("kind"), edit.get("job"), edit.get("settings")
+    return ((kind == "job" and isinstance(job, dict))
+            or (kind == "settings" and isinstance(new, dict) and job is None)
+            or (kind == "confirm" and job is None and new is None))
+
+
 def edited(jobs: list[dict], settings: dict, edit: dict, *, source_root: str | None = None) \
         -> tuple[list[dict], dict]:
     """jobs + settings as they will be once `edit` is saved -- the job normalized exactly as
-    jobs_io.upsert will (fix round 1, I1). Enforces kind<->payload: "job" needs `job`,
-    "settings" needs `settings` and no `job`, "confirm" carries neither -- otherwise
-    PreviewError("invalid") (fix round 1, Minor)."""
-    if not isinstance(edit, dict):
-        raise PreviewError("invalid", "That change couldn't be read — try again.")
-    kind, job, new = edit.get("kind"), edit.get("job"), edit.get("settings")
-    ok = ((kind == "job" and isinstance(job, dict))
-          or (kind == "settings" and isinstance(new, dict) and job is None)
-          or (kind == "confirm" and job is None and new is None))
-    if not ok:
-        raise PreviewError("invalid", "That change couldn't be read — try again.")
+    jobs_io.upsert will (fix round 1, I1). Enforces kind<->payload (_valid_edit_shape) --
+    otherwise PreviewError("invalid") (fix round 1, Minor)."""
+    if not _valid_edit_shape(edit):
+        raise PreviewError("invalid", _BAD_EDIT)
+    job, new = edit.get("job"), edit.get("settings")
     if isinstance(job, dict):
         try:
             job = _validated_job(job, jobs, source_root or os.environ.get("SOURCE_ROOT", "/backup/media"))
@@ -1203,7 +1214,11 @@ def _save_edit_unlocked(cfg, edit: dict) -> None:
     storage.json -- WITHOUT taking settings_lock. For apply_confirmed, which already holds it
     for the whole check-then-save window: flock locks are per open file description, so a
     second open()+flock of the same lock file in this process would block forever (fix round
-    1, Minor)."""
+    1, Minor). Enforces kind<->payload (_valid_edit_shape) -- raises ValueError otherwise (fix
+    round 2, Minor 2): apply_confirmed's edit already passed through edited()'s check, but
+    save_edit's OTHER caller (a standalone keeps-more save) may not have."""
+    if not _valid_edit_shape(edit):
+        raise ValueError(_BAD_EDIT)
     config_dir = cfg["CONFIG_DIR"]
     job = edit.get("job")
     if isinstance(job, dict):
@@ -1219,7 +1234,10 @@ def _save_edit_unlocked(cfg, edit: dict) -> None:
 def save_edit(cfg, edit: dict) -> None:
     """Save an edit standalone (a keeps-more edit: the caller saves it and syncs, no preview
     needed) -- storage.json under settings_lock. apply_confirmed uses _save_edit_unlocked
-    instead, taking the lock itself around the whole check-then-save window."""
+    instead, taking the lock itself around the whole check-then-save window. Enforces
+    kind<->payload up front (fails fast, before touching the lock) -- raises ValueError."""
+    if not _valid_edit_shape(edit):
+        raise ValueError(_BAD_EDIT)
     if isinstance(edit.get("settings"), dict):
         with settings_lock(cfg["CONFIG_DIR"]):
             _save_edit_unlocked(cfg, edit)
@@ -1268,9 +1286,19 @@ def preview(cfg, bucket: str, edit: dict) -> Preview:
     if edit.get("kind") == "confirm":
         own = less                                 # confirming IS resolving whatever's outstanding
     else:
+        # A change is the EDIT's own when the edit itself alters that rule -- its value differs
+        # from what's on disk right now (unedited) -- and the result keeps less than the
+        # baseline (already true: `less`). This also counts an edit that further TIGHTENS a
+        # rule that's already waiting (e.g. manga waiting 180->30, this edit sets it to 10):
+        # the rule the edit produces differs from the current (30-day) one, so it's own, even
+        # though manga was already keeps-less without the edit (fix round 2, Minor 6). A rule
+        # the edit leaves untouched (identical before and after the edit) is never own, no
+        # matter its keeps-less status -- purely informational via `keeps_less`.
         current_want = want_for(cfg, bucket)       # jobs.json + storage.json exactly as they are now
-        already = {c.rule_id for c in classify(before, current_want) if c.kind == KEEPS_LESS}
-        own = [c for c in less if c.rule_id not in already]
+        def _n(rs, rid):
+            r = rs.rules.get(rid)
+            return _norm(r) if r else None
+        own = [c for c in less if _n(current_want, c.rule_id) != _n(want, c.rule_id)]
     impacts: dict[str, dict | None] = {}
     fresh: dict[str, bool] = {}
     for c in less:
