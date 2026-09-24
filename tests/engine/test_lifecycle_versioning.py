@@ -834,3 +834,39 @@ def test_a_confirmed_suspend_that_lands_but_errors_after_a_rules_write_is_kept(c
     assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["versioning"] == "suspended"
     assert lc.outstanding(cfg, BASE) == (False, [])
     assert not _journal_file(cfg).exists()
+
+
+# item 5: a TRUE first apply (no applied record) whose rules put keeps failing notes the console
+# rules that can already delete or move backups (O1) ONCE -- not on every failing pass -- and
+# never by writing an applied record (the next pass must stay a first apply).
+def _o1_notes(cfg):
+    blob = "".join(x.read_text() for x in sorted(Path(cfg["CACHE_DIR"], "logs").rglob("*.log")))
+    return blob.count("Kept as it is — a rule added in the AWS console: my-console-rule")
+
+
+def test_a_true_first_apply_whose_rules_put_keeps_failing_notes_the_console_rule_once(cfg):
+    console = {"ID": "my-console-rule", "Status": "Enabled", "Filter": {"Prefix": ""}, "Expiration": {"Days": 5}}
+    fake = Fake2({BASE: json.loads(json.dumps(LEGACY)) + [dict(console)]})
+    fake.put_rules = "fail"
+    for _ in range(3):
+        assert lc.check(cfg, BASE, run=fake) == "error"
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE) is None      # still a first apply
+    assert _o1_notes(cfg) == 1
+    fake.put_rules = None
+    assert lc.check(cfg, BASE, run=fake) == "ok"                      # the first apply finally lands
+    assert "alarm" not in _st(cfg)
+    assert _o1_notes(cfg) == 1                                          # still noted just once
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["console"] == lc.console_fingerprint(fake.rules[BASE])
+    assert not lc._o1_noted_path(cfg["CACHE_DIR"], BASE).exists()      # the recorded fingerprint took over
+
+
+def test_a_console_rule_that_changes_between_failing_first_apply_passes_is_noted_again(cfg):
+    console = {"ID": "my-console-rule", "Status": "Enabled", "Filter": {"Prefix": ""}, "Expiration": {"Days": 5}}
+    fake = Fake2({BASE: json.loads(json.dumps(LEGACY)) + [dict(console)]})
+    fake.put_rules = "fail"
+    lc.check(cfg, BASE, run=fake)
+    lc.check(cfg, BASE, run=fake)
+    next(r for r in fake.rules[BASE] if r["ID"] == "my-console-rule")["Expiration"]["Days"] = 2   # changed
+    lc.check(cfg, BASE, run=fake)
+    lc.check(cfg, BASE, run=fake)
+    assert _o1_notes(cfg) == 2                                          # once per distinct set of console rules

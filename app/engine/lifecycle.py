@@ -878,6 +878,11 @@ def save_applied(cache_dir: str, bucket: str, rules: list[dict], console: dict |
     if versioning is not None:
         doc["versioning"] = versioning               # the versioning the app applied (R-B7)
     _write_atomic(Path(_state_dir(cache_dir), f"{bucket}.applied.json"), json.dumps(doc))
+    if console is not None:                          # a recorded fingerprint supersedes the O1 marker
+        try:
+            _o1_noted_path(cache_dir, bucket).unlink()
+        except OSError:
+            pass
 
 
 def seed_new_bucket(cache_dir: str, bucket: str) -> None:
@@ -972,6 +977,27 @@ def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_
     save_applied(cache_dir, bucket, applied, console=console, folders=folders, versioning=applied_ver)
     _delete_in_flight(cache_dir, bucket)            # item 3: only once the adoption is on disk
     return _applied_doc(cache_dir, bucket)
+
+
+def _o1_noted_path(cache_dir: str, bucket: str) -> Path:
+    return Path(_state_dir(cache_dir), f"{bucket}.o1-noted.json")
+
+
+def _o1_noted(cache_dir: str, bucket: str) -> dict | None:
+    """Fix round 4, item 5: the console fingerprint whose O1 note ("Kept as it is -- a rule
+    added in the AWS console") already reached Activity while no fingerprint could be recorded
+    in applied.json -- a TRUE first apply whose rules put keeps failing, which must never write
+    an applied record (the next pass has to stay a first apply). None = nothing noted yet."""
+    try:
+        data = json.loads(_o1_noted_path(cache_dir, bucket).read_text())
+    except (OSError, ValueError):
+        return None
+    fp = data.get("console") if isinstance(data, dict) else None
+    return fp if isinstance(fp, dict) else None
+
+
+def _mark_o1_noted(cache_dir: str, bucket: str, fp: dict) -> None:
+    _write_atomic(_o1_noted_path(cache_dir, bucket), json.dumps({"console": fp, "noted_at": _now_iso()}))
 
 
 def _status_path(cache_dir: str) -> Path:
@@ -1182,10 +1208,11 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     # O1; fix round 2: gated on "no fingerprint recorded yet" (stored_fp is None), not on
     # `first` -- a bucket seed_new_bucket pre-seeded (applied=[], first=False) has no console
     # fingerprint yet either, and deserves the same "note, don't alarm" first look.
+    live_fp = console_fingerprint(live)
     console_note = ([f"Kept as it is — a rule added in the AWS console: {line}"
                      for _, line in console_changes({}, live)] if stored_fp is None else [])
-
-    live_fp = console_fingerprint(live)
+    if console_note and _o1_noted(cache, bucket) == live_fp:
+        console_note = []                        # fix round 4, item 5: these exact rules were noted
     changes = console_changes(stored_fp, live)
     console_alarm = None
     if changes:
@@ -1296,6 +1323,10 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
             if console_note:
                 runs.record_system(cache, kind="s3-rules", summary=f"S3 rules checked · {bucket}",
                                    lines=console_note, trigger=trigger)
+                # fix round 4, item 5: a TRUE first apply records no fingerprint here (it must
+                # stay a first apply), so remember the note went out -- once, not every pass.
+                if applied is None:
+                    _mark_o1_noted(cache, bucket, live_fp)
             return _err_state(e), None, e, stale
         status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines},
               prior_alarm=true_prior_alarm)
