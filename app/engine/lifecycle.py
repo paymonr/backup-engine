@@ -2286,6 +2286,16 @@ def _cfg_from_env() -> dict:
             "CACHE_DIR": os.environ.get("CACHE_DIR", "/cache")}
 
 
+def _check_line(cfg, bucket: str, trigger: str, run_id: str | None = None) -> str:
+    """One bucket's check as the log line the `check` CLI (before a backup run) and `check-all`
+    (hourly) both print -- one helper, so the wording never drifts (parked P1). Never raises."""
+    try:
+        words = _CHECK_WORDS.get(check(cfg, bucket, trigger=trigger, run_id=run_id), _CHECK_WORDS["error"])
+    except Exception as e:                                   # noqa: BLE001 — never block a backup
+        words = f"couldn't be checked ({type(e).__name__})"
+    return f"S3 rules check · {bucket}: {words}"
+
+
 def check_all_lines(cfg) -> list[str]:
     """The hourly check (R-B9, crontab `check-all`): every bucket, as a scheduled run. Prints
     nothing when S3 rules aren't managed here (below level 4, no role, not set up). Never raises."""
@@ -2296,14 +2306,7 @@ def check_all_lines(cfg) -> list[str]:
         buckets = buckets_for(base, jobs_io.load(cfg["CONFIG_DIR"]))
     except Exception as e:                                   # noqa: BLE001 — cron must never see a trace
         return [f"S3 rules check: couldn't start ({type(e).__name__})"]
-    out = []
-    for b in buckets:
-        try:
-            words = _CHECK_WORDS.get(check(cfg, b, trigger="scheduled"), "couldn't be checked (see Setup)")
-        except Exception as e:                               # noqa: BLE001
-            words = f"couldn't be checked ({type(e).__name__})"
-        out.append(f"S3 rules check · {b}: {words}")
-    return out
+    return [_check_line(cfg, b, "scheduled") for b in buckets]
 
 
 _TRIGGER = re.compile(r"[a-z][a-z-]{0,19}")
@@ -2326,13 +2329,7 @@ def main(argv=None) -> int:
     if args.cmd == "check":
         # O4: backup-job.sh passes BE_TRIGGER, so a Run now records its check as manual.
         trigger = args.trigger if _TRIGGER.fullmatch(args.trigger or "") else "scheduled"
-        try:
-            words = _CHECK_WORDS.get(check(cfg, args.bucket, trigger=trigger,
-                                           run_id=os.environ.get("BE_RUN_ID") or None),
-                                     "couldn't be checked (see Setup)")
-        except Exception as e:                       # noqa: BLE001 — never block a backup
-            words = f"couldn't be checked ({type(e).__name__})"
-        print(f"S3 rules check · {args.bucket}: {words}")
+        print(_check_line(cfg, args.bucket, trigger, os.environ.get("BE_RUN_ID") or None))
         return 0
     if args.cmd == "check-all":
         for line in check_all_lines(cfg):

@@ -659,3 +659,27 @@ def test_a_dedicated_job_on_the_base_bucket_gets_its_folder_not_a_whole_bucket_r
     assert lc.buckets_for(BASE, jobs) == [BASE]
     assert lc.folder_of_job(BASE, jobs, "tv") == (BASE, "media/tv/")
     assert lc.folder_of_job(BASE, jobs, "snap") == (BASE, "appdata/")
+
+
+# --- P1: one check line, the same words in the `check` CLI and `check-all` --------------------
+
+def test_check_and_check_all_share_one_line_helper(cfg, monkeypatch, capsys):
+    monkeypatch.setenv("CONFIG_DIR", cfg["CONFIG_DIR"])
+    monkeypatch.setenv("CACHE_DIR", cfg["CACHE_DIR"])
+    monkeypatch.delenv("BE_RUN_ID", raising=False)
+    seen = []
+    monkeypatch.setattr(lc, "_check_line", lambda c, b, trigger, run_id=None:
+                        seen.append((b, trigger, run_id)) or f"LINE {b} {trigger}")
+    assert lc.main(["check", "--bucket", BASE, "--trigger", "manual"]) == 0
+    assert lc.main(["check-all"]) == 0
+    assert capsys.readouterr().out.splitlines() == [f"LINE {BASE} manual", f"LINE {BASE} scheduled"]
+    assert seen == [(BASE, "manual", None), (BASE, "scheduled", None)]
+
+
+@pytest.mark.parametrize("state,words", [("ok", "in place"), ("error", "couldn't be checked (see Setup)"),
+                                         ("weird", "couldn't be checked (see Setup)")])
+def test_the_check_line_words(cfg, monkeypatch, state, words):
+    monkeypatch.setattr(lc, "check", lambda *a, **k: state)
+    assert lc._check_line(cfg, BASE, "scheduled") == f"S3 rules check · {BASE}: {words}"
+    monkeypatch.setattr(lc, "check", lambda *a, **k: (_ for _ in ()).throw(KeyError("x")))
+    assert lc._check_line(cfg, BASE, "scheduled") == f"S3 rules check · {BASE}: couldn't be checked (KeyError)"
