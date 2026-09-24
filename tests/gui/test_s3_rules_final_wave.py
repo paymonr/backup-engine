@@ -331,3 +331,22 @@ def test_a_failed_acknowledge_still_says_couldnt_clear(client, cfg, monkeypatch)
     monkeypatch.setattr(lifecycle, "acknowledge", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
     client.post("/setup/s3-rules/acknowledge", data={"csrf": token})
     assert "Couldn't clear the S3 rules alarm" in " ".join(_flashes(client).values())
+
+
+# --- P5: screen() reuses setup_row's computation ------------------------------------------------
+
+def test_the_screen_computes_buckets_status_and_alarm_once(cfg, monkeypatch):
+    _applied(cfg)
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "restored",
+                         alarm={"kind": "restored", "at": "2026-09-23T04:59:00Z", "lines": []})
+    counts = {"load_status": 0, "_alarm": 0, "_buckets": 0}
+    for mod, name in ((lifecycle, "load_status"), (s3_rules, "_alarm"), (s3_rules, "_buckets")):
+        real = getattr(mod, name)
+
+        def counted(*a, _real=real, _name=name, **k):
+            counts[_name] += 1
+            return _real(*a, **k)
+        monkeypatch.setattr(mod, name, counted)
+    v = s3_rules.screen(cfg)
+    assert v["alarm"]["kind"] == "restored" and v["status"]["level"] == "blocker"
+    assert counts == {"load_status": 1, "_alarm": 1, "_buckets": 1}

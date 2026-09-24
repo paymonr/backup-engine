@@ -139,20 +139,26 @@ def _console_cap(cfg, buckets: list[str]) -> dict | None:
 
 
 def setup_row(cfg) -> dict | None:
+    return _setup_state(cfg)[0]
+
+
+def _setup_state(cfg) -> tuple[dict | None, list[str], dict | None]:
+    """(the Setup row, the buckets, their merged open alarm) -- computed ONCE and shared by
+    setup_row() and screen() (parked P5: the screen used to recompute buckets/status/alarm)."""
     config_dir, cache = cfg["CONFIG_DIR"], cfg["CACHE_DIR"]
     if not config_io.is_provisioned(config_dir):
-        return None
+        return None, [], None
     row = {"code": "s3_rules", "verified_at": None, "fix_label": None, "fix_url": "/setup"}
     if not permissions.feature_available(config_dir, "s3-rules"):
         row.update(state="warn", sentence="Needs the AWS permissions update", fix_url="/setup/permissions")
-        return row
+        return row, [], None
     buckets = _buckets(cfg)
     status = lifecycle.load_status(cache)
     alarm = _alarm(status, buckets)
     if alarm:
         row.update(state="fail", blocker=True, verified_at=alarm.get("at"), sentence=_sentence(alarm),
                    alarm_seen=alarm.get("latest") or alarm.get("at"))
-        return row
+        return row, buckets, alarm
     entries = [status.get(b) or {} for b in buckets]
     states = [e.get("state") for e in entries]
     checked = [e.get("checked_at") for e in entries if e.get("checked_at")]
@@ -185,7 +191,7 @@ def setup_row(cfg) -> dict | None:
         row.update(state="warn", sentence="Not checked yet")
     else:
         row.update(state="ok", sentence="Your jobs' S3 rules are in place")
-    return row
+    return row, buckets, None
 
 
 def open_alarm(cfg) -> dict | None:
@@ -353,9 +359,8 @@ def screen(cfg) -> dict:
     ctx = {"CONFIG_DIR": config_dir, "CACHE_DIR": cache}
     base = config_io.read_backup_env(config_dir).get("S3_BUCKET", "").strip()
     jobs, settings = jobs_io.load(config_dir), lifecycle.load_settings(config_dir)
-    buckets = lifecycle.buckets_for(base, jobs)
-    alarm = _alarm(lifecycle.load_status(cache), buckets)
-    row = setup_row(cfg) or {}
+    row, buckets, alarm = _setup_state(cfg)             # P5: the Setup row's own computation
+    row = row or {}
     v["alarm"] = alarm
     v["alarm_seen"] = (alarm or {}).get("latest") or (alarm or {}).get("at")
     v["status"] = {"level": "blocker" if alarm else ("ok" if row.get("state") == "ok" else "warn"),
