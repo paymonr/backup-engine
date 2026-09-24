@@ -11,10 +11,12 @@ ROLE = "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"
 
 
 class FakeS3:
-    """sts assume-role + get/put-bucket-lifecycle-configuration, per bucket."""
-    def __init__(self, rules=None, *, unsupported=False, deny_put=False, deny_assume=False):
+    """sts assume-role + get/put-bucket-lifecycle-configuration + get/put-bucket-versioning, per bucket."""
+    def __init__(self, rules=None, *, unsupported=False, deny_put=False, deny_assume=False, versioning=None):
         self.rules = {b: list(r) for b, r in (rules or {}).items()}
         self.unsupported, self.deny_put, self.deny_assume = unsupported, deny_put, deny_assume
+        # bucket -> "Enabled" | "Suspended" | None (never versioned); a bucket not listed is Enabled
+        self.versioning = dict(versioning or {})
         self.calls = []
 
     def __call__(self, args, *, region, key, secret, session_token=None):
@@ -38,6 +40,14 @@ class FakeS3:
                 return SimpleNamespace(returncode=254, stdout="",
                                        stderr="AccessDenied s3:PutLifecycleConfiguration rolesecret")
             self.rules[bucket] = json.loads(args[args.index("--lifecycle-configuration") + 1])["Rules"]
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if args[:2] == ["s3api", "get-bucket-versioning"]:
+            status = self.versioning.get(bucket, "Enabled")
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Status": status} if status else {}))
+        if args[:2] == ["s3api", "put-bucket-versioning"]:
+            if self.deny_put:
+                return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:PutBucketVersioning")
+            self.versioning[bucket] = args[args.index("--versioning-configuration") + 1].split("=", 1)[1]
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         raise AssertionError(args)
 
@@ -163,7 +173,7 @@ def test_sync_never_touches_objects_or_versions(cfg):
     lc.sync(cfg, BASE, run=fake)
     for c in fake.calls:
         assert c[1] in ("assume-role", "get-bucket-lifecycle-configuration",
-                        "put-bucket-lifecycle-configuration"), c
+                        "put-bucket-lifecycle-configuration", "get-bucket-versioning"), c
 
 
 # --- I2: a sync never silently absorbs rules changed outside backup-engine -------------------

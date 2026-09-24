@@ -16,7 +16,8 @@ JOBS = [
      "retention": {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}}},
 ]
 # Captured before any test patches them (the integrated tests put them back).
-REAL = {n: getattr(lifecycle, n) for n in ("role_creds", "read_rules", "write_rules")}
+REAL = {n: getattr(lifecycle, n) for n in ("role_creds", "read_rules", "write_rules",
+                                           "read_versioning", "write_versioning")}
 
 
 @pytest.fixture
@@ -57,7 +58,8 @@ def _csrf(client):
 
 def _applied(cfg, jobs=JOBS, settings=None, bucket=BASE):
     want = lifecycle.desired(bucket, BASE, jobs, settings or {})
-    lifecycle.save_applied(cfg["CACHE_DIR"], bucket, list(want.rules.values()), folders=sorted(want.folders))
+    lifecycle.save_applied(cfg["CACHE_DIR"], bucket, list(want.rules.values()), folders=sorted(want.folders),
+                           versioning=want.versioning)
 
 
 # --- Refresh now (Task 12) ------------------------------------------------------------------
@@ -605,3 +607,23 @@ def test_a_non_whole_day_count_is_a_form_error(client, cfg):
     _applied(cfg)
     body = _preview(client, keep="days", days="1.5").get_data(as_text=True)
     assert "Enter a whole number of days" in body and 'id="s3-editor"' in body
+
+
+# --- versioning on the screen (Task 16) ------------------------------------------------------------
+
+def test_the_bucket_card_shows_versioning_and_offers_to_suspend_it(client, cfg):
+    _applied(cfg)
+    lifecycle.save_live(cfg["CACHE_DIR"], BASE, lifecycle.load_applied(cfg["CACHE_DIR"], BASE), versioning="on")
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert '<span class="tok tok-ok">versioning on</span>' in body and "Suspend versioning…" in body
+    body = client.get(f"/setup/storage?edit={BASE}|*").get_data(as_text=True)
+    assert 'name="versioning" value="on" checked' in body
+
+
+def test_suspending_versioning_is_previewed_behind_the_bucket_name(client, cfg):
+    _applied(cfg)
+    body = client.post("/setup/storage/preview", data={"csrf": _csrf(client), "key": f"{BASE}|*", "abort_days": "7",
+                                                        "markers": "1", "versioning": "suspended"}).get_data(as_text=True)
+    assert "versioning: on → suspended" in body and "gone immediately from now on" in body
+    assert f'placeholder="{BASE}"' in body
+    assert lifecycle.bucket_settings(lifecycle.load_settings(cfg["CONFIG_DIR"]), BASE)["versioning"] == "on"

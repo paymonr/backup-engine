@@ -342,12 +342,16 @@ def editor(cfg, key: str | None, *, error: str | None = None, form=None) -> dict
     bset = lifecycle.bucket_settings(settings, bucket)
     ed = {"key": key, "bucket": bucket, "folder": folder, "error": error}
     if folder == "*":
+        intent = lifecycle.versioning_intent(bucket, base, jobs, settings,
+                                             base_versioned=config_io.base_bucket_versioned(cfg["CONFIG_DIR"]))
         if form is not None:
             abort_days, markers = form.get("abort_days", bset["abort_uploads_days"]), bool(form.get("markers"))
+            versioning = form.get("versioning", intent)
         else:
             abort_days, markers = bset["abort_uploads_days"], bset["delete_marker_cleanup"]
+            versioning = intent
         ed.update(kind="bucket", title="Bucket-wide", where="whole bucket",
-                  abort_days=abort_days, markers=markers)
+                  abort_days=abort_days, markers=markers, versioning=versioning)
         return ed
     f = next((x for x in lifecycle.folders_for(bucket, base, jobs) if x.folder == folder), None)
     if f is None:
@@ -424,6 +428,11 @@ def _edit_from_form(cfg, form):
         b = _bucket_entry(settings, bucket)
         b["abort_uploads_days"] = _whole(form.get("abort_days"), _ABORT_MSG, max_=MAX_DAYS)
         b["delete_marker_cleanup"] = bool(form.get("markers"))
+        v = form.get("versioning")
+        if v is not None:
+            if v not in ("on", "suspended"):
+                raise ValueError("Pick versioning on or suspended.")
+            b["versioning"] = v
         return base, jobs, settings, bucket, {"kind": "settings", "settings": settings}
     f = next((x for x in lifecycle.folders_for(bucket, base, jobs) if x.folder == folder), None)
     if f is None:
@@ -478,6 +487,9 @@ def impact_line(cfg, args) -> dict:
 
 def damage_notes(change, kind: str | None) -> list[str]:
     """Spec §3's damage warnings for one keeps-less change, in words."""
+    if change.rule_id == "versioning":
+        return ["Overwritten or deleted files in this bucket are gone immediately from now on; Plain copy "
+                "history stops; existing old versions stay until their rule removes them."]
     if change.folder is None:
         return []
     bd, bn = lifecycle.expiry(change.before)

@@ -36,6 +36,11 @@
   <span><input type="number" step="any" id="s3-abort" name="abort_days" value="{{ ed.abort_days }}" class="mono" style="width:5rem"> days</span>
   <label class="radio" style="margin-top:var(--sp-3)"><input type="checkbox" name="markers" value="1" {{ 'checked' if ed.markers }}>
     <span>Clear leftover delete markers</span></label>
+  <p class="lbl" style="margin-top:var(--sp-3)">Versioning</p>
+  <label class="radio"><input type="radio" name="versioning" value="on" {{ 'checked' if ed.versioning == 'on' }}>
+    <span>On — S3 keeps the old versions Plain copy history and the undo window rely on</span></label>
+  <label class="radio"><input type="radio" name="versioning" value="suspended" {{ 'checked' if ed.versioning == 'suspended' }}>
+    <span>Suspended — overwritten or deleted files are gone at once</span></label>
   {% endif %}
   {% if ed.kind != 'bucket' %}
   {#- fix round 1, I1: the true first line, server-rendered by the same impact_line() impact.json

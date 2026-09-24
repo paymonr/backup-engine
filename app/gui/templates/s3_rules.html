@@ -57,7 +57,8 @@
     <div class="stack">
       {% for b in v.buckets %}
       <div class="card" style="padding:var(--sp-4)" data-bucket="{{ b.name }}">
-        <p class="slabel">{{ 'Dedicated bucket' if b.dedicated else 'Shared bucket' }} · <span class="mono">{{ b.name }}</span></p>
+        <p class="slabel">{{ 'Dedicated bucket' if b.dedicated else 'Shared bucket' }} · <span class="mono">{{ b.name }}</span>
+          {% if b.versioning %}&nbsp;<span class="tok {{ 'tok-ok' if b.versioning == 'on' else 'tok-overdue' }}">versioning {{ {'on': 'on', 'suspended': 'suspended', 'never': 'off'}[b.versioning] }}</span>{% endif %}</p>
         {% if not b.applied %}<p class="hint" style="margin-top:var(--sp-2)">Not checked yet — press Check now to read this bucket's rules.</p>{% endif %}
         <div class="scroll" style="margin-top:var(--sp-3)">
         <table class="classes">
@@ -95,7 +96,8 @@
         <p class="hint" style="margin-top:var(--sp-3)" data-bucketwide="{{ b.name }}">Bucket-wide: abandoned uploads
           cleared after <span class="mono">{{ b.housekeeping.abort_days }}</span> days ·
           {{ 'leftover delete markers cleared' if b.housekeeping.markers else 'leftover delete markers kept' }} ·
-          <a class="linklike" href="/setup/storage?edit={{ b.housekeeping.key|urlencode }}">Change…</a></p>
+          <a class="linklike" href="/setup/storage?edit={{ b.housekeeping.key|urlencode }}">Change…</a>
+          {% if b.versioning == 'on' %} · <a class="linklike" href="/setup/storage?edit={{ b.housekeeping.key|urlencode }}">Suspend versioning…</a>{% endif %}</p>
         {% if b.live_read_at %}<p class="hint">Rules as read <span class="stamp">{{ b.live_read_at }}</span>.</p>{% endif %}
         {% if b.waiting %}
         <div class="sig sig-warning" style="margin-top:var(--sp-3)" data-waiting="{{ b.name }}">

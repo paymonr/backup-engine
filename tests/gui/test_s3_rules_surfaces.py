@@ -319,6 +319,8 @@ def test_check_now_with_a_malformed_job_redirects_not_500(client, cfg, monkeypat
     monkeypatch.setattr(lifecycle, "read_rules", lambda b, c, r, **k: fake.rules.get(b, []))
     monkeypatch.setattr(lifecycle, "write_rules", lambda b, rules, c, r, **k: fake.rules.__setitem__(b, rules))
     monkeypatch.setattr(lifecycle, "role_creds", lambda *a, **k: {"AWS_ACCESS_KEY_ID": "A", "AWS_SECRET_ACCESS_KEY": "S"})
+    monkeypatch.setattr(lifecycle, "read_versioning", lambda b, c, r, **k: "on")
+    monkeypatch.setattr(lifecycle, "write_versioning", lambda b, s, c, r, **k: None)
     r = client.post("/setup/s3-rules/check", data={"csrf": _csrf(client)})
     assert r.status_code in (302, 303)
     assert "backup-engine:media/manga/" not in {x["ID"] for x in fake.rules[BASE]}

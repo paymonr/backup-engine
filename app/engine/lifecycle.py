@@ -466,29 +466,36 @@ def _change_words(rid: str, before, after) -> str:
     return f"{_folder_of(rid) or 'whole bucket'}: {_keeps_words(before)} → {_keeps_words(after)}"
 
 
-def desired(bucket: str, base: str, jobs: list[dict], settings: dict) -> RuleSet:
-    """desired_rules() as a RuleSet, with the folders the jobs have now."""
+def desired(bucket: str, base: str, jobs: list[dict], settings: dict, *, base_versioned: bool = True) -> RuleSet:
+    """desired_rules() as a RuleSet, with the folders the jobs have now and the versioning
+    intent (Task 16)."""
     return RuleSet({r["ID"]: r for r in desired_rules(bucket, base, jobs, settings)},
-                   frozenset(f.folder for f in folders_for(bucket, base, jobs)))
+                   frozenset(f.folder for f in folders_for(bucket, base, jobs)),
+                   versioning_intent(bucket, base, jobs, settings, base_versioned=base_versioned))
 
 
 def want_for(cfg, bucket: str, jobs=None, settings=None) -> RuleSet:
-    """What jobs.json + storage.json want for `bucket` now (files only, never AWS)."""
+    """What jobs.json + storage.json (+ BASE_BUCKET_VERSIONED) want for `bucket` now -- files
+    only, never AWS."""
     base, _, _ = _context(cfg)
     config_dir = cfg["CONFIG_DIR"]
     return desired(bucket, base, jobs_io.load(config_dir) if jobs is None else jobs,
-                   load_settings(config_dir) if settings is None else settings)
+                   load_settings(config_dir) if settings is None else settings,
+                   base_versioned=config_io.base_bucket_versioned(config_dir))
 
 
-def baseline_from_applied(doc, want: RuleSet) -> RuleSet | None:
+def baseline_from_applied(doc, want: RuleSet, live_versioning: str | None = None) -> RuleSet | None:
     """The baseline once the app has applied (R-B1): exactly what it last wrote. A record
     from before `folders` existed counts every current folder as known (the careful side:
-    nothing is mistaken for a new job)."""
+    nothing is mistaken for a new job); one from before `versioning` existed takes the
+    versioning S3 reports (when the caller read it, Task 16)."""
     if not isinstance(doc, dict) or not isinstance(doc.get("rules"), list):
         return None
     known = doc.get("folders")
+    v = doc.get("versioning")
     return RuleSet(app_rules_of(doc["rules"]),
-                   frozenset(known) if isinstance(known, list) else want.folders)
+                   frozenset(known) if isinstance(known, list) else want.folders,
+                   v if v in ("on", "suspended") else live_versioning)
 
 
 def _legacy_targets(rid: str, folders) -> list[str]:
@@ -521,14 +528,16 @@ def _stricter(a: dict | None, b: dict) -> dict:
     return out
 
 
-def baseline_from_live(live_rules: list[dict], want: RuleSet, known: frozenset | None = None) -> RuleSet:
+def baseline_from_live(live_rules: list[dict], want: RuleSet, known: frozenset | None = None,
+                       versioning: str | None = None) -> RuleSet:
     """The baseline of a FIRST apply (R-B1): the live app and legacy rules mapped to folders --
     backstop-appdata -> appdata/, backstop-media -> every media/<job>/ folder, a dedicated
     bucket's `backup-engine` -> the whole bucket, backup-engine:<folder> -> that folder. Only
     their old-version actions count; switched-off rules count as none. `known` is which
     folders are treated as already having data in S3 (R-B2'; default -- careful side -- is
     every current folder, `want.folders`); anything else is a new job's folder, never a
-    keeps-less change no matter what the live/legacy rules say."""
+    keeps-less change no matter what the live/legacy rules say. `versioning` (Task 16) is
+    what was just read live -- the baseline's own versioning."""
     by_folder: dict[str, dict] = {}
     housekeeping = None
     for r in live_rules:
@@ -546,7 +555,7 @@ def baseline_from_live(live_rules: list[dict], want: RuleSet, known: frozenset |
     rules = {rule_id(f): by_folder[f] for f in sorted(by_folder)}
     if housekeeping is not None:
         rules[HOUSEKEEPING_ID] = housekeeping
-    return RuleSet(rules, want.folders if known is None else known)
+    return RuleSet(rules, want.folders if known is None else known, versioning)
 
 
 def _has_run(cache_dir: str, job: str) -> bool:
@@ -583,12 +592,17 @@ def classify(before: RuleSet, after: RuleSet) -> list[Change]:
             known = folder in before.folders
             kind = KEEPS_LESS if known and keeps_less(b, a) else KEEPS_MORE
         out.append(Change(rid, folder, kind, _change_words(rid, b, a), b, a))
+    bv, av = before.versioning, after.versioning
+    if bv is not None and av is not None and not versioning_matches(bv, av):
+        out.append(Change("versioning", None, KEEPS_LESS if av == "suspended" else KEEPS_MORE,
+                          f"versioning: {_VER_WORDS.get(bv, bv)} → {_VER_WORDS.get(av, av)}", None, None))
     return out
 
 
 def gate(before: RuleSet, after: RuleSet) -> RuleSet:
     """R-B1: what may be written without the owner's confirmation -- `after`, except that a
-    folder whose change keeps less keeps `before`'s rule (or its absence)."""
+    folder whose change keeps less keeps `before`'s rule (or its absence), and a suspend
+    keeps `before`'s versioning."""
     held = {c.rule_id for c in classify(before, after) if c.kind == KEEPS_LESS}
     rules = {}
     for rid, r in after.rules.items():
@@ -596,7 +610,8 @@ def gate(before: RuleSet, after: RuleSet) -> RuleSet:
             rules[rid] = r
         elif rid in before.rules:
             rules[rid] = before.rules[rid]
-    return RuleSet(rules, after.folders, after.versioning)
+    versioning = before.versioning if "versioning" in held else after.versioning
+    return RuleSet(rules, after.folders, versioning)
 
 
 def outstanding(cfg, bucket: str) -> tuple[bool, list[Change]]:
@@ -610,7 +625,9 @@ def outstanding(cfg, bucket: str) -> tuple[bool, list[Change]]:
         return False, []
     waiting = [c for c in classify(before, want) if c.kind == KEEPS_LESS]
     target = gate(before, want)
-    return app_rules_differ(list(before.rules.values()), list(target.rules.values())), waiting
+    not_reached = (app_rules_differ(list(before.rules.values()), list(target.rules.values()))
+                   or (before.versioning is not None and not versioning_matches(before.versioning, target.versioning)))
+    return not_reached, waiting
 
 
 def seed_undo_days(config_dir: str, bucket: str, live_rules: list[dict], folders: list[Folder]) -> bool:
@@ -740,6 +757,52 @@ def write_rules(bucket: str, rules: list[dict], creds: dict, region: str, *, run
         raise _fail(creds, cp.stderr)
 
 
+# --- versioning (Task 16, R-B7): owner intent, read/write through the role -----------------
+
+_VERSIONING = {"Enabled": "on", "Suspended": "suspended"}
+_VER_WORDS = {"on": "on", "suspended": "suspended", "never": "never turned on"}
+
+
+def read_versioning(bucket: str, creds: dict, region: str, *, run=provision._run_aws) -> str:
+    """"on" | "suspended" | "never" -- a bucket that was never versioned reports no Status."""
+    cp = _call(run, creds, region, ["s3api", "get-bucket-versioning", "--bucket", bucket, "--output", "json"])
+    if cp.returncode != 0:
+        raise _fail(creds, cp.stderr)
+    try:
+        status = (json.loads(cp.stdout or "{}") or {}).get("Status")
+    except (ValueError, AttributeError):
+        raise LifecycleError("aws", "unreadable versioning response")
+    return _VERSIONING.get(status, "never")
+
+
+def write_versioning(bucket: str, state: str, creds: dict, region: str, *, run=provision._run_aws) -> None:
+    cp = _call(run, creds, region, ["s3api", "put-bucket-versioning", "--bucket", bucket,
+                                    "--versioning-configuration",
+                                    f"Status={'Enabled' if state == 'on' else 'Suspended'}"])
+    if cp.returncode != 0:
+        raise _fail(creds, cp.stderr)
+
+
+def versioning_intent(bucket: str, base: str, jobs: list[dict], settings: dict, *, base_versioned: bool = True) -> str:
+    """storage.json's `versioning`, else what the install already chose: a dedicated bucket's
+    job `bucket_versioned`, the base bucket's BASE_BUCKET_VERSIONED (default on) -- so no
+    install is flipped against a choice it already made."""
+    raw = ((settings or {}).get("buckets") or {}).get(bucket)
+    v = raw.get("versioning") if isinstance(raw, dict) else None
+    if v in ("on", "suspended"):
+        return v
+    if bucket != base:
+        job = next((j for j in jobs if j.get("dedicated") and j.get("bucket") == bucket), None)
+        if job is not None:
+            return "on" if job.get("bucket_versioned", True) else "suspended"
+    return "on" if base_versioned else "suspended"
+
+
+def versioning_matches(live: str | None, want: str | None) -> bool:
+    """S3 can't return to never-versioned, so "never" is in step with an intent of suspended."""
+    return want is None or live == want or (live == "never" and want == "suspended")
+
+
 # --- state files ---------------------------------------------------------------------
 
 def _state_dir(cache_dir: str) -> Path:
@@ -801,12 +864,14 @@ def load_applied_doc(cache_dir: str, bucket: str) -> dict | None:
 
 
 def save_applied(cache_dir: str, bucket: str, rules: list[dict], console: dict | None = None,
-                 folders: list[str] | None = None) -> None:
+                 folders: list[str] | None = None, versioning: str | None = None) -> None:
     doc = {"rules": rules, "applied_at": _now_iso()}
     if console is not None:
         doc["console"] = console
     if folders is not None:
         doc["folders"] = sorted(folders)             # the app folders known at this apply (R-B2)
+    if versioning is not None:
+        doc["versioning"] = versioning               # the versioning the app applied (R-B7)
     _write_atomic(Path(_state_dir(cache_dir), f"{bucket}.applied.json"), json.dumps(doc))
 
 
@@ -895,27 +960,30 @@ def _reconcile(cfg, bucket: str, *, run, trigger: str):
 def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True, expect: str | None = None):
     """The pass behind sync(), check() and -- with gated=False -- apply_confirmed().
 
-    What it writes is TARGET: what jobs.json + storage.json want (DESIRED) gated against the
-    BASELINE -- the rules the app last applied, or on a first apply the live app/legacy rules
-    mapped to folders (R-B1). A folder whose change keeps less keeps the baseline's rule (or
-    its absence) until the owner confirms it through a preview; a new job's folder always
-    applies (R-B2). Tamper detection is unchanged -- live app rules vs what was APPLIED:
+    What it writes is TARGET: what jobs.json + storage.json want (DESIRED: app rules and the
+    versioning intent, Task 16) gated against the BASELINE -- the rules and versioning the app
+    last applied, or on a first apply the live app/legacy rules mapped to folders plus the live
+    versioning (R-B1). A folder whose change keeps less keeps the baseline's rule (or its
+    absence), and a suspend keeps the baseline's versioning, until the owner confirms it
+    through a preview; a new job's folder always applies (R-B2). Tamper detection compares
+    live with what was APPLIED -- app rules and versioning (R-B7):
       live == target (no legacy IDs)       -> in step, nothing written;
       applied exists and live != applied  -> changed outside: alarm + Activity, write target;
       otherwise (job change, a failed earlier write, first apply) -> write target.
-    Live rules that already equal target are never tampering -- nothing to put back. Before
+    Live state that already equals target is never tampering -- nothing to put back. Before
     anything is recorded, new/changed console rules that can delete or move backups are
     alarmed ("console_rule") and never touched; the status/alarm is always written before
     the fingerprint moves (M2). A first apply seeds longer legacy undo windows (R-B6) and
     names the console rules that can already delete or move backups (O1).
 
     `expect` (apply_confirmed only, fix round 1 I1): the exact target the owner previewed and
-    confirmed (_set_hash). Checked right here, against WANT as this pass just (re-)read it off
-    disk -- the one authoritative re-check, since jobs.json/storage.json can change between
-    apply_confirmed's own pre-check and this read (job writers don't take the bucket lock).
-    A mismatch forces `gated` on for this pass -- the write becomes the ordinary GATED one, so
-    nothing unconfirmed is EVER written ungated -- and is reported back via the 4th return value
-    so apply_confirmed can tell the owner nothing that keeps less applied.
+    confirmed (_set_hash, which covers versioning too). Checked right here, against WANT as
+    this pass just (re-)read it off disk -- the one authoritative re-check, since jobs.json/
+    storage.json can change between apply_confirmed's own pre-check and this read (job writers
+    don't take the bucket lock). A mismatch forces `gated` on for this pass -- the write
+    becomes the ordinary GATED one, so nothing unconfirmed is EVER written ungated -- and is
+    reported back via the 4th return value so apply_confirmed can tell the owner nothing that
+    keeps less applied.
 
     Returns (state, SyncResult | None, LifecycleError | None, expect_stale: bool); state is what
     was recorded (ok | restored | not_restored | error | unsupported), or "console_rule" when
@@ -926,15 +994,18 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     detail = "; ".join(notes_for(bucket, base, jobs))
     doc = _applied_doc(cache, bucket)
     applied = load_applied(cache, bucket)
+    applied_ver = doc.get("versioning") if isinstance(doc, dict) and doc.get("versioning") in ("on", "suspended") \
+        else None
     stored_fp = load_console_fingerprint(cache, bucket) if applied is not None else None
     stale = False
     try:
         creds = role_creds(config_dir, region, run=run)
         live = read_rules(bucket, creds, region, run=run)
+        live_ver = read_versioning(bucket, creds, region, run=run)
     except LifecycleError as e:
         set_status(cache, bucket, _err_state(e), e.detail)
         return _err_state(e), None, e, stale
-    save_live(cache, bucket, live)
+    save_live(cache, bucket, live, versioning=live_ver)
 
     first = applied is None
     if first:
@@ -946,9 +1017,11 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     # once one of its jobs has actually run -- otherwise it is a new job's folder, always
     # keeps-more, no matter what a legacy/console rule already does to that prefix.
     known = _known_folders(cache, bucket, base, jobs) if first else None
-    before = baseline_from_live(live, want, known) if first else baseline_from_applied(doc, want)
+    before = (baseline_from_live(live, want, known, versioning=live_ver) if first
+              else baseline_from_applied(doc, want, live_versioning=live_ver))
     waiting = [c for c in classify(before, want) if c.kind == KEEPS_LESS] if gated else []
-    target = list((gate(before, want) if gated else want).rules.values())
+    target_set = gate(before, want) if gated else want
+    target, target_ver = list(target_set.rules.values()), target_set.versioning
     # I1: never forget a known folder -- a folder that once had a job (so may already have
     # data in S3) stays recorded even after that job is deleted, so if it's later reused
     # (the only way to change a job's type is delete + recreate under the same name) its new
@@ -978,42 +1051,54 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     def headline(state):
         return "console_rule" if console_alarm and state in ("ok", "restored") else state
 
-    in_step = not app_rules_differ(live, target) and not any(r.get("ID") in LEGACY_IDS for r in live)
-    if in_step:
+    rules_in_step = not app_rules_differ(live, target) and not any(r.get("ID") in LEGACY_IDS for r in live)
+    ver_in_step = versioning_matches(live_ver, target_ver)
+    if rules_in_step and ver_in_step:
         status("ok", detail)                     # M2: the alarm is on disk before the fingerprint moves
-        if first or app_rules_differ(applied, target) or stored_fp != live_fp or old_folders != folders:
-            save_applied(cache, bucket, target, console=live_fp, folders=folders)
+        if (first or app_rules_differ(applied, target) or stored_fp != live_fp or old_folders != folders
+                or applied_ver != target_ver):
+            save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=target_ver)
         if console_note:
             runs.record_system(cache, kind="s3-rules", summary=f"S3 rules checked · {bucket}",
                                lines=console_note, trigger=trigger)
         return headline("ok"), SyncResult(bucket, False, [], headline("ok"), waiting), None, stale
-    tampered = applied is not None and app_rules_differ(live, applied)
-    tamper_lines = _change_lines(applied, live) if tampered else []
+    rules_tampered = applied is not None and app_rules_differ(live, applied)
+    ver_tampered = applied_ver is not None and not versioning_matches(live_ver, applied_ver)
+    tampered = rules_tampered or ver_tampered
+    tamper_lines = ((_change_lines(applied, live) if rules_tampered else [])
+                    + ([f"versioning: was {_VER_WORDS[applied_ver]}, now {_VER_WORDS.get(live_ver, live_ver)}"]
+                       if ver_tampered else []))
     try:
-        write_rules(bucket, merge(live, target), creds, region, run=run)
+        if not rules_in_step:
+            write_rules(bucket, merge(live, target), creds, region, run=run)
+        if not ver_in_step:
+            write_versioning(bucket, target_ver, creds, region, run=run)
     except LifecycleError as e:
         if not tampered:
             status(_err_state(e), e.detail)
             if applied is not None and stored_fp != live_fp:
-                save_applied(cache, bucket, applied, console=live_fp, folders=old_folders)   # alarm once
+                save_applied(cache, bucket, applied, console=live_fp, folders=old_folders,
+                             versioning=applied_ver)                                    # alarm once
             return _err_state(e), None, e, stale
         status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
         if stored_fp != live_fp:
-            save_applied(cache, bucket, applied, console=live_fp, folders=old_folders)
+            save_applied(cache, bucket, applied, console=live_fp, folders=old_folders, versioning=applied_ver)
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
                            lines=[*tamper_lines, e.detail], outcome="failed", error=e.detail,
                            trigger=trigger)
         return "not_restored", None, e, stale
-    lines = _change_lines(live, target) + ([detail] if detail else []) + waiting_lines + console_note
+    lines = (_change_lines(live, target) + ([] if ver_in_step else [f"now: versioning {_VER_WORDS[target_ver]}"])
+             + ([detail] if detail else []) + waiting_lines + console_note)
     if tampered:
         status("restored", detail, {"kind": "restored", "at": _now_iso(), "lines": tamper_lines})
-        save_applied(cache, bucket, target, console=live_fp, folders=folders)
-        also = ["Your latest job settings were applied too."] if app_rules_differ(applied, target) else []
+        save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=target_ver)
+        also = (["Your latest job settings were applied too."]
+                if app_rules_differ(applied, target) or applied_ver != target_ver else [])
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — restored · {bucket}",
                            lines=[*tamper_lines, *also, *waiting_lines], trigger=trigger)
         return headline("restored"), SyncResult(bucket, True, lines, headline("restored"), waiting), None, stale
     status("ok", detail)
-    save_applied(cache, bucket, target, console=live_fp, folders=folders)
+    save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=target_ver)
     runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines,
                        trigger=trigger)
     return headline("ok"), SyncResult(bucket, True, lines, headline("ok"), waiting), None, stale
@@ -1178,7 +1263,8 @@ def _inputs_hash(config_dir: str, cache_dir: str, bucket: str) -> str:
             pass
         h.update(b"\0")
     doc = _applied_doc(cache_dir, bucket) or {}
-    h.update(json.dumps({"rules": doc.get("rules"), "folders": doc.get("folders")}, sort_keys=True).encode())
+    h.update(json.dumps({"rules": doc.get("rules"), "folders": doc.get("folders"),
+                         "versioning": doc.get("versioning")}, sort_keys=True).encode())
     return h.hexdigest()
 
 
@@ -1327,6 +1413,8 @@ def preview(cfg, bucket: str, edit: dict) -> Preview:
         # matter its keeps-less status -- purely informational via `keeps_less`.
         current_want = want_for(cfg, bucket)       # jobs.json + storage.json exactly as they are now
         def _n(rs, rid):
+            if rid == "versioning":                # Task 16: not a folder rule -- RuleSet.versioning
+                return rs.versioning
             r = rs.rules.get(rid)
             return _norm(r) if r else None
         own = [c for c in less if _n(current_want, c.rule_id) != _n(want, c.rule_id)]
