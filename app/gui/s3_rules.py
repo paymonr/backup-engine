@@ -304,16 +304,6 @@ def _whole(v, msg: str, *, max_: int | None = None) -> int:
     return n
 
 
-def _fits(v, limit: int) -> bool:
-    """Whether a stored/submitted value is small enough that an HTML `max` on its input can't
-    block resubmitting it unchanged (fix round 1, Minor) -- unparseable reads as "no", the
-    careful side: the server still validates for real either way."""
-    try:
-        return int(str(v).strip()) <= limit
-    except (TypeError, ValueError):
-        return False
-
-
 def refresh_ok(cfg) -> bool:
     """Whether Refresh now may be offered: S3 rules managed here and not a custom S3 endpoint --
     /setup/storage/refresh (Task 12) refuses both with a warning otherwise, so the button (and
@@ -375,7 +365,7 @@ def editor(cfg, key: str | None, *, error: str | None = None, form=None) -> dict
         else:
             keep, days, count = stored_keep, stored_days, stored_count
         ed.update(kind="plain", title=f"{f.jobs[0]} · Plain copy", job=f.jobs[0], keep=keep,
-                  days=days, count=count, count_capped=_fits(count, lifecycle.MAX_NEWER))
+                  days=days, count=count)
         args = {"key": key, "keep": keep, "days": str(days), "count": str(count)}
     else:
         stored_undo = lifecycle.undo_days(bset, folder)

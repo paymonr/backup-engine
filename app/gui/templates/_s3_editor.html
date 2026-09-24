@@ -10,13 +10,19 @@
 <form method="post" action="/setup/storage/preview" id="s3-editor" style="margin-top:var(--sp-3)">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="key" value="{{ ed.key }}">
+  {#- fix round 3: no client-side min/max/disabled anywhere here -- this codebase's no-JS
+      pattern (_s3_preview.html's typed-confirm, restore.html) is the server is the gate; a
+      native range/step/disabled constraint can silently block "Preview change" (a field the
+      owner switched away from keeping a leftover value; without JS a disabled field never
+      re-enables at all). `step="any"` also keeps a non-whole entry like 1.5 from a client-side
+      stepMismatch -- the server already turns it into an owner-word form error. -#}
   {% if ed.kind == 'plain' %}
   <p class="hint">This is also {{ ed.job }}'s history setting — the same value is saved to the job.</p>
   <p class="lbl" style="margin-top:var(--sp-3)">Keep old versions</p>
   <label class="radio"><input type="radio" name="keep" value="days" {{ 'checked' if ed.keep == 'days' }}>
-    <span>for <input type="number" min="1" name="days" value="{{ ed.days }}" class="mono" style="width:5rem" data-radio="days"{% if ed.keep not in ('days', 'both') %} disabled{% endif %}> days after being replaced</span></label>
+    <span>for <input type="number" step="any" name="days" value="{{ ed.days }}" class="mono" style="width:5rem" data-radio="days"> days after being replaced</span></label>
   <label class="radio"><input type="radio" name="keep" value="count" {{ 'checked' if ed.keep == 'count' }}>
-    <span>the newest <input type="number" min="1"{% if ed.count_capped %} max="100"{% endif %} name="count" value="{{ ed.count }}" class="mono" style="width:4rem" data-radio="count"{% if ed.keep not in ('count', 'both') %} disabled{% endif %}> of each file</span></label>
+    <span>the newest <input type="number" step="any" name="count" value="{{ ed.count }}" class="mono" style="width:4rem" data-radio="count"> of each file</span></label>
   <label class="radio"><input type="radio" name="keep" value="both" {{ 'checked' if ed.keep == 'both' }}>
     <span>both — the newest of each file, and older ones for the days above</span></label>
   <label class="radio"><input type="radio" name="keep" value="all" {{ 'checked' if ed.keep == 'all' }}>
@@ -24,10 +30,10 @@
   {% elif ed.kind == 'undo' %}
   <p class="hint">What {{ ed.jobs|join(', ') }} already removed stays recoverable in S3 this long.</p>
   <label class="fld" for="s3-undo" style="margin-top:var(--sp-3)">Undo window</label>
-  <span><input type="number" min="1" id="s3-undo" name="undo_days" value="{{ ed.undo_days }}" class="mono" style="width:5rem"> days</span>
+  <span><input type="number" step="any" id="s3-undo" name="undo_days" value="{{ ed.undo_days }}" class="mono" style="width:5rem"> days</span>
   {% else %}
   <label class="fld" for="s3-abort" style="margin-top:var(--sp-3)">Clear abandoned uploads after</label>
-  <span><input type="number" min="1" id="s3-abort" name="abort_days" value="{{ ed.abort_days }}" class="mono" style="width:5rem"> days</span>
+  <span><input type="number" step="any" id="s3-abort" name="abort_days" value="{{ ed.abort_days }}" class="mono" style="width:5rem"> days</span>
   <label class="radio" style="margin-top:var(--sp-3)"><input type="checkbox" name="markers" value="1" {{ 'checked' if ed.markers }}>
     <span>Clear leftover delete markers</span></label>
   {% endif %}
@@ -69,40 +75,23 @@
 </script>
 {% if ed.kind == 'plain' %}
 <script>
-// fix round 2: a number box whose radio isn't checked is disabled -- otherwise its own
-// leftover/out-of-range value (e.g. echoed back from a form error, spec: "keep the owner's
-// entries") still blocks "Preview change" via native validation even after the owner switches
-// to a different option. A disabled input is neither validated nor submitted --
-// retention_from_editor() never reads the inactive one in any mode, so the server path needs
-// nothing from it. The days/count fields are already server-rendered `disabled` to match
-// `ed.keep` on first load; this keeps them in sync as the owner clicks around afterward.
+// Typing or focusing a number box selects its radio (fix round 1; live again in round 3 now
+// every box is always enabled) -- so typing straight into "the newest N" without first
+// clicking its radio still submits "count", not "days". Never downgrades "both" to a single
+// field just because the owner clicked into one of its two boxes (fix round 2).
 (function () {
   var form = document.getElementById("s3-editor");
   if (!form) return;
-  var boxes = form.querySelectorAll("input[type=number][data-radio]");
-  function sync(keep) {
-    Array.prototype.forEach.call(boxes, function (b) {
-      b.disabled = !(keep === b.getAttribute("data-radio") || keep === "both");
-    });
-  }
   function checkedKeep() {
     var r = form.querySelector('input[name="keep"]:checked');
     return r ? r.value : null;
   }
-  sync(checkedKeep());
-  // A radio change -- direct click, or a label click landing anywhere else in it, since
-  // clicking a disabled number box itself fires nothing -- re-syncs which boxes are enabled.
-  form.addEventListener("change", function (e) {
-    if (e.target.name === "keep") sync(e.target.value);
-  });
-  // Focusing or typing an already-enabled box keeps it selected too (belt and suspenders):
-  // never downgrades "both" to a single field just because the owner clicked into one of them.
-  Array.prototype.forEach.call(boxes, function (inp) {
+  Array.prototype.forEach.call(form.querySelectorAll("input[type=number][data-radio]"), function (inp) {
     function select() {
       var mine = inp.getAttribute("data-radio"), now = checkedKeep();
       if (now === "both" || now === mine) return;
       var r = form.querySelector('input[name="keep"][value="' + mine + '"]');
-      if (r) { r.checked = true; sync(mine); }
+      if (r) r.checked = true;
     }
     inp.addEventListener("focus", select);
     inp.addEventListener("input", select);

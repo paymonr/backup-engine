@@ -437,19 +437,16 @@ def test_a_form_error_on_a_vanished_row_is_flashed_not_dropped(client, cfg):
 
 # Minors -------------------------------------------------------------------------------------
 
-def test_a_stored_count_over_100_omits_the_client_side_cap(client, cfg):
+def test_a_stored_count_over_100_shows_with_no_client_side_cap(client, cfg):
+    # fix round 3 superseded round 1's conditional max="100": there is no client-side max at
+    # all now, for any stored count (see the fix-round-3 block below for the full "no
+    # min/max/disabled" sweep) -- the server alone enforces 1-100.
     jobs = json.loads(json.dumps(JOBS))
     jobs[0]["retention"] = {"type": "count", "count": 500}
     Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
     body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
     count_input = re.search(r'<input[^>]*name="count"[^>]*>', body).group(0)
     assert 'value="500"' in count_input and "max=" not in count_input
-
-
-def test_a_stored_count_at_or_under_100_keeps_the_client_side_cap(client, cfg):
-    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
-    count_input = re.search(r'<input[^>]*name="count"[^>]*>', body).group(0)
-    assert 'max="100"' in count_input
 
 
 def test_a_stored_days_zero_shows_as_one(client, cfg):
@@ -572,61 +569,39 @@ def test_apply_flashes_a_stale_after_save_race(client, cfg, monkeypatch):
     assert "Confirm what's waiting" in html.unescape(r.get_data(as_text=True))
 
 
-# --- fix round 2 ---------------------------------------------------------------------------------
-# The plain-copy editor's "days"/"count" number boxes: a box whose radio isn't checked must be
-# `disabled` -- otherwise its own leftover value (e.g. echoed back invalid from a form error)
-# still blocks "Preview change" via native browser validation once the owner switches to a
-# different option, even though the server never reads that field in that mode (the classic
-# "silent form-submit block" gotcha). No jsdom/node dependency is added to this suite (`node -e
-# "require('jsdom')"` fails in this environment -- see the report for the actual behavioral
-# check, done separately with a scratch jsdom install, not part of this repo's dependencies);
-# these are the markup-level proof plus a source-level check on the shipped script.
+# --- fix round 3 ---------------------------------------------------------------------------------
+# Controller ruling on round 2's disabling approach: it works with JS, but with JS OFF a
+# server-rendered `disabled` field never re-enables (a no-JS owner who hits a form error and
+# then switches options is stuck -- worse than round 1). This codebase's own no-JS pattern
+# (_s3_preview.html's typed-confirm, restore.html's) is the server is the gate: a native
+# min/max/step constraint never blocks "Preview change" here, for any field, in any mode --
+# round 2's `disabled` wiring and round 1's conditional `max="100"` are both gone. Replaces
+# round 2's disabled-markup/sync-script tests (no longer applicable) with the reviewer's exact
+# scenario going through in one post, plus the "no client-side constraints anywhere" sweep.
 
-def _input(body, name):
-    return re.search(rf'<input[^>]*name="{name}"[^>]*>', body).group(0)
-
-
-def test_the_inactive_number_box_is_disabled_the_active_one_is_not(client, cfg):
+def test_the_editors_number_inputs_carry_no_client_side_constraints(client, cfg):
     _applied(cfg)
-    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)  # stored: days
-    assert "disabled" not in _input(body, "days") and "disabled" in _input(body, "count")
-
-    jobs = json.loads(json.dumps(JOBS))
-    jobs[0]["retention"] = {"type": "count", "count": 5}
-    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
-    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)  # stored: count
-    assert "disabled" in _input(body, "days") and "disabled" not in _input(body, "count")
-
-    jobs[0]["retention"] = {"type": "count", "count": 5, "days": 30}
-    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
-    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)  # stored: both
-    assert "disabled" not in _input(body, "days") and "disabled" not in _input(body, "count")
-
-    jobs[0]["retention"] = {"type": "keep_all"}
-    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
-    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)  # stored: all
-    assert "disabled" in _input(body, "days") and "disabled" in _input(body, "count")
+    for url in (f"/setup/storage?edit={BASE}|media/manga/", f"/setup/storage?edit={BASE}|appdata/",
+                f"/setup/storage?edit={BASE}|*"):
+        body = client.get(url).get_data(as_text=True)
+        tags = re.findall(r'<input type="number"[^>]*>', body)
+        assert tags, f"no number input found on {url}"
+        for tag in tags:
+            assert "min=" not in tag and "max=" not in tag and "disabled" not in tag
+            assert 'step="any"' in tag
 
 
-def test_a_form_error_disables_the_field_the_owner_isnt_using(client, cfg):
-    # The reviewer's exact scenario: POST keep=days&days=0 re-renders with the invalid days
-    # field still active (not disabled -- its own value needs to keep failing validation while
-    # "days" is the chosen option) and the untouched "count" field disabled (so a leftover
-    # default there can never block a later switch to "newest N").
+def test_the_reviewers_scenario_previews_in_one_post(client, cfg):
     _applied(cfg)
     body = _preview(client, keep="days", days="0").get_data(as_text=True)
-    assert "Enter a whole number of days" in body
-    assert "disabled" not in _input(body, "days") and "disabled" in _input(body, "count")
+    assert "Enter a whole number of days" in body                    # the first post's form error
+    r = _preview(client, keep="count", count="20")                   # the owner's very next post
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200 and "Preview — nothing has changed yet" in body
+    assert "Enter a whole number of days" not in body
 
 
-def test_the_disable_sync_script_is_shipped_and_wired_to_the_keep_radios(client, cfg):
-    # A source-level check on the actual shipped script (fix round 2's "JS unit check" half --
-    # the behavioral half, `form.checkValidity()` flipping true once the inactive box is
-    # disabled, was verified separately with jsdom; see the report). Pins that the disabling
-    # logic and its "change" listener on the keep radios are really in the page the browser
-    # gets, not just in a docstring -- a future edit that silently drops the wiring fails this.
+def test_a_non_whole_day_count_is_a_form_error(client, cfg):
     _applied(cfg)
-    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
-    script = body[body.index('id="s3-editor"'):]
-    assert 'b.disabled = !(keep === b.getAttribute("data-radio") || keep === "both")' in script
-    assert 'if (e.target.name === "keep") sync(e.target.value)' in script
+    body = _preview(client, keep="days", days="1.5").get_data(as_text=True)
+    assert "Enter a whole number of days" in body and 'id="s3-editor"' in body
