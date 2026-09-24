@@ -635,6 +635,9 @@ def test_the_editor_keeps_the_versioning_choice_on_a_form_error(client, cfg):
                                                         "abort_days": "0", "versioning": "suspended"}
                        ).get_data(as_text=True)
     assert "Clear abandoned uploads after 1 to" in body and 'id="s3-editor"' in body
+    # fix round 2, (e): the submitted radio itself stays checked, not the stored ("on") one.
+    assert 'name="versioning" value="suspended" checked' in body
+    assert 'name="versioning" value="on" checked' not in body
 
 
 def test_a_suspended_chip_is_neutral_when_it_matches_the_owners_own_intent(client, cfg):
@@ -675,3 +678,21 @@ def test_a_versioning_only_keeps_more_edit_is_saved_and_applied_at_once(client, 
     body = client.get("/setup/storage").get_data(as_text=True)
     assert "this keeps more, so S3 applies it now" in body
     assert lifecycle.bucket_settings(lifecycle.load_settings(cfg["CONFIG_DIR"]), BASE)["versioning"] == "on"
+
+
+# --- fix round 2 -------------------------------------------------------------------------------
+
+def test_the_chip_reads_never_turned_on_and_is_neutral_when_that_matches_intent(client, cfg):
+    settings = {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}}
+    lifecycle.save_settings(cfg["CONFIG_DIR"], settings)
+    _applied(cfg, settings=settings)
+    lifecycle.save_live(cfg["CACHE_DIR"], BASE, lifecycle.load_applied(cfg["CACHE_DIR"], BASE), versioning="never")
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert '<span class="tok tok-ok">versioning never turned on</span>' in body
+
+
+def test_the_chip_warns_when_live_has_drifted_from_intent(client, cfg):
+    _applied(cfg)                                       # intent "on"
+    lifecycle.save_live(cfg["CACHE_DIR"], BASE, lifecycle.load_applied(cfg["CACHE_DIR"], BASE), versioning="suspended")
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert '<span class="tok tok-overdue">versioning suspended</span>' in body

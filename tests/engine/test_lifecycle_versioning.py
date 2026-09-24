@@ -267,3 +267,307 @@ def test_no_alarm_on_the_first_check_after_an_upgrade_without_a_versioning_recor
     state = lc.check(cfg, BASE, run=fake)
     assert state not in ("restored", "not_restored")
     assert "alarm" not in lc.load_status(cfg["CACHE_DIR"])[BASE]
+
+
+# --- fix round 2 (re-review of cbe2f7e..16035ad) ----------------------------------------------
+# (a) the per-half tamper rule; (b) the write journal (in_flight, for a kill/timeout the
+# per-half rule alone can't fix -- a CONFIRMED keeps-less apply); (c) an Activity entry + the
+# O1 note on the partial path; (d) the alarm kind reflecting whichever half was tampered.
+
+class Killed(BaseException):
+    """Simulates SIGTERM (backup-job.sh's `timeout`) landing between the two puts -- no
+    Python cleanup code runs at all, unlike a caught LifecycleError."""
+
+
+class FailOrKill(FakeS3):
+    mode = None          # None | "fail" | "kill"
+
+    def __call__(self, args, **kw):
+        if self.mode and args[:2] == ["s3api", "put-bucket-versioning"]:
+            self.calls.append(list(args))
+            if self.mode == "kill":
+                raise Killed()
+            return SimpleNamespace(returncode=254, stdout="", stderr="RequestTimeout")
+        return super().__call__(args, **kw)
+
+
+def _hk(rules):
+    return next(r for r in rules if r["ID"] == lc.HOUSEKEEPING_ID)["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"]
+
+
+def _appd(rules):
+    return next(r for r in rules if r["ID"] == "backup-engine:appdata/")["NoncurrentVersionExpiration"]
+
+
+def _st(cfg):
+    return lc.load_status(cfg["CACHE_DIR"])[BASE]
+
+
+def _confirm_suspend(cfg, fake):
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings",
+                               "settings": {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}}})
+    lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert fake.versioning[BASE] == "Suspended"
+
+
+def _events(cfg):
+    p = Path(cfg["CACHE_DIR"], "state", "_system.runs.jsonl")
+    return [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
+
+
+def test_a_kill_between_the_puts_on_a_keeps_more_change_is_not_a_false_alarm(cfg):
+    # (a): a kill (not a caught LifecycleError) between write_rules landing and write_versioning
+    # -- the NEXT pass must see live already matching the (unaffected) rules target and never
+    # treat that as tampering, purely from the per-half comparison (no journal needed here,
+    # since the rules half's target never changed across the two passes).
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on", "abort_uploads_days": 14}}})
+    fake.mode = "kill"
+    with pytest.raises(Killed):
+        lc.sync(cfg, BASE, run=fake)
+    assert _hk(fake.rules[BASE]) == 14 and fake.versioning[BASE] == "Suspended"
+    fake.mode = None
+    state = lc.check(cfg, BASE, run=fake)
+    assert state == "ok" and "alarm" not in _st(cfg)
+
+
+def test_versioning_moved_outside_to_exactly_the_pending_target_is_not_alarmed(cfg):
+    # (a): live versioning changed OUTSIDE the app to exactly the new (not-yet-applied)
+    # target while a rules change is also pending -- live already equals target, so per the
+    # per-half rule that's never tampering, even though it differs from what was applied.
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on", "abort_uploads_days": 14}}})
+    fake.versioning[BASE] = "Enabled"                       # outside actor: exactly the new target
+    state = lc.check(cfg, BASE, run=fake)
+    assert state == "ok" and "alarm" not in _st(cfg)
+    assert _hk(fake.rules[BASE]) == 14
+
+
+def test_a_kill_after_a_confirmed_rules_write_adopts_it_next_pass_instead_of_reverting(cfg):
+    # (b): the write journal -- a CONFIRMED (gated=False) undo 30->10 + suspend, killed right
+    # after write_rules lands. The per-half rule alone can't save this: the NEXT pass is an
+    # ORDINARY gated check(), which would judge live (now 10) against the old GATED baseline
+    # (still 30, since save_applied never ran) and revert it. The journal lets that pass adopt
+    # the landed rules half instead.
+    fake = FailOrKill()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": {"version": 1, "buckets": {BASE: {
+        "versioning": "suspended", "folders": {"appdata/": {"undo_days": 10}}}}}})
+    fake.mode = "kill"
+    with pytest.raises(Killed):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10} and _ver(fake) == "Enabled"
+    fake.mode = None
+    state = lc.check(cfg, BASE, run=fake)                   # an ordinary GATED check, not a re-confirm
+    assert state == "ok" and "alarm" not in _st(cfg)
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}      # never reverted to 30
+    _, waiting = lc.outstanding(cfg, BASE)
+    assert [c.rule_id for c in waiting] == ["versioning"]         # the suspend still needs fresh confirmation
+
+
+def test_a_kill_before_any_put_behaves_normally_next_pass(cfg):
+    # (b): the journal is written before the puts -- if the kill lands before either one even
+    # starts, live never changed at all, so the next pass just judges normally (nothing to
+    # adopt, the journal is dropped).
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on", "abort_uploads_days": 14}}})
+    doc_before = lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
+    lc._write_in_flight(cfg["CACHE_DIR"], BASE, doc_before["rules"], doc_before["folders"], "on")
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["in_flight"]["versioning"] == "on"
+    state = lc.check(cfg, BASE, run=fake)                   # nothing in flight ever landed
+    assert "in_flight" not in lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
+    assert state in ("ok", "restored")
+    assert _hk(fake.rules[BASE]) == 14 and fake.versioning[BASE] == "Enabled"
+
+
+def test_in_flight_present_but_live_tampered_to_something_else_still_alarms(cfg):
+    # (b): a journal exists, but live doesn't match it (someone else changed things in the
+    # meantime) -- dropped, judged normally, still alarms like any other real tamper.
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    doc = lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
+    lc._write_in_flight(cfg["CACHE_DIR"], BASE, doc["rules"], doc["folders"], "on")
+    next(r for r in fake.rules[BASE] if r["ID"] == lc.HOUSEKEEPING_ID)["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] = 1
+    state = lc.check(cfg, BASE, run=fake)
+    assert state == "restored" and _st(cfg)["alarm"]["kind"] == "restored"
+    assert "in_flight" not in lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
+
+
+def test_partial_record_then_an_outside_rules_change_keeps_alarming(cfg):
+    # a partial-failure record (untampered) followed by a REAL outside rules change, with the
+    # versioning put STILL failing: stays "not_restored" for as long as that failure persists
+    # -- restoring the rules half doesn't retroactively call the whole pass "restored" while
+    # something else the app wanted is still not in S3.
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on", "abort_uploads_days": 14}}})
+    fake.mode = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)
+    next(r for r in fake.rules[BASE] if r["ID"] == lc.HOUSEKEEPING_ID)["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] = 3
+    state = lc.check(cfg, BASE, run=fake)                   # mode still "fail"
+    assert state == "not_restored" and _st(cfg)["alarm"]["kind"] == "not_restored"
+    fake.mode = None
+    lc.check(cfg, BASE, run=fake)
+    assert _hk(fake.rules[BASE]) == 14 and fake.versioning[BASE] == "Enabled"
+
+
+def test_confirmed_partial_then_an_outside_suspend_is_restored_and_alarmed(cfg):
+    fake = FailOrKill()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": {"version": 1, "buckets": {BASE: {
+        "versioning": "suspended", "folders": {"appdata/": {"undo_days": 10}}}}}})
+    fake.mode = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    fake.mode = None
+    fake.versioning[BASE] = "Suspended"                     # someone outside suspends
+    state = lc.check(cfg, BASE, run=fake)
+    assert state == "restored" and fake.versioning[BASE] == "Enabled"
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}
+    _, waiting = lc.outstanding(cfg, BASE)
+    assert [c.rule_id for c in waiting] == ["versioning"]
+
+
+def test_gate_intact_on_the_partial_path(cfg):
+    # Task 11's gate must still hold a keeps-less folder change back even when the SAME pass
+    # also has an (unrelated) versioning write that fails.
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {
+        "versioning": "on", "abort_uploads_days": 14, "folders": {"appdata/": {"undo_days": 10}}}}})
+    fake.mode = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)
+    assert _hk(fake.rules[BASE]) == 14 and _appd(fake.rules[BASE]) == {"NoncurrentDays": 30}     # held
+    doc = lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
+    assert _appd(doc["rules"]) == {"NoncurrentDays": 30} and _hk(doc["rules"]) == 14 and doc["versioning"] == "suspended"
+    fake.mode = None
+    state = lc.check(cfg, BASE, run=fake)
+    _, waiting = lc.outstanding(cfg, BASE)
+    assert state == "ok" and "alarm" not in _st(cfg)
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 30} and fake.versioning[BASE] == "Enabled"
+    assert [c.rule_id for c in waiting] == ["backup-engine:appdata/"]
+
+
+def test_expect_stale_intact_on_the_partial_path(cfg):
+    # Task 13's expect re-check must still force gated=True on the partial path -- nothing
+    # unconfirmed ever written ungated, even with a versioning write failing alongside it.
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {
+        "versioning": "on", "abort_uploads_days": 14, "folders": {"appdata/": {"undo_days": 10}}}}})
+    fake.mode = "fail"
+    with lc.bucket_lock(cfg["CACHE_DIR"], BASE):
+        state, res, err, stale = lc._reconcile_locked(cfg, BASE, run=fake, trigger="manual", gated=False, expect="bogus")
+    assert stale is True and err is not None
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 30}
+    assert _appd(lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["rules"]) == {"NoncurrentDays": 30}
+
+
+def test_console_alarm_survives_the_partial_path(cfg):
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    fake.rules[BASE].append({"ID": "my-console-rule", "Status": "Enabled", "Filter": {"Prefix": ""},
+                             "Expiration": {"Days": 5}})
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on", "abort_uploads_days": 14}}})
+    fake.mode = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)
+    assert _st(cfg)["alarm"]["kind"] == "console_rule"
+    assert any(r["ID"] == "my-console-rule" for r in fake.rules[BASE])            # never touched
+    fake.mode = None
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    assert _st(cfg)["alarm"]["kind"] == "console_rule"                              # kept until acked
+
+
+def test_first_apply_partial_keeps_the_o1_note(cfg):
+    # (c): a seeded bucket (applied=[] pre-seeded, so `first` is False) still deserves the O1
+    # "kept as it is" note -- it's gated on no console fingerprint recorded yet, not on `first`.
+    fake = FailOrKill(versioning={BASE: "Suspended"})
+    fake.rules[BASE] = [{"ID": "my-console-rule", "Status": "Enabled", "Filter": {"Prefix": ""},
+                         "Expiration": {"Days": 5}}]
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    fake.mode = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)
+    fake.mode = None
+    lc.check(cfg, BASE, run=fake)
+    logs = sorted(Path(cfg["CACHE_DIR"], "logs").rglob("*.log"))
+    blob = "".join(x.read_text() for x in logs)
+    assert "Kept as it is" in blob
+
+
+def test_true_first_apply_partial_keeps_the_o1_note(cfg):
+    # (c): a TRUE first apply (no seed at all, an upgrading install) with a partial failure --
+    # the O1 note must reach Activity from the exception path, not just the "nothing to write"
+    # fast path.
+    fake = FailOrKill(versioning={BASE: "Suspended"})
+    fake.rules[BASE] = [{"ID": "my-console-rule", "Status": "Enabled", "Filter": {"Prefix": ""},
+                         "Expiration": {"Days": 5}}]
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE) is None
+    fake.mode = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.sync(cfg, BASE, run=fake)
+    fake.mode = None
+    lc.check(cfg, BASE, run=fake)
+    logs = sorted(Path(cfg["CACHE_DIR"], "logs").rglob("*.log"))
+    blob = "".join(x.read_text() for x in logs)
+    assert "Kept as it is" in blob
+
+
+def test_tampered_rules_restored_while_versioning_keeps_failing_eventually_reads_restored(cfg):
+    # (d): S3 abort tampered (7->3) while versioning is also mid-change and keeps failing --
+    # the tampered rules half gets restored every pass; once a later pass is fully clean
+    # ("ok", nothing left outstanding), the stuck alarm reads "restored", never stuck forever
+    # at "not_restored" just because the pass that actually fixed it reported "ok".
+    fake = FailOrKill()
+    _confirm_suspend(cfg, fake)
+    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on"}}})
+    next(r for r in fake.rules[BASE] if r["ID"] == lc.HOUSEKEEPING_ID)["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] = 3
+    fake.mode = "fail"
+    lc.check(cfg, BASE, run=fake)
+    fake.mode = None
+    lc.check(cfg, BASE, run=fake)
+    assert _st(cfg)["alarm"]["kind"] == "restored"
+
+
+def test_unsupported_versioning_never_perpetually_outstanding(cfg):
+    class NI(FakeS3):
+        def __call__(self, args, **kw):
+            if args[:2] == ["s3api", "get-bucket-versioning"]:
+                self.calls.append(list(args))
+                return SimpleNamespace(returncode=254, stdout="", stderr="An error occurred (MethodNotAllowed)")
+            return super().__call__(args, **kw)
+    f = NI()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    assert lc.check(cfg, BASE, run=f) == "ok"
+    assert lc.check(cfg, BASE, run=f) == "ok"
+    nr, waiting = lc.outstanding(cfg, BASE)
+    assert nr is False and waiting == []
+
+
+def test_confirmed_partial_landed_rules_reach_activity(cfg):
+    # (c): the confirmed undo 30->10 that DID reach S3, even though the pass overall failed
+    # (the versioning half), must be visible in Activity -- not silently dropped because the
+    # pass as a whole raised.
+    fake = FailOrKill()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings", "settings": {"version": 1, "buckets": {BASE: {
+        "versioning": "suspended", "folders": {"appdata/": {"undo_days": 10}}}}}})
+    fake.mode = "fail"
+    with pytest.raises(lc.LifecycleError):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    fake.mode = None
+    lc.check(cfg, BASE, run=fake)
+    logs = sorted(Path(cfg["CACHE_DIR"], "logs").rglob("*.log"))
+    blob = "".join(x.read_text() for x in logs)
+    assert "10 days" in blob

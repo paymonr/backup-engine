@@ -639,7 +639,7 @@ EOF
   printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
   run_job movies
   [ "$status" -eq 0 ]
-  grep -qx "timeout 180" "$tlog"
+  grep -qx "timeout 240" "$tlog"
   grep -q "^check --bucket my-bucket" "$log"
 }
 

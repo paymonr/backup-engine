@@ -888,6 +888,46 @@ def seed_new_bucket(cache_dir: str, bucket: str) -> None:
         save_applied(cache_dir, bucket, [], folders=[])
 
 
+def _write_in_flight(cache_dir: str, bucket: str, rules: list[dict], folders: list[str],
+                     versioning: str | None) -> None:
+    """A write journal (fix round 2, (b)): recorded immediately before writing `rules`/
+    `versioning` to S3 -- the TARGET this pass is about to write, kept alongside (never
+    replacing) the existing applied fields. Covers a kill/timeout landing between a put
+    actually reaching S3 and save_applied recording it -- including a CONFIRMED keeps-less
+    apply, which the per-half tamper rule alone can't fix: once live has moved past the
+    ordinary GATED baseline, the very next (ungated-unaware) pass would judge it against that
+    stale baseline and revert it. `_resolve_in_flight` reads this back at the start of the
+    next pass."""
+    doc = _applied_doc(cache_dir, bucket)
+    doc = dict(doc) if isinstance(doc, dict) else {"rules": [], "applied_at": _now_iso()}
+    doc["in_flight"] = {"rules": rules, "folders": sorted(folders), "versioning": versioning}
+    _write_atomic(Path(_state_dir(cache_dir), f"{bucket}.applied.json"), json.dumps(doc))
+
+
+def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_ver: str | None,
+                       ver_managed: bool) -> dict | None:
+    """The other half of the write journal (fix round 2, (b)), read at the very start of a
+    pass (after live is known): a journal from a pass that never got to record what it wrote
+    is adopted, PER HALF, wherever live now matches it EXACTLY -- as if save_applied had
+    already run for that half; a half that doesn't match is simply dropped (no adoption, no
+    alarm) and this pass judges it normally, the same as any other pending change. Always
+    clears the journal entry once read, whether anything adopted or not, so a stale one never
+    lingers -- and persists the result immediately (M2: this never involves an alarm, so
+    there's nothing to order against). Returns the applied doc as it now stands (`doc`
+    itself, unchanged, when there was no journal to resolve)."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("in_flight"), dict):
+        return doc
+    inf = doc["in_flight"]
+    new = {k: v for k, v in doc.items() if k != "in_flight"}
+    if not app_rules_differ(live, inf.get("rules") or []):
+        new["rules"], new["folders"] = inf.get("rules") or [], sorted(inf.get("folders") or [])
+    if ver_managed and versioning_matches(live_ver, inf.get("versioning")):
+        new["versioning"] = inf.get("versioning")
+    new["applied_at"] = _now_iso()
+    _write_atomic(Path(_state_dir(cache_dir), f"{bucket}.applied.json"), json.dumps(new))
+    return new
+
+
 def _status_path(cache_dir: str) -> Path:
     return Path(cache_dir, "state", "_lifecycle.json")
 
@@ -905,12 +945,17 @@ def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm:
     not_restored | console_rule) survives later clean checks until the owner
     acknowledges it; a new one is merged with any still open (merge_alarms). A pass that
     RESTORED the app's rules turns an open not_restored alarm of this bucket into a
-    restored one (M1) -- its lines and console rule IDs stay."""
+    restored one (M1) -- its lines and console rule IDs stay. Fix round 2: a later pass that
+    reaches a plain "ok" (fully settled -- nothing tampered, nothing pending, not merely one
+    half of a still-failing multi-half write) does the same -- S3 matching everything the app
+    currently wants means whatever the alarm was about no longer applies, so it's never left
+    stuck at "not_restored" forever just because the pass that actually fixed it happened to
+    report "ok" rather than "restored"."""
     with _status_lock(cache_dir):                # buckets share this file: read-modify-write locked
         data = load_status(cache_dir)
         prev = data.get(bucket) or {}
         prev_alarm = prev.get("alarm")
-        if state == "restored" and isinstance(prev_alarm, dict) and prev_alarm.get("kind") == "not_restored":
+        if state in ("ok", "restored") and isinstance(prev_alarm, dict) and prev_alarm.get("kind") == "not_restored":
             prev_alarm = dict(prev_alarm, kind="restored")
         entry = {"state": state, "checked_at": _now_iso(), "detail": detail}
         keep = merge_alarms([prev_alarm, alarm]) if alarm is not None else prev_alarm
@@ -996,6 +1041,15 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     write, no versioning tamper check, `record_ver` (what's recorded to applied.json) stays
     whatever was last confirmed applied -- and the rules half still applies normally.
 
+    Per-half tamper rule and write journal (fix round 2, (a)/(b)): a half is tampered only
+    when live differs from BOTH what was applied AND what this pass's target wants (live
+    already equal to target is never tampering, even mid-way through a multi-half write --
+    that's the docstring's own rule, applied per half now). `_write_in_flight`/
+    `_resolve_in_flight` cover the gap a kill/timeout leaves between a put landing and
+    save_applied recording it (which the per-half rule alone can't fix for a CONFIRMED
+    keeps-less apply, since live then sits past the ordinary GATED baseline the very next,
+    journal-unaware pass would otherwise judge it against and revert).
+
     Returns (state, SyncResult | None, LifecycleError | None, expect_stale: bool); state is what
     was recorded (ok | restored | not_restored | error | unsupported), or "console_rule" when
     this pass raised that alarm and the app's own rules are ok/restored."""
@@ -1004,10 +1058,6 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     jobs = jobs_io.load(config_dir)                          # under the lock: never a stale list
     notes = notes_for(bucket, base, jobs)
     doc = _applied_doc(cache, bucket)
-    applied = load_applied(cache, bucket)
-    applied_ver = doc.get("versioning") if isinstance(doc, dict) and doc.get("versioning") in VERSIONING_STATES \
-        else None
-    stored_fp = load_console_fingerprint(cache, bucket) if applied is not None else None
     stale = False
     try:
         creds = role_creds(config_dir, region, run=run)
@@ -1027,6 +1077,13 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     ver_managed = live_ver is not None
     detail = "; ".join(notes)
     save_live(cache, bucket, live, versioning=live_ver)
+
+    doc = _resolve_in_flight(cache, bucket, doc, live, live_ver, ver_managed)   # fix round 2, (b)
+    applied = doc.get("rules") if isinstance(doc, dict) and isinstance(doc.get("rules"), list) else None
+    applied_ver = doc.get("versioning") if isinstance(doc, dict) and doc.get("versioning") in VERSIONING_STATES \
+        else None
+    stored_fp = (doc.get("console") if isinstance(doc, dict) and isinstance(doc.get("console"), dict) else None) \
+        if applied is not None else None
 
     first = applied is None
     if first:
@@ -1052,8 +1109,11 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     folders = sorted(before.folders | want.folders)
     old_folders = doc.get("folders") if isinstance(doc, dict) and isinstance(doc.get("folders"), list) else None
     waiting_lines = [f"Waiting for your confirmation (S3 keeps the current rule): {c.words}" for c in waiting]
+    # O1; fix round 2: gated on "no fingerprint recorded yet" (stored_fp is None), not on
+    # `first` -- a bucket seed_new_bucket pre-seeded (applied=[], first=False) has no console
+    # fingerprint yet either, and deserves the same "note, don't alarm" first look.
     console_note = ([f"Kept as it is — a rule added in the AWS console: {line}"
-                     for _, line in console_changes({}, live)] if first else [])    # O1
+                     for _, line in console_changes({}, live)] if stored_fp is None else [])
 
     live_fp = console_fingerprint(live)
     changes = console_changes(stored_fp, live)
@@ -1087,13 +1147,18 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
             runs.record_system(cache, kind="s3-rules", summary=f"S3 rules checked · {bucket}",
                                lines=console_note, trigger=trigger)
         return headline("ok"), SyncResult(bucket, False, [], headline("ok"), waiting), None, stale
-    rules_tampered = applied is not None and app_rules_differ(live, applied)
-    ver_tampered = ver_managed and applied_ver is not None and not versioning_matches(live_ver, applied_ver)
+    # fix round 2, (a): a half is tampered only when live differs from BOTH what was applied
+    # AND what this pass's target wants -- live already equal to target (rules_in_step /
+    # ver_in_step) is never tampering, even mid-way through a multi-half write.
+    rules_tampered = applied is not None and app_rules_differ(live, applied) and not rules_in_step
+    ver_tampered = (ver_managed and applied_ver is not None
+                    and not versioning_matches(live_ver, applied_ver) and not ver_in_step)
     tampered = rules_tampered or ver_tampered
     tamper_lines = ((_change_lines(applied, live) if rules_tampered else [])
                     + ([f"versioning: was {_VER_WORDS[applied_ver]}, now {_VER_WORDS.get(live_ver, live_ver)}"]
                        if ver_tampered else []))
     rules_written = False
+    _write_in_flight(cache, bucket, target, folders, record_ver)          # fix round 2, (b)
     try:
         if not rules_in_step:
             write_rules(bucket, merge(live, target), creds, region, run=run)
@@ -1106,16 +1171,28 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
             # (the versioning write) -- record it (folders union, the OLD applied versioning:
             # that half never changed) so applied.json matches S3, and the NEXT pass never
             # mistakes our own successful half-write for tampering (or reverts a confirmed
-            # change). Status/alarm written before save_applied on every path (M2).
+            # change). Status/alarm before save_applied on every path (M2); an Activity entry
+            # always names the rules that landed and the versioning failure, plus any O1
+            # console note (fix round 2, (c)). `tampered` here is unchanged from fix round
+            # 1 -- a pass whose tampered half WAS restored but leaves the OTHER (untampered)
+            # write still failing is "not_restored" for as long as that failure persists
+            # (probe #3: an outside rules change while the versioning put keeps failing must
+            # keep alarming); once a LATER pass reaches a clean "ok" with nothing left
+            # outstanding, set_status's own not_restored -> restored upgrade (fix round 2,
+            # M1 broadened) fires without this pass needing to guess ahead of that (probe
+            # #10).
             if tampered:
                 status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
                 save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver)
                 runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
-                                   lines=[*tamper_lines, e.detail], outcome="failed", error=e.detail,
-                                   trigger=trigger)
+                                   lines=[*tamper_lines, e.detail, *console_note], outcome="failed",
+                                   error=e.detail, trigger=trigger)
                 return "not_restored", None, e, stale
             status(_err_state(e), e.detail)
             save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver)
+            runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}",
+                               lines=[*_change_lines(live, target), f"versioning couldn't be changed: {e.detail}",
+                                      *console_note], trigger=trigger)
             return _err_state(e), None, e, stale
         if not tampered:
             status(_err_state(e), e.detail)
