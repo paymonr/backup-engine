@@ -350,3 +350,13 @@ def test_the_screen_computes_buckets_status_and_alarm_once(cfg, monkeypatch):
     v = s3_rules.screen(cfg)
     assert v["alarm"]["kind"] == "restored" and v["status"]["level"] == "blocker"
     assert counts == {"load_status": 1, "_alarm": 1, "_buckets": 1}
+
+
+def test_the_screen_lists_no_invented_waiting_change_from_an_unreadable_settings_file(client, cfg):
+    settings = {"version": 1, "buckets": {BASE: {"folders": {"appdata/": {"undo_days": 90}}}}}
+    _applied(cfg, settings=settings)
+    Path(cfg["CONFIG_DIR"], "storage.json").write_text("{oops")
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "error", lifecycle.CONFIG_SETTINGS_UNREADABLE)
+    body = html.unescape(client.get("/setup/storage").get_data(as_text=True))
+    assert "The S3 rules settings couldn't be read (storage.json)" in body
+    assert 'data-waiting="' not in body and "Waiting for your confirmation:" not in body

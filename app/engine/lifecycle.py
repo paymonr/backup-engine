@@ -903,10 +903,24 @@ def gate(before: RuleSet, after: RuleSet) -> RuleSet:
     return RuleSet(rules, after.folders, versioning)
 
 
+def config_readable(config_dir: str) -> bool:
+    """Whether jobs.json and storage.json read STRICTLY (I1) -- a missing file is fine."""
+    try:
+        jobs_io.load_strict(config_dir)
+        load_settings_strict(config_dir)
+    except (ValueError, OSError):
+        return False
+    return True
+
+
 def outstanding(cfg, bucket: str) -> tuple[bool, list[Change]]:
     """From files only (no AWS, R-B3): (S3 was last given less than the gate allows -- a
     keeps-more change not applied yet, e.g. a failed job-save write; the keeps-less changes
-    waiting for the owner's confirmation). Nothing applied yet -> (False, [])."""
+    waiting for the owner's confirmation). Nothing applied yet -> (False, []). An unreadable
+    jobs/settings file -> (False, []) too (I1): the fail-safe reading of it (no jobs / the
+    defaults) would invent changes the owner never made -- the pass itself stops on it."""
+    if not config_readable(cfg["CONFIG_DIR"]):
+        return False, []
     before, want = applied_view(cfg, bucket)
     if before is None:
         return False, []

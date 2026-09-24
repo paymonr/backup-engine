@@ -781,3 +781,19 @@ def test_the_lifecycle_runner_strips_every_credential_when_given_none(monkeypatc
     env = envs[0]
     assert not any(k in env for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"))
     assert "leaksecret" not in json.dumps(env)
+
+
+def test_outstanding_invents_nothing_from_an_unreadable_config(cfg):
+    # I1 follow-through: the GUI's own fail-safe reading of an unreadable storage.json is the
+    # defaults, which would "find" a waiting change (a longer undo window read as 30) that isn't
+    # real -- outstanding() judges nothing until the files can be read.
+    _ran(cfg, "manga", "appdata_backups")
+    fake = FakeS3()
+    lc.check(cfg, BASE, run=fake)
+    settings = {"version": 1, "buckets": {BASE: {"folders": {"appdata/": {"undo_days": 90}}}}}
+    lc.save_edit(cfg, {"kind": "settings", "settings": settings})
+    lc.check(cfg, BASE, run=fake)                                        # 90 days applied (keeps more)
+    Path(cfg["CONFIG_DIR"], "storage.json").write_text("{oops")
+    assert lc.outstanding(cfg, BASE) == (False, [])
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text("{not json")
+    assert lc.outstanding(cfg, BASE) == (False, [])

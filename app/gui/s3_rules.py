@@ -367,6 +367,13 @@ def screen(cfg) -> dict:
                    "sentence": row.get("sentence", ""), "checked_at": row.get("verified_at"),
                    "checked_human": _human_time(row.get("verified_at"))}
     v["buckets"] = [_safe_bucket_view(ctx, b, base, jobs, settings) for b in buckets]
+    if not lifecycle.config_readable(config_dir):
+        # I1: the files these waiting items would be computed from can't be read -- the status
+        # line says which one; never list changes invented from the fail-safe defaults
+        for b in v["buckets"]:
+            b["waiting"], b["versioning_waiting"] = [], False
+            for r in b.get("rows") or []:
+                r["waiting"] = None
     return v
 
 
