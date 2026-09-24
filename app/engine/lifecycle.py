@@ -1244,12 +1244,67 @@ def load_live(cache_dir: str, bucket: str) -> dict | None:
 
 
 def load_applied_doc(cache_dir: str, bucket: str) -> dict | None:
-    """The whole applied record: {"rules", "applied_at", "console"?, "folders"?} (GUI, previews)."""
+    """The whole applied record: {"rules", "applied_at", "console"?, "folders"?, "versioning"?,
+    "previous"?, "written_at"?} (GUI, previews; the last two: settle-fix, see SETTLE_S)."""
     return _applied_doc(cache_dir, bucket)
 
 
+# --- S3's settle window (settle-fix) ---------------------------------------------------------------
+# S3 serves bucket configuration -- lifecycle rules and versioning -- eventually consistently: for a
+# while after a put, a read can still return what S3 had BEFORE it, even after an earlier read
+# already showed the new one (smoke test run 1: read #103 new, read #104 the old config); AWS
+# documents up to 15 minutes for versioning. So every write the app records keeps the state S3 had
+# right before it (applied.json `previous`; the write journal's own `previous`), and inside SETTLE_S
+# of that write a live half equal to one of those states is S3 still settling -- never tampering,
+# never alarmed, notified or written back (_reconcile_locked). The accepted cost (ruling): someone
+# who puts back EXACTLY such a state inside the window is alarmed only once the window has passed.
+SETTLE_S = 15 * 60
+SETTLING = "S3 is still applying the last change"          # owner words: the status detail
+_MAX_PRE_WRITES = 50                                        # a bound, far above any 15 minutes' writes
+
+
+def _pre_write(rules: list[dict] | None, versioning: str | None, at: str) -> dict:
+    """One write's settle entry: when it was made and, for each half it WROTE, what S3 had right
+    before it (the app's own rules only -- console rules are never the app's to judge)."""
+    e = {"written_at": at}
+    if rules is not None:
+        e["rules"] = [r for r in rules if is_app_rule(r)]
+    if versioning is not None:
+        e["versioning"] = versioning
+    return e
+
+
+def _recent_writes(*lists) -> list[dict]:
+    """The settle entries (of any of `lists`) still inside SETTLE_S, oldest first, each once."""
+    now, out, seen = datetime.now(timezone.utc), [], set()
+    for entries in lists:
+        for e in entries if isinstance(entries, list) else []:
+            t = _parse_iso(e.get("written_at")) if isinstance(e, dict) else None
+            if t is None or (now - t).total_seconds() >= SETTLE_S:
+                continue
+            key = json.dumps(e, sort_keys=True)
+            if key not in seen:
+                seen.add(key)
+                out.append(e)
+    return sorted(out, key=lambda e: e["written_at"])[-_MAX_PRE_WRITES:]
+
+
+def _settles_rules(entries: list[dict], live: list[dict]) -> bool:
+    """Live app rules equal to what S3 had right before one of these writes."""
+    return any(isinstance(e.get("rules"), list) and not app_rules_differ(live, e["rules"]) for e in entries)
+
+
+def _settles_ver(entries: list[dict], live_ver: str | None) -> bool:
+    return live_ver is not None and any(e.get("versioning") == live_ver for e in entries)
+
+
 def save_applied(cache_dir: str, bucket: str, rules: list[dict], console: dict | None = None,
-                 folders: list[str] | None = None, versioning: str | None = None) -> None:
+                 folders: list[str] | None = None, versioning: str | None = None, *,
+                 wrote: dict | None = None, carry=()) -> None:
+    """Record what the app applied. `wrote` (settle-fix): this record's own write, as a _pre_write
+    entry -- kept in `previous` with every earlier entry (the record being replaced, and `carry`:
+    a journal's) still inside SETTLE_S, so a record that writes nothing never drops them;
+    `written_at` is the newest of them (absent once the window has passed)."""
     doc = {"rules": rules, "applied_at": _now_iso()}
     if console is not None:
         doc["console"] = console
@@ -1257,6 +1312,11 @@ def save_applied(cache_dir: str, bucket: str, rules: list[dict], console: dict |
         doc["folders"] = sorted(folders)             # the app folders known at this apply (R-B2)
     if versioning is not None:
         doc["versioning"] = versioning               # the versioning the app applied (R-B7)
+    previous = _recent_writes((_applied_doc(cache_dir, bucket) or {}).get("previous"), list(carry),
+                              [wrote] if wrote else [])
+    if previous:
+        doc["previous"] = previous
+        doc["written_at"] = previous[-1]["written_at"]
     _write_atomic(Path(_state_dir(cache_dir), f"{bucket}.applied.json"), json.dumps(doc))
     if console is not None:                          # a recorded fingerprint supersedes the O1 marker
         try:
@@ -1282,16 +1342,20 @@ def _inflight_path(cache_dir: str, bucket: str) -> Path:
 
 
 def _write_in_flight(cache_dir: str, bucket: str, rules: list[dict], folders: list[str],
-                     versioning: str | None) -> None:
+                     versioning: str | None, previous: list[dict] | None = None, at: str | None = None) -> None:
     """A write journal, in its OWN file (fix round 3, item 1 -- never applied.json, which
     only save_applied ever writes): the TARGET this pass is about to write to S3, recorded
     immediately before the puts. Covers a kill/timeout landing between a put actually
     reaching S3 and save_applied recording it -- including a CONFIRMED keeps-less apply,
     which the per-half tamper rule alone can't fix: once live has moved past the ordinary
     GATED baseline, the very next (ungated-unaware, journal-unaware) pass would judge it
-    against that stale baseline and revert it. `_resolve_in_flight` reads this back, and
-    always deletes it, at the start of the next pass."""
-    doc = {"rules": rules, "folders": sorted(folders), "versioning": versioning, "written_at": _now_iso()}
+    against that stale baseline and revert it. `_resolve_in_flight` reads this back at the
+    start of the next pass. `previous` (settle-fix): the settle entries -- this write's own
+    pre-write state plus every earlier one still inside SETTLE_S -- so a stale read of any of
+    them keeps the journal instead of dropping it."""
+    doc = {"rules": rules, "folders": sorted(folders), "versioning": versioning, "written_at": at or _now_iso()}
+    if previous:
+        doc["previous"] = previous
     _write_atomic(_inflight_path(cache_dir, bucket), json.dumps(doc))
 
 
@@ -1315,18 +1379,33 @@ def _delete_in_flight(cache_dir: str, bucket: str) -> None:
         pass
 
 
+@dataclass(frozen=True)
+class _JournalView:
+    """What _resolve_in_flight found (settle-fix): per half, whether live is still the state from
+    BEFORE the journal's write (S3 settling -- the journal is kept, neither adopted nor dropped);
+    `journal` is that kept journal (None when nothing settles); `entries` are the journal's settle
+    entries, carried into whatever this pass records."""
+    rules: bool = False
+    versioning: bool = False
+    journal: dict | None = None
+    entries: tuple = ()
+
+
 def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_ver: str | None,
-                       ver_managed: bool) -> dict | None:
+                       ver_managed: bool) -> tuple[dict | None, _JournalView]:
     """The other half of the write journal (fix round 3, item 1), read at the very start of a
     pass (after live is known): a journal from a pass that never got to record what it wrote
     is adopted, PER HALF, wherever live now matches it EXACTLY -- as if save_applied had
     already run for that half; a half that doesn't match is simply dropped (no adoption, no
-    alarm) and this pass judges it normally, the same as any other pending change. The
-    journal file is always deleted once resolved, whether anything adopted or not, so a stale
-    one never lingers -- but only AFTER an adoption is saved (fix round 4, item 3): a kill
-    between the two then leaves the journal for the next pass to adopt again (idempotent),
-    never a lost adoption that the next check would revert with a false alarm. Never invents
-    or rewrites an applied record on its own: applied.json is
+    alarm) and this pass judges it normally, the same as any other pending change. Settle-fix:
+    a half whose live state is instead one the journal records as S3's state right BEFORE the
+    write (inside SETTLE_S) is S3 still settling -- not adopted, not dropped: the journal is
+    KEPT for the next pass, and the caller counts that half as landed for this pass only
+    (_JournalView). Otherwise the journal file is deleted once resolved, whether anything
+    adopted or not, so a stale one never lingers -- but only AFTER an adoption is saved (fix
+    round 4, item 3): a kill between the two then leaves the journal for the next pass to adopt
+    again (idempotent), never a lost adoption that the next check would revert with a false
+    alarm. Never invents or rewrites an applied record on its own: applied.json is
     only ever written by `save_applied`, called here only when something actually adopts AND
     there's a valid rules list to record (a bucket with no applied record and no rules match
     stays exactly as it was -- still `None`, still judged as a first apply next time, never a
@@ -1336,27 +1415,37 @@ def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_
     pass and this one must still be compared and alarmed, never silently absorbed into the
     fingerprint just because an unrelated app-rule half also happened to adopt. Returns the
     applied doc as it now stands (`doc` itself, unchanged, when there was nothing to resolve
-    or nothing adopted)."""
+    or nothing adopted) and the _JournalView."""
     inf = _load_in_flight(cache_dir, bucket)
     if inf is None:                                  # none, unreadable or past its TTL: drop it
         _delete_in_flight(cache_dir, bucket)
-        return doc
+        return doc, _JournalView()
     applied = doc.get("rules") if isinstance(doc, dict) and isinstance(doc.get("rules"), list) else None
     applied_ver = doc.get("versioning") if isinstance(doc, dict) and doc.get("versioning") in VERSIONING_STATES \
         else None
     folders = doc.get("folders") if isinstance(doc, dict) and isinstance(doc.get("folders"), list) else None
     console = doc.get("console") if isinstance(doc, dict) and isinstance(doc.get("console"), dict) else None
+    entries = _recent_writes(inf.get("previous"))
+    adopt_rules = not app_rules_differ(live, inf.get("rules") or [])
+    adopt_ver = ver_managed and versioning_matches(live_ver, inf.get("versioning"))
+    settle_rules = not adopt_rules and _settles_rules(entries, live)
+    settle_ver = ver_managed and not adopt_ver and _settles_ver(entries, live_ver)
+    keep = settle_rules or settle_ver
+    view = _JournalView(settle_rules, settle_ver, inf if keep else None, tuple(entries))
     adopted = False
-    if not app_rules_differ(live, inf.get("rules") or []):
+    if adopt_rules:
         applied, folders, adopted = inf.get("rules") or [], sorted(inf.get("folders") or []), True
-    if ver_managed and versioning_matches(live_ver, inf.get("versioning")):
+    if adopt_ver:
         applied_ver, adopted = inf.get("versioning"), True
     if not adopted or applied is None:              # nothing changed, or no rules baseline yet
-        _delete_in_flight(cache_dir, bucket)
-        return doc
-    save_applied(cache_dir, bucket, applied, console=console, folders=folders, versioning=applied_ver)
-    _delete_in_flight(cache_dir, bucket)            # item 3: only once the adoption is on disk
-    return _applied_doc(cache_dir, bucket)
+        if not keep:
+            _delete_in_flight(cache_dir, bucket)
+        return doc, view
+    save_applied(cache_dir, bucket, applied, console=console, folders=folders, versioning=applied_ver,
+                 carry=entries)
+    if not keep:
+        _delete_in_flight(cache_dir, bucket)        # item 3: only once the adoption is on disk
+    return _applied_doc(cache_dir, bucket), view
 
 
 def _o1_noted_path(cache_dir: str, bucket: str) -> Path:
@@ -1400,7 +1489,7 @@ _FROM_DISK = object()          # set_status's default: read the prior alarm from
 
 
 def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm: dict | None = None, *,
-               ver_managed: bool = True, prior_alarm=_FROM_DISK, blocking: bool = True) -> None:
+               ver_managed: bool = True, prior_alarm=_FROM_DISK, blocking: bool = True, heal: bool = True) -> None:
     """state: ok | error | unsupported | restored | not_restored. An `alarm` (restored |
     not_restored | console_rule) survives later clean checks until the owner
     acknowledges it; a new one is merged with any still open (merge_alarms). A pass that
@@ -1415,7 +1504,9 @@ def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm:
     (`ver_managed=False`, an unsupported storage) -- "ok" here only means the rules half is
     settled, not that the still-suspended-outside versioning is back the way it was. Fix round
     4, item 6: the same holds for a "restored" pass -- restoring the rules half says nothing
-    about versioning it never read. An alarm about rules only still heals on either.
+    about versioning it never read. An alarm about rules only still heals on either. Settle-fix:
+    `heal=False` for a pass that read S3 still settling after the app's own write -- what it read
+    proves nothing yet, so an open not_restored alarm waits for a settled pass.
 
     `prior_alarm` (fix round 3, item 6): by default this call's own "before" state is read
     straight off disk, as always -- but a caller that ALREADY wrote its own provisional alarm
@@ -1429,7 +1520,7 @@ def set_status(cache_dir: str, bucket: str, state: str, detail: str = "", alarm:
         data = load_status(cache_dir)
         prev = data.get(bucket) or {}
         prev_alarm = prev.get("alarm") if prior_alarm is _FROM_DISK else prior_alarm
-        heals = (isinstance(prev_alarm, dict) and prev_alarm.get("kind") == "not_restored"
+        heals = (heal and isinstance(prev_alarm, dict) and prev_alarm.get("kind") == "not_restored"
                 and state in ("ok", "restored")
                 and (ver_managed or not _alarm_mentions_versioning(prev_alarm)))
         if heals:
@@ -1604,12 +1695,44 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     detail = "; ".join(notes)
     save_live(cache, bucket, live, versioning=live_ver, min_size=min_size)
 
-    doc = _resolve_in_flight(cache, bucket, doc, live, live_ver, ver_managed)   # fix round 2, (b)
+    doc, jview = _resolve_in_flight(cache, bucket, doc, live, live_ver, ver_managed)   # fix round 2, (b)
     applied = doc.get("rules") if isinstance(doc, dict) and isinstance(doc.get("rules"), list) else None
     applied_ver = doc.get("versioning") if isinstance(doc, dict) and doc.get("versioning") in VERSIONING_STATES \
         else None
     stored_fp = (doc.get("console") if isinstance(doc, dict) and isinstance(doc.get("console"), dict) else None) \
         if applied is not None else None
+    old_folders = doc.get("folders") if isinstance(doc, dict) and isinstance(doc.get("folders"), list) else None
+
+    # Settle-fix: S3 may still be serving what it had BEFORE one of the app's own recent writes
+    # (see SETTLE_S). A half is SETTLING when live equals such a pre-write state -- of the kept
+    # journal (_resolve_in_flight), or of a recorded write whose own target is the applied half
+    # that live now differs from. A settling half is judged as S3 will show it once settled --
+    # EFF_LIVE: that write's target -- so it's never tampering and never written back; a
+    # journal half still settling also counts as landed in this pass's BASELINE (EFF_DOC, never
+    # recorded), so the gate can never write the old rule over a confirmed change still
+    # propagating. A target that moved on since (a keeps-more edit, the owner's confirmed apply)
+    # is still written. Anything else is judged exactly as before.
+    settle = _recent_writes(doc.get("previous") if isinstance(doc, dict) else None, list(jview.entries))
+    rules_settling = jview.rules or (applied is not None and app_rules_differ(live, applied)
+                                     and _settles_rules(settle, live))
+    ver_settling = jview.versioning or (ver_managed and applied_ver is not None
+                                        and not versioning_matches(live_ver, applied_ver)
+                                        and _settles_ver(settle, live_ver))
+    settling = rules_settling or ver_settling
+    eff_doc = doc
+    if jview.journal is not None:
+        eff_doc = dict(doc) if isinstance(doc, dict) else {}
+        if jview.rules:
+            eff_doc["rules"] = jview.journal.get("rules") or []
+            eff_doc["folders"] = sorted({*(old_folders or []), *(jview.journal.get("folders") or [])})
+        if jview.versioning:
+            eff_doc["versioning"] = jview.journal.get("versioning")
+    eff_applied = eff_doc.get("rules") if isinstance(eff_doc, dict) and isinstance(eff_doc.get("rules"), list) \
+        else None
+    eff_applied_ver = eff_doc.get("versioning") if isinstance(eff_doc, dict) \
+        and eff_doc.get("versioning") in VERSIONING_STATES else None
+    eff_live = eff_applied if rules_settling else live
+    eff_live_ver = eff_applied_ver if ver_settling else live_ver
 
     first = applied is None
     if first:
@@ -1625,9 +1748,10 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     # Final fix wave I2: the same definition on EVERY pass -- known = the applied record's folders
     # (never forgotten, R-B2) plus every folder whose job ran before THIS run (run_id: the pre-
     # backup check's own run, which hasn't uploaded yet, never counts).
-    known = _known_folders(cache, bucket, base, jobs, run_id) if first else None
-    before = (baseline_from_live(live, want, known, versioning=live_ver) if first
-              else known_baseline(baseline_from_applied(doc, want, live_versioning=live_ver),
+    base_first = eff_applied is None             # settle-fix: a settling journal is this pass's baseline
+    known = _known_folders(cache, bucket, base, jobs, run_id) if base_first else None
+    before = (baseline_from_live(live, want, known, versioning=eff_live_ver) if base_first
+              else known_baseline(baseline_from_applied(eff_doc, want, live_versioning=eff_live_ver),
                                   cache, bucket, base, jobs, run_id))
     want = resolve_held(before, want)          # I1: a folder whose setting can't be read keeps its rule
     if expect is not None and _set_hash(want) != expect:
@@ -1640,7 +1764,9 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     # files never move (S3's own default -- 128 KB -- silently governs every put we make).
     if any(r.get("NoncurrentVersionTransitions") for r in target) and not _min_size_supported(run, region):
         notes = [*notes, "small files (under 128 KB) stay where they are"]
-        detail = "; ".join(notes)
+    if settling:
+        notes = [*notes, SETTLING]
+    detail = "; ".join(notes)
     # I1: never forget a known folder -- a folder that once had a job (so may already have
     # data in S3) stays recorded even after that job is deleted, so if it's later reused
     # (the only way to change a job's type is delete + recreate under the same name) its new
@@ -1648,7 +1774,6 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     # `before.folders` already IS the previous applied record's folders (baseline_from_applied
     # reused, not re-parsed) on every pass but the first, where it's <= want.folders anyway.
     folders = sorted(before.folders | want.folders)
-    old_folders = doc.get("folders") if isinstance(doc, dict) and isinstance(doc.get("folders"), list) else None
     waiting_lines = [f"Waiting for your confirmation (S3 keeps the current rule): {c.words}" for c in waiting]
     # O1; fix round 2: gated on "no fingerprint recorded yet" (stored_fp is None), not on
     # `first` -- a bucket seed_new_bucket pre-seeded (applied=[], first=False) has no console
@@ -1670,33 +1795,44 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
 
     def status(state, detail_="", alarm=None, prior_alarm=_FROM_DISK):
         set_status(cache, bucket, state, detail_, alarm=merge_alarms([console_alarm, alarm]),
-                  ver_managed=ver_managed, prior_alarm=prior_alarm)
+                  ver_managed=ver_managed, prior_alarm=prior_alarm, heal=not settling)
 
     def headline(state):
         return "console_rule" if console_alarm and state in ("ok", "restored") else state
 
-    rules_in_step = not app_rules_differ(live, target) and not any(r.get("ID") in LEGACY_IDS for r in live)
+    rules_in_step = not app_rules_differ(eff_live, target) and not any(r.get("ID") in LEGACY_IDS for r in eff_live)
     # fix round 1, Minor: when this pass can't manage versioning at all (unsupported storage),
     # it's never out of step and never tampered -- `record_ver` (what applied.json gets) stays
     # whatever was last actually confirmed applied, never a target we never verified.
-    ver_in_step = True if not ver_managed else versioning_matches(live_ver, target_ver)
-    record_ver = target_ver if ver_managed else applied_ver
+    ver_in_step = True if not ver_managed else versioning_matches(eff_live_ver, target_ver)
+    journal_ver = target_ver if ver_managed else applied_ver
+    # settle-fix: a journal half still settling that this pass doesn't write stays the journal's
+    # -- kept for the next pass, and never recorded as applied from what counted as landed here.
+    keep_rules, keep_ver = jview.rules and rules_in_step, jview.versioning and ver_in_step
+    keep_journal = keep_rules or keep_ver
+    record_rules = applied if keep_rules else target
+    record_ver = applied_ver if keep_ver else journal_ver
     if rules_in_step and ver_in_step:
         status("ok", detail)                     # M2: the alarm is on disk before the fingerprint moves
-        _delete_in_flight(cache, bucket)          # defensive: _resolve_in_flight already did this
-        if (first or app_rules_differ(applied, target) or stored_fp != live_fp or old_folders != folders
-                or applied_ver != record_ver):
-            save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=record_ver)
+        if not keep_journal:
+            _delete_in_flight(cache, bucket)      # defensive: _resolve_in_flight already did this
+        if record_rules is not None and (first or app_rules_differ(applied, record_rules) or stored_fp != live_fp
+                                         or old_folders != folders or applied_ver != record_ver):
+            save_applied(cache, bucket, record_rules, console=live_fp, folders=folders, versioning=record_ver,
+                         carry=jview.entries)
         if console_note:
             runs.record_system(cache, kind="s3-rules", summary=f"S3 rules checked · {bucket}",
                                lines=console_note, trigger=trigger)
+            if record_rules is None:             # a first apply still settling: noted once, recorded later
+                _mark_o1_noted(cache, bucket, live_fp)
         return headline("ok"), SyncResult(bucket, False, [], headline("ok"), waiting), None, stale
     # fix round 2, (a): a half is tampered only when live differs from BOTH what was applied
     # AND what this pass's target wants -- live already equal to target (rules_in_step /
-    # ver_in_step) is never tampering, even mid-way through a multi-half write.
-    rules_tampered = applied is not None and app_rules_differ(live, applied) and not rules_in_step
-    ver_tampered = (ver_managed and applied_ver is not None
-                    and not versioning_matches(live_ver, applied_ver) and not ver_in_step)
+    # ver_in_step) is never tampering, even mid-way through a multi-half write. Settle-fix: a
+    # settling half is judged as it will read once settled (eff_live), so it never is.
+    rules_tampered = eff_applied is not None and app_rules_differ(eff_live, eff_applied) and not rules_in_step
+    ver_tampered = (ver_managed and eff_applied_ver is not None
+                    and not versioning_matches(eff_live_ver, eff_applied_ver) and not ver_in_step)
     tampered = rules_tampered or ver_tampered
     tamper_lines = ((_change_lines(applied, live) if rules_tampered else [])
                     + ([f"versioning: was {_VER_WORDS[applied_ver]}, now {_VER_WORDS.get(live_ver, live_ver)}"]
@@ -1713,7 +1849,12 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         true_prior_alarm = (load_status(cache).get(bucket) or {}).get("alarm")
         status("not_restored", detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
     rules_written = False
-    _write_in_flight(cache, bucket, target, folders, record_ver)          # fix round 2, (b)
+    # settle-fix: this write's own pre-write state -- what S3 has (as it will read once settled)
+    # for each half about to be put -- plus every earlier one still inside the window.
+    now = _now_iso()
+    wrote = _pre_write(None if rules_in_step else eff_live, None if ver_in_step else eff_live_ver, now)
+    _write_in_flight(cache, bucket, target, folders, journal_ver,
+                     previous=_recent_writes(settle, [wrote]), at=now)                  # fix round 2, (b)
     try:
         if not rules_in_step:
             write_rules(bucket, merge(live, target), creds, region, run=run, min_size=min_size)
@@ -1722,6 +1863,13 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
             write_versioning(bucket, target_ver, creds, region, run=run)
     except LifecycleError as e:
         e.rules_applied = rules_written                        # M5: say what DID land
+        # settle-fix: a put that REPORTED failure isn't a write S3 may still be applying -- the
+        # journal stays (it may have landed after all: a fresh read still adopts it, as before),
+        # but no longer offers the state from before a half whose put failed as a settle candidate
+        # (else the next pass would take S3's real, unchanged state for settling and not retry).
+        landed = _pre_write(eff_live, None, now) if rules_written else None
+        _write_in_flight(cache, bucket, target, folders, journal_ver,
+                         previous=_recent_writes(settle, [landed] if landed else []), at=now)
         if rules_written:
             # fix round 1, I1: the rules half reached S3 even though this pass overall failed
             # (the versioning write) -- record it (folders union, the OLD applied versioning:
@@ -1747,22 +1895,24 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
                 rules_word = "rules restored" if rules_tampered else "rules applied"
                 status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines},
                       prior_alarm=true_prior_alarm)
-                save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver)
+                save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver,
+                             wrote=landed, carry=jview.entries)
                 runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
                                    lines=[*tamper_lines, f"{rules_word}; versioning couldn't be changed: {e.detail}",
                                           *console_note], outcome="failed", error=e.detail, trigger=trigger)
                 return "not_restored", None, e, stale
             status(_err_state(e), e.detail)
-            save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver)
+            save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver,
+                         wrote=landed, carry=jview.entries)
             runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}",
-                               lines=[*_change_lines(live, target), f"versioning couldn't be changed: {e.detail}",
+                               lines=[*_change_lines(eff_live, target), f"versioning couldn't be changed: {e.detail}",
                                       *console_note], trigger=trigger)
             return _err_state(e), None, e, stale
         if not tampered:
             status(_err_state(e), e.detail)
             if applied is not None and stored_fp != live_fp:
                 save_applied(cache, bucket, applied, console=live_fp, folders=old_folders,
-                             versioning=applied_ver)                                    # alarm once
+                             versioning=applied_ver, carry=jview.entries)                   # alarm once
             # fix round 3, item 4: the O1 console note must still reach Activity even when
             # NOTHING landed this pass (the rules put itself failed/was never attempted) --
             # previously this branch never logged to Activity at all.
@@ -1777,26 +1927,33 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines},
               prior_alarm=true_prior_alarm)
         if stored_fp != live_fp:
-            save_applied(cache, bucket, applied, console=live_fp, folders=old_folders, versioning=applied_ver)
+            save_applied(cache, bucket, applied, console=live_fp, folders=old_folders, versioning=applied_ver,
+                         carry=jview.entries)
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
                            lines=[*tamper_lines, e.detail, *console_note], outcome="failed", error=e.detail,
                            trigger=trigger)
         return "not_restored", None, e, stale
-    lines = (_change_lines(live, target) + ([] if ver_in_step else [f"now: versioning {_VER_WORDS[target_ver]}"])
+    lines = (_change_lines(eff_live, target) + ([] if ver_in_step else [f"now: versioning {_VER_WORDS[target_ver]}"])
              + ([detail] if detail else []) + waiting_lines + console_note)
     if tampered:
         status("restored", detail, {"kind": "restored", "at": _now_iso(), "lines": tamper_lines},
               prior_alarm=true_prior_alarm)
-        save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=record_ver)
-        _delete_in_flight(cache, bucket)              # definitively recorded -- the journal's job is done
+        if record_rules is not None:
+            save_applied(cache, bucket, record_rules, console=live_fp, folders=folders, versioning=record_ver,
+                         wrote=wrote, carry=jview.entries)
+        if not keep_journal:
+            _delete_in_flight(cache, bucket)          # definitively recorded -- the journal's job is done
         also = (["Your latest job settings were applied too."]
-                if app_rules_differ(applied, target) or applied_ver != record_ver else [])
+                if app_rules_differ(applied or [], record_rules or []) or applied_ver != record_ver else [])
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — restored · {bucket}",
                            lines=[*tamper_lines, *also, *waiting_lines], trigger=trigger)
         return headline("restored"), SyncResult(bucket, True, lines, headline("restored"), waiting), None, stale
     status("ok", detail)
-    save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=record_ver)
-    _delete_in_flight(cache, bucket)                  # definitively recorded -- the journal's job is done
+    if record_rules is not None:
+        save_applied(cache, bucket, record_rules, console=live_fp, folders=folders, versioning=record_ver,
+                     wrote=wrote, carry=jview.entries)
+    if not keep_journal:
+        _delete_in_flight(cache, bucket)              # definitively recorded -- the journal's job is done
     runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines,
                        trigger=trigger)
     return headline("ok"), SyncResult(bucket, True, lines, headline("ok"), waiting), None, stale

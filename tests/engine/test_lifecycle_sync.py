@@ -10,14 +10,44 @@ BASE = "unraid-backup-123456789012"
 ROLE = "arn:aws:iam::123456789012:role/backup-engine-bucket-admin"
 
 
+_BEFORE = object()
+
+
 class FakeS3:
-    """sts assume-role + get/put-bucket-lifecycle-configuration + get/put-bucket-versioning, per bucket."""
-    def __init__(self, rules=None, *, unsupported=False, deny_put=False, deny_assume=False, versioning=None):
+    """sts assume-role + get/put-bucket-lifecycle-configuration + get/put-bucket-versioning, per bucket.
+
+    Stale reads (settle-fix): S3 serves bucket configuration eventually consistently -- right after
+    a put, a read can still return the configuration from BEFORE it. `stale_reads=N` makes the next
+    N reads of a setting after every put of it return the old one; stale_next() arms that by hand
+    (e.g. after a killed pass's put), optionally with an older state."""
+    def __init__(self, rules=None, *, unsupported=False, deny_put=False, deny_assume=False, versioning=None,
+                 stale_reads=0):
         self.rules = {b: list(r) for b, r in (rules or {}).items()}
         self.unsupported, self.deny_put, self.deny_assume = unsupported, deny_put, deny_assume
         # bucket -> "Enabled" | "Suspended" | None (never versioned); a bucket not listed is Enabled
         self.versioning = dict(versioning or {})
         self.calls = []
+        self.stale_reads = stale_reads
+        self.before_put = {}                 # (bucket, "rules" | "versioning") -> what the last put replaced
+        self.stale = {}                      # (bucket, kind) -> [reads left, what they return]
+
+    def stale_next(self, kind, reads, *, bucket=BASE, old=_BEFORE):
+        """The next `reads` reads of `kind` ("rules" | "versioning") return `old` -- by default what
+        S3 had before its last put of that setting."""
+        value = self.before_put[(bucket, kind)] if old is _BEFORE else old
+        self.stale[(bucket, kind)] = [reads, json.loads(json.dumps(value))]
+
+    def _put(self, bucket, kind, before):
+        self.before_put[(bucket, kind)] = json.loads(json.dumps(before))
+        if self.stale_reads:
+            self.stale_next(kind, self.stale_reads, bucket=bucket)
+
+    def _read(self, bucket, kind, current):
+        left = self.stale.get((bucket, kind))
+        if left and left[0] > 0:
+            left[0] -= 1
+            return left[1]
+        return current
 
     def __call__(self, args, *, region, key, secret, session_token=None):
         self.calls.append(list(args))
@@ -31,28 +61,53 @@ class FakeS3:
         if self.unsupported:
             return SimpleNamespace(returncode=254, stdout="", stderr="An error occurred (NotImplemented)")
         if args[:2] == ["s3api", "get-bucket-lifecycle-configuration"]:
-            if not self.rules.get(bucket):
+            rules = self._read(bucket, "rules", self.rules.get(bucket))
+            if not rules:
                 return SimpleNamespace(returncode=254, stdout="",
                                        stderr="An error occurred (NoSuchLifecycleConfiguration)")
-            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Rules": self.rules[bucket]}))
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Rules": rules}))
         if args[:2] == ["s3api", "put-bucket-lifecycle-configuration"]:
             if self.deny_put:
                 return SimpleNamespace(returncode=254, stdout="",
                                        stderr="AccessDenied s3:PutLifecycleConfiguration rolesecret")
+            self._put(bucket, "rules", self.rules.get(bucket) or [])
             self.rules[bucket] = json.loads(args[args.index("--lifecycle-configuration") + 1])["Rules"]
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if args[:2] == ["s3api", "get-bucket-versioning"]:
-            status = self.versioning.get(bucket, "Enabled")
+            status = self._read(bucket, "versioning", self.versioning.get(bucket, "Enabled"))
             return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"Status": status} if status else {}))
         if args[:2] == ["s3api", "put-bucket-versioning"]:
             if self.deny_put:
                 return SimpleNamespace(returncode=254, stdout="", stderr="AccessDenied s3:PutBucketVersioning")
+            self._put(bucket, "versioning", self.versioning.get(bucket, "Enabled"))
             self.versioning[bucket] = args[args.index("--versioning-configuration") + 1].split("=", 1)[1]
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         raise AssertionError(args)
 
     def puts(self):
         return [c for c in self.calls if c[:2] == ["s3api", "put-bucket-lifecycle-configuration"]]
+
+
+def age_writes(cfg, seconds=None, bucket=BASE):
+    """Move every app write on record (applied.json and the write journal) `seconds` into the past
+    -- by default just past the settle window (settle-fix): S3 has long since settled, so a tamper
+    to the exact state from before one of those writes is judged as tampering, not settling."""
+    from datetime import datetime, timedelta, timezone
+    seconds = lc.SETTLE_S + 60 if seconds is None else seconds
+
+    def shift(ts):
+        t = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) - timedelta(seconds=seconds)
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+    for path in (Path(lc._state_dir(cfg["CACHE_DIR"]), f"{bucket}.applied.json"),
+                 lc._inflight_path(cfg["CACHE_DIR"], bucket)):
+        if not path.exists():
+            continue
+        doc = json.loads(path.read_text())
+        if doc.get("written_at"):
+            doc["written_at"] = shift(doc["written_at"])
+        for e in doc.get("previous") or []:
+            e["written_at"] = shift(e["written_at"])
+        path.write_text(json.dumps(doc))
 
 
 @pytest.fixture
@@ -220,6 +275,7 @@ def test_sync_after_a_job_change_is_not_tampering(cfg):
 def test_sync_tampering_that_cannot_be_put_back_is_not_restored(cfg):
     fake = FakeS3()
     lc.sync(cfg, BASE, run=fake)
+    age_writes(cfg)                          # no rules at all was S3's state before that write: settled
     fake.rules[BASE] = []
     fake.deny_put = True
     with pytest.raises(lc.LifecycleError):

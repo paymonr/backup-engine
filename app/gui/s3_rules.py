@@ -194,7 +194,11 @@ def _setup_state(cfg) -> tuple[dict | None, list[str], dict | None]:
     elif cap := _console_cap(cfg, buckets):
         row.update(state="warn", fix_url="/setup/storage", sentence=console_cap_words(cap))
     else:
-        row.update(state="ok", sentence="Your jobs' S3 rules are in place")
+        # settle-fix: a check that read S3 still settling after the app's own write is ok, not a
+        # warning -- the row just says so (lifecycle.SETTLING, the status detail).
+        settling = any(lifecycle.SETTLING in str(e.get("detail") or "") for e in entries)
+        row.update(state="ok", sentence="Your jobs' S3 rules are in place"
+                   + (f" — {lifecycle.SETTLING}" if settling else ""))
     return row, buckets, None
 
 

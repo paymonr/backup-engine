@@ -43,6 +43,15 @@ def test_row_ok(cfg):
     assert row["state"] == "ok" and row["verified_at"] == "2026-09-23T05:00:00Z"
 
 
+def test_row_ok_says_when_s3_is_still_applying_the_last_change(cfg):
+    # settle-fix: a check that read S3 still settling after the app's own write is ok -- not a
+    # warning -- and the row says why the rules it just read weren't the new ones yet
+    _status(cfg, state="ok", checked_at="2026-09-23T05:00:00Z", detail=lifecycle.SETTLING)
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "ok"
+    assert row["sentence"] == "Your jobs' S3 rules are in place — S3 is still applying the last change"
+
+
 def test_row_not_checked_yet(cfg):
     assert s3_rules.setup_row(cfg)["sentence"] == "Not checked yet"
 

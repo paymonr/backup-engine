@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from app.engine import lifecycle as lc
 from tests.engine.test_lifecycle_sync import (BASE, LEGACY, FakeS3, _events, _live,  # noqa: F401
-                                              _set_manga, cfg)
+                                              _set_manga, age_writes, cfg)
 
 M = "media/manga/"
 
@@ -452,7 +452,8 @@ def test_an_acknowledged_alarm_that_happens_again_is_notified_again(cfg, sent):
     _tamper(fake)
     lc.check(cfg, BASE, run=fake)
     lc.acknowledge(cfg["CACHE_DIR"])
-    _tamper(fake)
+    age_writes(cfg)          # settle-fix: the very same tamper again INSIDE the window would read as
+    _tamper(fake)            # S3 still serving the pre-restore state (tests/engine/test_lifecycle_settle.py)
     assert lc.check(cfg, BASE, run=fake) == "restored"
     assert len(sent) == 2
 

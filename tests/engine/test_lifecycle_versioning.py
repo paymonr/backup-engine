@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from app.engine import lifecycle as lc
-from tests.engine.test_lifecycle_sync import BASE, LEGACY, FakeS3, cfg  # noqa: F401
+from tests.engine.test_lifecycle_sync import BASE, LEGACY, FakeS3, age_writes, cfg  # noqa: F401
 
 ROLE_CREDS = {"AWS_ACCESS_KEY_ID": "ASIAROLE", "AWS_SECRET_ACCESS_KEY": "rolesecret", "AWS_SESSION_TOKEN": "roletok"}
 
@@ -660,6 +660,11 @@ def test_n1b_true_first_apply_killed_before_any_put(cfg, monkeypatch):
         lc.sync(cfg, BASE, run=fake)
     assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE) is None      # never a bare {"rules": []} stub
     monkeypatch.undo()
+    # settle-fix: the next pass can't tell a kill before the put from one after it with S3 still
+    # serving the old rules -- inside the window it's settling: nothing written, still a first apply
+    assert lc.check(cfg, BASE, run=fake) == "ok" and lc.SETTLING in _st(cfg)["detail"]
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE) is None and len(fake.puts()) == 0
+    age_writes(cfg)
     state = lc.check(cfg, BASE, run=fake)
     assert state == "ok" and "alarm" not in _st(cfg)
     ids = {r["ID"] for r in fake.rules[BASE]}

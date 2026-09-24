@@ -3,13 +3,14 @@ import json
 
 import pytest
 from app.engine import lifecycle as lc
-from tests.engine.test_lifecycle_sync import BASE, CONSOLE, FakeS3, cfg  # noqa: F401 (fixture)
+from tests.engine.test_lifecycle_sync import BASE, CONSOLE, FakeS3, age_writes, cfg  # noqa: F401 (fixture)
 
 
 def _applied(cfg, fake):
     if not fake.rules.get(BASE):
         lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)          # a bucket the app created: every folder applies
     lc.sync(cfg, BASE, run=fake)
+    age_writes(cfg)          # applied a while ago -- S3 has settled (settle-fix): these tests judge tampering
     return list(fake.rules[BASE])
 
 
@@ -191,6 +192,7 @@ def test_check_records_its_trigger(cfg):
     assert lc.check(cfg, BASE, run=fake, trigger="manual") == "restored"
     starts = [e for e in _events(cfg) if e["kind"] == "s3-rules" and e["event"] == "start"]
     assert starts[-1]["trigger"] == "manual"
+    age_writes(cfg)                          # deleted again only once S3 has settled after the restore
     fake.rules[BASE] = []
     lc.check(cfg, BASE, run=fake)
     starts = [e for e in _events(cfg) if e["kind"] == "s3-rules" and e["event"] == "start"]
