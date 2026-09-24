@@ -591,6 +591,15 @@ def test_render_crontab_without_jobs_stays_empty(tmp_path):
                                   dry_run=True, source_root=_root(tmp_path)) == ""
 
 
+def test_render_crontab_keeps_the_hourly_check_while_every_job_is_paused(tmp_path):
+    # final fix wave M2: pausing every job doesn't take their data out of S3 -- the rules
+    # there still need checking, so the line stays whenever at least one job exists.
+    cfg, root = _cfg(tmp_path), _root(tmp_path)
+    jobs_io.upsert(cfg, _job(name="paused", schedule="0 3 * * *", enabled=False), source_root=root)
+    text = jobs_io.render_crontab(cfg, str(tmp_path / "cache"), "/app/scripts", dry_run=True, source_root=root)
+    assert text == jobs_io.S3_RULES_CHECK_LINE + "\n"
+
+
 def test_entrypoint_renders_the_same_check_line():
     text = (Path(__file__).resolve().parents[2] / "scripts" / "entrypoint.sh").read_text()
     assert f"'{jobs_io.S3_RULES_CHECK_LINE}'" in text

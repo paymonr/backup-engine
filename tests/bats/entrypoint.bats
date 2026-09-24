@@ -42,6 +42,21 @@ EOF
   [ "$(wc -l <"$CACHE_DIR/crontab")" -eq 3 ]
 }
 
+@test "entrypoint --emit-crontab keeps the hourly S3 rules check while every job is paused" {
+  cat >"$CFG/jobs.json" <<'EOF'
+{
+  "jobs": [
+    {"name": "scratch", "type": "archive", "source": "scratch", "schedule": "0 2 * * *", "enabled": false, "storage_class": "STANDARD", "mirror": false}
+  ]
+}
+EOF
+  run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
+  [ "$status" -eq 0 ]
+  local want
+  want="$(python3 -c 'from app.gui import jobs_io; print(jobs_io.S3_RULES_CHECK_LINE)')"
+  [ "$(cat "$CACHE_DIR/crontab")" = "$want" ]
+}
+
 @test "entrypoint --emit-crontab with no jobs.json writes an empty crontab" {
   run bash "$BATS_TEST_DIRNAME/../../scripts/entrypoint.sh" --emit-crontab
   [ "$status" -eq 0 ]

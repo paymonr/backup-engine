@@ -18,7 +18,7 @@ _KEEP_KEYS = ("last", "daily", "weekly", "monthly")
 _RETENTION_TYPES = ("keep_all", "days", "count", "tiered")
 
 # The hourly S3 rules tamper check (spec 2026-09-23, R-B9). entrypoint.sh:emit_crontab prints
-# the SAME line under the same condition (at least one scheduled job) -- crontab_stale
+# the SAME line under the same condition (at least one valid job, enabled or paused) -- crontab_stale
 # compares the two renders byte for byte. Under `timeout` (final fix wave M1): a hung check-all
 # is cut off long before the next hour's -- its SIGTERM handler records "timed out" for the
 # bucket it was on.
@@ -401,16 +401,19 @@ def render_crontab(config_dir, cache_dir, scripts_dir, *, dry_run=False, source_
     them, so on-disk == this render whenever nothing was hand-edited (crontab_stale).
     dry_run=True returns the text without writing or signalling (7.3, 7.8)."""
     source_root = source_root if source_root is not None else os.environ.get("SOURCE_ROOT", "/backup/media")
-    lines = []
+    lines, any_job = [], False
     for job in load(config_dir):
         try:
             v = validate(job, source_root, require_exists=False)
         except ValueError:
             continue
+        any_job = True
         if not v.get("enabled"):
             continue
         lines.append(f"{v['schedule']} {scripts_dir}/backup-job.sh {v['name']}")
-    if lines:
+    # final fix wave M2: whenever at least one (valid) job EXISTS -- a paused job's data still
+    # sits in S3 under the app's rules, so they're still checked hourly.
+    if any_job:
         lines.append(S3_RULES_CHECK_LINE)
     text = "".join(line + "\n" for line in lines)
     if not dry_run:
