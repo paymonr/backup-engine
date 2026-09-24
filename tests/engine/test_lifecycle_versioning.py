@@ -1,5 +1,6 @@
 # tests/engine/test_lifecycle_versioning.py — versioning intent + tamper coverage (spec §1, §2; R-B7).
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -405,23 +406,6 @@ def test_in_flight_present_but_live_tampered_to_something_else_still_alarms(cfg)
     assert _inflight(cfg) is None
 
 
-def test_a_stale_journal_past_its_ttl_is_never_adopted(cfg):
-    # (b): a journal older than 6 hours is dropped without adoption, judged normally.
-    fake = FailOrKill()
-    _confirm_suspend(cfg, fake)
-    lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on", "abort_uploads_days": 14}}})
-    doc = lc.load_applied_doc(cfg["CACHE_DIR"], BASE)
-    lc._write_in_flight(cfg["CACHE_DIR"], BASE, doc["rules"], doc["folders"], "on")
-    stale = lc._inflight_path(cfg["CACHE_DIR"], BASE)
-    old = json.loads(stale.read_text())
-    old["written_at"] = "2020-01-01T00:00:00Z"
-    stale.write_text(json.dumps(old))
-    next(r for r in fake.rules[BASE] if r["ID"] == lc.HOUSEKEEPING_ID)["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] = 14
-    state = lc.check(cfg, BASE, run=fake)
-    assert _inflight(cfg) is None                            # dropped, not adopted
-    assert state == "ok" and "alarm" not in _st(cfg)          # rules genuinely match target now anyway
-
-
 def test_a_corrupt_applied_record_is_never_overwritten_by_the_journal(cfg):
     # item 1: the journal must never create or rewrite the applied record on its own -- only
     # save_applied does, and only when something in the journal actually matches live. A
@@ -616,21 +600,27 @@ def test_confirmed_partial_landed_rules_reach_activity(cfg):
 # TRUE first apply must still read as a first apply next time, never a false tamper alarm.
 
 class Fake2(FakeS3):
-    """put_rules: None | "fail" (error, nothing landed) | "landed_err" (lands, THEN errors);
-    put_ver: None | "fail"; ver_read: None | "unsupported"."""
+    """put_rules: None | "fail" (error, nothing landed) | "landed_err" (lands, THEN errors) |
+    "kill_after" (lands, then the process is killed before the pass hears back);
+    put_ver: None | "fail" | "landed_err"; ver_read: None | "unsupported"."""
     put_rules = None
     put_ver = None
     ver_read = None
 
     def __call__(self, args, **kw):
         if self.put_rules and args[:2] == ["s3api", "put-bucket-lifecycle-configuration"]:
-            if self.put_rules == "landed_err":
+            if self.put_rules in ("landed_err", "kill_after"):
                 super().__call__(args, **kw)
             else:
                 self.calls.append(list(args))
+            if self.put_rules == "kill_after":
+                raise Killed()
             return SimpleNamespace(returncode=254, stdout="", stderr="RequestTimeout")
         if self.put_ver and args[:2] == ["s3api", "put-bucket-versioning"]:
-            self.calls.append(list(args))
+            if self.put_ver == "landed_err":
+                super().__call__(args, **kw)
+            else:
+                self.calls.append(list(args))
             return SimpleNamespace(returncode=254, stdout="", stderr="RequestTimeout")
         if self.ver_read and args[:2] == ["s3api", "get-bucket-versioning"]:
             self.calls.append(list(args))
@@ -719,3 +709,72 @@ def test_n7_seeded_rules_put_failure_keeps_o1_note(cfg):
     lc.check(cfg, BASE, run=fake)
     blob = "".join(x.read_text() for x in sorted(Path(cfg["CACHE_DIR"], "logs").rglob("*.log")))
     assert "Kept as it is" in blob
+
+
+# --- fix round 4 (re-review of 72a52a8..88823ca) ------------------------------------------------
+
+def _journal_file(cfg, bucket=BASE):
+    return lc._inflight_path(cfg["CACHE_DIR"], bucket)
+
+
+def _age_journal(cfg, seconds):
+    p = _journal_file(cfg)
+    doc = json.loads(p.read_text())
+    doc["written_at"] = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    p.write_text(json.dumps(doc))
+
+
+def _confirmed_undo_10_killed_after_the_put_lands(cfg):
+    """A confirmed undo 30->10 whose rules put LANDS, then the process is killed before the
+    pass records it: live now matches the journal exactly, applied.json still says 30."""
+    fake = Fake2()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)                                     # applied: undo 30 days
+    pv = lc.preview(cfg, BASE, {"kind": "settings",
+                               "settings": {"version": 1, "buckets": {BASE: {"folders": {"appdata/": {"undo_days": 10}}}}}})
+    fake.put_rules = "kill_after"
+    with pytest.raises(Killed):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    fake.put_rules = None
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}                           # landed...
+    assert _appd(lc.load_applied(cfg["CACHE_DIR"], BASE)) == {"NoncurrentDays": 30}    # ...never recorded
+    assert _appd(_inflight(cfg)["rules"]) == {"NoncurrentDays": 10}                    # live DOES match the journal
+    return fake
+
+
+# item 1: the 6 h TTL, pinned at the spec's number (not derived from _INFLIGHT_TTL_S, so a
+# changed/disabled constant fails here). Live matches the journal in both cases -- only its age differs.
+@pytest.mark.parametrize("age_s,adopted", [(6 * 3600 - 120, True), (6 * 3600 + 120, False)])
+def test_a_journal_live_matches_is_adopted_only_inside_its_6h_ttl(cfg, age_s, adopted):
+    fake = _confirmed_undo_10_killed_after_the_put_lands(cfg)
+    _age_journal(cfg, age_s)
+    state = lc.check(cfg, BASE, run=fake)                           # an ordinary GATED check
+    assert not _journal_file(cfg).exists()                          # consumed either way
+    if adopted:
+        assert state == "ok" and "alarm" not in _st(cfg)
+        assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}
+        assert _appd(lc.load_applied(cfg["CACHE_DIR"], BASE)) == {"NoncurrentDays": 10}
+    else:                                                           # judged normally: live != applied
+        assert state == "restored" and _st(cfg)["alarm"]["kind"] == "restored"
+        assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 30}
+        assert _appd(lc.load_applied(cfg["CACHE_DIR"], BASE)) == {"NoncurrentDays": 30}
+
+
+# item 2: "status first" for tamper -- a tampered pass killed right after the restoring rules put
+# lands (before it ever reaches its own post-write status call) still leaves the alarm on disk.
+def test_a_tampered_pass_killed_right_after_the_restoring_put_lands_leaves_the_alarm(cfg):
+    fake = Fake2()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    fake.rules[BASE] = [r for r in fake.rules[BASE] if r["ID"] != "backup-engine:appdata/"]   # changed outside
+    fake.put_rules = "kill_after"
+    with pytest.raises(Killed):
+        lc.check(cfg, BASE, run=fake)
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 30}          # the restoring put DID land
+    alarm = _st(cfg).get("alarm")
+    assert alarm and alarm["kind"] == "not_restored", "the kill lost the tamper alarm"
+    assert any("appdata/" in ln for ln in alarm["lines"])
+    fake.put_rules = None
+    assert lc.check(cfg, BASE, run=fake) == "ok"                      # the landed restore is adopted...
+    alarm = _st(cfg)["alarm"]
+    assert alarm["kind"] == "restored" and any("appdata/" in ln for ln in alarm["lines"])   # ...the alarm stays
