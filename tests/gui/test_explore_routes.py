@@ -488,3 +488,14 @@ def test_explore_get_busy_flashes_and_redirects(client, example, monkeypatch):
     assert r.status_code in (302, 303)
     assert r.headers["Location"].endswith("/explore/appdata")
     assert "argv" not in launched
+
+
+def test_explore_file_sizes_scale_their_unit(client, example, monkeypatch):
+    # The owner asked for sizes in MB: a file size is never a raw byte count.
+    monkeypatch.setattr(routes, "_browse_level",
+        lambda cfg, name, jt, path, snapshot=None: {"path": path, "entries": [
+            {"name": "big.mkv", "kind": "file", "size": 5 * 1024 * 1024, "storage_class": None, "modified": None},
+            {"name": "tiny.txt", "kind": "file", "size": 300, "storage_class": None, "modified": None}]})
+    body = client.get("/explore/manga").get_data(as_text=True)
+    assert "5.0 MB" in body and "300 B" in body
+    assert "5242880" not in body
