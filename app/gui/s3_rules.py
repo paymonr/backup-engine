@@ -240,10 +240,20 @@ def _bucket_view(cfg, bucket: str, base: str, jobs: list[dict], settings: dict) 
                      "waiting": w.words.split(": ", 1)[-1] if w else None, "note": f.note})
     bset = lifecycle.bucket_settings(settings, bucket)
     live = lifecycle.load_live(cache, bucket)
+    live_versioning = (live or {}).get("versioning")
+    # fix round 1, Minor: neutral chip styling when versioning is suspended/never-on BY THE
+    # OWNER'S CHOICE (it matches the current intent and nothing is waiting) -- warning only
+    # when it differs from intent (not yet reconciled, or tampered) or a suspend is waiting
+    # (the waiting box below already offers "Review and confirm…", so the link is redundant).
+    versioning_waiting = "versioning" in waiting
+    versioning_ok = (live_versioning is not None
+                     and lifecycle.versioning_matches(live_versioning, want.versioning)
+                     and not versioning_waiting)
     return {"name": bucket, "dedicated": bucket != base, "applied": before is not None, "rows": rows,
             "console": console_view(live["rules"], want.folders) if live else [],
             "live_read_at": _human_time((live or {}).get("read_at")),
-            "versioning": (live or {}).get("versioning"),
+            "versioning": live_versioning, "versioning_ok": versioning_ok,
+            "versioning_waiting": versioning_waiting,
             "housekeeping": {"key": f"{bucket}|*", "abort_days": bset["abort_uploads_days"],
                              "markers": bset["delete_marker_cleanup"]},
             "waiting": [c.words for c in waiting.values()]}
@@ -430,7 +440,7 @@ def _edit_from_form(cfg, form):
         b["delete_marker_cleanup"] = bool(form.get("markers"))
         v = form.get("versioning")
         if v is not None:
-            if v not in ("on", "suspended"):
+            if v not in lifecycle.VERSIONING_STATES:
                 raise ValueError("Pick versioning on or suspended.")
             b["versioning"] = v
         return base, jobs, settings, bucket, {"kind": "settings", "settings": settings}

@@ -8,6 +8,12 @@ resource "aws_s3_bucket_versioning" "backup" {
   versioning_configuration {
     status = var.base_bucket_versioned ? "Enabled" : "Suspended"
   }
+  # backup-engine owns versioning after this first apply (one owner per setting, like
+  # lifecycle rules below) -- a later `tofu apply` (e.g. to rotate the runtime key) must
+  # never flip an app-side suspend/resume back to this variable's value.
+  lifecycle {
+    ignore_changes = [versioning_configuration]
+  }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "backup" {

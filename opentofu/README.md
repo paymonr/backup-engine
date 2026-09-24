@@ -7,8 +7,13 @@ object-only IAM user that the backup container uses at runtime.
 It provisions:
 
 - **`aws_s3_bucket`** — the off-site backup bucket, with:
-  - **Versioning** enabled (protects against ransomware/accidental delete —
-    `restic` and `rclone` both rely on this for safe pruning).
+  - **Versioning** enabled on first apply (protects against
+    ransomware/accidental delete — `restic` and `rclone` both rely on this
+    for safe pruning). After that, backup-engine owns it (one owner per
+    setting, like lifecycle rules below): `aws_s3_bucket_versioning` carries
+    a `lifecycle { ignore_changes = [versioning_configuration] }`, so a
+    later `tofu apply` (e.g. to rotate the runtime key) never flips an
+    app-side suspend/resume back to `base_bucket_versioned`'s value.
   - **Default server-side encryption** (SSE-S3 / `AES256`).
   - **Public access fully blocked** (`aws_s3_bucket_public_access_block`,
     all four flags `true`).

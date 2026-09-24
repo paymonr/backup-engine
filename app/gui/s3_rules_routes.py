@@ -90,12 +90,17 @@ def setup_storage_preview():
         # baseline) still waits -- apply_for's own warning says so; this flash must not
         # contradict it.
         folder = key.partition("|")[2]
-        rid = lifecycle.HOUSEKEEPING_ID if folder == "*" else lifecycle.rule_id(folder)
-        change = next((c for c in pv.changes if c.rule_id == rid), None)
-        if change is None:
+        # fix round 1, I2: the bucket-wide row covers TWO app rules -- housekeeping and,
+        # since Task 16, versioning -- either or both can be what this edit actually changed
+        # (a versioning-only edit must not be reported as "No change." and skip apply_for).
+        if folder == "*":
+            relevant = [c for c in pv.changes if c.rule_id in (lifecycle.HOUSEKEEPING_ID, "versioning")]
+        else:
+            relevant = [c for c in pv.changes if c.rule_id == lifecycle.rule_id(folder)]
+        if not relevant:
             flash("No change.", "note")
             return redirect("/setup/storage")
-        if change.kind == lifecycle.KEEPS_LESS:
+        if any(c.kind == lifecycle.KEEPS_LESS for c in relevant):
             flash("Saved.", "note")
         else:
             flash("Saved — this keeps more, so S3 applies it now.", "success")

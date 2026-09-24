@@ -627,3 +627,51 @@ def test_suspending_versioning_is_previewed_behind_the_bucket_name(client, cfg):
     assert "versioning: on → suspended" in body and "gone immediately from now on" in body
     assert f'placeholder="{BASE}"' in body
     assert lifecycle.bucket_settings(lifecycle.load_settings(cfg["CONFIG_DIR"]), BASE)["versioning"] == "on"
+
+
+def test_the_editor_keeps_the_versioning_choice_on_a_form_error(client, cfg):
+    _applied(cfg)
+    body = client.post("/setup/storage/preview", data={"csrf": _csrf(client), "key": f"{BASE}|*",
+                                                        "abort_days": "0", "versioning": "suspended"}
+                       ).get_data(as_text=True)
+    assert "Clear abandoned uploads after 1 to" in body and 'id="s3-editor"' in body
+
+
+def test_a_suspended_chip_is_neutral_when_it_matches_the_owners_own_intent(client, cfg):
+    # fix round 1, Minor: suspended-by-choice is not a warning -- only a mismatch (not yet
+    # reconciled, or tampered) or a pending confirmation earns the warning style.
+    settings = {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}}
+    lifecycle.save_settings(cfg["CONFIG_DIR"], settings)
+    _applied(cfg, settings=settings)
+    lifecycle.save_live(cfg["CACHE_DIR"], BASE, lifecycle.load_applied(cfg["CACHE_DIR"], BASE), versioning="suspended")
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert '<span class="tok tok-ok">versioning suspended</span>' in body
+
+
+def test_the_suspend_link_hides_while_a_suspend_is_already_waiting(client, cfg):
+    _applied(cfg)                                                  # applied: versioning "on"
+    lifecycle.save_live(cfg["CACHE_DIR"], BASE, lifecycle.load_applied(cfg["CACHE_DIR"], BASE), versioning="on")
+    lifecycle.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}})
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "Suspend versioning…" not in body
+    assert '<span class="tok tok-overdue">versioning on</span>' in body   # warning: something's pending
+
+
+# --- fix round 1 -------------------------------------------------------------------------------
+
+def test_a_versioning_only_keeps_more_edit_is_saved_and_applied_at_once(client, cfg, monkeypatch):
+    # I2: a bucket-wide edit that changes ONLY versioning (housekeeping unchanged) used to be
+    # matched by rid == HOUSEKEEPING_ID alone, so it fell through to "No change." and never
+    # called apply_for -- the intent was saved but never actually reached S3 this pass.
+    settings = {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}}
+    lifecycle.save_settings(cfg["CONFIG_DIR"], settings)
+    _applied(cfg, settings=settings)
+    assert lifecycle.load_applied_doc(cfg["CACHE_DIR"], BASE)["versioning"] == "suspended"
+    applied = []
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: applied.append(b) or [("success", "S3 rules updated: x")])
+    r = client.post("/setup/storage/preview", data={"csrf": _csrf(client), "key": f"{BASE}|*", "abort_days": "7",
+                                                     "markers": "1", "versioning": "on"})
+    assert r.status_code in (302, 303) and applied == [[BASE]]
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "this keeps more, so S3 applies it now" in body
+    assert lifecycle.bucket_settings(lifecycle.load_settings(cfg["CONFIG_DIR"]), BASE)["versioning"] == "on"

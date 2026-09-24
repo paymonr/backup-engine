@@ -495,7 +495,7 @@ def baseline_from_applied(doc, want: RuleSet, live_versioning: str | None = None
     v = doc.get("versioning")
     return RuleSet(app_rules_of(doc["rules"]),
                    frozenset(known) if isinstance(known, list) else want.folders,
-                   v if v in ("on", "suspended") else live_versioning)
+                   v if v in VERSIONING_STATES else live_versioning)
 
 
 def _legacy_targets(rid: str, folders) -> list[str]:
@@ -761,6 +761,7 @@ def write_rules(bucket: str, rules: list[dict], creds: dict, region: str, *, run
 
 _VERSIONING = {"Enabled": "on", "Suspended": "suspended"}
 _VER_WORDS = {"on": "on", "suspended": "suspended", "never": "never turned on"}
+VERSIONING_STATES = ("on", "suspended")            # the only states the app itself ever stores/writes
 
 
 def read_versioning(bucket: str, creds: dict, region: str, *, run=provision._run_aws) -> str:
@@ -776,6 +777,10 @@ def read_versioning(bucket: str, creds: dict, region: str, *, run=provision._run
 
 
 def write_versioning(bucket: str, state: str, creds: dict, region: str, *, run=provision._run_aws) -> None:
+    # fix round 1, Minor: never silently send Suspended for a bad `state` -- a caller bug
+    # must surface as a bug, not as an unintended suspend.
+    if state not in VERSIONING_STATES:
+        raise ValueError(f"write_versioning: state must be 'on' or 'suspended', not {state!r}")
     cp = _call(run, creds, region, ["s3api", "put-bucket-versioning", "--bucket", bucket,
                                     "--versioning-configuration",
                                     f"Status={'Enabled' if state == 'on' else 'Suspended'}"])
@@ -789,7 +794,7 @@ def versioning_intent(bucket: str, base: str, jobs: list[dict], settings: dict, 
     install is flipped against a choice it already made."""
     raw = ((settings or {}).get("buckets") or {}).get(bucket)
     v = raw.get("versioning") if isinstance(raw, dict) else None
-    if v in ("on", "suspended"):
+    if v in VERSIONING_STATES:
         return v
     if bucket != base:
         job = next((j for j in jobs if j.get("dedicated") and j.get("bucket") == bucket), None)
@@ -985,26 +990,42 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     reported back via the 4th return value so apply_confirmed can tell the owner nothing that
     keeps less applied.
 
+    Versioning is read/written as its own half (fix round 1): a storage that can't report
+    versioning at all (NotImplemented/MethodNotAllowed, e.g. a non-AWS S3-compatible endpoint
+    while lifecycle rules work fine) leaves that half unmanaged for this pass -- no versioning
+    write, no versioning tamper check, `record_ver` (what's recorded to applied.json) stays
+    whatever was last confirmed applied -- and the rules half still applies normally.
+
     Returns (state, SyncResult | None, LifecycleError | None, expect_stale: bool); state is what
     was recorded (ok | restored | not_restored | error | unsupported), or "console_rule" when
     this pass raised that alarm and the app's own rules are ok/restored."""
     config_dir = cfg["CONFIG_DIR"]
     base, region, cache = _context(cfg)
     jobs = jobs_io.load(config_dir)                          # under the lock: never a stale list
-    detail = "; ".join(notes_for(bucket, base, jobs))
+    notes = notes_for(bucket, base, jobs)
     doc = _applied_doc(cache, bucket)
     applied = load_applied(cache, bucket)
-    applied_ver = doc.get("versioning") if isinstance(doc, dict) and doc.get("versioning") in ("on", "suspended") \
+    applied_ver = doc.get("versioning") if isinstance(doc, dict) and doc.get("versioning") in VERSIONING_STATES \
         else None
     stored_fp = load_console_fingerprint(cache, bucket) if applied is not None else None
     stale = False
     try:
         creds = role_creds(config_dir, region, run=run)
         live = read_rules(bucket, creds, region, run=run)
-        live_ver = read_versioning(bucket, creds, region, run=run)
     except LifecycleError as e:
         set_status(cache, bucket, _err_state(e), e.detail)
         return _err_state(e), None, e, stale
+    try:
+        live_ver = read_versioning(bucket, creds, region, run=run)
+    except LifecycleError as e:
+        if e.kind != "unsupported":
+            set_status(cache, bucket, _err_state(e), e.detail)
+            return _err_state(e), None, e, stale
+        # fix round 1, Minor: unsupported here means only that THIS storage can't report
+        # versioning -- the lifecycle rules half still works, so don't fail the whole pass.
+        live_ver, notes = None, [*notes, "this storage doesn't report versioning"]
+    ver_managed = live_ver is not None
+    detail = "; ".join(notes)
     save_live(cache, bucket, live, versioning=live_ver)
 
     first = applied is None
@@ -1052,28 +1073,50 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         return "console_rule" if console_alarm and state in ("ok", "restored") else state
 
     rules_in_step = not app_rules_differ(live, target) and not any(r.get("ID") in LEGACY_IDS for r in live)
-    ver_in_step = versioning_matches(live_ver, target_ver)
+    # fix round 1, Minor: when this pass can't manage versioning at all (unsupported storage),
+    # it's never out of step and never tampered -- `record_ver` (what applied.json gets) stays
+    # whatever was last actually confirmed applied, never a target we never verified.
+    ver_in_step = True if not ver_managed else versioning_matches(live_ver, target_ver)
+    record_ver = target_ver if ver_managed else applied_ver
     if rules_in_step and ver_in_step:
         status("ok", detail)                     # M2: the alarm is on disk before the fingerprint moves
         if (first or app_rules_differ(applied, target) or stored_fp != live_fp or old_folders != folders
-                or applied_ver != target_ver):
-            save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=target_ver)
+                or applied_ver != record_ver):
+            save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=record_ver)
         if console_note:
             runs.record_system(cache, kind="s3-rules", summary=f"S3 rules checked · {bucket}",
                                lines=console_note, trigger=trigger)
         return headline("ok"), SyncResult(bucket, False, [], headline("ok"), waiting), None, stale
     rules_tampered = applied is not None and app_rules_differ(live, applied)
-    ver_tampered = applied_ver is not None and not versioning_matches(live_ver, applied_ver)
+    ver_tampered = ver_managed and applied_ver is not None and not versioning_matches(live_ver, applied_ver)
     tampered = rules_tampered or ver_tampered
     tamper_lines = ((_change_lines(applied, live) if rules_tampered else [])
                     + ([f"versioning: was {_VER_WORDS[applied_ver]}, now {_VER_WORDS.get(live_ver, live_ver)}"]
                        if ver_tampered else []))
+    rules_written = False
     try:
         if not rules_in_step:
             write_rules(bucket, merge(live, target), creds, region, run=run)
+            rules_written = True
         if not ver_in_step:
             write_versioning(bucket, target_ver, creds, region, run=run)
     except LifecycleError as e:
+        if rules_written:
+            # fix round 1, I1: the rules half reached S3 even though this pass overall failed
+            # (the versioning write) -- record it (folders union, the OLD applied versioning:
+            # that half never changed) so applied.json matches S3, and the NEXT pass never
+            # mistakes our own successful half-write for tampering (or reverts a confirmed
+            # change). Status/alarm written before save_applied on every path (M2).
+            if tampered:
+                status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines})
+                save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver)
+                runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
+                                   lines=[*tamper_lines, e.detail], outcome="failed", error=e.detail,
+                                   trigger=trigger)
+                return "not_restored", None, e, stale
+            status(_err_state(e), e.detail)
+            save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver)
+            return _err_state(e), None, e, stale
         if not tampered:
             status(_err_state(e), e.detail)
             if applied is not None and stored_fp != live_fp:
@@ -1091,14 +1134,14 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
              + ([detail] if detail else []) + waiting_lines + console_note)
     if tampered:
         status("restored", detail, {"kind": "restored", "at": _now_iso(), "lines": tamper_lines})
-        save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=target_ver)
+        save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=record_ver)
         also = (["Your latest job settings were applied too."]
-                if app_rules_differ(applied, target) or applied_ver != target_ver else [])
+                if app_rules_differ(applied, target) or applied_ver != record_ver else [])
         runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — restored · {bucket}",
                            lines=[*tamper_lines, *also, *waiting_lines], trigger=trigger)
         return headline("restored"), SyncResult(bucket, True, lines, headline("restored"), waiting), None, stale
     status("ok", detail)
-    save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=target_ver)
+    save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=record_ver)
     runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}", lines=lines,
                        trigger=trigger)
     return headline("ok"), SyncResult(bucket, True, lines, headline("ok"), waiting), None, stale
