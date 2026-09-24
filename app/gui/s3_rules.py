@@ -277,16 +277,14 @@ def screen(cfg) -> dict:
 
 # --- the side editor, impact line and preview (spec §3, §5 layout B) -----------------------------
 
-_DAYS_MSG = "Enter a whole number of days, 1 or more."
+MAX_DAYS = 36500                                # fix round 1: an upper bound on every day count here
+_DAYS_MSG = f"Enter a whole number of days, 1 to {MAX_DAYS}."
+_ABORT_MSG = f"Clear abandoned uploads after 1 to {MAX_DAYS} days."
 _COUNT_MSG = f"S3 can keep 1 to {lifecycle.MAX_NEWER} old versions per file."
 
 
 def why(kind: str) -> str:
     return _WHY.get(kind, kind)
-
-
-def _days(n) -> str:
-    return f"{n} day" if n == 1 else f"{n} days"
 
 
 def _human_bytes(b) -> str:
@@ -296,14 +294,33 @@ def _human_bytes(b) -> str:
     return f"{int(b)} B"
 
 
-def _whole(v, msg: str) -> int:
+def _whole(v, msg: str, *, max_: int | None = None) -> int:
     try:
         n = int(str(v).strip())
     except (TypeError, ValueError):
         raise ValueError(msg)
-    if n < 1:
+    if n < 1 or (max_ is not None and n > max_):
         raise ValueError(msg)
     return n
+
+
+def _fits(v, limit: int) -> bool:
+    """Whether a stored/submitted value is small enough that an HTML `max` on its input can't
+    block resubmitting it unchanged (fix round 1, Minor) -- unparseable reads as "no", the
+    careful side: the server still validates for real either way."""
+    try:
+        return int(str(v).strip()) <= limit
+    except (TypeError, ValueError):
+        return False
+
+
+def refresh_ok(cfg) -> bool:
+    """Whether Refresh now may be offered: S3 rules managed here and not a custom S3 endpoint --
+    /setup/storage/refresh (Task 12) refuses both with a warning otherwise, so the button (and
+    its wording) is never offered where it would just bounce (fix round 1; shared by the route,
+    the editor's and the preview's initial/live impact text)."""
+    return (lifecycle.managed(cfg["CONFIG_DIR"])
+           and not config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_ENDPOINT", "").strip())
 
 
 def _context(cfg):
@@ -313,8 +330,19 @@ def _context(cfg):
     return base, jobs_io.load(config_dir), lifecycle.load_settings(config_dir)
 
 
-def editor(cfg, key: str | None, *, error: str | None = None) -> dict | None:
-    """The side editor for one row (layout B): only the fields that row has."""
+def _plain_days(r: dict) -> int:
+    """The days value the plain-copy editor shows: what S3 actually applies (plain_rule's own
+    max(1, ...) clamp), not the raw stored value -- a stored `days: 0` must show as 1, the
+    figure S3 really uses, not the "no value at all" placeholder (fix round 1, Minor)."""
+    days = r.get("days")
+    return 180 if days is None else max(1, int(days))
+
+
+def editor(cfg, key: str | None, *, error: str | None = None, form=None) -> dict | None:
+    """The side editor for one row (layout B): only the fields that row has. `form` (fix round
+    1, I2/Minor), when given, is the just-submitted, still-invalid POST -- its own entries and
+    radio choice are shown instead of the stored values, so a form error never silently reverts
+    what the owner typed."""
     if not key or "|" not in key:
         return None
     base, jobs, settings = _context(cfg)
@@ -324,8 +352,12 @@ def editor(cfg, key: str | None, *, error: str | None = None) -> dict | None:
     bset = lifecycle.bucket_settings(settings, bucket)
     ed = {"key": key, "bucket": bucket, "folder": folder, "error": error}
     if folder == "*":
+        if form is not None:
+            abort_days, markers = form.get("abort_days", bset["abort_uploads_days"]), bool(form.get("markers"))
+        else:
+            abort_days, markers = bset["abort_uploads_days"], bset["delete_marker_cleanup"]
         ed.update(kind="bucket", title="Bucket-wide", where="whole bucket",
-                  abort_days=bset["abort_uploads_days"], markers=bset["delete_marker_cleanup"])
+                  abort_days=abort_days, markers=markers)
         return ed
     f = next((x for x in lifecycle.folders_for(bucket, base, jobs) if x.folder == folder), None)
     if f is None:
@@ -335,12 +367,24 @@ def editor(cfg, key: str | None, *, error: str | None = None) -> dict | None:
               summary_at=_human_time((summary or {}).get("scanned_at")))
     if f.kind == "plain":
         r = f.retention or {"type": "keep_all"}
-        keep = {"keep_all": "all", "days": "days"}.get(r.get("type"), "both" if r.get("days") else "count")
+        stored_keep = {"keep_all": "all", "days": "days"}.get(r.get("type"), "both" if r.get("days") else "count")
+        stored_days, stored_count = _plain_days(r), r.get("count") or 10
+        if form is not None:
+            keep = form.get("keep", stored_keep)
+            days, count = form.get("days", stored_days), form.get("count", stored_count)
+        else:
+            keep, days, count = stored_keep, stored_days, stored_count
         ed.update(kind="plain", title=f"{f.jobs[0]} · Plain copy", job=f.jobs[0], keep=keep,
-                  days=r.get("days") or 180, count=r.get("count") or 10)
+                  days=days, count=count, count_capped=_fits(count, lifecycle.MAX_NEWER))
+        args = {"key": key, "keep": keep, "days": str(days), "count": str(count)}
     else:
-        ed.update(kind="undo", title=f"{', '.join(f.jobs)} · undo window",
-                  undo_days=lifecycle.undo_days(bset, folder))
+        stored_undo = lifecycle.undo_days(bset, folder)
+        undo_days = form.get("undo_days", stored_undo) if form is not None else stored_undo
+        ed.update(kind="undo", title=f"{', '.join(f.jobs)} · undo window", undo_days=undo_days)
+        args = {"key": key, "undo_days": str(undo_days)}
+    # fix round 1, I1: the true impact line on the very first render (impact.json's JS then
+    # keeps it live as the owner changes values) -- the same function, the row's own values.
+    ed["impact"] = impact_line(cfg, args)
     return ed
 
 
@@ -350,14 +394,12 @@ def retention_from_editor(form) -> dict:
     if keep == "all":
         return {"type": "keep_all"}
     if keep == "days":
-        return {"type": "days", "days": _whole(form.get("days"), _DAYS_MSG)}
+        return {"type": "days", "days": _whole(form.get("days"), _DAYS_MSG, max_=MAX_DAYS)}
     if keep in ("count", "both"):
-        n = _whole(form.get("count"), _COUNT_MSG)
-        if n > lifecycle.MAX_NEWER:
-            raise ValueError(_COUNT_MSG)
+        n = _whole(form.get("count"), _COUNT_MSG, max_=lifecycle.MAX_NEWER)
         r = {"type": "count", "count": n}
         if keep == "both":
-            r["days"] = _whole(form.get("days"), _DAYS_MSG)
+            r["days"] = _whole(form.get("days"), _DAYS_MSG, max_=MAX_DAYS)
         return r
     raise ValueError("Pick how long S3 keeps old versions.")
 
@@ -378,44 +420,50 @@ def _folder_entry(settings: dict, bucket: str, folder: str) -> dict:
     return e
 
 
-def edit_from_form(cfg, form) -> tuple[str, dict]:
-    """The editor's (or the waiting list's) POST as a lifecycle edit: (bucket, edit).
-    Raises ValueError with owner words on a bad value -- nothing is previewed then."""
+def _edit_from_form(cfg, form):
+    """(base, jobs, settings, bucket, edit) -- the shared computation edit_from_form and
+    impact_line both need, loading jobs.json/storage.json once (fix round 1, Minor: impact_line
+    used to load them a second time via lifecycle.edited's own jobs_io.load/load_settings call)."""
     base, jobs, settings = _context(cfg)
     bucket, _, folder = (form.get("key") or "").partition("|")
     if bucket not in lifecycle.buckets_for(base, jobs):
         raise ValueError("That bucket isn't one of backup-engine's.")
     if form.get("what") == "waiting":
-        return bucket, {"kind": "confirm"}
+        return base, jobs, settings, bucket, {"kind": "confirm"}
     if folder == "*":
         b = _bucket_entry(settings, bucket)
-        b["abort_uploads_days"] = _whole(form.get("abort_days"), "Clear abandoned uploads after 1 day or more.")
+        b["abort_uploads_days"] = _whole(form.get("abort_days"), _ABORT_MSG, max_=MAX_DAYS)
         b["delete_marker_cleanup"] = bool(form.get("markers"))
-        return bucket, {"kind": "settings", "settings": settings}
+        return base, jobs, settings, bucket, {"kind": "settings", "settings": settings}
     f = next((x for x in lifecycle.folders_for(bucket, base, jobs) if x.folder == folder), None)
     if f is None:
         raise ValueError("That folder isn't one of backup-engine's.")
     if f.kind == "undo":
-        _folder_entry(settings, bucket, folder)["undo_days"] = _whole(form.get("undo_days"), _DAYS_MSG)
-        return bucket, {"kind": "settings", "settings": settings}
+        _folder_entry(settings, bucket, folder)["undo_days"] = _whole(form.get("undo_days"), _DAYS_MSG, max_=MAX_DAYS)
+        return base, jobs, settings, bucket, {"kind": "settings", "settings": settings}
     job = next(j for j in jobs if j.get("name") == f.jobs[0])
-    return bucket, {"kind": "job", "job": dict(job, retention=retention_from_editor(form))}
+    return base, jobs, settings, bucket, {"kind": "job", "job": dict(job, retention=retention_from_editor(form))}
+
+
+def edit_from_form(cfg, form) -> tuple[str, dict]:
+    """The editor's (or the waiting list's) POST as a lifecycle edit: (bucket, edit).
+    Raises ValueError with owner words on a bad value -- nothing is previewed then."""
+    *_, bucket, edit = _edit_from_form(cfg, form)
+    return bucket, edit
 
 
 def impact_line(cfg, args) -> dict:
     """The live impact line (GET, files only): what the editor's values would remove that S3
     keeps today, from the stored summary."""
-    from . import jobs_io
     try:
-        bucket, edit = edit_from_form(cfg, args)
+        _base, jobs, settings, bucket, edit = _edit_from_form(cfg, args)
     except ValueError as e:
         return {"line": str(e)}
     folder = (args.get("key") or "").partition("|")[2]
     if folder == "*" or edit["kind"] == "confirm":
         return {"line": ""}
     try:
-        jobs, settings = lifecycle.edited(jobs_io.load(cfg["CONFIG_DIR"]), lifecycle.load_settings(cfg["CONFIG_DIR"]),
-                                          edit, source_root=cfg.get("SOURCE_ROOT"))
+        jobs, settings = lifecycle.edited(jobs, settings, edit, source_root=cfg.get("SOURCE_ROOT"))
     except lifecycle.PreviewError as e:
         return {"line": e.message}
     ctx = {"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}
@@ -425,7 +473,8 @@ def impact_line(cfg, args) -> dict:
         return {"line": "Not checked yet — press Check now first."}
     summary = storage_summary.load(cfg["CACHE_DIR"], bucket, folder)
     if summary is None:
-        return {"line": "No storage summary for this folder yet — Refresh now for exact figures."}
+        tail = " Refresh now for exact figures." if refresh_ok(cfg) else ""
+        return {"line": f"No storage summary for this folder yet.{tail}"}
     rid = lifecycle.rule_id(folder)
     imp = storage_summary.impact(summary, before.rules.get(rid), want.rules.get(rid))
     when = _human_time(summary.get("scanned_at")) or "the last scan"
@@ -445,8 +494,8 @@ def damage_notes(change, kind: str | None) -> list[str]:
     ad, an = lifecycle.expiry(change.after)
     notes = []
     if kind == "undo" and ad != math.inf:
-        was = _days(int(bd)) if bd != math.inf else "being kept for good"
-        notes.append(f"Data these jobs already deleted will be unrecoverable after {_days(int(ad))} "
+        was = lifecycle._days(int(bd)) if bd != math.inf else "being kept for good"
+        notes.append(f"Data these jobs already deleted will be unrecoverable after {lifecycle._days(int(ad))} "
                      f"instead of {was}.")
     if an:
         notes.append(f"Files with more than {an} old versions lose the oldest ones.")

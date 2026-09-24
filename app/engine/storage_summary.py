@@ -53,12 +53,40 @@ def summary_path(cache_dir, bucket: str, folder: str) -> Path:
     return Path(cache_dir, "state", "storage", f"{bucket}__{slug(folder)}.json")
 
 
+def _num(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _rows(v, width: int) -> bool:
+    """One histogram field: a list of numeric rows exactly `width` wide, as summary() writes
+    them. Missing entirely is fine -- a freshness-only stub (sysop's after-run skip check reads
+    only `scanned_at`) never had one; only a field that IS present but the wrong shape counts as
+    malformed (fix round 1, Minor)."""
+    if v is None:
+        return True
+    return isinstance(v, list) and all(
+        isinstance(row, (list, tuple)) and len(row) == width and all(_num(x) for x in row) for row in v)
+
+
+def _valid_shape(data) -> bool:
+    """A malformed or hand-edited summary file counts as no summary (fix round 1, Minor) --
+    impact() unpacks these rows without re-checking them, so a bad row (wrong width, non-numeric)
+    would otherwise crash the GET impact-line endpoint and the preview POST, not just read wrong."""
+    if not isinstance(data, dict):
+        return False
+    scanned = data.get("scanned_at")
+    if scanned is not None and not isinstance(scanned, str):
+        return False
+    return (_rows(data.get("noncurrent_by_age_days"), 3) and _rows(data.get("noncurrent_by_rank"), 3)
+           and _rows(data.get("noncurrent_by_age_rank"), 4))
+
+
 def load(cache_dir, bucket: str, folder: str) -> dict | None:
     try:
         data = json.loads(summary_path(cache_dir, bucket, folder).read_text())
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    return data if _valid_shape(data) else None
 
 
 def save(cache_dir, summary: dict) -> None:

@@ -28,20 +28,21 @@ def _back() -> str:
     return "/setup/storage" if request.form.get("back") == "storage" else url_for("gui.setup_page")
 
 
-def _refresh_ok(cfg) -> bool:
-    """Whether the editor/preview may offer Refresh now: only when S3 rules are managed here
-    and this isn't a custom S3 endpoint -- /setup/storage/refresh (Task 12) refuses both with
-    a warning, so the button is never offered when it would just bounce (Task 15 context)."""
-    return (lifecycle.managed(cfg["CONFIG_DIR"])
-           and not config_io.read_backup_env(cfg["CONFIG_DIR"]).get("S3_ENDPOINT", "").strip())
-
-
-def _screen(*, key: str = "", error: str | None = None, pvw: dict | None = None):
+def _screen(*, key: str = "", error: str | None = None, pvw: dict | None = None, form=None):
+    """Render the S3 rules screen with the editor/preview it currently needs. fix round 1, I2:
+    a form error whose row no longer resolves (job deleted/renamed in another tab, bucket
+    changed) can't build an editor to show that error in -- flash it and bounce home instead of
+    silently dropping it."""
     cfg = current_app.config
     v = s3_rules.screen(cfg)
-    ed = s3_rules.editor(cfg, key, error=error) if (v["managed"] and not pvw) else None
+    ed = None
+    if v["managed"] and not pvw:
+        ed = s3_rules.editor(cfg, key, error=error, form=form)
+        if error and ed is None:
+            flash(error, "warning")
+            return redirect("/setup/storage")
     return render_template("s3_rules.html", v=v, ed=ed, pvw=pvw, csrf=security.issue_csrf(),
-                           refresh_ok=_refresh_ok(cfg) if v["managed"] else False)
+                           refresh_ok=s3_rules.refresh_ok(cfg) if v["managed"] else False)
 
 
 @bp.get("/setup/storage")
@@ -68,7 +69,7 @@ def setup_storage_preview():
     try:
         bucket, edit = s3_rules.edit_from_form(cfg, request.form)
     except ValueError as e:
-        return _screen(key=key, error=str(e))
+        return _screen(key=key, error=str(e), form=request.form)
     try:
         pv = lifecycle.preview(cfg, bucket, edit)
     except lifecycle.PreviewError as e:
@@ -81,8 +82,23 @@ def setup_storage_preview():
         try:
             lifecycle.save_edit(cfg, edit)
         except ValueError as e:
-            return _screen(key=key, error=str(e))
-        flash("Saved — this keeps more, so S3 applies it now.", "success")
+            return _screen(key=key, error=str(e), form=request.form)
+        # fix round 1, Minor: an honest flash -- don't claim "S3 applies it now" unless this
+        # row's own target actually differs from what's applied. A resubmission identical to
+        # what's already applied changes nothing (and apply_for is skipped); one that resaves a
+        # value that's already waiting (own is empty, but the row still keeps less than the
+        # baseline) still waits -- apply_for's own warning says so; this flash must not
+        # contradict it.
+        folder = key.partition("|")[2]
+        rid = lifecycle.HOUSEKEEPING_ID if folder == "*" else lifecycle.rule_id(folder)
+        change = next((c for c in pv.changes if c.rule_id == rid), None)
+        if change is None:
+            flash("No change.", "note")
+            return redirect("/setup/storage")
+        if change.kind == lifecycle.KEEPS_LESS:
+            flash("Saved.", "note")
+        else:
+            flash("Saved — this keeps more, so S3 applies it now.", "success")
         for category, msg in s3_rules.apply_for(cfg, [bucket]):
             flash(msg, category)
         return redirect("/setup/storage")

@@ -149,6 +149,30 @@ def test_save_and_load_round_trip(tmp_path):
     assert ss.slug("") == "bucket" and ss.slug("appdata/") == "appdata"
 
 
+@pytest.mark.parametrize("bad", ["x", [[1, 2]], [["a", 1, 2, 3]]])
+def test_a_malformed_summary_counts_as_no_summary(tmp_path, bad):
+    # fix round 1, Minor: a hand-edited or corrupted summary file must never crash impact() --
+    # it reads as "no summary yet" instead, same as a missing file.
+    s = _scan()
+    s["noncurrent_by_age_rank"] = bad
+    ss.save(str(tmp_path), s)
+    assert ss.load(str(tmp_path), B, "media/manga/") is None
+
+
+def test_a_non_string_scanned_at_counts_as_no_summary(tmp_path):
+    s = _scan()
+    s["scanned_at"] = 12345
+    ss.save(str(tmp_path), s)
+    assert ss.load(str(tmp_path), B, "media/manga/") is None
+
+
+def test_a_summary_missing_the_histograms_entirely_still_loads(tmp_path):
+    # sysop's after-run freshness check only reads scanned_at (fix round 1: don't require the
+    # full scan shape for that, only reject a field that IS present but malformed).
+    ss.save(str(tmp_path), {"bucket": B, "folder": "media/manga/", "scanned_at": "2026-09-23T12:00:00Z"})
+    assert ss.load(str(tmp_path), B, "media/manga/") is not None
+
+
 def _days(d):
     return {"NoncurrentVersionExpiration": {"NoncurrentDays": d}}
 

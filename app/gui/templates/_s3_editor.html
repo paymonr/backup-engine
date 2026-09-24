@@ -14,9 +14,9 @@
   <p class="hint">This is also {{ ed.job }}'s history setting — the same value is saved to the job.</p>
   <p class="lbl" style="margin-top:var(--sp-3)">Keep old versions</p>
   <label class="radio"><input type="radio" name="keep" value="days" {{ 'checked' if ed.keep == 'days' }}>
-    <span>for <input type="number" min="1" name="days" value="{{ ed.days }}" class="mono" style="width:5rem"> days after being replaced</span></label>
+    <span>for <input type="number" min="1" name="days" value="{{ ed.days }}" class="mono" style="width:5rem" data-radio="days"> days after being replaced</span></label>
   <label class="radio"><input type="radio" name="keep" value="count" {{ 'checked' if ed.keep == 'count' }}>
-    <span>the newest <input type="number" min="1" max="100" name="count" value="{{ ed.count }}" class="mono" style="width:4rem"> of each file</span></label>
+    <span>the newest <input type="number" min="1"{% if ed.count_capped %} max="100"{% endif %} name="count" value="{{ ed.count }}" class="mono" style="width:4rem" data-radio="count"> of each file</span></label>
   <label class="radio"><input type="radio" name="keep" value="both" {{ 'checked' if ed.keep == 'both' }}>
     <span>both — the newest of each file, and older ones for the days above</span></label>
   <label class="radio"><input type="radio" name="keep" value="all" {{ 'checked' if ed.keep == 'all' }}>
@@ -32,7 +32,9 @@
     <span>Clear leftover delete markers</span></label>
   {% endif %}
   {% if ed.kind != 'bucket' %}
-  <p class="hint" id="s3-impact" aria-live="polite" style="margin-top:var(--sp-3)">{% if ed.summary_at %}Nothing S3 keeps today would be removed · as of <span class="stamp">{{ ed.summary_at }}</span>{% else %}No storage summary for this folder yet — Refresh now for exact figures.{% endif %}</p>
+  {#- fix round 1, I1: the true first line, server-rendered by the same impact_line() impact.json
+      calls -- a waiting row opens already showing what it would remove, not a false "nothing". -#}
+  <p class="hint" id="s3-impact" aria-live="polite" style="margin-top:var(--sp-3)">{{ ed.impact.line }}</p>
   {% endif %}
   <div class="actions" style="margin-top:var(--sp-4)">
     <button type="submit" class="btn btn-primary">Preview change</button>
@@ -65,3 +67,21 @@
   form.addEventListener("change", later);
 })();
 </script>
+{% if ed.kind == 'plain' %}
+<script>
+// Focusing or typing a number box selects its radio (fix round 1, Minor) -- so typing straight
+// into "the newest N" without first clicking its radio still submits "count", not "days".
+(function () {
+  var form = document.getElementById("s3-editor");
+  if (!form) return;
+  Array.prototype.forEach.call(form.querySelectorAll("input[type=number][data-radio]"), function (inp) {
+    function select() {
+      var r = form.querySelector('input[name="keep"][value="' + inp.getAttribute("data-radio") + '"]');
+      if (r) r.checked = true;
+    }
+    inp.addEventListener("focus", select);
+    inp.addEventListener("input", select);
+  });
+})();
+</script>
+{% endif %}

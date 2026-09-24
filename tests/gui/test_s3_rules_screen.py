@@ -391,3 +391,182 @@ def test_the_editor_and_preview_obey_the_vocabulary_and_mono_laws(client, cfg):
              _preview(client, keep="days", days="30").get_data(as_text=True)]
     for body in pages:
         assert forbidden_hits(body) == [] and mono_violations(body) == []
+
+
+# --- fix round 1 --------------------------------------------------------------------------------
+
+def _raiser(exc):
+    def f(*a, **k):
+        raise exc
+    return f
+
+
+# I1 -- the editor's first impact line is server-rendered from the same impact_line() -----------
+
+def test_editor_opens_with_the_true_impact_line_for_a_waiting_row(client, cfg):
+    _applied(cfg)                                            # baseline: manga 180 days applied
+    _summary(cfg)
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "days", "days": 30}       # already waiting for confirmation
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    assert "permanently delete" in body and "3" in body
+
+
+def test_editor_opens_with_not_checked_yet_before_the_first_check(client, cfg):
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    assert "Not checked yet" in body
+
+
+def test_editor_opens_with_nothing_would_be_removed_when_in_step(client, cfg):
+    _applied(cfg)
+    _summary(cfg)
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    assert "Nothing S3 keeps today would be removed" in body
+
+
+# I2 -- a form error on a row that no longer resolves is flashed, not dropped --------------------
+
+def test_a_form_error_on_a_vanished_row_is_flashed_not_dropped(client, cfg):
+    import html
+    _applied(cfg)
+    r = client.post("/setup/storage/preview", data={"csrf": _csrf(client), "key": f"{BASE}|media/gone/",
+                                                     "keep": "days", "days": "30"}, follow_redirects=True)
+    assert "isn't one of backup-engine's" in html.unescape(r.get_data(as_text=True))
+
+
+# Minors -------------------------------------------------------------------------------------
+
+def test_a_stored_count_over_100_omits_the_client_side_cap(client, cfg):
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "count", "count": 500}
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    count_input = re.search(r'<input[^>]*name="count"[^>]*>', body).group(0)
+    assert 'value="500"' in count_input and "max=" not in count_input
+
+
+def test_a_stored_count_at_or_under_100_keeps_the_client_side_cap(client, cfg):
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    count_input = re.search(r'<input[^>]*name="count"[^>]*>', body).group(0)
+    assert 'max="100"' in count_input
+
+
+def test_a_stored_days_zero_shows_as_one(client, cfg):
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "days", "days": 0}
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    days_input = re.search(r'<input[^>]*name="days"[^>]*>', body).group(0)
+    assert 'value="1"' in days_input
+
+
+def test_a_no_op_change_says_no_change_and_skips_apply(client, cfg, monkeypatch):
+    _applied(cfg)
+    calls = []
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: calls.append(b) or [])
+    r = _preview(client, keep="days", days="180")              # already what's stored and applied
+    assert r.status_code in (302, 303)
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "No change." in body and calls == []
+
+
+def test_resaving_an_already_waiting_value_does_not_claim_applied(client, cfg, monkeypatch):
+    _applied(cfg)                                              # baseline: manga 180 days applied
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "days", "days": 30}        # already saved, already waiting
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    calls = []
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: calls.append(b) or [("warning", "still waits")])
+    r = _preview(client, keep="days", days="30")               # resaves the SAME value
+    assert r.status_code in (302, 303)
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "this keeps more, so S3 applies it now" not in body
+    assert calls == [[BASE]]
+
+
+def test_refresh_now_button_is_hidden_for_a_custom_s3_endpoint(client, cfg):
+    _applied(cfg)
+    _summary(cfg)
+    env = Path(cfg["CONFIG_DIR"], "backup.env")
+    env.write_text(env.read_text() + "S3_ENDPOINT=https://minio.example\n")
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    assert 'action="/setup/storage/refresh"' not in body
+    body = _preview(client, keep="days", days="30").get_data(as_text=True)
+    assert 'action="/setup/storage/refresh"' not in body
+
+
+def test_refresh_now_wording_follows_refresh_ok_when_theres_no_summary(client, cfg):
+    _applied(cfg)                                              # no _summary(cfg): the no-summary branch
+    body_on = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    assert "Refresh now for exact figures" in body_on
+    env = Path(cfg["CONFIG_DIR"], "backup.env")
+    env.write_text(env.read_text() + "S3_ENDPOINT=https://minio.example\n")
+    body_off = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    assert "Refresh now for exact figures" not in body_off
+
+
+def test_days_zero_is_a_form_error(client, cfg):
+    _applied(cfg)
+    body = _preview(client, keep="days", days="0").get_data(as_text=True)
+    assert "Enter a whole number of days" in body and 'id="s3-editor"' in body
+
+
+def test_days_above_the_upper_bound_is_a_form_error(client, cfg):
+    _applied(cfg)
+    body = _preview(client, keep="days", days="36501").get_data(as_text=True)
+    assert "Enter a whole number of days" in body
+
+
+def test_a_huge_day_count_is_a_form_error_not_a_crash(client, cfg):
+    _applied(cfg)
+    r = _preview(client, keep="days", days="9" * 20)
+    assert r.status_code == 200 and "Enter a whole number of days" in r.get_data(as_text=True)
+
+
+def test_a_form_error_keeps_the_owners_entries(client, cfg):
+    _applied(cfg)
+    body = _preview(client, keep="count", count="500", days="45").get_data(as_text=True)
+    assert 'name="keep" value="count" checked' in body
+    count_input = re.search(r'<input[^>]*name="count"[^>]*>', body).group(0)
+    days_input = re.search(r'<input[^>]*name="days"[^>]*>', body).group(0)
+    assert 'value="500"' in count_input and 'value="45"' in days_input
+
+
+def test_both_saves_count_and_days_to_the_job(client, cfg, monkeypatch):
+    _applied(cfg)
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: [])
+    r = _preview(client, keep="both", count="50", days="200")  # keeps more than the baseline (180, 0)
+    assert r.status_code in (302, 303)
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "count", "count": 50, "days": 200}
+
+
+def test_a_settings_edit_keeps_other_buckets(client, cfg, monkeypatch):
+    _applied(cfg)
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: [])
+    other = "vault-dedicated-987654321098"
+    Path(cfg["CONFIG_DIR"], "storage.json").write_text(json.dumps(
+        {"version": 1, "buckets": {other: {"abort_uploads_days": 99, "delete_marker_cleanup": False}}}))
+    r = client.post("/setup/storage/preview", data={"csrf": _csrf(client), "key": f"{BASE}|*", "abort_days": "3"})
+    assert r.status_code in (302, 303)
+    settings = lifecycle.load_settings(cfg["CONFIG_DIR"])
+    assert settings["buckets"][other]["abort_uploads_days"] == 99
+    assert lifecycle.bucket_settings(settings, BASE)["abort_uploads_days"] == 3
+
+
+def test_apply_flashes_a_lifecycle_error_and_keeps_waiting(client, cfg, monkeypatch):
+    import html
+    monkeypatch.setattr(lifecycle, "apply_confirmed", _raiser(lifecycle.LifecycleError("aws", "boom")))
+    r = client.post("/setup/storage/apply", data={"csrf": _csrf(client), "token": "x" * 24, "typed": BASE,
+                                                   "key": f"{BASE}|media/manga/"}, follow_redirects=True)
+    body = html.unescape(r.get_data(as_text=True))
+    assert "AWS refused the change" in body and "still waits for your confirmation" in body
+
+
+def test_apply_flashes_a_stale_after_save_race(client, cfg, monkeypatch):
+    import html
+    monkeypatch.setattr(lifecycle, "apply_confirmed",
+                        _raiser(lifecycle.PreviewError("stale", lifecycle._STALE_RACE)))
+    r = client.post("/setup/storage/apply", data={"csrf": _csrf(client), "token": "x" * 24, "typed": BASE,
+                                                   "key": f"{BASE}|media/manga/"}, follow_redirects=True)
+    assert "Confirm what's waiting" in html.unescape(r.get_data(as_text=True))

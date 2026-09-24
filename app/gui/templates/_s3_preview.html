@@ -20,7 +20,7 @@
       </div>
       {% endif %}
     {% elif row.no_summary %}
-    <p class="hint" style="margin-top:var(--sp-1)">No storage summary for this folder yet — Refresh now for exact figures. Confirming still needs the bucket name.</p>
+    <p class="hint" style="margin-top:var(--sp-1)">No storage summary for this folder yet.{% if refresh_ok %} Refresh now for exact figures.{% endif %} Confirming still needs the bucket name.</p>
     {% endif %}
     {% for n in row.notes %}<p class="hint" style="margin-top:var(--sp-1)">{{ n }}</p>{% endfor %}
     {% if row.refresh and refresh_ok %}
