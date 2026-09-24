@@ -1010,8 +1010,13 @@ _AWS_RETRY_ENV = {"AWS_MAX_ATTEMPTS": "2", "AWS_RETRY_MODE": "standard"}
 
 
 def _run_aws(args, *, region, key, secret, session_token=None):
-    """lifecycle's own aws runner: provision's credential env plus the bounded retries above."""
+    """lifecycle's own aws runner: provision's credential env plus the bounded retries above.
+    No key (the local `help` probe, P7) -> no credentials in the environment at all, not even
+    ones inherited from the container's."""
     env = provision._aws_env(region, key, secret, session_token)
+    if not key:
+        for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"):
+            env.pop(k, None)
     env.update(_AWS_RETRY_ENV)
     return subprocess.run(["aws", *args], env=env, capture_output=True, text=True)
 
@@ -1063,17 +1068,19 @@ MIN_SIZE_FLAG = "--transition-default-minimum-object-size"
 _MIN_SIZE_PROBED: list = []
 
 
-def _min_size_supported(run, creds, region) -> bool:
+def _min_size_supported(run, region) -> bool:
     """Whether this process's aws CLI understands --transition-default-minimum-object-size
     (added to botocore ~September 2024; Alpine 3.20's pinned aws-cli, 2.15.57, predates it).
-    Probed with a local `help` call -- no AWS reached, no bucket needed -- and cached; a failed
-    probe counts as unsupported (the safe direction: never send the flag, S3's own default
-    already applies)."""
+    Probed with a local `help` call -- no AWS reached, no bucket needed, and run with NO
+    credentials at all in its environment (parked P7: _run_aws strips them when given none) --
+    and cached; a failed probe counts as unsupported (the safe direction: never send the flag,
+    S3's own default already applies)."""
     for cached_run, supported in _MIN_SIZE_PROBED:
         if cached_run is run:
             return supported
     try:
-        cp = _call(run, creds, region, ["s3api", "put-bucket-lifecycle-configuration", "help"])
+        cp = run(["s3api", "put-bucket-lifecycle-configuration", "help"], region=region, key="", secret="",
+                 session_token=None)
         supported = cp.returncode == 0 and MIN_SIZE_FLAG in (cp.stdout or "")
     except Exception:                        # noqa: BLE001 -- a probe must never crash a sync
         supported = False
@@ -1091,7 +1098,7 @@ def write_rules(bucket: str, rules: list[dict], creds: dict, region: str, *, run
     app never SETS a min-size itself."""
     args = ["s3api", "put-bucket-lifecycle-configuration", "--bucket", bucket,
             "--lifecycle-configuration", json.dumps({"Rules": rules})]
-    if min_size and min_size != MIN_SIZE_DEFAULT and _min_size_supported(run, creds, region):
+    if min_size and min_size != MIN_SIZE_DEFAULT and _min_size_supported(run, region):
         args += [MIN_SIZE_FLAG, min_size]
     cp = _call(run, creds, region, args)
     if cp.returncode != 0:
@@ -1610,7 +1617,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     # fix round 1, #9 controller ruling: whenever a tier is (still) wanted here and this aws
     # CLI can't control the small-object threshold on a put, the owner should know why small
     # files never move (S3's own default -- 128 KB -- silently governs every put we make).
-    if any(r.get("NoncurrentVersionTransitions") for r in target) and not _min_size_supported(run, creds, region):
+    if any(r.get("NoncurrentVersionTransitions") for r in target) and not _min_size_supported(run, region):
         notes = [*notes, "small files (under 128 KB) stay where they are"]
         detail = "; ".join(notes)
     # I1: never forget a known folder -- a folder that once had a job (so may already have

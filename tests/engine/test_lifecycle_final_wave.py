@@ -705,14 +705,14 @@ def _watch_saves(cfg, monkeypatch, *, kinds):
     return seen
 
 
-def _base(cfg, fake):
+def _seeded_base(cfg, fake):
     lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
     lc.sync(cfg, BASE, run=fake)
 
 
 def test_m2_order_when_rules_restored_but_the_versioning_put_fails(cfg, monkeypatch):
     fake = _NoVersioningPut()
-    _base(cfg, fake)
+    _seeded_base(cfg, fake)
     _tamper(fake)
     fake.versioning[BASE] = "Suspended"                       # changed outside too
     fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
@@ -724,7 +724,7 @@ def test_m2_order_when_rules_restored_but_the_versioning_put_fails(cfg, monkeypa
 def test_m2_order_when_rules_applied_but_the_versioning_put_fails(cfg, monkeypatch):
     fake = _NoVersioningPut(versioning={BASE: "Suspended"})
     lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "suspended"}}})
-    _base(cfg, fake)
+    _seeded_base(cfg, fake)
     lc.save_settings(cfg["CONFIG_DIR"], {"version": 1, "buckets": {BASE: {"versioning": "on"}}})
     _set_manga(cfg, {"type": "days", "days": 365})           # keeps more: rules written
     fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
@@ -735,7 +735,7 @@ def test_m2_order_when_rules_applied_but_the_versioning_put_fails(cfg, monkeypat
 
 def test_m2_order_when_nothing_could_be_written(cfg, monkeypatch):
     fake = FakeS3()
-    _base(cfg, fake)
+    _seeded_base(cfg, fake)
     _set_manga(cfg, {"type": "days", "days": 365})
     fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
     fake.deny_put = True
@@ -746,10 +746,38 @@ def test_m2_order_when_nothing_could_be_written(cfg, monkeypatch):
 
 def test_m2_order_when_a_tamper_could_not_be_restored(cfg, monkeypatch):
     fake = FakeS3()
-    _base(cfg, fake)
+    _seeded_base(cfg, fake)
     _tamper(fake)
     fake.rules[BASE].append(json.loads(json.dumps(HOSTILE)))
     fake.deny_put = True
     seen = _watch_saves(cfg, monkeypatch, kinds=("not_restored",))
     assert lc.check(cfg, BASE, run=fake) == "not_restored"
     assert seen and all(k == "not_restored" and named for k, named in seen)
+
+
+# --- P7: the aws-cli `help` probe runs with no credentials in its environment ------------------
+
+def test_the_help_probe_passes_no_credentials():
+    seen = []
+
+    def run(args, *, region, key, secret, session_token=None):
+        from types import SimpleNamespace
+        seen.append((list(args), key, secret, session_token))
+        return SimpleNamespace(returncode=0, stdout=lc.MIN_SIZE_FLAG + " (string)", stderr="")
+    assert lc._min_size_supported(run, "us-east-1") is True
+    assert seen == [(["s3api", "put-bucket-lifecycle-configuration", "help"], "", "", None)]
+
+
+def test_the_lifecycle_runner_strips_every_credential_when_given_none(monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIALEAK")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "leaksecret")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "leaktoken")
+    envs = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: envs.append(kw["env"]) or
+                        SimpleNamespace(returncode=0, stdout="", stderr=""))
+    lc._run_aws(["s3api", "put-bucket-lifecycle-configuration", "help"], region="us-east-1", key="", secret="")
+    env = envs[0]
+    assert not any(k in env for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"))
+    assert "leaksecret" not in json.dumps(env)
