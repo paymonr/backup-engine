@@ -108,8 +108,8 @@ only ever receives the narrow `runtime` IAM user's access key, which cannot
 touch bucket configuration directly or objects outside `appdata/` and
 `media/`. Through the bucket-admin role it can manage the base bucket's
 lifecycle rules and versioning — backup-engine checks its own rules before
-every backup run, puts back anything changed outside the app and flags it,
-and flags any new rule that could delete or move backups. Re-running `tofu apply` (e.g. to rotate the runtime key by
+every backup run and every hour, puts back anything changed outside the app
+and flags it, and flags any new rule that could delete or move backups. Re-running `tofu apply` (e.g. to rotate the runtime key by
 tainting `aws_iam_access_key.runtime`) still only requires admin
 credentials on the operator's machine, never inside the running backup
 stack.

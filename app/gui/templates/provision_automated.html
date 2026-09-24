@@ -16,8 +16,9 @@
   <p class="hint" style="margin-top:var(--sp-4)">Run <code>aws sts get-session-token
      --duration-seconds 900</code> with an admin profile, or create a temporary access key on
      an admin IAM user and <strong>delete it right after</strong>. OpenTofu creates the bucket
-     (versioning + SSE + all public access blocked + lifecycle rules) and a least-privilege IAM
-     user, then saves that user's key here.</p>
+     (versioning + SSE + all public access blocked) and a least-privilege IAM user, then saves
+     that user's key here; after that, backup-engine keeps the bucket's S3 rules in step with your
+     jobs itself.</p>
 
   {% if error %}
   <div class="sig sig-failure" data-flash="failure" style="margin-top:var(--sp-4)">

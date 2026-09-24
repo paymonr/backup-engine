@@ -206,16 +206,42 @@ Each kind of history has exactly one owner:
 - **archive** (Plain copy) jobs — **S3 itself**: the job's policy *is* its folder's S3 lifecycle rule
   (`backup-engine:media/<job>/`, or `backup-engine:bucket` for a dedicated bucket). *Keep for N days*
   → old versions expire N days after being replaced; *keep last N versions* → S3 keeps the newest N
-  old versions of each file (S3 allows at most 100); *keep everything* → no rule at all. There is no
-  prune step of the app's own.
+  old versions of each file (S3 allows at most 100); *newest N + days* (Plain copy only) → S3 keeps
+  the newest N old versions and removes older ones D days after they're replaced; *keep everything*
+  → no rule at all. There is no prune step of the app's own.
 
 backup-engine writes each bucket's lifecycle rules itself — right after setup, whenever a job is
-saved or deleted, and before every backup run — through its bucket-admin role (AWS permissions
-level 4; Setup → AWS permissions). Besides the Plain copy rules it keeps an **undo window** on the
-versioned and versioned-files folders (default 30 days: data a job already removed stays
-recoverable that long) and one bucket-wide housekeeping rule (abandoned uploads cleared after 7
-days, leftover delete markers cleared). It never creates a rule that expires or moves *current*
+saved or deleted, before every backup run, and every hour — through its bucket-admin role (AWS
+permissions level 4; Setup → AWS permissions). Besides the Plain copy rules it keeps an **undo
+window** on the versioned and versioned-files folders (default 30 days: data a job already removed
+stays recoverable that long) and one bucket-wide housekeeping rule (abandoned uploads cleared after
+7 days, leftover delete markers cleared). It never creates a rule that expires or moves *current*
 files, and the backup key itself can't permanently delete old versions.
+
+**Setup → S3 rules** shows every bucket (the shared one first, then any dedicated ones) with, per
+folder, what S3 keeps, the cheaper tier (if any), and the bucket's versioning; rules you added in
+the AWS console are listed read-only, flagged when they overlap an app folder or can delete or move
+current backups. **Change…** opens a side editor for one row — a Plain copy job's history (the same
+setting as the job's own), an undo window, a cheaper tier, or the bucket-wide settings (abandoned
+uploads, delete markers, **versioning on / suspended**):
+
+- A change that **keeps more** (longer history, a limit removed, a tier removed) is saved and
+  applied at once.
+- A change that **keeps less** — shorter history, fewer newest versions, a tier added or moved
+  earlier, versioning suspended — first shows a **preview**: the rule before and after in words and,
+  from the folder's **storage summary**, roughly how many old versions (and how much data) S3 would
+  permanently delete. Whenever it would delete anything (or can't tell), suspends versioning, or
+  moves history to a cheaper tier, you **type the bucket name** to confirm. Nothing that keeps less
+  is ever applied without that confirmation; shortening a Plain copy job's history in the job wizard
+  goes through the same preview. Until you confirm, S3 keeps the current rule and the change is
+  listed as *waiting for your confirmation*.
+- The **storage summary** is a read-only scan of a job's folder, taken in the background after each
+  successful run (**Refresh now** re-scans on demand), so previews are instant even for very large
+  folders.
+- The **cheaper tier** moves old versions to Glacier Instant Retrieval or Deep Archive N days after
+  they're replaced (never current files). Those classes have a minimum storage charge (90 / 180
+  days), objects under 128 KB aren't moved, and getting an old version back from Deep Archive takes
+  hours and costs money. The cost estimate doesn't price the tier (the cost screens say so).
 
 Rules you add yourself in the AWS console are always kept exactly as they are. The app's own rules
 are checked before every backup run, every hour, and by **Check now** on Setup: if they were changed
@@ -223,8 +249,10 @@ outside backup-engine they are put back and flagged on the Board until you ackno
 console rule that could delete or move backups is flagged the same way (but left in place — you may
 have meant it). Each such alarm is also sent once through your notifications (`APPRISE_URLS`, the
 same channel as a failed backup). backup-engine never modifies or removes a console rule — one that
-can delete or move backups stays until you remove it in the AWS console. On a non-AWS endpoint
-without lifecycle support, Plain copy keeps every old version.
+can delete or move backups stays until you remove it in the AWS console; one that removes old
+versions sooner than a job's own setting is called out on Setup, the job page and the job wizard
+(S3 applies the shorter expiry where rules overlap). On a non-AWS endpoint without lifecycle support,
+Plain copy keeps every old version.
 
 A cold storage class (`GLACIER`/`DEEP_ARCHIVE`/`GLACIER_IR`) works fine for **archive** and
 **versioned-files** jobs — both store plain objects. For **versioned** (restic) jobs a cold class is

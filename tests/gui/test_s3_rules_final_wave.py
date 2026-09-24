@@ -222,3 +222,33 @@ def test_the_job_page_and_costs_survive_an_unreadable_history_setting(client, cf
     Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
     assert client.get("/jobs/odd").status_code == 200
     assert client.get("/cost").status_code == 200
+
+
+# --- M7: docs and copy match what the app does now ---------------------------------------------
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _section(text, heading):
+    start = text.index(heading)
+    nxt = re.search(r"\n#{1,3} ", text[start + len(heading):])
+    return text[start: start + len(heading) + (nxt.start() if nxt else len(text))]
+
+
+def test_the_automated_setup_page_no_longer_says_opentofu_creates_lifecycle_rules(client):
+    body = html.unescape(re.sub(r"<[^>]+>", " ", client.get("/setup/destination/automated").get_data(as_text=True)))
+    assert "lifecycle rules" not in body
+    assert "backup-engine keeps the bucket's S3 rules in step with your jobs" in re.sub(r"\s+", " ", body)
+
+
+def test_the_readme_describes_how_history_is_kept_now():
+    text = re.sub(r"\s+", " ", _section((REPO / "README.md").read_text(), "### How history is kept"))
+    for phrase in ("Setup → S3 rules", "preview", "type the bucket name", "before every backup run",
+                   "every hour", "storage summary", "cheaper tier", "versioning", "abandoned uploads",
+                   "delete markers", "newest N", "keeps the newest N old versions and removes older ones"):
+        assert phrase in text, phrase
+
+
+def test_the_opentofu_readme_mentions_the_hourly_check():
+    text = re.sub(r"\s+", " ", (REPO / "opentofu" / "README.md").read_text())
+    assert "before every backup run and every hour" in text
