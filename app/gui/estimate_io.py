@@ -94,7 +94,30 @@ def _size_for(job: dict, usage) -> tuple[float, int]:
     return _DEFAULT_SIZE_GB, _DEFAULT_FILES
 
 
-def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override) -> JobInputs:
+_UNDO_ENGINES = ("versioned", "versioned-files")
+
+
+def _undo_days(job: dict, jobs: list[dict], config_dir) -> int | None:
+    """Spec §10 (final fix wave M6): the S3 undo window -- from storage.json, per folder, via
+    lifecycle's own settings reading -- that keeps what a Snapshot/File history job removed
+    recoverable in S3. None for Plain copy (its history IS its S3 rule). Fail-safe: anything
+    unreadable is the default window (a cost page never 500s on this)."""
+    if job.get("type", "versioned") not in _UNDO_ENGINES:
+        return None
+    from ..engine import lifecycle                     # local: lifecycle imports gui modules
+    try:
+        base = config_io.read_backup_env(config_dir).get("S3_BUCKET", "").strip()
+        target = lifecycle.folder_of_job(base, jobs, job.get("name"))
+        if target is None:
+            return lifecycle.DEFAULT_UNDO_DAYS
+        return lifecycle.undo_days(lifecycle.bucket_settings(lifecycle.load_settings(config_dir), target[0]),
+                                   target[1])
+    except Exception:                                  # noqa: BLE001
+        return lifecycle.DEFAULT_UNDO_DAYS
+
+
+def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override,
+                undo_days: int | None = None) -> JobInputs:
     engine = job.get("type", "versioned")
     # The single source of truth for a job's retention is its `retention` policy
     # object (jobs_io._normalize_retention also migrates the legacy per-type
@@ -120,6 +143,12 @@ def _job_inputs(job: dict, *, size_gb, file_count, scenario_retention, override)
         retention_type, retention_count, retention_days = "keep_all", 0, None
     else:  # "days"
         retention_type, retention_count, retention_days = "days", 0, policy["days"]
+    if undo_days is not None and engine in _UNDO_ENGINES:
+        # M6 (spec §10): what a Snapshot/File history run removes stays in S3 for the folder's
+        # undo window -- a "days" policy's old data lives its own window PLUS that; the other
+        # policies have their own model paths (tiered/count/keep_all), where the undo window
+        # replaces the scenario's fixed fallback (it feeds the comparison curves).
+        retention_days = retention_days + undo_days if retention_type == "days" else undo_days
     o = override or {}
     return JobInputs(
         name=job["name"], engine=engine,
@@ -153,7 +182,8 @@ def scenario_from_jobs(config_dir, source_root, *, usage=None, overrides=None) -
     for j in jobs:
         size_gb, files = _size_for(j, usage)
         inputs.append(_job_inputs(j, size_gb=size_gb, file_count=files,
-                                  scenario_retention=None, override=overrides.get(j["name"])))
+                                  scenario_retention=None, override=overrides.get(j["name"]),
+                                  undo_days=_undo_days(j, jobs, config_dir)))
     return Scenario(region=_region(config_dir), jobs=tuple(inputs), **_GLOBAL_DEFAULTS)
 
 
@@ -606,8 +636,10 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
             raise ValueError("bundle size must be greater than zero")
     override = override or None
 
+    others_saved = [j for j in jobs_io.load(config_dir) if j.get("name") != name]
     candidate = _job_inputs(job, size_gb=size_gb, file_count=file_count,
-                            scenario_retention=None, override=override)
+                            scenario_retention=None, override=override,
+                            undo_days=_undo_days(job, others_saved + [job], config_dir))
 
     base = scenario_from_jobs(config_dir, source_root)
     this_scn = replace(base, jobs=(candidate,))
@@ -1260,6 +1292,24 @@ def cost_page(params: Mapping, config_dir, cache_dir, prices, source_root) -> di
         "per_job": per_job, "restore": restore_rows, "assumptions": assumptions,
         "price": {"kind": prices.source, "region": scenario.region, "date": prices.date},
     }
+
+
+def combined_in_use(config_dir, job: dict | None = None) -> bool:
+    """Final fix wave M6: the frozen model prices "keep the newest N old versions; older ones go
+    after D days" (Plain copy's combined form) as newest N only -- cost screens say so when any
+    job (or this job) uses it. Never raises."""
+    def combined(j) -> bool:
+        if not isinstance(j, dict) or j.get("type") != "archive":
+            return False
+        try:
+            r = jobs_io._normalize_retention(j, "archive")
+        except ValueError:
+            return False
+        return r["type"] == "count" and r.get("days", 1) > 1
+    try:
+        return combined(job) if job is not None else any(combined(j) for j in jobs_io.load(config_dir))
+    except Exception:                                  # noqa: BLE001 — a cost page never 500s on this
+        return False
 
 
 def tier_in_use(config_dir, job: dict | None = None) -> bool:

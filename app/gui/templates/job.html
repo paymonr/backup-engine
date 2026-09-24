@@ -391,6 +391,7 @@
           <p class="band-head more"><a class="linklike" href="/cost">Open the full cost view →</a></p>
         </div>
         {% if tier_note %}<p class="sig-note" data-tier-note style="margin-bottom:var(--sp-3)">Estimate doesn't include moving old versions to a cheaper tier.</p>{% endif %}
+        {% if combined_note %}<p class="sig-note" data-combined-note style="margin-bottom:var(--sp-3)">Estimate counts a Plain copy job that keeps the newest old versions plus a number of days as keeping only those newest versions.</p>{% endif %}
         <div class="grid4" style="margin-bottom:var(--sp-4)">
           <div class="sfig"><span class="k">First bill</span>
             <span class="v">{% if cost.first_bill is not none %}{{ prov(money(cost.first_bill), cost.first_bill_provenance) }}{% else %}—{% endif %}</span>

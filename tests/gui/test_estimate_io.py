@@ -61,7 +61,9 @@ def test_versioned_retention_from_keep_policy_archive_default(tmp_path):
     a = by["appdata"]
     assert a.retention_type == "tiered"
     assert (a.keep_last, a.keep_daily, a.keep_weekly, a.keep_monthly) == (3, 7, 4, 6)
-    assert a.retention_count == 0 and a.versioning_retention_days is None
+    # final fix wave M6: the folder's S3 undo window (default 30), not the scenario fallback --
+    # the tiered model path itself never reads it (only the comparison curves do)
+    assert a.retention_count == 0 and a.versioning_retention_days == 30
     assert a.backup_interval_days > 0
     # An archive job keeps its own {"type":"days","days":180} default.
     assert by["movies"].versioning_retention_days == 180
@@ -114,12 +116,12 @@ def test_versioned_files_job_maps_to_versioned_cost_profile(tmp_path):
     j = by["docs"]
     assert j.engine == "versioned-files"
     assert j.storage_class == "DEEP_ARCHIVE"
-    assert j.versioning_retention_days == 45
+    assert j.versioning_retention_days == 45 + 30          # its own 45 days + the 30-day S3 undo window (M6)
 
 def test_versioned_files_default_retention_when_missing(tmp_path):
     job = {k: v for k, v in VFJOB.items() if k != "retention_days"}
     by = _by_name(estimate_io.scenario_from_jobs(_cfg(tmp_path, [job]), SRC))
-    assert by["docs"].versioning_retention_days == 90
+    assert by["docs"].versioning_retention_days == 90 + 30   # + the S3 undo window (M6)
 
 def test_versioned_files_size_from_cached_usage_media_prefix(tmp_path):
     # versioned-files jobs live under media/<job>/ in S3 (their own per-job
@@ -269,7 +271,7 @@ def test_wizard_estimate_returns_projection_and_breakdown(tmp_path):
               "upload_onetime", "lockin_onetime", "change_rate_pct", "retention_days"):
         assert k in r["breakdown"]
     assert r["breakdown"]["lockin_onetime"] > 0          # DEEP_ARCHIVE has a minimum
-    assert r["breakdown"]["retention_days"] == 180
+    assert r["breakdown"]["retention_days"] == 180 + 30   # a File history job: + the S3 undo window (M6)
 
 def test_wizard_estimate_static_versions_are_minority_of_bill(tmp_path):
     # ~1% churn: old-version storage should be a small fraction of base storage.
@@ -316,7 +318,7 @@ def test_tiered_retention_policy_is_modelled_natively(tmp_path):
     a = by["appdata"]
     assert a.retention_type == "tiered"
     assert (a.keep_last, a.keep_daily, a.keep_weekly, a.keep_monthly) == (3, 7, 4, 6)
-    assert a.retention_count == 0 and a.versioning_retention_days is None
+    assert a.retention_count == 0 and a.versioning_retention_days == 30    # the undo window (M6)
 
 
 # ===========================================================================
@@ -870,3 +872,63 @@ def test_tier_in_use_reads_storage_json(tmp_path):
     assert eio.tier_in_use(str(cfg)) is True
     assert eio.tier_in_use(str(cfg), job=job) is True
     assert eio.tier_in_use(str(cfg), job={"name": "a", "type": "versioned"}) is False
+
+
+# ===========================================================================
+# Final fix wave M6 (spec §10): the undo window from storage.json reaches the estimate for
+# Snapshot/File history, per folder, instead of a fixed 30; "newest N + days" is noted.
+# ===========================================================================
+
+BASE_ENV = "S3_BUCKET=unraid-backup-123\nAWS_REGION=us-east-1\n"
+
+
+def _storage(cfg_dir, folders, bucket="unraid-backup-123"):
+    pathlib.Path(cfg_dir, "storage.json").write_text(json.dumps({"version": 1, "buckets": {
+        bucket: {"folders": {f: {"undo_days": d} for f, d in folders.items()}}}}))
+
+
+def test_file_history_days_carries_its_folders_undo_window(tmp_path):
+    cfg = _cfg(tmp_path, [VFJOB], env=BASE_ENV)
+    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["docs"].versioning_retention_days == 45 + 30
+    _storage(cfg, {"media/docs/": 60})
+    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["docs"].versioning_retention_days == 45 + 60
+
+
+def test_snapshot_jobs_take_the_undo_window_instead_of_the_fixed_scenario_value(tmp_path):
+    cfg = _cfg(tmp_path, [VJOB, AJOB], env=BASE_ENV)
+    _storage(cfg, {"appdata/": 14})
+    by = _by_name(estimate_io.scenario_from_jobs(cfg, SRC))
+    assert by["appdata"].retention_type == "tiered" and by["appdata"].versioning_retention_days == 14
+    assert by["movies"].versioning_retention_days == 180            # Plain copy: its own S3 rule
+
+
+def test_a_dedicated_snapshot_jobs_undo_window_is_its_buckets(tmp_path):
+    cfg = _cfg(tmp_path, [VJOB_DEDICATED], env=BASE_ENV)
+    _storage(cfg, {"": 21}, bucket="acme-vault")
+    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["vault"].versioning_retention_days == 21
+
+
+def test_an_unreadable_settings_file_estimates_with_the_default_undo_window(tmp_path):
+    cfg = _cfg(tmp_path, [VFJOB], env=BASE_ENV)
+    pathlib.Path(cfg, "storage.json").write_text("{oops")
+    assert _by_name(estimate_io.scenario_from_jobs(cfg, SRC))["docs"].versioning_retention_days == 45 + 30
+
+
+def test_the_wizard_prices_a_new_file_history_job_with_the_undo_window(tmp_path):
+    from app.estimator.prices import load_prices
+    cfg = _cfg(tmp_path, [], env=BASE_ENV)
+    r = estimate_io.wizard_estimate({"name": "docs", "type": "versioned-files", "source": "docs",
+                                     "schedule": "0 2 * * *", "storage_class": "STANDARD",
+                                     "retention_type": "days", "retention_days": "45"},
+                                    cfg, SRC, load_prices("us-east-1"))
+    assert r["breakdown"]["retention_days"] == 45 + 30
+
+
+def test_newest_n_plus_days_is_noted_as_estimated_as_newest_n(tmp_path):
+    combined = {**AJOB, "retention": {"type": "count", "count": 5, "days": 30}}
+    cfg = _cfg(tmp_path, [combined, VJOB])
+    assert estimate_io.combined_in_use(cfg) is True
+    assert estimate_io.combined_in_use(cfg, job=combined) is True
+    assert estimate_io.combined_in_use(cfg, job=VJOB) is False
+    (tmp_path / "b").mkdir()
+    assert estimate_io.combined_in_use(_cfg(tmp_path / "b", [AJOB])) is False

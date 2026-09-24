@@ -188,3 +188,25 @@ def test_the_wizard_confirm_says_so_too(client, cfg, monkeypatch):
     client.post("/jobs/history/confirm", data={"csrf": token, "token": "t" * 24, "typed": BASE, "name": "manga"})
     text = " ".join(_flashes(client).values())
     assert "S3 rules were applied" in text and "versioning couldn't be changed" in text
+
+
+# --- M6: the cost screens note that "newest N + days" is estimated as newest N ----------------
+
+COMBINED = "keeps the newest old versions plus a number of days as keeping only those newest versions"
+
+
+def test_cost_screens_note_the_combined_form(client, cfg):
+    from tests.gui.test_vocabulary import forbidden_hits, mono_violations
+    jobs = json.loads(json.dumps(JOBS))
+    jobs[0]["retention"] = {"type": "count", "count": 5, "days": 30}
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
+    for url in ("/cost", "/jobs/manga"):
+        body = client.get(url).get_data(as_text=True)
+        assert COMBINED in body, url
+        note = re.search(r"<p[^>]*data-combined-note[^>]*>.*?</p>", body, re.S).group(0)
+        assert forbidden_hits(note) == [] and mono_violations(note) == []
+    assert COMBINED not in client.get("/jobs/appdata_backups").get_data(as_text=True)
+
+
+def test_no_combined_note_without_the_combined_form(client, cfg):
+    assert COMBINED not in client.get("/cost").get_data(as_text=True)
