@@ -158,6 +158,19 @@ re-apply `applied` (merged with the current console rules), record an `s3-rules`
 `{<bucket>: {"state": "ok"|"restored"|"not_restored"|"unsupported", "checked_at", "detail"}}`.
 A missing lifecycle configuration counts as tampering. **A failed check never blocks the backup.**
 
+**Settle window** (added after the real-AWS smoke test): S3 serves bucket configuration eventually
+consistently — right after a put, a read can still return the old configuration, even after a
+read already showed the new one; versioning can take up to 15 minutes. Every write the app
+records keeps the state S3 had just before it (`applied.json` `previous` + `written_at`; the write
+journal `<bucket>.inflight.json` carries the same). For 15 minutes after such a write, a live half
+(rules / versioning) equal to that pre-write state is "S3 still applying the last change": not
+tampering, no alarm or notification, nothing written back, the journal kept (it counts as landed
+for that pass's gate only, so an old rule is never written over a confirmed change), status `ok`
+with that detail. A change made since (a keeps-more edit, a confirmed apply) is still written. A
+put that reported an error is not a settle candidate (it is retried at once). Accepted cost:
+someone who puts back exactly the pre-write state inside the window is alarmed and restored only
+once the window has passed.
+
 ## 3. Previews and damage warnings
 
 Every keeps-less change produces a **preview** before it can apply, per affected folder/job:
