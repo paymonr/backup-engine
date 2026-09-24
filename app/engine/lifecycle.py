@@ -1052,18 +1052,24 @@ def write_versioning(bucket: str, state: str, creds: dict, region: str, *, run=p
         raise _fail(creds, cp.stderr)
 
 
-def versioning_intent(bucket: str, base: str, jobs: list[dict], settings: dict, *, base_versioned: bool = True) -> str:
+def versioning_intent(bucket: str, base: str, jobs: list[dict], settings: dict, *,
+                      base_versioned: bool = True) -> str | None:
     """storage.json's `versioning`, else what the install already chose: a dedicated bucket's
     job `bucket_versioned`, the base bucket's BASE_BUCKET_VERSIONED (default on) -- so no
-    install is flipped against a choice it already made."""
+    install is flipped against a choice it already made. None (final fix wave I3): a dedicated
+    bucket no job uses any more -- its versioning is left exactly as it is (S3 can never turn it
+    back off, so the app never writes versioning for a bucket nothing backs up to)."""
+    job = None
+    if bucket != base:
+        job = next((j for j in jobs if j.get("dedicated") and j.get("bucket") == bucket), None)
+        if job is None:
+            return None
     raw = ((settings or {}).get("buckets") or {}).get(bucket)
     v = raw.get("versioning") if isinstance(raw, dict) else None
     if v in VERSIONING_STATES:
         return v
-    if bucket != base:
-        job = next((j for j in jobs if j.get("dedicated") and j.get("bucket") == bucket), None)
-        if job is not None:
-            return "on" if job.get("bucket_versioned", True) else "suspended"
+    if job is not None:
+        return "on" if job.get("bucket_versioned", True) else "suspended"
     return "on" if base_versioned else "suspended"
 
 

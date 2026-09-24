@@ -285,3 +285,30 @@ def test_the_check_cli_passes_the_runs_id_through(cfg, monkeypatch, capsys):
     monkeypatch.setattr(lc, "check", fake_check)
     assert lc.main(["check", "--bucket", BASE]) == 0
     assert seen.get("run_id") == RUN
+
+
+# --- I3: never write versioning for a bucket no job uses -------------------------------------
+
+DED = BASE + "-tv"
+
+
+def test_probe5_deleting_a_dedicated_job_never_turns_its_buckets_versioning_on(cfg):
+    _write_jobs(cfg, [{"name": "tv", "type": "archive", "source": "media/tv", "schedule": "0 3 * * *",
+                       "enabled": True, "storage_class": "STANDARD", "dedicated": True, "bucket": DED,
+                       "bucket_versioned": False, "retention": {"type": "days", "days": 30}}])
+    fake = FakeS3({}, versioning={DED: None})
+    lc.sync(cfg, DED, run=fake)
+    assert fake.versioning[DED] is None
+    _write_jobs(cfg, [])                                     # routes.job_delete -> apply_for(its bucket)
+    res = lc.sync(cfg, DED, run=fake)
+    assert fake.versioning[DED] is None                      # never versioned: still never versioned
+    assert [c for c in fake.calls if c[:2] == ["s3api", "put-bucket-versioning"]] == []
+    assert not any("versioning" in line for line in res.lines)
+
+
+@pytest.mark.parametrize("stored", [None, "on", "suspended"])
+def test_a_bucket_no_job_uses_has_no_versioning_intent(stored):
+    settings = {"buckets": {DED: {"versioning": stored}}} if stored else {}
+    assert lc.versioning_intent(DED, BASE, [], settings) is None
+    assert lc.desired(DED, BASE, [], settings).versioning is None
+    assert lc.versioning_intent(BASE, BASE, [], {}) == "on"            # the base bucket always has one
