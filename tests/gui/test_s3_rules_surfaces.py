@@ -374,3 +374,34 @@ def test_row_warns_about_changes_waiting_for_confirmation(cfg):
     row = s3_rules.setup_row(cfg)
     assert row["state"] == "warn" and row["fix_url"] == "/setup/storage"
     assert row["sentence"] == "1 change waiting for your confirmation"
+
+
+# --- final fix wave I1: a pass that stopped on an unreadable config file says so ------------
+
+@pytest.mark.parametrize("detail", list(lifecycle.CONFIG_ERRORS))
+def test_row_names_an_unreadable_config_file_instead_of_try_check_now(cfg, detail):
+    _status(cfg, state="error", checked_at="2026-09-23T05:00:00Z", detail=detail)
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "warn"
+    assert row["sentence"] == detail[0].upper() + detail[1:]
+    assert "try Check now" not in row["sentence"]
+
+
+def test_a_job_save_on_an_unreadable_settings_file_flashes_owner_words(cfg):
+    Path(cfg["CONFIG_DIR"], "storage.json").write_text("{oops")
+    msgs = s3_rules.apply_for(cfg, [BASE])
+    assert msgs and "a settings file couldn't be read" in msgs[0][1]
+
+
+def test_an_unreadable_settings_file_outranks_a_waiting_count_it_would_invent(cfg):
+    # The GUI's own (fail-safe) reading of an unreadable storage.json is the defaults, which can
+    # "find" a waiting change that isn't real -- the config error must head the row instead.
+    _status(cfg, state="error", checked_at="2026-09-23T05:00:00Z", detail=lifecycle.CONFIG_SETTINGS_UNREADABLE)
+    import app.gui.s3_rules as mod
+    orig = mod._outstanding
+    try:
+        mod._outstanding = lambda c, b: (True, 3)
+        row = s3_rules.setup_row(cfg)
+    finally:
+        mod._outstanding = orig
+    assert row["sentence"].startswith("The S3 rules settings couldn't be read")

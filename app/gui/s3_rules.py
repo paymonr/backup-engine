@@ -9,7 +9,8 @@ from ..engine import lifecycle, storage_summary
 from . import config_io, permissions, vocab
 
 _WHY = {"role": "couldn't use the bucket-admin role", "aws": "AWS refused the change",
-        "unsupported": "this storage doesn't support S3 rules"}
+        "unsupported": "this storage doesn't support S3 rules",
+        "config": "a settings file couldn't be read"}
 
 
 def job_buckets(cfg, job: dict) -> list[str]:
@@ -113,11 +114,18 @@ def setup_row(cfg) -> dict | None:
     checked = [e.get("checked_at") for e in entries if e.get("checked_at")]
     row["verified_at"] = min(checked) if checked else None
     not_reached, waiting = _outstanding(cfg, buckets)
+    # final fix wave I1: a pass that stopped on an unreadable jobs/settings file wrote nothing
+    # -- say which file (not "try Check now", which would stop the same way), ahead of anything
+    # computed from those files (a "waiting" count from an unreadable file would be invented).
+    config = next((e.get("detail") for e in entries if e.get("state") == "error"
+                   and e.get("detail") in lifecycle.CONFIG_ERRORS), None)
     if "not_restored" in states:
         # The alarm was acknowledged (popped), but the bucket's rules are still not
         # what the jobs need — an acknowledged not_restored must not read as "ok"
         # until the next successful Check now/backup run fixes it (or re-alarms).
         row.update(state="warn", sentence="S3 rules still differ from what your jobs need — try Check now")
+    elif config:
+        row.update(state="warn", sentence=config[0].upper() + config[1:])
     elif not_reached:
         row.update(state="warn", sentence="Your latest job settings haven't reached S3 yet — try Check now")
     elif waiting:
@@ -223,8 +231,7 @@ def console_view(rules: list[dict], folders) -> list[dict]:
 
 def _bucket_view(cfg, bucket: str, base: str, jobs: list[dict], settings: dict) -> dict:
     cache = cfg["CACHE_DIR"]
-    want = lifecycle.want_for(cfg, bucket, jobs, settings)
-    before = lifecycle.baseline_from_applied(lifecycle.load_applied_doc(cache, bucket), want)
+    before, want = lifecycle.applied_view(cfg, bucket, jobs, settings)
     shown = before.rules if before is not None else want.rules      # what S3 was last given
     waiting = ({c.rule_id: c for c in lifecycle.classify(before, want) if c.kind == lifecycle.KEEPS_LESS}
                if before is not None else {})
@@ -546,8 +553,7 @@ def impact_line(cfg, args) -> dict:
     except lifecycle.PreviewError as e:
         return {"line": e.message}
     ctx = {"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}
-    want = lifecycle.want_for(ctx, bucket, jobs, settings)
-    before = lifecycle.baseline_from_applied(lifecycle.load_applied_doc(cfg["CACHE_DIR"], bucket), want)
+    before, want = lifecycle.applied_view(ctx, bucket, jobs, settings)
     if before is None:
         return {"line": "Not checked yet — press Check now first."}
     summary = storage_summary.load(cfg["CACHE_DIR"], bucket, folder)
@@ -703,12 +709,11 @@ def job_history(cfg, job: dict) -> dict | None:
         bucket, folder = target
         kind = next(f.kind for f in lifecycle.folders_for(bucket, base, jobs) if f.folder == folder)
         ctx = {"CONFIG_DIR": config_dir, "CACHE_DIR": cache}
-        want = lifecycle.want_for(ctx, bucket, jobs, settings)
+        before, want = lifecycle.applied_view(ctx, bucket, jobs, settings)
         if want.versioning != "on":
             return {"state": "versioning_off", "kind": kind}
         if (lifecycle.load_status(cache).get(bucket) or {}).get("state") == "unsupported":
             return {"state": "unsupported", "kind": kind}
-        before = lifecycle.baseline_from_applied(lifecycle.load_applied_doc(cache, bucket), want)
         rule = (before.rules if before is not None else want.rules).get(lifecycle.rule_id(folder))
         d, n = lifecycle.expiry(rule)
         waiting = before is not None and any(c.folder == folder and c.kind == lifecycle.KEEPS_LESS

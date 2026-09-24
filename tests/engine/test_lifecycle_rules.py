@@ -154,15 +154,28 @@ def test_describe_in_words():
     {"type": "tiered", "keep": {"last": 3, "daily": 7, "weekly": 4, "monthly": 6}},   # Snapshot-only
     {"type": "nope"},
 ])
-def test_a_malformed_plain_copy_setting_means_keep_everything(bad):
-    # Never raise: one bad job must not break the bucket's rules. Keep-everything is
-    # the safe direction (no rule = S3 removes nothing), and the folder says why.
+def test_a_malformed_plain_copy_setting_holds_its_folders_rule(bad):
+    # Never raise: one bad job must not break the bucket's rules -- and never silently drop
+    # the folder's rule either (final fix wave I1): the folder HOLDS whatever rule S3 has for
+    # it (resolve_held against the baseline), and the folder says why.
     jobs = [_job("manga", "archive", bad), _job("documents", "versioned-files", {"type": "days", "days": 90})]
     fs = {f.folder: f for f in lc.folders_for(BASE, BASE, jobs)}
-    assert fs["media/manga/"].retention == {"type": "keep_all"}
+    assert fs["media/manga/"].hold is True and fs["media/manga/"].retention is None
     assert "manga" in fs["media/manga/"].note and fs["media/documents/"].note == ""
+    assert fs["media/documents/"].hold is False
     rules = _by_id(lc.desired_rules(BASE, BASE, jobs, {}))
     assert "backup-engine:media/manga/" not in rules and "backup-engine:media/documents/" in rules
+    want = lc.desired(BASE, BASE, jobs, {})
+    assert want.held == frozenset({"backup-engine:media/manga/"})
+    kept = lc.plain_rule("media/manga/", {"type": "days", "days": 180})
+    before = lc.RuleSet({kept["ID"]: kept}, frozenset({"media/manga/"}))
+    resolved = lc.resolve_held(before, want)
+    assert resolved.rules["backup-engine:media/manga/"] == kept
+    assert list(resolved.rules)[-1] == lc.HOUSEKEEPING_ID
+    assert lc.classify(before, resolved) == [c for c in lc.classify(before, resolved)
+                                             if c.rule_id != "backup-engine:media/manga/"]
+    # no baseline rule there -> none (S3 keeps everything, as it does now)
+    assert "backup-engine:media/manga/" not in lc.resolve_held(lc.RuleSet({}, frozenset()), want).rules
 
 
 # --- console rules: fingerprint + destructive actions in words (I1) --------------------------

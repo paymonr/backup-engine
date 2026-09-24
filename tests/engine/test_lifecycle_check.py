@@ -95,7 +95,24 @@ def test_cli_check_always_exits_zero(cfg, monkeypatch, capsys):
 
 # --- a check never raises (it runs before every backup and behind Check now) -----------
 
-def test_a_malformed_plain_copy_job_keeps_everything_and_the_check_still_runs(cfg):
+def test_a_malformed_plain_copy_job_holds_its_rule_and_the_check_still_runs(cfg):
+    # final fix wave I1: the folder whose job's history setting can't be read HOLDS the rule
+    # S3 already has (180 days here) -- never dropped (keeps more) and re-confirmed later.
+    from pathlib import Path
+    fake = FakeS3()
+    _applied(cfg, fake)                                                      # manga: 180 days
+    jobs_p = Path(cfg["CONFIG_DIR"], "jobs.json")
+    data = json.loads(jobs_p.read_text())
+    data["jobs"][0]["retention"] = {"type": "count", "count": "x"}          # manga
+    jobs_p.write_text(json.dumps(data))
+    assert lc.check(cfg, BASE, run=fake) == "ok"
+    manga = next(r for r in fake.rules[BASE] if r["ID"] == "backup-engine:media/manga/")
+    assert manga["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}
+    assert "backup-engine:housekeeping" in {r["ID"] for r in fake.rules[BASE]}
+    assert "manga" in lc.load_status(cfg["CACHE_DIR"])[BASE]["detail"]
+
+
+def test_a_malformed_plain_copy_job_on_an_empty_bucket_gets_no_rule(cfg):
     from pathlib import Path
     jobs_p = Path(cfg["CONFIG_DIR"], "jobs.json")
     data = json.loads(jobs_p.read_text())
@@ -105,7 +122,6 @@ def test_a_malformed_plain_copy_job_keeps_everything_and_the_check_still_runs(cf
     assert lc.check(cfg, BASE, run=fake) == "ok"
     ids = {r["ID"] for r in fake.rules[BASE]}
     assert "backup-engine:media/manga/" not in ids and "backup-engine:housekeeping" in ids
-    assert "manga" in lc.load_status(cfg["CACHE_DIR"])[BASE]["detail"]
 
 
 @pytest.mark.parametrize("with_applied,target,exc", [

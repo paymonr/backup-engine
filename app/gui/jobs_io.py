@@ -161,6 +161,18 @@ def _load_strict(config_dir) -> list[dict]:
         raise JobsFileError("jobs.json is not valid JSON; fix or remove it before "
                             "editing jobs")
 
+def load_strict(config_dir) -> list[dict]:
+    # STRICT READ path for anything that writes somewhere ELSE from the jobs -- the S3 rules
+    # pass (spec 2026-09-23, final fix wave I1). load()'s fail-safe "corrupt -> no jobs" is
+    # right for a page or a crontab, but acting on it would remove every folder's S3 rule; so
+    # here a present-but-unreadable file raises JobsFileError, and so does an entry whose name
+    # backup-engine can't use (load() silently drops it -- its folder's rule would go with it).
+    # A missing file is still simply no jobs.
+    jobs = _load_strict(config_dir)
+    if not all(isinstance(j.get("name"), str) and valid_name(j["name"]) for j in jobs):
+        raise JobsFileError("jobs.json has a job whose name backup-engine can't use")
+    return jobs
+
 def get(config_dir, name) -> dict | None:
     return next((j for j in load(config_dir) if j.get("name") == name), None)
 

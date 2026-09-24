@@ -64,6 +64,7 @@ class Folder:
     jobs: tuple[str, ...]
     retention: dict | None = None    # plain only: the job's normalized history setting
     note: str = ""                   # why the folder's rule isn't the job's setting (owner words)
+    hold: bool = False               # the job's setting can't be read: S3 keeps the rule it has (I1)
 
 
 def rule_id(folder: str) -> str:
@@ -76,7 +77,7 @@ def folders_for(bucket: str, base: str, jobs: list[dict]) -> list[Folder]:
     dedicated bucket its single job's whole bucket."""
     out: list[Folder] = []
     snapshot_jobs: list[str] = []
-    for j in sorted(jobs, key=lambda j: j.get("name", "")):
+    for j in sorted(jobs, key=lambda j: str(j.get("name", ""))):
         name, typ = j.get("name", ""), j.get("type")
         if j.get("dedicated") and j.get("bucket"):
             if j["bucket"] != bucket:
@@ -88,14 +89,16 @@ def folders_for(bucket: str, base: str, jobs: list[dict]) -> list[Folder]:
             folder = None
         if typ == "archive":
             # A malformed setting (hand-edited jobs.json, a Snapshot-only choice) must not
-            # break the whole bucket's rules: keep everything -- no rule, the safe direction.
+            # break the whole bucket's rules -- nor silently drop the folder's rule (final fix
+            # wave I1): the folder HOLDS whatever rule S3 has for it now (resolve_held), until
+            # the setting can be read again.
             try:
-                retention, note = jobs_io._normalize_retention(j, typ), ""
+                retention, note, hold = jobs_io._normalize_retention(j, typ), "", False
             except ValueError:
-                retention = {"type": "keep_all"}
-                note = f"{name}: its history setting couldn't be read, so S3 keeps every old version"
+                retention, hold = None, True
+                note = f"{name}: its history setting couldn't be read, so S3 keeps the rule it already has"
             out.append(Folder(f"media/{name}/" if folder is None else folder, "plain", (name,),
-                              retention, note))
+                              retention, note, hold))
         elif typ == "versioned-files":
             out.append(Folder(f"media/{name}/" if folder is None else folder, "undo", (name,)))
         elif typ == "versioned":
@@ -121,6 +124,8 @@ def _settings_path(config_dir: str) -> Path:
 
 
 def load_settings(config_dir: str) -> dict:
+    """Fail-safe read (pages, previews): an unreadable file reads as the defaults. Anything
+    that WRITES S3 or storage.json from the settings uses load_settings_strict instead."""
     try:
         data = json.loads(_settings_path(config_dir).read_text())
     except (OSError, ValueError):
@@ -129,6 +134,34 @@ def load_settings(config_dir: str) -> dict:
         data = {}
     buckets = data.get("buckets")
     return {"version": 1, "buckets": buckets if isinstance(buckets, dict) else {}}
+
+
+class SettingsFileError(ValueError):
+    """storage.json exists but can't be read (bad JSON, or not the shape the app writes)."""
+
+
+def load_settings_strict(config_dir: str) -> dict:
+    """The owner's settings for a pass that writes (final fix wave I1): a missing file is the
+    defaults, but a present-but-unreadable one raises SettingsFileError -- acting on the
+    defaults instead would silently undo what the owner confirmed (a suspend, a tier, a longer
+    undo window). Checks the shape as far as the app reads it: buckets, each bucket, its
+    folders and each folder entry are objects."""
+    p = _settings_path(config_dir)
+    if not p.exists():
+        return {"version": 1, "buckets": {}}
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError) as e:
+        raise SettingsFileError(f"storage.json can't be read ({type(e).__name__})")
+    buckets = data.get("buckets", {}) if isinstance(data, dict) else None
+    ok = isinstance(buckets, dict) and all(
+        isinstance(b, dict)
+        and isinstance(b.get("folders", {}), dict)
+        and all(isinstance(f, dict) for f in b.get("folders", {}).values())
+        for b in buckets.values())
+    if not ok:
+        raise SettingsFileError("storage.json isn't in the shape backup-engine writes")
+    return {"version": 1, "buckets": buckets}
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -284,9 +317,14 @@ def _folder_storage_class(jobs: list[dict], names: tuple[str, ...]) -> str:
 
 
 def desired_rules(bucket: str, base: str, jobs: list[dict], settings: dict) -> list[dict]:
+    """The app rules the jobs and settings want. A HELD folder (its job's setting can't be
+    read, I1) has none here -- desired() marks it, and resolve_held() gives it whatever rule
+    the baseline (what S3 has) holds for it."""
     bset = bucket_settings(settings, bucket)
     rules = []
     for f in folders_for(bucket, base, jobs):
+        if f.hold:
+            continue
         r = plain_rule(f.folder, f.retention) if f.kind == "plain" else undo_rule(f.folder, undo_days(bset, f.folder))
         r = with_tier(f.folder, r, folder_tier(bset, f.folder), _folder_storage_class(jobs, f.jobs))
         if r:
@@ -485,10 +523,13 @@ _NONCURRENT = ("NoncurrentVersionExpiration", "NoncurrentVersionTransitions")
 class RuleSet:
     """A bucket's app rules as one comparable whole: {rule ID: rule} in write order, the app
     folders it covers ("" = a dedicated bucket's whole bucket) and the versioning intent
-    (Task 16; None = not known)."""
+    (Task 16; None = not known / not managed). `held` (final fix wave I1): rule IDs whose
+    folder keeps whatever rule the baseline has (its job's setting can't be read) --
+    resolve_held() fills them in once the baseline is known."""
     rules: dict
     folders: frozenset
     versioning: str | None = None
+    held: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -588,11 +629,30 @@ def _change_words(rid: str, before, after) -> str:
 
 
 def desired(bucket: str, base: str, jobs: list[dict], settings: dict, *, base_versioned: bool = True) -> RuleSet:
-    """desired_rules() as a RuleSet, with the folders the jobs have now and the versioning
-    intent (Task 16)."""
+    """desired_rules() as a RuleSet, with the folders the jobs have now, the versioning
+    intent (Task 16) and the held folders' rule IDs (I1)."""
+    folders = folders_for(bucket, base, jobs)
     return RuleSet({r["ID"]: r for r in desired_rules(bucket, base, jobs, settings)},
-                   frozenset(f.folder for f in folders_for(bucket, base, jobs)),
-                   versioning_intent(bucket, base, jobs, settings, base_versioned=base_versioned))
+                   frozenset(f.folder for f in folders),
+                   versioning_intent(bucket, base, jobs, settings, base_versioned=base_versioned),
+                   frozenset(rule_id(f.folder) for f in folders if f.hold))
+
+
+def resolve_held(before: RuleSet | None, want: RuleSet) -> RuleSet:
+    """`want` with every held folder (I1) given exactly the rule `before` has for it -- or
+    none, when before has none. Applied wherever want meets a baseline (the pass, previews,
+    outstanding, the screens), so a folder whose job's setting can't be read is never a
+    change: S3 keeps what it has there, gated or confirmed."""
+    if not want.held:
+        return want
+    rules = {rid: r for rid, r in want.rules.items() if rid != HOUSEKEEPING_ID}
+    for rid in want.held:
+        if before is not None and rid in before.rules:
+            rules[rid] = before.rules[rid]
+    ordered = {rid: rules[rid] for rid in sorted(rules)}
+    if HOUSEKEEPING_ID in want.rules:
+        ordered[HOUSEKEEPING_ID] = want.rules[HOUSEKEEPING_ID]
+    return RuleSet(ordered, want.folders, want.versioning, want.held)
 
 
 def want_for(cfg, bucket: str, jobs=None, settings=None) -> RuleSet:
@@ -603,6 +663,16 @@ def want_for(cfg, bucket: str, jobs=None, settings=None) -> RuleSet:
     return desired(bucket, base, jobs_io.load(config_dir) if jobs is None else jobs,
                    load_settings(config_dir) if settings is None else settings,
                    base_versioned=config_io.base_bucket_versioned(config_dir))
+
+
+def applied_view(cfg, bucket: str, jobs=None, settings=None) -> tuple[RuleSet | None, RuleSet]:
+    """(baseline, want) from files only -- never AWS: what the app last applied (None before
+    the first apply) and what jobs.json + storage.json want now, held folders resolved against
+    that baseline (I1). The one pairing previews, outstanding() and the screens compare, so
+    they always agree with what the pass itself holds."""
+    want = want_for(cfg, bucket, jobs, settings)
+    before = baseline_from_applied(_applied_doc(cfg["CACHE_DIR"], bucket), want)
+    return before, resolve_held(before, want)
 
 
 def baseline_from_applied(doc, want: RuleSet, live_versioning: str | None = None) -> RuleSet | None:
@@ -739,9 +809,7 @@ def outstanding(cfg, bucket: str) -> tuple[bool, list[Change]]:
     """From files only (no AWS, R-B3): (S3 was last given less than the gate allows -- a
     keeps-more change not applied yet, e.g. a failed job-save write; the keeps-less changes
     waiting for the owner's confirmation). Nothing applied yet -> (False, [])."""
-    _, _, cache = _context(cfg)
-    want = want_for(cfg, bucket)
-    before = baseline_from_applied(_applied_doc(cache, bucket), want)
+    before, want = applied_view(cfg, bucket)
     if before is None:
         return False, []
     waiting = [c for c in classify(before, want) if c.kind == KEEPS_LESS]
@@ -773,7 +841,7 @@ def seed_undo_days(config_dir: str, bucket: str, live_rules: list[dict], folders
     if not found:
         return False
     with settings_lock(config_dir):                      # read-modify-write, never interleaved
-        settings = load_settings(config_dir)
+        settings = load_settings_strict(config_dir)       # I1: never write over an unreadable file
         b = settings["buckets"].get(bucket)
         b = dict(b) if isinstance(b, dict) else {}
         fs = dict(b["folders"]) if isinstance(b.get("folders"), dict) else {}
@@ -1260,6 +1328,18 @@ def _err_state(e: LifecycleError) -> str:
     return "unsupported" if e.kind == "unsupported" else "error"
 
 
+# final fix wave I1: the owner-words detail of a pass that stopped on an unreadable config file.
+CONFIG_JOBS_UNREADABLE = "the jobs file couldn't be read — S3 rules left as they are"
+CONFIG_SETTINGS_UNREADABLE = "the S3 rules settings couldn't be read (storage.json) — S3 rules left as they are"
+CONFIG_ERRORS = (CONFIG_JOBS_UNREADABLE, CONFIG_SETTINGS_UNREADABLE)
+
+
+def _config_error(cache: str, bucket: str, detail: str, stale: bool):
+    """The pass stops before any AWS call and writes nothing (I1); an open alarm stays."""
+    set_status(cache, bucket, "error", detail)
+    return "error", None, LifecycleError("config", detail), stale
+
+
 TAMPERED = "S3 rules were changed outside backup-engine"
 
 
@@ -1316,10 +1396,21 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     this pass raised that alarm and the app's own rules are ok/restored."""
     config_dir = cfg["CONFIG_DIR"]
     base, region, cache = _context(cfg)
-    jobs = jobs_io.load(config_dir)                          # under the lock: never a stale list
+    stale = False
+    # final fix wave I1: read jobs.json and storage.json STRICTLY, under the lock (never a stale
+    # list), before any AWS call -- a present-but-unreadable file stops the pass with state
+    # "error" and nothing written, instead of acting on "no jobs" / the defaults (which would
+    # remove every folder rule, or undo a confirmed suspend or tier).
+    try:
+        jobs = jobs_io.load_strict(config_dir)
+    except (ValueError, OSError):
+        return _config_error(cache, bucket, CONFIG_JOBS_UNREADABLE, stale)
+    try:
+        settings = load_settings_strict(config_dir)
+    except SettingsFileError:
+        return _config_error(cache, bucket, CONFIG_SETTINGS_UNREADABLE, stale)
     notes = notes_for(bucket, base, jobs)
     doc = _applied_doc(cache, bucket)
-    stale = False
     try:
         creds = role_creds(config_dir, region, run=run)
         live, min_size = read_lifecycle(bucket, creds, region, run=run)
@@ -1348,16 +1439,21 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
 
     first = applied is None
     if first:
-        seed_undo_days(config_dir, bucket, live, folders_for(bucket, base, jobs))     # R-B6 (#7)
-    want = want_for(cfg, bucket, jobs, load_settings(config_dir))
-    if expect is not None and _set_hash(want) != expect:
-        stale, gated = True, True             # never write anything unconfirmed (I1)
+        try:
+            if seed_undo_days(config_dir, bucket, live, folders_for(bucket, base, jobs)):   # R-B6 (#7)
+                settings = load_settings_strict(config_dir)
+        except SettingsFileError:
+            return _config_error(cache, bucket, CONFIG_SETTINGS_UNREADABLE, stale)
+    want = want_for(cfg, bucket, jobs, settings)
     # R-B2': on a first apply, a folder is only "known" (able to gate a keeps-less change)
     # once one of its jobs has actually run -- otherwise it is a new job's folder, always
     # keeps-more, no matter what a legacy/console rule already does to that prefix.
     known = _known_folders(cache, bucket, base, jobs) if first else None
     before = (baseline_from_live(live, want, known, versioning=live_ver) if first
               else baseline_from_applied(doc, want, live_versioning=live_ver))
+    want = resolve_held(before, want)          # I1: a folder whose setting can't be read keeps its rule
+    if expect is not None and _set_hash(want) != expect:
+        stale, gated = True, True             # never write anything unconfirmed (I1)
     waiting = [c for c in classify(before, want) if c.kind == KEEPS_LESS] if gated else []
     target_set = gate(before, want) if gated else want
     target, target_ver = list(target_set.rules.values()), target_set.versioning
@@ -1817,8 +1913,7 @@ def preview(cfg, bucket: str, edit: dict) -> Preview:
     base = _context(cfg)[0]
     if bucket not in buckets_for(base, jobs):
         raise PreviewError("invalid", f"{bucket!r} isn't one of this install's buckets.")
-    want = want_for(cfg, bucket, jobs, settings)
-    before = baseline_from_applied(_applied_doc(cache, bucket), want)
+    before, want = applied_view(cfg, bucket, jobs, settings)
     if before is None:
         raise PreviewError("not_checked", "S3 rules for this bucket haven't been checked yet — "
                                           "press Check now first.")
@@ -1835,7 +1930,7 @@ def preview(cfg, bucket: str, edit: dict) -> Preview:
         # though manga was already keeps-less without the edit (fix round 2, Minor 6). A rule
         # the edit leaves untouched (identical before and after the edit) is never own, no
         # matter its keeps-less status -- purely informational via `keeps_less`.
-        current_want = want_for(cfg, bucket)       # jobs.json + storage.json exactly as they are now
+        _, current_want = applied_view(cfg, bucket)    # jobs.json + storage.json exactly as they are now
         def _n(rs, rid):
             if rid == "versioning":                # Task 16: not a folder rule -- RuleSet.versioning
                 return rs.versioning
@@ -1900,7 +1995,7 @@ def apply_confirmed(cfg, token: str, typed: str, *, run=provision._run_aws) -> S
             jobs, settings = edited(jobs_io.load(config_dir), load_settings(config_dir), edit,
                                     source_root=_source_root(cfg))
             if (_inputs_hash(config_dir, cache, bucket) != t.get("inputs_hash")
-                    or _set_hash(want_for(cfg, bucket, jobs, settings)) != t.get("target_hash")):
+                    or _set_hash(applied_view(cfg, bucket, jobs, settings)[1]) != t.get("target_hash")):
                 discard_preview(cache, token)
                 raise PreviewError("stale", _STALE)
             try:
