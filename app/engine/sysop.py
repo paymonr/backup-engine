@@ -231,11 +231,13 @@ def _summary_target(cfg, params: dict | None) -> tuple[str, str] | None:
 
 def _summary_skip(cfg, params: dict | None) -> bool:
     """Silent skips (no Activity record at all): nothing to scan here, or -- for the after-run
-    scan only -- a summary of the same folder taken in the last SUMMARY_FRESH_S seconds."""
+    scan only (backup-job.sh passes --job; Refresh now passes --bucket/--folder) -- a summary of
+    the same folder taken in the last SUMMARY_FRESH_S seconds. Keyed on --job, not the trigger:
+    the after-run scan now records its run's own trigger, and a Run now is "manual" (M12)."""
     target = _summary_target(cfg, params)
     if target is None:
         return True
-    if os.environ.get("BE_TRIGGER", "manual") == "scheduled":
+    if (params or {}).get("job"):
         s = storage_summary.load(cfg["CACHE_DIR"], *target)
         at = storage_summary.scanned_at(s)
         if at is not None and time.time() - at.timestamp() < SUMMARY_FRESH_S:

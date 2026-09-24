@@ -403,10 +403,32 @@ def test_an_after_run_scan_skips_a_folder_scanned_minutes_ago(tmp_path, monkeypa
     monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("fresh summary"))
     assert sysop.run("storage-summary", {"job": "movies"}) == 0
     assert not Path(cache, "state", "_system.runs.jsonl").exists()
-    monkeypatch.setenv("BE_TRIGGER", "manual")                          # Refresh now always scans
     seen = []
     monkeypatch.setattr(sysop.storage_summary, "scan", _fake_scan(seen))
-    assert sysop.run("storage-summary", {"job": "movies"}) == 0 and seen
+    assert sysop.run("storage-summary", {"bucket": "my-bucket", "folder": "media/movies/"}) == 0 and seen
+    # ^ Refresh now (bucket + folder) always scans
+
+
+def test_an_after_run_scan_of_a_run_now_run_still_skips_a_fresh_folder(tmp_path, monkeypatch):
+    # final fix wave M12: the after-run scan now carries the run's own trigger (a Run now is
+    # "manual") -- whether it's an after-run scan is its --job, not its trigger.
+    from datetime import datetime, timezone
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    storage_summary.save(cache, {"bucket": "my-bucket", "folder": "media/movies/",
+                                 "scanned_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    monkeypatch.setenv("BE_TRIGGER", "manual")
+    monkeypatch.setattr(sysop.storage_summary, "scan", lambda *a, **k: pytest.fail("fresh summary"))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    assert not Path(cache, "state", "_system.runs.jsonl").exists()
+
+
+def test_an_after_run_scan_records_the_runs_trigger(tmp_path, monkeypatch):
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    monkeypatch.setenv("BE_TRIGGER", "manual")
+    monkeypatch.setattr(sysop.storage_summary, "scan", _fake_scan([]))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    start = [r for r in _system_records(cache) if r["event"] == "start"][0]
+    assert start["trigger"] == "manual"
 
 
 def test_a_failed_scan_is_a_failed_record(tmp_path, monkeypatch):

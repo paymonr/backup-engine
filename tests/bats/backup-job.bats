@@ -688,6 +688,17 @@ EOF
   grep -qx "storage-summary --job movies trigger=scheduled run=unset" "$out"
 }
 
+@test "a Run now run's detached storage summary records the run's own trigger" {
+  local stub="$BATS_TEST_TMPDIR/summary.sh" out="$BATS_TEST_TMPDIR/summary.log"
+  printf '#!/usr/bin/env bash\necho "$* trigger=${BE_TRIGGER:-unset}" >>"%s"\n' "$out" >"$stub"
+  export SUMMARY_CMD="bash $stub" BE_TRIGGER=manual
+  printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
+  run_job movies
+  [ "$status" -eq 0 ]
+  for _ in $(seq 1 50); do [ -s "$out" ] && break; sleep 0.1; done
+  grep -qx "storage-summary --job movies trigger=manual" "$out"
+}
+
 @test "a storage summary that can't start never fails the run" {
   export SUMMARY_CMD="$BATS_TEST_TMPDIR/no-such-command"
   printf 'echo JOB_NAME=movies; echo JOB_TYPE=archive; echo JOB_SOURCE=media/movies; echo JOB_STORAGE_CLASS=STANDARD; echo JOB_MIRROR=false; echo JOB_RETENTION_TYPE=keep_all\n' >"$JOBS_IO_STUB"
