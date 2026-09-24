@@ -259,7 +259,8 @@ def job_page(name):
         sibling_cold=_sibling_cold(cfg, job_def),
         dowdate=lambda iso: _dow_date(iso, tz),
         schedule_desc=schedule_desc, csrf=security.issue_csrf(),
-        s3h=s3_rules.job_history(cfg, job_def))
+        s3h=s3_rules.job_history(cfg, job_def),
+        tier_note=estimate_io.tier_in_use(cfg["CONFIG_DIR"], job=job_def))
 
 
 @bp.get("/jobs/<name>/progress.json")
@@ -2496,6 +2497,7 @@ def cost_page_view():
             scrub_month = 1
     return render_template("cost.html", cost=cost, error=error, scrub_month=scrub_month,
                            retrieval_tiers=estimate_io.RETRIEVAL_TIERS,
+                           tier_note=estimate_io.tier_in_use(cfg["CONFIG_DIR"]),
                            csrf=security.issue_csrf())
 
 

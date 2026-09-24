@@ -1260,3 +1260,22 @@ def cost_page(params: Mapping, config_dir, cache_dir, prices, source_root) -> di
         "per_job": per_job, "restore": restore_rows, "assumptions": assumptions,
         "price": {"kind": prices.source, "region": scenario.region, "date": prices.date},
     }
+
+
+def tier_in_use(config_dir, job: dict | None = None) -> bool:
+    """Spec §10: the frozen model doesn't price moving old versions to a cheaper tier; cost
+    screens say so when any app folder (or this job's folder) has one. Never raises."""
+    from ..engine import lifecycle                     # local: lifecycle imports gui modules
+    try:
+        settings = lifecycle.load_settings(config_dir)
+        jobs = jobs_io.load(config_dir)
+        base = config_io.read_backup_env(config_dir).get("S3_BUCKET", "").strip()
+        if job is not None:
+            targets = [lifecycle.folder_of_job(base, jobs, job.get("name"))]
+        else:
+            targets = [(b, f.folder) for b in lifecycle.buckets_for(base, jobs)
+                       for f in lifecycle.folders_for(b, base, jobs)]
+        return any(t is not None and lifecycle.folder_tier(lifecycle.bucket_settings(settings, t[0]), t[1])
+                   for t in targets)
+    except Exception:                                  # noqa: BLE001 — a cost page never 500s on this
+        return False

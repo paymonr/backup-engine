@@ -22,6 +22,9 @@
     {% elif row.no_summary %}
     <p class="hint" style="margin-top:var(--sp-1)">No storage summary for this folder yet.{% if refresh_ok %} Refresh now for exact figures.{% endif %} Confirming still needs the bucket name.</p>
     {% endif %}
+    {% if row.impact and row.impact.moved %}
+    <p class="hint" style="margin-top:var(--sp-1)">S3 moves about <span class="mono">{{ row.impact.moved.versions }}</span> old versions (<span class="mono">{{ row.impact.moved.bytes }}</span>) to the cheaper tier.</p>
+    {% endif %}
     {% for n in row.notes %}<p class="hint" style="margin-top:var(--sp-1)">{{ n }}</p>{% endfor %}
     {% if row.refresh and refresh_ok %}
     <form method="post" action="/setup/storage/refresh" style="margin-top:var(--sp-1)">

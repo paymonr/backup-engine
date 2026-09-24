@@ -229,16 +229,24 @@ def _bucket_view(cfg, bucket: str, base: str, jobs: list[dict], settings: dict) 
     waiting = ({c.rule_id: c for c in lifecycle.classify(before, want) if c.kind == lifecycle.KEEPS_LESS}
                if before is not None else {})
     types = {j.get("name"): j.get("type") for j in jobs}
+    bset = lifecycle.bucket_settings(settings, bucket)
     rows = []
     for f in lifecycle.folders_for(bucket, base, jobs):
         rid = lifecycle.rule_id(f.folder)
-        d, n = lifecycle.expiry(shown.get(rid))
+        rule = shown.get(rid)
+        d, n = lifecycle.expiry(rule)
         w = waiting.get(rid)
+        # Task 18b: the tier column shows what the LAST APPLIED rule (`rule`) actually
+        # does; `tier_off` is a tier the owner set (storage.json) but that dropped out of
+        # `want` -- e.g. it couldn't move anything before removal (fix round 1, M3b/M5) --
+        # so the row can say it's set but not doing anything, rather than silently hiding it.
+        set_tier = lifecycle.folder_tier(bset, f.folder)
         rows.append({"key": f"{bucket}|{f.folder}", "folder": f.folder, "where": f.folder or "whole bucket",
                      "kind": f.kind, "jobs": list(f.jobs), "type": vocab.TYPE_NAMES.get(types.get(f.jobs[0]), ""),
                      "keeps": {"days": None if d == float("inf") else d, "newer": n or None},
-                     "waiting": w.words.split(": ", 1)[-1] if w else None, "note": f.note})
-    bset = lifecycle.bucket_settings(settings, bucket)
+                     "waiting": w.words.split(": ", 1)[-1] if w else None, "note": f.note,
+                     "tier": _tier_view(rule), "tier_off": bool(set_tier) and
+                     lifecycle.tier_of(want.rules.get(rid)) is None})
     live = lifecycle.load_live(cache, bucket)
     live_versioning = (live or {}).get("versioning")
     # fix round 1, Minor: neutral chip styling when versioning is suspended/never-on BY THE
@@ -386,6 +394,19 @@ def editor(cfg, key: str | None, *, error: str | None = None, form=None) -> dict
         undo_days = form.get("undo_days", stored_undo) if form is not None else stored_undo
         ed.update(kind="undo", title=f"{', '.join(f.jobs)} · undo window", undo_days=undo_days)
         args = {"key": key, "undo_days": str(undo_days)}
+    # Task 18b: the cheaper-tier fields, for both kinds -- fix round 1, I2 applies here
+    # too: a just-submitted, still-invalid `form`'s own tier_class/tier_days are shown
+    # instead of the stored ones, so a tier form error never silently reverts what the
+    # owner typed.
+    stored_tier = lifecycle.folder_tier(bset, folder)
+    if form is not None:
+        tier_class = form.get("tier_class", (stored_tier or {}).get("class", ""))
+        tier_days = form.get("tier_days", (stored_tier or {}).get("after_days", 30))
+    else:
+        tier_class, tier_days = (stored_tier or {}).get("class", ""), (stored_tier or {}).get("after_days", 30)
+    ed.update(tier_class=tier_class, tier_days=tier_days,
+              tier_classes=[(c, vocab.CLASS_NAMES[c]) for c in lifecycle.TIER_CLASSES])
+    args["tier_class"], args["tier_days"] = tier_class, str(tier_days)
     # fix round 1, I1: the true impact line on the very first render (impact.json's JS then
     # keeps it live as the owner changes values) -- the same function, the row's own values.
     ed["impact"] = impact_line(cfg, args)
@@ -424,6 +445,26 @@ def _folder_entry(settings: dict, bucket: str, folder: str) -> dict:
     return e
 
 
+def _tier_from_form(form) -> dict | None:
+    """The editor's tier_class/tier_days fields as a storage.json tier entry, or None
+    when "None" is picked (tier_days is then ignored -- fix round: no client min on it,
+    so a hidden-invalid number can never silently block the submit; the server is the
+    gate, via tier_error below)."""
+    cls = (form.get("tier_class") or "").strip()
+    if not cls:
+        return None
+    try:
+        days = int(str(form.get("tier_days") or "").strip())
+    except ValueError:
+        days = 0
+    return {"class": cls, "after_days": days}
+
+
+def _tier_view(rule) -> dict | None:
+    t = lifecycle.tier_of(rule)
+    return {"class": t[0], "label": vocab.tier_label(t[0]), "days": t[1]} if t else None
+
+
 def _edit_from_form(cfg, form):
     """(base, jobs, settings, bucket, edit) -- the shared computation edit_from_form and
     impact_line both need, loading jobs.json/storage.json once (fix round 1, Minor: impact_line
@@ -447,11 +488,33 @@ def _edit_from_form(cfg, form):
     f = next((x for x in lifecycle.folders_for(bucket, base, jobs) if x.folder == folder), None)
     if f is None:
         raise ValueError("That folder isn't one of backup-engine's.")
+    # Task 18b: a cheaper tier lives in storage.json for BOTH kinds (plain and undo) --
+    # written into the same folder entry as undo_days, and validated (tier_error) against
+    # the rule this edit is about to produce, with the folder's own upload storage class
+    # (Task 18a final: tier_error refuses a tier no colder than that).
+    tier = _tier_from_form(form)
+    entry = _folder_entry(settings, bucket, folder)
+    if tier is None:
+        entry.pop("tier", None)
+    else:
+        entry["tier"] = tier
+    storage_class = lifecycle._folder_storage_class(jobs, f.jobs)
     if f.kind == "undo":
-        _folder_entry(settings, bucket, folder)["undo_days"] = _whole(form.get("undo_days"), _DAYS_MSG, max_=MAX_DAYS)
+        entry["undo_days"] = _whole(form.get("undo_days"), _DAYS_MSG, max_=MAX_DAYS)
+        err = lifecycle.tier_error(tier, lifecycle.undo_rule(folder, entry["undo_days"]), storage_class)
+        if err:
+            raise ValueError(err)
         return base, jobs, settings, bucket, {"kind": "settings", "settings": settings}
+    retention = retention_from_editor(form)
+    err = lifecycle.tier_error(tier, lifecycle.plain_rule(folder, retention), storage_class)
+    if err:
+        raise ValueError(err)
     job = next(j for j in jobs if j.get("name") == f.jobs[0])
-    return base, jobs, settings, bucket, {"kind": "job", "job": dict(job, retention=retention_from_editor(form))}
+    # A Plain copy edit now carries `settings` too (the folder's tier lives there), not
+    # just `job` -- edited()/_save_edit_unlocked/save_edit already handle both keys
+    # together regardless of `kind` (fix round: this only needed the shape, not new code).
+    return base, jobs, settings, bucket, {"kind": "job", "job": dict(job, retention=retention),
+                                          "settings": settings}
 
 
 def edit_from_form(cfg, form) -> tuple[str, dict]:
@@ -495,8 +558,12 @@ def impact_line(cfg, args) -> dict:
     return {"line": line, "versions": imp["versions"], "bytes": imp["bytes"]}
 
 
-def damage_notes(change, kind: str | None) -> list[str]:
-    """Spec §3's damage warnings for one keeps-less change, in words."""
+def damage_notes(change, kind: str | None, min_size: str | None = None) -> list[str]:
+    """Spec §3's damage warnings for one keeps-less change, in words. `min_size` (Task 18a
+    final: live.json's TransitionDefaultMinimumObjectSize) gates the small-object warning --
+    it's only true when S3's default applies (the reading is S3's own default or unknown);
+    a bucket the owner set to "varies_by_storage_class" moves small objects too, so claiming
+    otherwise would be a straight lie."""
     if change.rule_id == "versioning":
         return ["Overwritten or deleted files in this bucket are gone immediately from now on; Plain copy "
                 "history stops; existing old versions stay until their rule removes them."]
@@ -513,6 +580,16 @@ def damage_notes(change, kind: str | None) -> list[str]:
         notes.append(f"Files with more than {an} old versions lose the oldest ones.")
     elif bn and ad != math.inf:
         notes.append("The newest old versions of each file are no longer protected — they go by age like the rest.")
+    t = lifecycle.tier_of(change.after)
+    if t and lifecycle.tier_keeps_less(change.before, change.after):
+        name = vocab.CLASS_NAMES.get(t[0], t[0])
+        notes.append(f"Old versions moved to {name} are charged for at least "
+                     f"{lifecycle.TIER_MIN_STORAGE_DAYS.get(t[0], 0)} days, even if S3 removes them sooner.")
+        if min_size != "varies_by_storage_class":
+            notes.append("Old versions under 128 KB are not moved (S3's default).")
+        notes.append("Getting an old version back from this tier takes hours and costs money."
+                     if t[0] == "DEEP_ARCHIVE" else
+                     "Reading an old version back from this tier costs a fee for every GB read.")
     return notes
 
 
@@ -527,7 +604,9 @@ def _impact_view(imp: dict) -> dict:
     except ValueError:
         oldest = None
     return {"zero": imp["versions"] == 0, "versions": f"{imp['versions']:,}", "bytes": _human_bytes(imp["bytes"]),
-            "oldest": oldest, "as_of": _human_time(scanned)}
+            "oldest": oldest, "as_of": _human_time(scanned),
+            "moved": ({"versions": f"{imp['moved']['versions']:,}", "bytes": _human_bytes(imp["moved"]["bytes"])}
+                      if (imp.get("moved") or {}).get("versions") else None)}
 
 
 def preview_view(cfg, pv, *, action: str = "/setup/storage/apply", hidden: dict | None = None,
@@ -536,13 +615,16 @@ def preview_view(cfg, pv, *, action: str = "/setup/storage/apply", hidden: dict 
     less, what S3 would permanently delete and the damage warnings."""
     base, jobs, _settings = _context(cfg)
     kinds = {f.folder: f.kind for f in lifecycle.folders_for(pv.bucket, base, jobs)}
+    # Task 18b: the small-object warning is only true when the bucket's own min-size
+    # reading (Task 18a final, live.json) says so -- read once for the whole preview.
+    min_size = (lifecycle.load_live(cfg["CACHE_DIR"], pv.bucket) or {}).get("min_size")
     rows = []
     for c in pv.changes:
         less = c.kind == lifecycle.KEEPS_LESS
         imp = pv.impacts.get(c.rule_id) if less else None
         rows.append({"words": c.words, "less": less, "impact": _impact_view(imp) if imp else None,
                      "no_summary": less and c.folder is not None and imp is None,
-                     "notes": damage_notes(c, kinds.get(c.folder)) if less else [],
+                     "notes": damage_notes(c, kinds.get(c.folder), min_size) if less else [],
                      "refresh": ({"bucket": pv.bucket, "folder": c.folder}
                                  if less and c.folder is not None else None)})
     return {"bucket": pv.bucket, "token": pv.token, "needs_typed": pv.needs_typed, "rows": rows,
@@ -615,7 +697,7 @@ def job_history(cfg, job: dict) -> dict | None:
         waiting = before is not None and any(c.folder == folder and c.kind == lifecycle.KEEPS_LESS
                                              for c in lifecycle.classify(before, want))
         return {"state": "ok", "kind": kind, "days": None if d == math.inf else d, "newer": n or None,
-                "waiting": waiting, "applied": before is not None}
+                "waiting": waiting, "applied": before is not None, "tier": _tier_view(rule)}
     except Exception:                                        # noqa: BLE001 — a GET never 500s on this
         return None
 

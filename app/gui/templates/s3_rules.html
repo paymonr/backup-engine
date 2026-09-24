@@ -66,6 +66,7 @@
             <th style="text-align:left">Folder</th>
             <th style="text-align:left">Job</th>
             <th style="text-align:left">What S3 keeps</th>
+            <th style="text-align:left">Cheaper tier</th>
             <th style="text-align:left" aria-label="Change"></th>
           </tr></thead>
           <tbody>
@@ -76,6 +77,8 @@
               <td style="text-align:left">{{ keeps(r.keeps, r.kind) }}
                 {% if r.waiting %}<div class="hint" style="margin-top:var(--sp-1)">Waiting for your confirmation: {{ r.waiting }}</div>{% endif %}
                 {% if r.note %}<div class="hint" style="margin-top:var(--sp-1)">{{ r.note }}</div>{% endif %}</td>
+              <td style="text-align:left">{% if r.tier %}{{ r.tier.label }} <code>{{ r.tier.class }}</code> after <span class="mono">{{ r.tier.days }}</span> days{% else %}—{% endif %}
+                {% if r.tier_off %}<div class="hint" style="margin-top:var(--sp-1)">Off — S3 removes these old versions before they would move.</div>{% endif %}</td>
               <td style="text-align:left"><a class="linklike" href="/setup/storage?edit={{ r.key|urlencode }}">Change…</a></td>
             </tr>
             {% endfor %}
@@ -87,6 +90,7 @@
                 {% if c.danger %}<div style="margin-top:var(--sp-1)"><span class="tok tok-failed">deletes or moves current backups</span></div>{% endif %}
                 {% if c.overlap %}<div style="margin-top:var(--sp-1)"><span class="tok tok-overdue">overlaps an app folder</span>
                   <span class="hint">S3 applies the shorter expiry where rules overlap</span></div>{% endif %}</td>
+              <td style="text-align:left">—</td>
               <td style="text-align:left" class="hint">read-only</td>
             </tr>
             {% endfor %}

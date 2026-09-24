@@ -106,6 +106,7 @@
       <input type="range" id="month" name="month" min="1" max="{{ cost.projection.primary.months|length }}" value="{{ scrub_month }}" form="lever-form">
       <p class="scrub mono" id="scrub-readout">Month {{ scrub_month }} · storing your files {{ money(m.storage) }} · old versions {{ money(m.versioning) }} · uploading {{ money(m.ingest) }} · replacing old versions {{ money(m.rotation) }} · total {{ money(m.total) }}</p>
       {% if cost.projection.primary.unbounded %}<p class="hint">Still climbing at month {{ cost.projection.primary.months|length }} — Keep everything never plateaus.</p>{% else %}<p class="hint">Settles month {{ cost.projection.steady_state_month }}.</p>{% endif %}
+      {% if tier_note %}<p class="sig-note" data-tier-note>Estimate doesn't include moving old versions to a cheaper tier.</p>{% endif %}
     </div>
 
     {# ---- the lever panel: one GET form; JS intercepts, no-JS submits ---- #}

@@ -851,3 +851,22 @@ def test_retention_from_form_maps_the_plain_copy_combined_option():
     from app.gui.estimate_io import retention_from_form
     assert retention_from_form({"retention_type": "count_days", "retention_nd_count": "10",
                                 "retention_nd_days": "30"}) == {"type": "count", "count": "10", "days": "30"}
+
+
+# --- Task 18b: the cheaper tier isn't priced -- the cost screens say so --------------------------
+
+def test_tier_in_use_reads_storage_json(tmp_path):
+    import json as _json
+    from app.engine import lifecycle
+    from app.gui import estimate_io as eio
+    cfg = tmp_path / "config"; cfg.mkdir()
+    (cfg / "backup.env").write_text("S3_BUCKET=b\nAWS_REGION=us-east-1\n")
+    job = {"name": "manga", "type": "archive", "source": "media/manga", "schedule": "0 3 * * *"}
+    (cfg / "jobs.json").write_text(_json.dumps({"jobs": [job, {"name": "a", "type": "versioned",
+                                                              "source": "appdata", "schedule": "0 5 * * *"}]}))
+    assert eio.tier_in_use(str(cfg)) is False
+    lifecycle.save_settings(str(cfg), {"version": 1, "buckets": {"b": {"folders": {
+        "media/manga/": {"tier": {"class": "DEEP_ARCHIVE", "after_days": 30}}}}}})
+    assert eio.tier_in_use(str(cfg)) is True
+    assert eio.tier_in_use(str(cfg), job=job) is True
+    assert eio.tier_in_use(str(cfg), job={"name": "a", "type": "versioned"}) is False

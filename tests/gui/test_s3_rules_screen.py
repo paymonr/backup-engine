@@ -1059,3 +1059,73 @@ def test_when_preview_itself_blows_up_the_save_goes_through_and_the_pass_holds_i
     assert manga["NoncurrentVersionExpiration"] == {"NoncurrentDays": 180}     # S3 untouched
     _, waiting = lifecycle.outstanding({"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}, BASE)
     assert any(c.folder == "media/manga/" for c in waiting)
+
+
+# --- the cheaper tier on the screens (Task 18b) -------------------------------------------------
+
+TIERED = {"version": 1, "buckets": {BASE: {"folders": {"media/manga/": {
+    "tier": {"class": "DEEP_ARCHIVE", "after_days": 30}}}}}}
+NOTE = "Estimate doesn't include moving old versions to a cheaper tier"
+
+
+def test_the_screen_and_editor_show_the_tier(client, cfg):
+    lifecycle.save_settings(cfg["CONFIG_DIR"], TIERED)
+    _applied(cfg, settings=TIERED)
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "Cheaper tier" in body and "Thaw first, hours <code>DEEP_ARCHIVE</code> after" in body
+    body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    assert '<option value="DEEP_ARCHIVE" selected>' in body and 'name="tier_days" value="30"' in body
+
+
+def test_adding_a_tier_is_previewed_with_its_warnings(client, cfg):
+    _applied(cfg)
+    _summary(cfg)
+    body = _preview(client, keep="days", days="180", tier_class="DEEP_ARCHIVE", tier_days="30").get_data(as_text=True)
+    assert "Preview — nothing has changed yet" in body and f'placeholder="{BASE}"' in body
+    assert "charged for at least 180 days" in body and "under 128 KB are not moved" in body
+    assert "takes hours and costs money" in body
+    assert 'S3 moves about <span class="mono">3</span> old versions' in body
+    assert "tier" not in (lifecycle.load_settings(cfg["CONFIG_DIR"])["buckets"].get(BASE) or {}).get("folders", {}).get(
+        "media/manga/", {})
+
+
+def test_a_tier_that_would_not_move_anything_before_removal_is_refused(client, cfg):
+    _applied(cfg)
+    body = _preview(client, keep="days", days="30", tier_class="DEEP_ARCHIVE", tier_days="60").get_data(as_text=True)
+    assert "Old versions must move before S3 removes them" in body and 'id="s3-editor"' in body
+
+
+def test_removing_a_tier_keeps_more_and_applies_at_once(client, cfg, monkeypatch):
+    lifecycle.save_settings(cfg["CONFIG_DIR"], TIERED)
+    _applied(cfg, settings=TIERED)
+    monkeypatch.setattr(s3_rules, "apply_for", lambda c, b: [])
+    r = _preview(client, keep="days", days="180", tier_class="", tier_days="")
+    assert r.status_code in (302, 303)
+    assert "tier" not in lifecycle.load_settings(cfg["CONFIG_DIR"])["buckets"][BASE]["folders"]["media/manga/"]
+
+
+def test_the_cost_screens_say_the_tier_is_not_priced(client, cfg):
+    assert NOTE not in client.get("/cost").get_data(as_text=True)
+    lifecycle.save_settings(cfg["CONFIG_DIR"], TIERED)
+    assert NOTE in client.get("/cost").get_data(as_text=True)
+    assert NOTE in client.get("/jobs/manga").get_data(as_text=True)
+    assert NOTE not in client.get("/jobs/appdata_backups").get_data(as_text=True)
+
+
+def test_the_job_page_names_the_tier(client, cfg):
+    lifecycle.save_settings(cfg["CONFIG_DIR"], TIERED)
+    _applied(cfg, settings=TIERED)
+    line = re.search(r"<dd data-s3-history>.*?</dd>", client.get("/jobs/manga").get_data(as_text=True), re.S).group(0)
+    assert "Thaw first, hours <code>DEEP_ARCHIVE</code> after <span class=\"mono\">30</span> days" in line
+
+
+def test_the_tier_ui_obeys_the_vocabulary_and_mono_laws(client, cfg):
+    from tests.gui.test_vocabulary import forbidden_hits, mono_violations
+    lifecycle.save_settings(cfg["CONFIG_DIR"], TIERED)
+    _applied(cfg, settings=TIERED)
+    _summary(cfg)
+    for body in (client.get("/setup/storage").get_data(as_text=True),
+                 client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True),
+                 _preview(client, keep="days", days="180", tier_class="GLACIER_IR",
+                          tier_days="10").get_data(as_text=True)):
+        assert forbidden_hits(body) == [] and mono_violations(body) == []
