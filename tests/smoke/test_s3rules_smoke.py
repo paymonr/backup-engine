@@ -29,7 +29,7 @@ LIVE_PHOTOS = f"{LIVE}-photos"
 KEY, SECRET, TOKEN = "AKIASMOKETESTKEY0001", "smokeSECRET/value+abc123xyz", "smokeTOKENvalue//0987zyx=="
 CREDS = {"AWS_ACCESS_KEY_ID": KEY, "AWS_SECRET_ACCESS_KEY": SECRET, "AWS_SESSION_TOKEN": TOKEN}
 LIVE_LEGACY = [dict(r) for r in smoke.LEGACY_BASE_RULES]
-ALL_CHECKS = ["S1", "S2", "SETUP", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12"]
+ALL_CHECKS = ["S1", "S2", "SETUP", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13"]
 
 
 @pytest.fixture
@@ -166,8 +166,54 @@ def test_lagging_s3_reads_are_waited_out(tmp_path, live_config):
     fake = _fake(lag_reads=2)
     s, _ = _run(tmp_path, live_config, fake)
     assert s.exit_code == 0, {o.cid: o.fails for o in s.results if o.fails}
-    assert any(n > 1 for _, _, _, n, _ in s.settles)
-    assert "needed more than one read" in s.report_path.read_text()
+    assert any(n > smoke.SETTLE_AGREE for _, _, _, n, _ in s.settles)
+    assert f"needed more than {smoke.SETTLE_AGREE} reads" in s.report_path.read_text()
+    _scratch_gone(s, fake)
+
+
+def test_s3_answering_new_then_old_again_never_fails_a_check(tmp_path, live_config):
+    """Smoke test run 1 (S7): right after a put S3 answered one read with the new configuration and
+    the next with the OLD one. The settle loop wants SETTLE_AGREE reads in a row, every verification
+    read goes through it, and S13 catches the app's own check reading the old rules."""
+    fake = _fake(stale_pattern="FS")
+    s, _ = _run(tmp_path, live_config, fake)
+    assert s.exit_code == 0, {o.cid: o.fails for o in s.results if o.fails}
+    assert fake.stale_served > 0
+    s13 = next(o for o in s.results if o.cid == "S13")
+    assert s13.status == "PASS" and "read the rules from before the job save" in s13.summary
+    assert "ok, no alarm, nothing written" in s13.summary
+    _scratch_gone(s, fake)
+
+
+def test_s13_is_informational_when_s3_serves_no_stale_read(tmp_path, live_config):
+    s, _ = _run(tmp_path, live_config, _fake())
+    s13 = next(o for o in s.results if o.cid == "S13")
+    assert s13.status == "PASS" and "no stale read occurred" in s13.summary and "(informational)" in s13.summary
+
+
+@pytest.mark.parametrize("step", ["tamper", "console"])
+def test_s7_re_runs_a_check_that_s3_answered_from_before_the_outside_edit(tmp_path, live_config, monkeypatch, step):
+    """The check S7 is about must see the outside edit; one that S3 answered from before it had
+    nothing to find (ok, nothing written) -- S7 notes it and re-runs it instead of failing."""
+    real, fired = smoke.Smoke.put_lifecycle, []
+
+    def is_step(rules):
+        if step == "console":
+            return any(r.get("ID") == "smoke-console" for r in rules)
+        return any((r.get("NoncurrentVersionExpiration") or {}).get("NoncurrentDays") == 1 for r in rules)
+
+    def put_then_serve_stale(self, bucket, rules):
+        real(self, bucket, rules)
+        if self.rec.label == "S7" and is_step(rules) and not fired:
+            fired.append(bucket)                   # settled SETTLE_AGREE reads in a row -- then old again
+            fake.serve_stale(bucket, "lifecycle", "F" * smoke.SETTLE_AGREE + "S")
+    monkeypatch.setattr(smoke.Smoke, "put_lifecycle", put_then_serve_stale)
+    fake = _fake()
+    s, _ = _run(tmp_path, live_config, fake)
+    s7 = next(o for o in s.results if o.cid == "S7")
+    assert fired and fake.stale_served == 1
+    assert s7.status == "PASS", s7.fails
+    assert any("a stale read" in n for n in s7.notes)
     _scratch_gone(s, fake)
 
 

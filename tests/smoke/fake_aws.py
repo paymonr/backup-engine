@@ -13,7 +13,9 @@
 #     markers, KeyMarker/VersionIdMarker paging, LastModified at S3's whole-second resolution;
 #   * delete-bucket refuses a bucket with any version or delete marker left (BucketNotEmpty);
 #   * optional read-after-write lag: the next `lag_reads` GETs after a config put return the
-#     previous configuration (S3 bucket configuration is eventually consistent).
+#     previous configuration (S3 bucket configuration is eventually consistent) -- or, with
+#     `stale_pattern`, the GETs after each put follow it read by read ("F" fresh, "S" the previous
+#     configuration; fresh once it runs out): "FS" is smoke test run 1's #103 new, #104 old.
 #   * like Alpine's aws-cli (no help docs shipped): `... help` fails; `--generate-cli-skeleton
 #     input` prints the put's input shape, with TransitionDefaultMinimumObjectSize only when the CLI
 #     knows the flag (cli_has_flag).
@@ -67,16 +69,19 @@ class _Bucket:
         self.lifecycle = lifecycle            # None | list of rules
         self.min_size = "all_storage_classes_128K"
         self.objects: dict[str, list[dict]] = {}   # key -> versions/markers, NEWEST FIRST
-        self.lag = {"lifecycle": [0, None], "versioning": [0, None]}
+        self.lag = {"lifecycle": ["", None], "versioning": ["", None]}    # [reads still to come, previous]
 
 
 class FakeAWS:
     def __init__(self, *, region: str, creds: dict, live: dict | None = None, cli_has_flag: bool = False,
-                 lag_reads: int = 0, fail=None, interrupt=None, clock=None, mangle_get=None):
+                 lag_reads: int = 0, stale_pattern: str = "", fail=None, interrupt=None, clock=None,
+                 mangle_get=None):
         self.region = region
         self.creds = dict(creds)
         self.cli_has_flag = cli_has_flag
         self.lag_reads = lag_reads
+        self.stale_pattern = stale_pattern or "S" * lag_reads
+        self.stale_served = 0                 # how many GETs returned the previous configuration
         self.fail = fail                      # (op, bucket, args) -> (code, message) | None
         self.interrupt = interrupt            # (op, bucket, args) -> bool: raise KeyboardInterrupt once
         self.clock = clock or (lambda: datetime.now(timezone.utc).replace(microsecond=0))
@@ -227,14 +232,20 @@ class FakeAWS:
 
     def _lagged(self, b: _Bucket, kind: str, current):
         left, previous = b.lag[kind]
-        if left > 0:
-            b.lag[kind][0] = left - 1
-            return previous
+        if left:
+            b.lag[kind][0] = left[1:]
+            if left[0] == "S":
+                self.stale_served += 1
+                return previous
         return current
 
     def _set_lag(self, b: _Bucket, kind: str, previous):
-        if self.lag_reads:
-            b.lag[kind] = [self.lag_reads, json.loads(json.dumps(previous))]
+        b.lag[kind] = [self.stale_pattern, json.loads(json.dumps(previous))]
+
+    def serve_stale(self, bucket: str, kind: str, pattern: str) -> None:
+        """From now on, GETs of `kind` ("lifecycle" | "versioning") on `bucket` follow `pattern`
+        against what the bucket had before its last put of it."""
+        self.buckets[bucket].lag[kind][0] = pattern
 
     def _put_bucket_versioning(self, bucket, opts, flags, args):
         conf = opts.get("--versioning-configuration", "")

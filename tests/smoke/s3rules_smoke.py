@@ -24,7 +24,7 @@
 # credential seams return the admin keys instead of what the scratch install doesn't have:
 # lifecycle.role_creds (the bucket-admin role) and sysop._runtime_key (the runtime key).
 #
-# Checks (S1..S12, in order; each prints PASS / FAIL / SKIP + one line, and a failure never stops
+# Checks (S1..S13, in order; each prints PASS / FAIL / SKIP + one line, and a failure never stops
 # the next check):
 #   S1  environment: aws --version, tofu version, the permissions level this build needs
 #   S2  before-snapshot of every live bucket (read-only) -> /out/before-level4-<ts>.json
@@ -35,12 +35,21 @@
 #   S5  a cheaper tier through preview + typed confirmation, then moved later (keeps more)
 #   S6  versioning: never-versioned bucket; suspend through typed confirmation; back on via sync
 #   S7  tamper on real S3: an outside edit is restored + alarmed; a console rule is kept + alarmed
+#       (a check S3 answered from BEFORE the outside edit found nothing to do: noted, re-run)
 #   S8  killed between the put and the record: the write journal is adopted, nothing re-written
 #   S9  the local CLI-support probe for --transition-default-minimum-object-size
 #       (`--generate-cli-skeleton input`, no credentials)
 #   S10 storage summary on real object versions, paged 2 at a time; impact of shorter rules
 #   S11 (skipped) the Verify version-delete probe -- exercised by the permissions Verify
 #   S12 (opt-in, SMOKE_TOFU=1) tofu init + validate of the shipped OpenTofu module
+#   S13 stale read after the app's own write: a job save's sync, then checks straight away -- one
+#       that S3 answers with the rules from before the save must be ok, no alarm, nothing written
+#       (informational when S3 served no stale read)
+#
+# S3 bucket configuration is eventually consistent, even after a read already showed a write (run 1:
+# read #103 new, #104 old). So the harness's own read-after-write waits want SETTLE_AGREE reads in a
+# row, and every verification read goes through that loop: the checks are what's under test, not
+# S3's read consistency.
 from __future__ import annotations
 
 import copy
@@ -95,6 +104,7 @@ LEGACY_DEDICATED_RULES = [
 # --- scratch jobs ------------------------------------------------------------------------------
 J_PLAIN180, J_FILES, J_SNAP, J_DED = "smk-plain180", "smk-files", "smk-snap", "smk-ded"
 J_N10, J_N10D30, J_D36500, J_N100 = "smk-n10", "smk-n10d30", "smk-d36500", "smk-n100"
+J_S13 = "smk-s13"
 F_PLAIN180, F_FILES = f"media/{J_PLAIN180}/", f"media/{J_FILES}/"
 
 # --- safety ------------------------------------------------------------------------------------
@@ -107,6 +117,9 @@ _SCRATCH_RE = re.compile(r"[a-z0-9][a-z0-9-]*-" + SCRATCH_TAG + r"-[0-9a-f]{6}(?
 
 HARNESS_TIMEOUTS = ["--cli-connect-timeout", "10", "--cli-read-timeout", "60"]
 SETTLE_POLLS, SETTLE_INTERVAL_S = 20, 3     # read-after-write: wait up to ~1 minute per write
+SETTLE_AGREE, SETTLE_AGREE_S = 3, 1         # ...until S3 shows it this many reads in a row
+CHECK_ATTEMPTS = 4                          # a check S3 answered from before the edit it's about: re-run
+S13_CHECKS = 3                              # immediate checks after S13's job save
 PROBE_LIMIT_S = 30
 S10_ATTEMPTS, S10_RETRY_S = 4, 20
 CLEANUP_PAGE = 1000
@@ -345,8 +358,9 @@ PLAN = [
     ("S10", "Storage summary on real S3", "s10_summary"),
     ("S11", "Verify probe dry check", "s11_verify"),
     ("S12", "OpenTofu init + validate", "s12_tofu"),
+    ("S13", "Stale read right after the app's own write", "s13_stale_read"),
 ]
-NEEDS_SCRATCH = frozenset({"S3", "S4", "S5", "S6", "S7", "S8", "S10"})
+NEEDS_SCRATCH = frozenset({"S3", "S4", "S5", "S6", "S7", "S8", "S10", "S13"})
 # A check that FAILs after changing storage.json has it put back and the base bucket re-synced, so
 # one refusal by S3 (say, a tier) doesn't make every later check fail with it.
 ROLLBACK_SETTINGS = frozenset({"S5", "S6"})
@@ -478,28 +492,65 @@ class Smoke:
 
     # --- read-after-write -------------------------------------------------------------------
 
-    def settle(self, o: Outcome, bucket: str, what: str, rules_ok=None, want_ver: str | None = None) -> bool:
-        """S3 bucket configuration reads are eventually consistent: poll until S3 shows `what`
-        (rules_ok(live rules) and/or versioning == want_ver) before the next pass reads it, so a
-        stale read is never mistaken for the app's behaviour. The wait is recorded in the report."""
-        t0 = time.monotonic()
-        for poll in range(1, SETTLE_POLLS + 1):
-            ok = True
-            if rules_ok is not None:
-                ok = bool(rules_ok(self.live_rules(bucket)))
-            if ok and want_ver is not None:
-                ok = self.live_ver(bucket) == want_ver
-            if ok:
+    def _poll(self, o: Outcome, bucket: str, what: str, read, ok):
+        """Read until ok(value) holds SETTLE_AGREE reads in a row (at most SETTLE_POLLS reads);
+        returns (settled, the last value read). The wait is recorded in the report."""
+        t0, streak, value = time.monotonic(), 0, None
+        for n in range(1, SETTLE_POLLS + 1):
+            value = read()
+            streak = streak + 1 if ok(value) else 0
+            if streak >= SETTLE_AGREE:
                 waited = time.monotonic() - t0
-                self.settles.append((o.cid, bucket, what, poll, round(waited, 1)))
-                if poll > 1:
-                    o.note(f"S3 showed {what} on {bucket} only after {waited:.0f}s ({poll} reads)")
-                return True
-            self.sleep(SETTLE_INTERVAL_S)
+                self.settles.append((o.cid, bucket, what, n, round(waited, 1)))
+                if n > SETTLE_AGREE:
+                    o.note(f"S3 showed {what} on {bucket} {SETTLE_AGREE} reads in a row only after "
+                           f"{waited:.0f}s ({n} reads)")
+                return True, value
+            self.sleep(SETTLE_AGREE_S if streak else SETTLE_INTERVAL_S)
         self.settles.append((o.cid, bucket, what, SETTLE_POLLS, None))
         # not a FAIL by itself: whatever the check asserts next says what that means
-        o.note(f"S3 still didn't show {what} on {bucket} after {SETTLE_POLLS} reads — carried on")
-        return False
+        o.note(f"S3 still didn't show {what} on {bucket} {SETTLE_AGREE} reads in a row after "
+               f"{SETTLE_POLLS} reads — carried on")
+        return False, value
+
+    def settle(self, o: Outcome, bucket: str, what: str, rules_ok=None, want_ver: str | None = None) -> bool:
+        """S3 bucket configuration reads are eventually consistent -- and a read that already showed
+        a write can be followed by one that doesn't (run 1: #103 new, #104 old): poll until S3 shows
+        `what` (rules_ok(live rules) and/or versioning == want_ver) SETTLE_AGREE reads in a row
+        before the next pass reads it, so a stale read is never mistaken for the app's behaviour."""
+        def read():
+            ok = rules_ok is None or bool(rules_ok(self.live_rules(bucket)))
+            return ok and (want_ver is None or self.live_ver(bucket) == want_ver)
+        return self._poll(o, bucket, what, read, bool)[0]
+
+    def settled_rules(self, o: Outcome, bucket: str, what: str, rules_ok) -> list[dict]:
+        """A verification read through the settle loop: S3's rules once it has shown `what`
+        SETTLE_AGREE reads in a row (else the last read, so the check's own message says what S3 had)."""
+        return self._poll(o, bucket, what, lambda: self.live_rules(bucket), lambda r: bool(rules_ok(r)))[1]
+
+    def settled_ver(self, o: Outcome, bucket: str, want: str) -> str:
+        """read_versioning's answer once it is `want` SETTLE_AGREE reads in a row (else the last one)."""
+        return self._poll(o, bucket, f"versioning {want}", lambda: self.live_ver(bucket), lambda v: v == want)[1]
+
+    def settled_raw_versioning(self, o: Outcome, bucket: str, want: str | None) -> str | None:
+        return self._poll(o, bucket, f"get-bucket-versioning {want}", lambda: self.raw_versioning(bucket),
+                          lambda v: v == want)[1]
+
+    def check_seeing(self, o: Outcome, bucket: str, what: str, shows) -> str:
+        """The check a step is about, run once S3 shows the outside edit it has to find. If S3 still
+        answered the check itself from before that edit (what the check read -- live.json -- doesn't
+        show it), the check rightly had nothing to find: noted, S3 waited for again, re-run."""
+        state = None
+        for attempt in range(1, CHECK_ATTEMPTS + 1):
+            self.settle(o, bucket, what, shows)
+            start = len(self.rec.calls)
+            state = self.check(bucket)
+            read = (lifecycle.load_live(self.cfg["CACHE_DIR"], bucket) or {}).get("rules") or []
+            if shows(read):
+                return state
+            o.note(f"attempt {attempt}: S3 answered the check from before {what} (a stale read) — it had "
+                   f"nothing to find ({state}, {len(self.config_puts(start))} put(s)); re-checking")
+        return state
 
     def in_step_with_applied(self, bucket: str):
         def ok(rules):
@@ -545,6 +596,9 @@ class Smoke:
         o.expect(not puts, f"{label}: check on {bucket} wrote again ({len(puts)} put(s)) — S3's copy of the "
                            "rules didn't compare equal to what the app wrote")
         o.expect("alarm" not in st, f"{label}: an alarm is open on {bucket}: {st.get('alarm')}")
+        if lifecycle.SETTLING in (st.get("detail") or ""):
+            o.note(f"{label}: S3 answered the check on {bucket} from before the app's last write — the check "
+                   "treated it as S3 still settling (ok, no alarm, nothing written)")
 
     # --- scratch install ----------------------------------------------------------------------
 
@@ -685,8 +739,7 @@ class Smoke:
             st = self.status(bucket)
             o.expect(state == "ok", f"first check on {bucket} returned {state!r} ({st.get('detail', '')})")
             o.expect("alarm" not in st, f"first check on {bucket} raised an alarm: {st.get('alarm')}")
-            self.settle(o, bucket, "the app's rules", self.in_step_with_applied(bucket))
-            live = self.live_rules(bucket)
+            live = self.settled_rules(o, bucket, "the app's rules", self.in_step_with_applied(bucket))
             ids = {r.get("ID") for r in live}
             o.expect(not ids & lifecycle.LEGACY_IDS, f"{bucket}: legacy rule(s) still there: {sorted(ids & lifecycle.LEGACY_IDS)}")
             want_ids = set(expect[bucket]) | {lifecycle.HOUSEKEEPING_ID}
@@ -720,8 +773,7 @@ class Smoke:
             self._s4_which_shapes(o, shapes)
             return
         o.expect("alarm" not in st, f"an alarm is open: {st.get('alarm')}")
-        self.settle(o, self.base, "the new rules", self.in_step_with_applied(self.base))
-        live = self.live_rules(self.base)
+        live = self.settled_rules(o, self.base, "the new rules", self.in_step_with_applied(self.base))
         for name, _, nce in shapes:
             got = (_rule(live, lifecycle.rule_id(f"media/{name}/")) or {}).get("NoncurrentVersionExpiration")
             o.expect(_canon(got) == nce, f"media/{name}/: S3 has {got}, expected {nce}")
@@ -759,8 +811,7 @@ class Smoke:
         o.expect({rid_p, rid_f} <= {c.rule_id for c in pv.own}, f"preview's own changes: {[c.rule_id for c in pv.own]}")
         res = lifecycle.apply_confirmed(cfg, pv.token, base, run=self.R)
         o.expect(res is not None and res.changed, "apply_confirmed wrote nothing")
-        self.settle(o, base, "the tiers", self.in_step_with_applied(base))
-        live = self.live_rules(base)
+        live = self.settled_rules(o, base, "the tiers", self.in_step_with_applied(base))
         p, f = _rule(live, rid_p) or {}, _rule(live, rid_f) or {}
         o.expect(_sorted_dicts(p.get("NoncurrentVersionTransitions")) ==
                  _sorted_dicts([{"NoncurrentDays": 30, "StorageClass": "DEEP_ARCHIVE"}]),
@@ -779,8 +830,7 @@ class Smoke:
         res = lifecycle.sync(cfg, base, run=self.R)
         o.expect(res.changed and not res.waiting, f"moving the tier later: changed={res.changed}, "
                                                   f"waiting={[c.words for c in res.waiting]}")
-        self.settle(o, base, "the tier at 179 days", self.in_step_with_applied(base))
-        p = _rule(self.live_rules(base), rid_p) or {}
+        p = _rule(self.settled_rules(o, base, "the tier at 179 days", self.in_step_with_applied(base)), rid_p) or {}
         o.expect(_sorted_dicts(p.get("NoncurrentVersionTransitions")) ==
                  _sorted_dicts([{"NoncurrentDays": 179, "StorageClass": "DEEP_ARCHIVE"}]),
                  f"{F_PLAIN180}: after moving the tier later S3 has {p.get('NoncurrentVersionTransitions')}")
@@ -790,11 +840,10 @@ class Smoke:
 
     def s6_versioning(self, o: Outcome) -> None:
         base, nv, cfg = self.base, self.nv, self.cfg
-        v = self.live_ver(nv)
+        v = self.settled_ver(o, nv, "never")
         o.expect(v == "never", f"{nv}: read_versioning says {v!r}, expected 'never'")
         lifecycle.write_versioning(nv, "suspended", self.admin, self.region, run=self.R)
-        self.settle(o, nv, "versioning Suspended", want_ver="suspended")
-        v = self.live_ver(nv)
+        v = self.settled_ver(o, nv, "suspended")
         o.expect(v == "suspended", f"{nv}: after write_versioning('suspended') it reads {v!r}")
 
         def suspend(b):
@@ -804,8 +853,7 @@ class Smoke:
         o.expect(pv.needs_typed, "a suspend didn't ask for the bucket name to be typed")
         o.expect(any(c.rule_id == "versioning" for c in pv.own), f"preview's own changes: {[c.rule_id for c in pv.own]}")
         lifecycle.apply_confirmed(cfg, pv.token, base, run=self.R)
-        self.settle(o, base, "versioning Suspended", want_ver="suspended")
-        raw = self.raw_versioning(base)
+        raw = self.settled_raw_versioning(o, base, "Suspended")
         o.expect(raw == "Suspended", f"get-bucket-versioning on {base} says {raw!r} after the confirmed suspend")
         self.recheck_zero_puts(o, base, "check after the suspend")
 
@@ -815,8 +863,7 @@ class Smoke:
         res = lifecycle.sync(cfg, base, run=self.R)
         o.expect(res.changed and not res.waiting, f"turning versioning back on: changed={res.changed}, "
                                                   f"waiting={[c.words for c in res.waiting]}")
-        self.settle(o, base, "versioning Enabled", want_ver="on")
-        raw = self.raw_versioning(base)
+        raw = self.settled_raw_versioning(o, base, "Enabled")
         o.expect(raw == "Enabled", f"get-bucket-versioning on {base} says {raw!r} after turning it back on")
         self.recheck_zero_puts(o, base, "check after turning versioning back on")
         o.summary = (f"-nv reads never → suspended; {base} suspended through typed confirmation "
@@ -825,36 +872,33 @@ class Smoke:
     def s7_tamper(self, o: Outcome) -> None:
         base, cache = self.base, self.cfg["CACHE_DIR"]
         rid = lifecycle.rule_id(F_PLAIN180)
-        live = self.live_rules(base)
+        live = self.settled_rules(o, base, "the app's rules", self.in_step_with_applied(base))
         tampered = copy.deepcopy(live)
         r = _rule(tampered, rid)
         o.require(r is not None, f"{rid} isn't on {base}")
         r["NoncurrentVersionExpiration"] = {"NoncurrentDays": 1}
         r.pop("NoncurrentVersionTransitions", None)     # S3 refuses a move at/after the expiry
         self.put_lifecycle(base, tampered)
-        self.settle(o, base, "the outside edit", lambda rules: _by_id(rules) == _by_id(tampered))
-        state = self.check(base)
+        state = self.check_seeing(o, base, "the outside edit", lambda rules: _by_id(rules) == _by_id(tampered))
         st = self.status(base)
         o.expect(state == "restored", f"check after the outside edit returned {state!r} ({st.get('detail', '')})")
         o.expect((st.get("alarm") or {}).get("kind") == "restored", f"alarm after the outside edit: {st.get('alarm')}")
-        self.settle(o, base, "the restored rule", self.in_step_with_applied(base))
-        nce = (_rule(self.live_rules(base), rid) or {}).get("NoncurrentVersionExpiration")
+        live = self.settled_rules(o, base, "the restored rule", self.in_step_with_applied(base))
+        nce = (_rule(live, rid) or {}).get("NoncurrentVersionExpiration")
         o.expect(_canon(nce) == {"NoncurrentDays": 180}, f"{rid} on S3 after the check: {nce}")
         lifecycle.acknowledge(cache, base)
         o.expect("alarm" not in self.status(base), "acknowledge didn't clear the alarm")
 
         console = {"ID": "smoke-console", "Status": "Enabled", "Filter": {"Prefix": "logs/"}, "Expiration": {"Days": 1}}
-        live = self.live_rules(base)
         with_console = [*copy.deepcopy(live), console]
         self.put_lifecycle(base, with_console)
-        self.settle(o, base, "the console rule", lambda rules: _by_id(rules) == _by_id(with_console))
-        state = self.check(base)
+        state = self.check_seeing(o, base, "the console rule", lambda rules: _by_id(rules) == _by_id(with_console))
         st = self.status(base)
         alarm = st.get("alarm") or {}
         o.expect(state == "console_rule", f"check after the console rule returned {state!r} ({st.get('detail', '')})")
         o.expect(alarm.get("kind") == "console_rule" and "smoke-console" in (alarm.get("rules") or []),
                  f"alarm after the console rule: {alarm}")
-        after = self.live_rules(base)
+        after = self.settled_rules(o, base, "the console rule", lambda rules: _rule(rules, "smoke-console") is not None)
         got = _rule(after, "smoke-console")
         o.expect(got is not None and _canon(got) == _canon(console),
                  f"the console rule on S3 is now {got}")
@@ -886,11 +930,17 @@ class Smoke:
         applied = lifecycle.app_rules_of(lifecycle.load_applied(cache, ded) or [])
         o.expect((applied.get(rid) or {}).get("NoncurrentVersionExpiration") == {"NoncurrentDays": 90},
                  f"the applied record already moved before the kill: {applied.get(rid)}")
-        self.settle(o, ded, "the killed pass's put",
-                    lambda rules: _canon((_rule(rules, rid) or {}).get("NoncurrentVersionExpiration")) == {"NoncurrentDays": 120})
         start = len(self.rec.calls)
-        state = self.check(ded)
-        st = self.status(ded)
+        for attempt in range(1, CHECK_ATTEMPTS + 1):
+            self.settle(o, ded, "the killed pass's put",
+                        lambda rules: _canon((_rule(rules, rid) or {}).get("NoncurrentVersionExpiration")) == {"NoncurrentDays": 120})
+            state = self.check(ded)
+            st = self.status(ded)
+            if not journal.exists() or lifecycle.SETTLING not in (st.get("detail") or ""):
+                break
+            # the app's own settle window: S3 answered from before the killed put -- journal kept
+            o.note(f"attempt {attempt}: S3 answered the check from before the killed pass's put (a stale read) — "
+                   "treated as S3 still settling: journal kept, nothing written; re-checking")
         puts = self.config_puts(start)
         o.expect(state == "ok", f"check after the kill returned {state!r} ({st.get('detail', '')})")
         o.expect("alarm" not in st, f"check after the kill raised an alarm: {st.get('alarm')}")
@@ -1030,6 +1080,45 @@ class Smoke:
         finally:
             shutil.rmtree(work, ignore_errors=True)
         o.summary = "tofu init -backend=false + validate accept the module (the `removed` block, ignore_changes)"
+
+    def s13_stale_read(self, o: Outcome) -> None:
+        """A job save's own sync, then checks straight away (the pre-backup check, the hourly one
+        or Check now can land seconds after a save): whichever S3 answers with the rules from BEFORE
+        the save must be judged as S3 still settling -- ok, no alarm, nothing written."""
+        base, cfg, cache = self.base, self.cfg, self.cfg["CACHE_DIR"]
+        self.upsert(self.job(J_S13, "archive", {"type": "count", "count": 5}))
+        res = lifecycle.sync(cfg, base, run=self.R)            # what a job save runs right after saving
+        o.require(res.changed and res.state == "ok" and not res.waiting,
+                  f"the job save's sync: changed={res.changed}, state={res.state}, "
+                  f"waiting={[c.words for c in res.waiting]}")
+        wrote = lifecycle.load_applied(cache, base) or []
+        stale = 0
+        for n in range(1, S13_CHECKS + 1):
+            start = len(self.rec.calls)
+            state = self.check(base)
+            st = self.status(base)
+            puts = self.config_puts(start)
+            read = (lifecycle.load_live(cache, base) or {}).get("rules") or []
+            was_stale = lifecycle.app_rules_differ(read, wrote)
+            stale += was_stale
+            o.note(f"check {n} straight after the save: S3 answered with "
+                   + ("the rules from BEFORE the save (a stale read)" if was_stale else "the new rules")
+                   + f" — {state}" + (f" ({st['detail']})" if st.get("detail") else ""))
+            o.expect(state == "ok", f"check {n} after the job save returned {state!r} ({st.get('detail', '')})")
+            o.expect("alarm" not in st, f"check {n} after the job save raised an alarm: {st.get('alarm')}")
+            o.expect(not puts, f"check {n} after the job save wrote again ({len(puts)} put(s))")
+            if was_stale:
+                o.expect(lifecycle.SETTLING in (st.get("detail") or ""),
+                         f"check {n} read the rules from before the save, but its status doesn't say "
+                         f"{lifecycle.SETTLING!r}: {st.get('detail')!r}")
+        rid = lifecycle.rule_id(f"media/{J_S13}/")
+        live = self.settled_rules(o, base, "the job save's rule", self.in_step_with_applied(base))
+        o.expect(_canon((_rule(live, rid) or {}).get("NoncurrentVersionExpiration"))
+                 == {"NoncurrentDays": 1, "NewerNoncurrentVersions": 5}, f"{rid} on S3: {_rule(live, rid)}")
+        o.summary = (f"{stale} of {S13_CHECKS} checks straight after a job save read the rules from before the job "
+                     "save — each ok, no alarm, nothing written" if stale else
+                     f"no stale read occurred in {S13_CHECKS} checks straight after a job save (informational) — "
+                     "each ok, no alarm, nothing written")
 
     # --- small helpers ---------------------------------------------------------------------------
 
@@ -1249,9 +1338,10 @@ class Smoke:
                   f"  deleted: {', '.join(self.deleted) or 'nothing (no scratch bucket was created)'}",
                   f"  LEFTOVER BUCKETS: {', '.join(self.leftovers)}" if self.leftovers else "  leftovers: none",
                   *(f"  {n}" for n in self.cleanup_notes)]
-            waits = [s for s in self.settles if s[3] > 1 or s[4] is None]
+            waits = [s for s in self.settles if s[3] > SETTLE_AGREE or s[4] is None]
             L += ["", "READ-AFTER-WRITE (S3 bucket configuration is eventually consistent)",
-                  f"  {len(self.settles)} settle wait(s); {len(waits)} needed more than one read"]
+                  f"  {len(self.settles)} settle wait(s) of {SETTLE_AGREE} agreeing reads; "
+                  f"{len(waits)} needed more than {SETTLE_AGREE} reads"]
             L += [f"  {cid}: {b} — {what}: {n} read(s), {s if s is not None else 'NEVER'}s" for cid, b, what, n, s in waits]
             if self.guard.refused:
                 L += ["", "SAFETY GUARD REFUSED", *(f"  {r}" for r in self.guard.refused)]
