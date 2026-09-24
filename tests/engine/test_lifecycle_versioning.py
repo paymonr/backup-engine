@@ -778,3 +778,24 @@ def test_a_tampered_pass_killed_right_after_the_restoring_put_lands_leaves_the_a
     assert lc.check(cfg, BASE, run=fake) == "ok"                      # the landed restore is adopted...
     alarm = _st(cfg)["alarm"]
     assert alarm["kind"] == "restored" and any("appdata/" in ln for ln in alarm["lines"])   # ...the alarm stays
+
+
+# item 3: the journal is deleted only AFTER its adoption is saved -- a kill in between (here: the
+# save itself, or the delete right after it) must never lose the adoption, or the next check
+# reverts a confirmed, landed write with a false alarm.
+@pytest.mark.parametrize("killed_in", ["save_applied", "_delete_in_flight"])
+def test_a_kill_while_a_journal_is_being_adopted_never_loses_the_adoption(cfg, monkeypatch, killed_in):
+    fake = _confirmed_undo_10_killed_after_the_put_lands(cfg)
+
+    def boom(*a, **k):
+        raise Killed()
+    monkeypatch.setattr(lc, killed_in, boom)
+    with pytest.raises(Killed):
+        lc.check(cfg, BASE, run=fake)                               # killed while adopting the journal
+    monkeypatch.undo()
+    assert _journal_file(cfg).exists()                              # not consumed: the adoption isn't done
+    state = lc.check(cfg, BASE, run=fake)
+    assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}, "a confirmed, landed write was reverted"
+    assert state == "ok" and "alarm" not in _st(cfg)
+    assert _appd(lc.load_applied(cfg["CACHE_DIR"], BASE)) == {"NoncurrentDays": 10}
+    assert not _journal_file(cfg).exists()

@@ -937,8 +937,11 @@ def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_
     is adopted, PER HALF, wherever live now matches it EXACTLY -- as if save_applied had
     already run for that half; a half that doesn't match is simply dropped (no adoption, no
     alarm) and this pass judges it normally, the same as any other pending change. The
-    journal file is always deleted once read, whether anything adopted or not, so a stale one
-    never lingers. Never invents or rewrites an applied record on its own: applied.json is
+    journal file is always deleted once resolved, whether anything adopted or not, so a stale
+    one never lingers -- but only AFTER an adoption is saved (fix round 4, item 3): a kill
+    between the two then leaves the journal for the next pass to adopt again (idempotent),
+    never a lost adoption that the next check would revert with a false alarm. Never invents
+    or rewrites an applied record on its own: applied.json is
     only ever written by `save_applied`, called here only when something actually adopts AND
     there's a valid rules list to record (a bucket with no applied record and no rules match
     stays exactly as it was -- still `None`, still judged as a first apply next time, never a
@@ -950,8 +953,8 @@ def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_
     applied doc as it now stands (`doc` itself, unchanged, when there was nothing to resolve
     or nothing adopted)."""
     inf = _load_in_flight(cache_dir, bucket)
-    _delete_in_flight(cache_dir, bucket)
-    if inf is None:
+    if inf is None:                                  # none, unreadable or past its TTL: drop it
+        _delete_in_flight(cache_dir, bucket)
         return doc
     applied = doc.get("rules") if isinstance(doc, dict) and isinstance(doc.get("rules"), list) else None
     applied_ver = doc.get("versioning") if isinstance(doc, dict) and doc.get("versioning") in VERSIONING_STATES \
@@ -964,8 +967,10 @@ def _resolve_in_flight(cache_dir: str, bucket: str, doc, live: list[dict], live_
     if ver_managed and versioning_matches(live_ver, inf.get("versioning")):
         applied_ver, adopted = inf.get("versioning"), True
     if not adopted or applied is None:              # nothing changed, or no rules baseline yet
+        _delete_in_flight(cache_dir, bucket)
         return doc
     save_applied(cache_dir, bucket, applied, console=console, folders=folders, versioning=applied_ver)
+    _delete_in_flight(cache_dir, bucket)            # item 3: only once the adoption is on disk
     return _applied_doc(cache_dir, bucket)
 
 
