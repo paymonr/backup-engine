@@ -307,3 +307,27 @@ def test_a_bucket_whose_view_cant_be_built_shows_a_warning_row(client, cfg, monk
     assert r.status_code == 200
     assert f'data-bucket="{BASE}"' in body
     assert "This bucket's saved S3 rules record couldn't be read — press Check now." in body
+
+
+# --- P2: a successful acknowledge is never reported as "couldn't clear" ------------------------
+
+def test_acknowledge_then_an_unreadable_follow_up_still_says_cleared(client, cfg, monkeypatch):
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "restored",
+                         alarm={"kind": "restored", "at": "2026-09-23T04:59:00Z", "lines": []})
+    token = _csrf(client)
+
+    def boom(c):
+        raise ValueError("jobs.json is malformed")
+    monkeypatch.setattr(s3_rules, "open_alarm", boom)
+    r = client.post("/setup/s3-rules/acknowledge", data={"csrf": token})
+    assert r.status_code in (302, 303)
+    text = " ".join(_flashes(client).values())
+    assert "Couldn't clear" not in text and "cleared" in text
+    assert "alarm" not in lifecycle.load_status(cfg["CACHE_DIR"])[BASE]
+
+
+def test_a_failed_acknowledge_still_says_couldnt_clear(client, cfg, monkeypatch):
+    token = _csrf(client)
+    monkeypatch.setattr(lifecycle, "acknowledge", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
+    client.post("/setup/s3-rules/acknowledge", data={"csrf": token})
+    assert "Couldn't clear the S3 rules alarm" in " ".join(_flashes(client).values())

@@ -167,10 +167,15 @@ def s3_rules_acknowledge():
     seen = (request.form.get("seen") or "").strip() or None
     try:
         lifecycle.acknowledge(cfg["CACHE_DIR"], seen=seen)
-        still = s3_rules.open_alarm(cfg) is not None
     except Exception:                                        # noqa: BLE001 — never a 500 (O2)
         flash("Couldn't clear the S3 rules alarm — try again.", "warning")
         return redirect(_back())
+    try:
+        # parked P2: its own try -- the acknowledge above DID land; a follow-up read that fails
+        # (e.g. a malformed jobs.json) must not be reported as "couldn't clear"
+        still = s3_rules.open_alarm(cfg) is not None
+    except Exception:                                        # noqa: BLE001
+        still = False
     if still:
         flash("Noted. A newer S3 rules alarm arrived after this page loaded — it's still shown.", "warning")
     else:
