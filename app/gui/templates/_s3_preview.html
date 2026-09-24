@@ -44,7 +44,7 @@
   {% for name, value in pvw.hidden.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   {% if pvw.needs_typed %}
   <div class="guard">
-    <strong>This permanently removes backup history.</strong> Type the bucket name to confirm.
+    {% if pvw.guard %}<strong>{{ pvw.guard }}</strong> {% endif %}Type the bucket name to confirm.
     <div class="confirm">
       <label class="fld" for="s3-typed">Type <span class="mono">{{ pvw.bucket }}</span></label>
       <input type="text" id="s3-typed" name="typed" autocomplete="off" spellcheck="false"

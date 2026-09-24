@@ -698,16 +698,47 @@ def preview_view(cfg, pv, *, action: str = "/setup/storage/apply", hidden: dict 
     # reading (Task 18a final, live.json) says so -- read once for the whole preview.
     min_size = (lifecycle.load_live(cfg["CACHE_DIR"], pv.bucket) or {}).get("min_size")
     rows = []
+    removes = suspends = moves = False
     for c in pv.changes:
         less = c.kind == lifecycle.KEEPS_LESS
         imp = pv.impacts.get(c.rule_id) if less else None
+        if less:
+            # final fix wave M4: the typed-confirmation headline says what THIS preview does --
+            # it only "permanently removes backup history" when an old-version expiry keeps less
+            # AND the summary finds something to remove (or can't tell: none, or one too old).
+            if c.rule_id == "versioning":
+                suspends = True
+            elif c.folder is not None:
+                if _expiry_keeps_less(c.before, c.after) and (imp is None or imp["versions"] > 0
+                                                              or not _impact_fresh(imp)):
+                    removes = True
+                if lifecycle.tier_keeps_less(c.before, c.after):
+                    moves = True
         rows.append({"words": c.words, "less": less, "impact": _impact_view(imp) if imp else None,
                      "no_summary": less and c.folder is not None and imp is None,
                      "notes": damage_notes(c, kinds.get(c.folder), min_size) if less else [],
                      "refresh": ({"bucket": pv.bucket, "folder": c.folder}
                                  if less and c.folder is not None else None)})
+    guard = [line for flag, line in (
+        (removes, "This permanently removes backup history."),
+        (suspends, "This stops S3 keeping old versions in this bucket from now on."),
+        (moves, "This moves old versions to a cheaper tier — getting them back takes longer and costs money."),
+    ) if flag]
     return {"bucket": pv.bucket, "token": pv.token, "needs_typed": pv.needs_typed, "rows": rows,
-            "action": action, "hidden": dict(hidden or {}), "cancel": cancel, "error": error}
+            "guard": " ".join(guard), "action": action, "hidden": dict(hidden or {}), "cancel": cancel,
+            "error": error}
+
+
+def _expiry_keeps_less(before, after) -> bool:
+    """The old-version EXPIRY half of keeps-less (the tier half aside): `after` can remove an
+    old version `before` keeps."""
+    bd, bn = lifecycle.expiry(before)
+    ad, an = lifecycle.expiry(after)
+    return ad != math.inf and (ad < bd or an < bn)
+
+
+def _impact_fresh(imp: dict) -> bool:
+    return lifecycle._summary_fresh({"scanned_at": imp.get("scanned_at")})
 
 
 # --- the wizard (R-B5) and the job page (spec §5) ----------------------------------------------

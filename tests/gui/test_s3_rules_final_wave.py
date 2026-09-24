@@ -95,3 +95,61 @@ def test_a_tier_s3_removes_first_keeps_its_own_wording(client, cfg):
     body = html.unescape(client.get("/setup/storage").get_data(as_text=True))
     assert "Off — S3 removes these old versions before they would move." in body
     assert "already upload as" not in body
+
+
+# --- M4: "permanently removes" only when the preview removes something -----------------------
+
+from datetime import datetime, timezone                                     # noqa: E402
+
+from app.engine import storage_summary                                      # noqa: E402
+
+GIB = 1024 ** 3
+GUARD = "This permanently removes backup history."
+
+
+def _fresh_summary(cfg, folder="media/manga/", *, versions=8):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    by_age = [[10, 5, 500], [100, 3, 3 * GIB]] if versions else []
+    by_rank = [[1, 8, 3 * GIB + 500]] if versions else []
+    by_age_rank = [[10, 1, 5, 500], [100, 1, 3, 3 * GIB]] if versions else []
+    storage_summary.save(cfg["CACHE_DIR"], {
+        "v": 1, "scanned_at": now, "bucket": BASE, "folder": folder,
+        "noncurrent_by_age_days": by_age, "noncurrent_by_rank": by_rank, "noncurrent_by_age_rank": by_age_rank,
+        "noncurrent_versions": versions, "noncurrent_bytes": (3 * GIB + 500) if versions else 0,
+        "delete_markers": 0, "current_objects": 8, "current_bytes": 1})
+
+
+def _preview(client, **fields):
+    data = {"csrf": _csrf(client), "key": f"{BASE}|media/manga/"}
+    data.update(fields)
+    return html.unescape(client.post("/setup/storage/preview", data=data).get_data(as_text=True))
+
+
+def test_a_shortening_that_deletes_versions_says_it_permanently_removes_history(client, cfg):
+    _applied(cfg)
+    _fresh_summary(cfg)
+    body = _preview(client, keep="days", days="30")
+    assert 'name="typed"' in body and GUARD in body
+
+
+def test_a_shortening_with_no_summary_still_says_it_may_remove_history(client, cfg):
+    _applied(cfg)
+    body = _preview(client, keep="days", days="30")
+    assert 'name="typed"' in body and GUARD in body
+
+
+def test_a_tier_only_change_says_what_it_does_not_that_it_removes_history(client, cfg):
+    _applied(cfg)
+    _fresh_summary(cfg)
+    body = _preview(client, keep="days", days="180", tier_class="DEEP_ARCHIVE", tier_days="30")
+    assert 'name="typed"' in body
+    assert GUARD not in body
+    assert "This moves old versions to a cheaper tier" in body
+
+
+def test_a_suspend_says_what_it_does_not_that_it_removes_history(client, cfg):
+    _applied(cfg)
+    body = _preview(client, key=f"{BASE}|*", abort_days="7", markers="1", versioning="suspended")
+    assert 'name="typed"' in body
+    assert GUARD not in body
+    assert "This stops S3 keeping old versions in this bucket from now on." in body
