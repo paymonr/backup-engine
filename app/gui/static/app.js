@@ -11,6 +11,27 @@
   setInterval(refresh, 5000);
 })();
 
+// Shared byte-size formatter (owner request: sizes display in MB, not a flat
+// two-decimal GB, so a small job stops reading "0.35 GB") — mirrors
+// app/gui/units.py's fmt_bytes/fmt_gb exactly: 1024-based, the unit scales with
+// magnitude (B -> KB, 0 decimals -> MB, 1 decimal -> GB/TB, 2 decimals), with
+// thousands separators throughout. `null`/`undefined` -> `null` (not "—"):
+// callers on this side render their own "not yet known" state, e.g. the live
+// progress bar just omits the byte figure entirely rather than printing a dash.
+function fmtBytes(b) {
+  if (b == null) return null;
+  var KB = 1024, MB = KB * 1024, GB = MB * 1024, TB = GB * 1024;
+  if (b < KB) return Math.round(b).toLocaleString() + " B";
+  if (b < MB) return Math.round(b / KB).toLocaleString() + " KB";
+  if (b < GB) return (b / MB).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " MB";
+  if (b < TB) return (b / GB).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " GB";
+  return (b / TB).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " TB";
+}
+function fmtGb(gb) {
+  if (gb == null) return null;
+  return fmtBytes(gb * 1024 * 1024 * 1024);
+}
+
 // Job source: one confined folder tree over SOURCE_ROOT (#source-tree), single-
 // select — a job has exactly one source. Checking a folder writes its path into
 // #source-input (the posted name="source" field) and #source-shown, and
@@ -263,13 +284,6 @@
     if (v === null || v === undefined) return "—";
     return "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
-  function fmtBytes(b) {
-    var gb = b / (1024 * 1024 * 1024);
-    if (gb >= 1) return gb.toLocaleString(undefined, { maximumFractionDigits: 2 }) + " GB";
-    var mb = b / (1024 * 1024);
-    if (mb >= 1) return mb.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " MB";
-    return Math.max(0, Math.round(b / 1024)).toLocaleString() + " KB";
-  }
   function flash(el) { if (!el) return; el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
   function set(el, txt) { if (el && el.textContent !== txt) { el.textContent = txt; flash(el); } }
   function priceKind() { var t = $("#live-toggle"); return t ? t.dataset.kind : "bundled"; }
@@ -435,7 +449,7 @@
     }
     var wt = $("#working-text");
     if (wt && d.breakdown) {
-      wt.innerHTML = (d.breakdown.billed_gb).toFixed(2) + " GB measured × <span class=\"mono\">$" +
+      wt.innerHTML = fmtGb(d.breakdown.billed_gb) + " measured × <span class=\"mono\">$" +
         (d.breakdown.rate_gb_month).toFixed(3) + "</span>/GB·mo = <span class=\"mono\">" + money(d.breakdown.storage) +
         "</span> to store the files.";
     }
@@ -817,13 +831,6 @@
 (function () {
   var els = Array.prototype.slice.call(document.querySelectorAll("[data-progress-job]"));
   if (!els.length) return;
-  function fmtBytes(b) {
-    if (b == null) return null;
-    var g = b / (1024 * 1024 * 1024);
-    if (g >= 1) return g.toFixed(1) + " GB";
-    var m = b / (1024 * 1024);
-    return m >= 1 ? m.toFixed(0) + " MB" : Math.max(0, Math.round(b / 1024)) + " KB";
-  }
   function fmtEta(s) {
     if (s == null) return null;
     if (s < 60) return "~" + Math.max(1, Math.round(s)) + "s left";

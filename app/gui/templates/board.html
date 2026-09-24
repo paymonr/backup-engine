@@ -9,14 +9,6 @@
 
 {%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
 {%- macro smoney(v) -%}{% if v is not none %}{{ '+' if v >= 0 else '−' }}${{ '{:,.2f}'.format(v|abs) }}{% else %}—{% endif %}{%- endmacro -%}
-{%- macro humanbytes(b) -%}
-{%- if b is none -%}—
-{%- elif b >= 1099511627776 -%}{{ '%.2f'|format(b / 1099511627776) }} TB
-{%- elif b >= 1073741824 -%}{{ '%.2f'|format(b / 1073741824) }} GB
-{%- elif b >= 1048576 -%}{{ '%.1f'|format(b / 1048576) }} MB
-{%- else -%}{{ b|int }} B
-{%- endif -%}
-{%- endmacro -%}
 {%- macro dur(s) -%}
 {%- if s is none -%}—
 {%- elif s < 60 -%}{{ s|int }} s
@@ -146,7 +138,7 @@
               </div>
             </td>
             <td class="num">
-              {% if pj %}<div class="cell2"><span class="v">{{ prov(humanbytes(pj.size_bytes), pj.size_provenance) }}</span>{% if pj.file_count %}<span class="s">{{ '{:,}'.format(pj.file_count) }} files</span>{% endif %}</div>
+              {% if pj %}<div class="cell2"><span class="v">{{ prov(pj.size_bytes | size, pj.size_provenance) }}</span>{% if pj.file_count %}<span class="s">{{ '{:,}'.format(pj.file_count) }} files</span>{% endif %}</div>
               {% else %}<div class="cell2"><span class="v">—</span><span class="s">not measured yet</span></div>{% endif %}
             </td>
             <td class="num">
@@ -179,7 +171,7 @@
     <div class="grid4" style="margin-bottom:1.5rem">
       <div class="sfig">
         <span class="k">In the bucket now</span>
-        <span class="v">{% if c.in_bucket_bytes is not none %}{{ prov(humanbytes(c.in_bucket_bytes), 'measured') }}{% else %}—{% endif %}</span>
+        <span class="v">{% if c.in_bucket_bytes is not none %}{{ prov(c.in_bucket_bytes | size, 'measured') }}{% else %}—{% endif %}</span>
         <span class="s">{% if c.in_bucket_bytes is not none %}measured {{ c.in_bucket_at or '—' }} · {{ c.prefix_count }} folder{{ '' if c.prefix_count == 1 else 's' }}{% else %}not measured yet · Refresh usage on the cost view{% endif %}</span>
       </div>
       <div class="sfig">
@@ -211,7 +203,7 @@
           {% for p in c.per_job %}
           <tr class="jobrow">
             <td><a class="jobname" href="/jobs/{{ p.name }}">{{ p.name }}</a></td>
-            <td>{{ prov(humanbytes(p.size_bytes), p.size_provenance) }}{% if p.old_versions_gb %} <span class="hint">+ {{ prov(humanbytes(p.old_versions_gb * 1073741824), 'assumed') }} of old versions</span>{% endif %}</td>
+            <td>{{ prov(p.size_bytes | size, p.size_provenance) }}{% if p.old_versions_gb %} <span class="hint">+ {{ prov(p.old_versions_gb | size_gb, 'assumed') }} of old versions</span>{% endif %}</td>
             <td>{{ p.tier_label.split(' · ')[0] }} <code>{{ p.storage_class }}</code></td>
             <td class="num">{{ prov(money(p.monthly), p.monthly_provenance) }} <span class="hint">/mo</span></td>
             <td class="num hint">not split</td>

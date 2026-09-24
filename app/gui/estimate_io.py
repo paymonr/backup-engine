@@ -8,6 +8,7 @@ from dataclasses import asdict, replace
 from typing import Mapping
 from . import config_io, jobs_io, storage_advice, vocab
 from .storage_advice import COLD_CLASSES
+from .units import fmt_bytes, fmt_gb
 from ..estimator.model import (
     JobInputs, Scenario, STORAGE_CLASSES, estimate,
     restore_cost, project, job_retention_days, cold_lockin_onetime, upfront_onetime,
@@ -497,7 +498,7 @@ def _wizard_warnings(engine: str, cls: str, candidate: JobInputs, prices, saved_
         per_run = candidate.size_gb * (prices.retrieval_per_gb[cls].get("Standard") or 0.0)
         out.append({"code": "snapshots_on_ia", "text": (
             f"A Snapshot backup re-reads its store every run, and {plain} · {cls} charges "
-            f"$0.01 a GB for every read — on {candidate.size_gb:,.2f} GB that is about "
+            f"$0.01 a GB for every read — on {fmt_gb(candidate.size_gb)} that is about "
             f"${per_run:,.2f} a run, often more than the cheaper storage saves."),
             "fix": {"label": "Use Instant · STANDARD", "set": {"storage_class": "STANDARD"}}})
     if (engine in ("archive", "versioned-files") and min_days >= 180
@@ -1100,11 +1101,11 @@ def board_cost(config_dir, cache_dir, prices) -> dict:
 def _cost_rows(ji, u, fetched_str) -> list[dict]:
     """The `Where the money goes` rows for the job page cost band (8.7 `rows`)."""
     if u:
-        amount_text = f"{u['bytes'] / (1024 ** 3):,.2f} GB · {u['count']:,} files"
+        amount_text = f"{fmt_bytes(u['bytes'])} · {u['count']:,} files"
         prov, source = "measured", (f"Walked the folder on {fetched_str}."
                                     if fetched_str else "Measured from the bucket.")
     else:
-        amount_text, prov, source = f"{ji.size_gb:,.2f} GB", "assumed", "Not measured yet."
+        amount_text, prov, source = fmt_gb(ji.size_gb), "assumed", "Not measured yet."
     return [{"label": "Storing your files", "amount_text": amount_text,
              "amount_provenance": prov, "source": source}]
 
@@ -1173,7 +1174,7 @@ def job_cost_band(job, config_dir, cache_dir, prices) -> dict:
 def _cost_rows_none(u, fetched_str) -> list[dict]:
     if u:
         return [{"label": "Storing your files",
-                 "amount_text": f"{u['bytes'] / (1024 ** 3):,.2f} GB · {u['count']:,} files",
+                 "amount_text": f"{fmt_bytes(u['bytes'])} · {u['count']:,} files",
                  "amount_provenance": "measured",
                  "source": (f"Walked the folder on {fetched_str}." if fetched_str else "Measured.")}]
     return [{"label": "Storing your files", "amount_text": "—",

@@ -147,6 +147,28 @@ def test_cost_page_renders_in_the_bucket_now_no_ce_form(client):
     assert "COST_EXPLORER_" not in body        # the credential is edited at Keys & secrets
 
 
+def test_small_measured_job_shows_mb_on_the_per_job_row(client, dirs):
+    # Owner request: sizes scale their unit -- a small measured job's per-job row
+    # reads "358.4 MB", not a flat two-decimal "0.35 GB".
+    small = {"name": "docs", "type": "versioned-files", "source": "docs",
+             "schedule": "0 5 * * *", "enabled": True, "storage_class": "STANDARD",
+             "retention_days": 7}
+    pathlib.Path(dirs["config"], "jobs.json").write_text(json.dumps({"jobs": [small]}))
+    small_bytes = int(0.35 * 1024 ** 3)          # the owner's own example figure
+    usage.save_cached(dirs["cache"], {"media/docs": {"bytes": small_bytes, "count": 12}})
+    r = client.get("/cost", query_string={"docs_change_rate_pct": "10"})
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200
+    assert "358.4 MB" in body
+    assert "0.35 GB" not in body
+    # `old_versions_gb` (from li.versioning / rate) used to print a flat
+    # "%.1f GB" regardless of magnitude -- this job's is small enough (~250 MB)
+    # that the bug would have shown "0.2 GB" or "0.3 GB" here.
+    assert "of old versions" in body
+    assert "250.9 MB of old versions" in body
+    assert " GB of old versions" not in body
+
+
 # --- estimate_io.current_costs -----------------------------------------------
 
 def test_current_costs_prices_cached_usage_archive_at_class_appdata_at_standard(tmp_path):

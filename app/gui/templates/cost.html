@@ -7,14 +7,6 @@
 {% set MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
 {%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
 {%- macro smoney(v) -%}{% if v is not none %}{{ '+' if v >= 0 else '−' }}${{ '{:,.2f}'.format(v|abs) }}{% else %}—{% endif %}{%- endmacro -%}
-{%- macro humanbytes(b) -%}
-{%- if b is none -%}—
-{%- elif b >= 1099511627776 -%}{{ '%.2f'|format(b / 1099511627776) }} TB
-{%- elif b >= 1073741824 -%}{{ '%.2f'|format(b / 1073741824) }} GB
-{%- elif b >= 1048576 -%}{{ '%.1f'|format(b / 1048576) }} MB
-{%- else -%}{{ b|int }} B
-{%- endif -%}
-{%- endmacro -%}
 {%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="mono p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
 {#- a lever is a scratch what-if: highlight it while its value is set in the query
     string (differs from what is saved on the job), spec 5.6. -#}
@@ -49,7 +41,7 @@
   </div>
   <div class="grid4">
     <div class="sfig"><span class="k">In the bucket now</span>
-      <span class="v">{{ prov(humanbytes(ib), 'measured') if ib is not none else '—' }}</span>
+      <span class="v">{{ prov(ib | size, 'measured') if ib is not none else '—' }}</span>
       <span class="s">{% if cost.current.fetched_at %}measured {{ cost.current.fetched_at }}{% else %}not measured yet{% endif %}</span></div>
     <div class="sfig"><span class="k">Last invoice</span>
       <span class="v">{% if inv %}{{ prov(money(inv.amount), 'invoiced') }}{% else %}—{% endif %}</span>
@@ -80,10 +72,10 @@
         {% for p in cost.per_job %}
         <tr>
           <td>{{ p.name }}</td>
-          <td>{{ prov(humanbytes(p.size_bytes), p.size_provenance) if p.size_bytes is not none else 'not measured yet' }}{% if p.old_versions_gb %} + ~{{ '%.1f'|format(p.old_versions_gb) }} GB of old versions{% endif %}</td>
+          <td>{{ prov(p.size_bytes | size, p.size_provenance) if p.size_bytes is not none else 'not measured yet' }}{% if p.old_versions_gb %} + ~{{ p.old_versions_gb | size_gb }} of old versions{% endif %}</td>
           <td>{{ p.tier_label }} <code>{{ p.storage_class }}</code></td>
           <td class="num">{{ prov(money(p.monthly), p.monthly_provenance) }} <span class="s">/mo</span></td>
-          <td>{% if p.in_bucket_monthly is not none %}{{ prov(humanbytes(p.in_bucket_bytes), 'measured') }} · {{ money(p.in_bucket_monthly) }} <span class="s">priced now</span>{% else %}—{% endif %}</td>
+          <td>{% if p.in_bucket_monthly is not none %}{{ prov(p.in_bucket_bytes | size, 'measured') }} · {{ money(p.in_bucket_monthly) }} <span class="s">priced now</span>{% else %}—{% endif %}</td>
           <td class="num">{% if p.shared_store %}— <span class="hint">not comparable — one shared store</span>{% elif p.delta is not none %}{{ smoney(p.delta) }}{% else %}—{% endif %}</td>
         </tr>
         {% endfor %}
@@ -163,7 +155,7 @@
         {% for r in cost.restore %}
         <tr>
           <td>{{ r.name }}</td>
-          <td>{% if r.size_bytes is not none %}<span class="mono">{{ humanbytes(r.size_bytes) }}</span>{% else %}—{% endif %}</td>
+          <td>{% if r.size_bytes is not none %}<span class="mono">{{ r.size_bytes | size }}</span>{% else %}—{% endif %}</td>
           <td>{% if r.warmup %}up to {{ r.warmup.hours[1] or '—' }} h{% else %}none — instant tier{% endif %}</td>
           <td>{% if r.warmup %}{{ r.tier }}{% else %}—{% endif %}</td>
           <td class="num">{{ money(r.amount) }}{% if r.alt_amount is not none %}<span class="s"> · {{ r.alt_tier }} {{ money(r.alt_amount) }}</span>{% endif %}</td>

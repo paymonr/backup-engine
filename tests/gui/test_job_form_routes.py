@@ -64,6 +64,7 @@ def _jobs(app):
 
 
 MEASURED = str(int(52.71 * 1024 ** 3))
+SMALL_MEASURED = str(int(0.35 * 1024 ** 3))          # the owner's own "0.35 GB" example
 
 
 # --- the numbered sections + dim state (5.8 §1) ----------------------------
@@ -94,6 +95,23 @@ def test_measured_folder_undims_and_recommends(client):
     # the plan section is no longer dimmed once a folder is measured
     assert "sec dimmed" not in body
     assert not _jobs(client.application)              # recalc SAVES NOTHING
+
+
+def test_small_measured_folder_shows_mb_not_a_flat_gb(client):
+    # Owner request: sizes scale their unit -- a small measured folder reads
+    # "358.4 MB" on the wizard's measured line and its "priced for" heading, not a
+    # flat two-decimal "0.35 GB".
+    t = _csrf(client)
+    r = client.post("/jobs", data={
+        "csrf": t, "recalc": "1", "name": "appdata", "type": "versioned",
+        "source": "appdata", "schedule": "0 5 * * *", "storage_class": "STANDARD",
+        "retention_type": "tiered", "keep_last": "3", "keep_daily": "7",
+        "keep_weekly": "4", "keep_monthly": "6", "change_rate_pct": "1",
+        "size_gb": "0.35", "file_count": "40", "measured_bytes": SMALL_MEASURED})
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200
+    assert "358.4 MB" in body
+    assert "0.35 GB" not in body
 
 
 # --- the WON'T RUN blocker (5.8 §3.3) --------------------------------------

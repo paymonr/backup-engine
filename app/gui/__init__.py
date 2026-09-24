@@ -4,7 +4,7 @@ import os
 from flask import Flask, render_template, jsonify, request, current_app
 from werkzeug.exceptions import HTTPException, default_exceptions
 
-from . import vocab
+from . import vocab, units
 
 # Werkzeug's own default description for each status, so the error handler can
 # tell "the caller passed a description" from "this is the framework default".
@@ -100,6 +100,11 @@ def create_app(config: dict | None = None) -> Flask:
         app.config.update(config)
     # Templates use plain names through this global (spec 4.3/4.4, the mono law).
     app.jinja_env.globals["vocab"] = vocab
+    # The one shared SIZE formatter (owner request: sizes display in MB, not a flat
+    # two-decimal GB) -- `size` for a byte count, `size_gb` for a GB float. Prices
+    # and input fields never go through these.
+    app.jinja_env.filters["size"] = units.fmt_bytes
+    app.jinja_env.filters["size_gb"] = units.fmt_gb
 
     @app.context_processor
     def _shell_globals():
