@@ -1065,6 +1065,10 @@ def test_when_preview_itself_blows_up_the_save_goes_through_and_the_pass_holds_i
 
 TIERED = {"version": 1, "buckets": {BASE: {"folders": {"media/manga/": {
     "tier": {"class": "DEEP_ARCHIVE", "after_days": 30}}}}}}
+# after_days (200) >= manga's own 180-day retention -- can't move anything before removal,
+# so desired_rules/with_tier drops it; storage.json still HAS it (fix round 1, I2).
+DEAD_TIER = {"version": 1, "buckets": {BASE: {"folders": {"media/manga/": {
+    "tier": {"class": "DEEP_ARCHIVE", "after_days": 200}}}}}}
 NOTE = "Estimate doesn't include moving old versions to a cheaper tier"
 
 
@@ -1129,3 +1133,91 @@ def test_the_tier_ui_obeys_the_vocabulary_and_mono_laws(client, cfg):
                  _preview(client, keep="days", days="180", tier_class="GLACIER_IR",
                           tier_days="10").get_data(as_text=True)):
         assert forbidden_hits(body) == [] and mono_violations(body) == []
+
+
+# --- fix round 1 -----------------------------------------------------------------------------
+
+def test_tier_class_constants_never_appear_as_bare_prose(client, cfg):
+    # I1: a raw storage-class constant may only ever show up inside a <code> chip (the
+    # overview column and job page do this already); prose sentences (the preview's damage
+    # notes) and the editor's <select> options must use the owner-word map instead.
+    from tests.gui.test_vocabulary import visible_text
+    _applied(cfg)
+    _summary(cfg)
+    editor_body = client.get(f"/setup/storage?edit={BASE}|media/manga/").get_data(as_text=True)
+    preview_body = _preview(client, keep="days", days="180", tier_class="DEEP_ARCHIVE",
+                            tier_days="30").get_data(as_text=True)
+    for body in (editor_body, preview_body):
+        text = visible_text(body)
+        assert "DEEP_ARCHIVE" not in text and "GLACIER_IR" not in text
+
+
+def test_the_overview_shows_a_tier_that_cant_move_anything_as_off(client, cfg):
+    # I2: a stored tier that with_tier drops (it can't move anything before S3 removes it) --
+    # the row says "—" and is called out as off, not silently hidden.
+    lifecycle.save_settings(cfg["CONFIG_DIR"], DEAD_TIER)
+    _applied(cfg, settings=DEAD_TIER)
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "Off — S3 removes these old versions before they would move." in body
+
+
+def test_the_overview_does_not_call_a_pending_valid_tier_off(client, cfg):
+    # I2: a tier that IS valid (would move something) but hasn't been applied/confirmed yet
+    # is "waiting", not "off" -- the two must never be confused.
+    _applied(cfg)
+    lifecycle.save_settings(cfg["CONFIG_DIR"], TIERED)
+    body = client.get("/setup/storage").get_data(as_text=True)
+    assert "Off — S3 removes these old versions before they would move." not in body
+
+
+def test_tier_error_a_tier_no_colder_than_the_jobs_own_class(client, cfg):
+    # I3: tier_error's colder-class guard (Task 18a final), now reachable through the editor.
+    cold_jobs = [dict(JOBS[0], storage_class="DEEP_ARCHIVE"), JOBS[1]]
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": cold_jobs}))
+    _applied(cfg, jobs=cold_jobs)
+    body = html.unescape(_preview(client, keep="days", days="180", tier_class="DEEP_ARCHIVE",
+                                  tier_days="30").get_data(as_text=True))
+    assert ("Files here already upload as Deep Archive" in body
+           and "wouldn't move them anywhere cheaper" in body and 'id="s3-editor"' in body)
+
+
+def test_tier_error_newest_n_only_needs_a_days_limit(client, cfg):
+    # I3: tier_error's newest-N-only guard (Task 18a final), now reachable through the editor.
+    _applied(cfg)
+    body = _preview(client, keep="count", count="10", tier_class="DEEP_ARCHIVE",
+                    tier_days="5").get_data(as_text=True)
+    assert "Add a days limit to use a cheaper tier." in body and 'id="s3-editor"' in body
+
+
+def test_a_tier_form_error_keeps_the_submitted_tier_fields(client, cfg):
+    # Minor: a tier validation error must not silently revert the tier fields to their
+    # stored values -- the same "form keeps the owner's entries" rule every other field obeys.
+    _applied(cfg)
+    body = _preview(client, keep="days", days="30", tier_class="DEEP_ARCHIVE", tier_days="60").get_data(as_text=True)
+    assert '<option value="DEEP_ARCHIVE" selected>' in body and 'name="tier_days" value="60"' in body
+
+
+def test_m6_a_longer_expiry_and_a_new_tier_together_wait_as_one(client, cfg, monkeypatch):
+    # Minor (M6): lengthening the days AND adding a tier in the same submit is still ONE
+    # change on that rule -- it keeps less (the tier), so both wait for the same confirmation,
+    # and the preview says so explicitly.
+    import functools
+    from tests.engine.test_lifecycle_sync import FakeS3
+    for name, fn in REAL.items():
+        monkeypatch.setattr(lifecycle, name, fn)
+    _applied(cfg)
+    _summary(cfg)
+    fake = FakeS3({BASE: json.loads(json.dumps(lifecycle.load_applied(cfg["CACHE_DIR"], BASE)))})
+    monkeypatch.setattr(lifecycle, "apply_confirmed", functools.partial(lifecycle.apply_confirmed, run=fake))
+    body = _preview(client, keep="days", days="365", tier_class="DEEP_ARCHIVE",
+                    tier_days="30").get_data(as_text=True)
+    assert "This row waits as a whole — the longer history applies once you confirm the tier." in body
+    r = client.post("/setup/storage/apply", data={"csrf": _csrf(client), "token": _token(body), "typed": BASE,
+                                                   "key": f"{BASE}|media/manga/"}, follow_redirects=True)
+    assert "Confirmed — S3 rules updated" in r.get_data(as_text=True)
+    manga_rule = next(x for x in fake.rules[BASE] if x["ID"] == "backup-engine:media/manga/")
+    assert manga_rule["NoncurrentVersionExpiration"] == {"NoncurrentDays": 365}
+    assert manga_rule["NoncurrentVersionTransitions"] == [{"NoncurrentDays": 30, "StorageClass": "DEEP_ARCHIVE"}]
+    assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 365}
+    assert lifecycle.load_settings(cfg["CONFIG_DIR"])["buckets"][BASE]["folders"]["media/manga/"]["tier"] == {
+        "class": "DEEP_ARCHIVE", "after_days": 30}

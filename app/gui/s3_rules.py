@@ -405,7 +405,8 @@ def editor(cfg, key: str | None, *, error: str | None = None, form=None) -> dict
     else:
         tier_class, tier_days = (stored_tier or {}).get("class", ""), (stored_tier or {}).get("after_days", 30)
     ed.update(tier_class=tier_class, tier_days=tier_days,
-              tier_classes=[(c, vocab.CLASS_NAMES[c]) for c in lifecycle.TIER_CLASSES])
+              tier_classes=[(c, f"{lifecycle._storage_words(c)} — {_TIER_HINT[c]}")
+                            for c in lifecycle.TIER_CLASSES])
     args["tier_class"], args["tier_days"] = tier_class, str(tier_days)
     # fix round 1, I1: the true impact line on the very first render (impact.json's JS then
     # keeps it live as the owner changes values) -- the same function, the row's own values.
@@ -443,6 +444,12 @@ def _folder_entry(settings: dict, bucket: str, folder: str) -> dict:
     e = dict(fs[folder]) if isinstance(fs.get(folder), dict) else {}
     fs[folder] = e
     return e
+
+
+# fix round 1, I1: the editor's <select> options in owner words (lifecycle._storage_words),
+# never the raw AWS constant -- the constant stays out of the dropdown's visible text entirely
+# (it's already on the <option value="..."> attribute, which the vocabulary lint never reads).
+_TIER_HINT = {"GLACIER_IR": "instant reads, archive price", "DEEP_ARCHIVE": "restores take hours"}
 
 
 def _tier_from_form(form) -> dict | None:
@@ -582,7 +589,10 @@ def damage_notes(change, kind: str | None, min_size: str | None = None) -> list[
         notes.append("The newest old versions of each file are no longer protected — they go by age like the rest.")
     t = lifecycle.tier_of(change.after)
     if t and lifecycle.tier_keeps_less(change.before, change.after):
-        name = vocab.CLASS_NAMES.get(t[0], t[0])
+        # fix round 1, I1: the owner-word map, never the raw AWS constant, in running prose
+        # (the overview column and job page keep the constant in its own <code> chip instead --
+        # this is the one spot that folds it into a sentence, so it's the one that must not).
+        name = lifecycle._storage_words(t[0])
         notes.append(f"Old versions moved to {name} are charged for at least "
                      f"{lifecycle.TIER_MIN_STORAGE_DAYS.get(t[0], 0)} days, even if S3 removes them sooner.")
         if min_size != "varies_by_storage_class":
@@ -590,6 +600,13 @@ def damage_notes(change, kind: str | None, min_size: str | None = None) -> list[
         notes.append("Getting an old version back from this tier takes hours and costs money."
                      if t[0] == "DEEP_ARCHIVE" else
                      "Reading an old version back from this tier costs a fee for every GB read.")
+        # fix round 1, M6: the gate is per RULE, not per dimension -- a longer expiry bundled
+        # into the same submit as a newly-active (or earlier) tier still waits as a whole,
+        # because the row overall keeps less (the tier). Say so explicitly, or the owner reads
+        # "keeps more" language nowhere and wonders why their longer retention didn't apply.
+        if ad > bd or an > bn:
+            notes.append("This row waits as a whole — the longer history applies once you "
+                         "confirm the tier.")
     return notes
 
 
