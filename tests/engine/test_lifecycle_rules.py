@@ -188,7 +188,7 @@ def test_console_fingerprint_ignores_app_rules_and_s3_formatting():
      ["removes old versions 3 days after being replaced (newest 2 kept)"]),
     ({"Transitions": [{"Days": 30, "StorageClass": "GLACIER"}]}, ["moves current files to GLACIER after 30 days"]),
     ({"NoncurrentVersionTransitions": [{"NoncurrentDays": 5, "StorageClass": "DEEP_ARCHIVE"}]},
-     ["moves old versions to DEEP_ARCHIVE 5 days after being replaced"]),
+     ["moves old versions to Deep Archive 5 days after being replaced"]),   # fix round 1, M4: owner words
     ({"Expiration": {"ExpiredObjectDeleteMarker": True}}, []),
     ({"AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}, []),
     ({"Status": "Disabled", "Expiration": {"Days": 1}}, []),
@@ -233,7 +233,7 @@ def test_one_day_reads_as_a_day():
             "NoncurrentVersionTransitions": [{"NoncurrentDays": 1, "StorageClass": "GLACIER"}],
             "Transitions": [{"Days": 1, "StorageClass": "GLACIER"}]}
     assert lc.destructive_actions(rule) == ["moves current files to GLACIER after 1 day",
-                                            "moves old versions to GLACIER 1 day after being replaced"]
+                                            "moves old versions to Glacier 1 day after being replaced"]
 
 
 def test_merge_alarms_remembers_the_newest_alarm_time():

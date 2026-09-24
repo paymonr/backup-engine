@@ -134,7 +134,7 @@ def test_row_warns_when_the_latest_job_settings_have_not_reached_s3(cfg):
 def test_row_pending_check_never_calls_aws(cfg, monkeypatch):
     def no_aws(*a, **k):
         raise AssertionError("no AWS on a GET")
-    monkeypatch.setattr(lifecycle, "read_rules", no_aws)
+    monkeypatch.setattr(lifecycle, "read_lifecycle", no_aws)  # fix round 1, M7: read_rules is dead
     monkeypatch.setattr(lifecycle, "role_creds", no_aws)
     _jobs(cfg, 365)
     lifecycle.save_applied(cfg["CACHE_DIR"], BASE, [])

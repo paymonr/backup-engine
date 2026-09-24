@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runs
-from ..gui import config_io, jobs_io, permissions, provision, vocab
+from ..gui import config_io, jobs_io, permissions, provision
 
 APP_PREFIX = "backup-engine:"
 HOUSEKEEPING_ID = APP_PREFIX + "housekeeping"
@@ -35,6 +35,26 @@ TIER_CLASSES = ("GLACIER_IR", "DEEP_ARCHIVE")
 TIER_MIN_STORAGE_DAYS = {"GLACIER_IR": 90, "DEEP_ARCHIVE": 180}   # S3's minimum storage duration
 MIN_TIER_DAYS = 1
 MIN_SIZE_DEFAULT = "all_storage_classes_128K"                     # S3's default for small objects
+
+# Owner words for a storage class in running text -- never the raw AWS constant (fix round 1,
+# M4/M9): shared by tier_error (a tier no colder than the folder's own upload class, M3b),
+# _keeps_words and destructive_actions/describe (the tier's move, in Activity/tamper lines).
+_STORAGE_WORDS = {"STANDARD": "Standard", "STANDARD_IA": "Standard-IA",
+                  "GLACIER_IR": "Glacier Instant Retrieval", "GLACIER": "Glacier",
+                  "DEEP_ARCHIVE": "Deep Archive"}
+
+
+def _storage_words(cls: str) -> str:
+    return _STORAGE_WORDS.get(cls, cls)
+
+
+def tier_rank(cls: str) -> int:
+    """Coldness rank of a storage class (higher = colder); -1 for an unrecognized value. S3
+    never transitions an object to a WARMER class than it's already in -- shared by
+    storage_summary.moved (M3a: a class switch never claims a version the old, colder-or-equal
+    tier already moved) and with_tier/tier_error (M3b: a tier no colder than the folder's own
+    upload class can't move anything)."""
+    return jobs_io.STORAGE_CLASSES.index(cls) if cls in jobs_io.STORAGE_CLASSES else -1
 
 
 @dataclass(frozen=True)
@@ -213,11 +233,13 @@ def housekeeping_rule(bset: dict) -> dict:
     return r
 
 
-def with_tier(folder: str, rule: dict | None, tier: dict | None) -> dict | None:
+def with_tier(folder: str, rule: dict | None, tier: dict | None, storage_class: str | None = None) -> dict | None:
     """A folder rule plus its cheaper tier for old versions (or a tier-only rule when the folder
     keeps everything). A tier that can't move anything before S3 removes it (after_days >= the
-    expiry days) is left off: S3 rejects that rule, and leaving the move off keeps more."""
-    if not tier:
+    expiry days) is left off: S3 rejects that rule, and leaving the move off keeps more. A tier
+    that isn't colder than the folder's own upload class (fix round 1, M3b -- e.g. a Deep
+    Archive Plain copy job) can't move anything either, and is dropped the same way."""
+    if not tier or (storage_class and tier_rank(tier["class"]) <= tier_rank(storage_class)):
         return rule
     d, _n = expiry(rule)
     if tier["after_days"] >= d:
@@ -226,7 +248,7 @@ def with_tier(folder: str, rule: dict | None, tier: dict | None) -> dict | None:
     return {**rule, "NoncurrentVersionTransitions": t} if rule else _rule(folder, NoncurrentVersionTransitions=t)
 
 
-def tier_error(tier: dict | None, rule: dict | None) -> str | None:
+def tier_error(tier: dict | None, rule: dict | None, storage_class: str | None = None) -> str | None:
     """Owner words for a tier the editor must refuse (spec error table), else None."""
     if not tier:
         return None
@@ -235,9 +257,14 @@ def tier_error(tier: dict | None, rule: dict | None) -> str | None:
     days = tier.get("after_days")
     if not isinstance(days, int) or days < MIN_TIER_DAYS:
         return f"Move old versions after {_days(MIN_TIER_DAYS)} or more."
-    d, _n = expiry(rule)
+    if storage_class and tier_rank(tier["class"]) <= tier_rank(storage_class):
+        return (f"Files here already upload as {_storage_words(storage_class)} — "
+                f"{_storage_words(tier['class'])} wouldn't move them anywhere cheaper.")
+    d, n = expiry(rule)
     if days >= d:
-        return (f"Old versions must move before S3 removes them — move them before {int(d)} days, "
+        if d == 1 and n:                     # newest-N-only: no days limit to move earlier than
+            return "Add a days limit to use a cheaper tier."
+        return (f"Old versions must move before S3 removes them — move them before {_days(int(d))}, "
                 "or keep them longer.")
     return None
 
@@ -247,12 +274,21 @@ def notes_for(bucket: str, base: str, jobs: list[dict]) -> list[str]:
     return [f.note for f in folders_for(bucket, base, jobs) if f.note]
 
 
+def _folder_storage_class(jobs: list[dict], names: tuple[str, ...]) -> str:
+    """The warmest storage class among a folder's jobs (default STANDARD) -- the easiest for a
+    tier to beat; if a tier isn't even colder than this, it can't help anything the folder holds
+    (fix round 1, M3b)."""
+    classes = [j.get("storage_class") for j in jobs if j.get("name") in names]
+    classes = [c for c in classes if c in jobs_io.STORAGE_CLASSES]
+    return min(classes, key=jobs_io.STORAGE_CLASSES.index) if classes else "STANDARD"
+
+
 def desired_rules(bucket: str, base: str, jobs: list[dict], settings: dict) -> list[dict]:
     bset = bucket_settings(settings, bucket)
     rules = []
     for f in folders_for(bucket, base, jobs):
         r = plain_rule(f.folder, f.retention) if f.kind == "plain" else undo_rule(f.folder, undo_days(bset, f.folder))
-        r = with_tier(f.folder, r, folder_tier(bset, f.folder))
+        r = with_tier(f.folder, r, folder_tier(bset, f.folder), _folder_storage_class(jobs, f.jobs))
         if r:
             rules.append(r)
     rules.append(housekeeping_rule(bset))
@@ -314,7 +350,9 @@ def describe(rule: dict) -> str:
                      + _days(rule["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"]))
     if (rule.get("Expiration") or {}).get("ExpiredObjectDeleteMarker"):
         parts.append("leftover delete markers cleared")
-    # never created by the app -- only present when someone changed the rule outside it
+    # current-file actions here are never created by the app -- only present when someone
+    # changed the rule outside it; old-version moves ARE the app's own tier (Phase C) too, so
+    # both need naming (fix round 1, M4: the old "never created by the app" comment was stale).
     parts += [w for w in destructive_actions(rule) if not w.startswith("removes old versions")]
     return f"{where}: " + ("; ".join(parts) or "no actions")
 
@@ -366,7 +404,8 @@ def destructive_actions(rule: dict) -> list[str]:
         out.append(f"moves current files to {t.get('StorageClass', 'another class')} {when}".rstrip())
     for t in (_as_list(rule.get("NoncurrentVersionTransitions"))
               + _as_list(rule.get("NoncurrentVersionTransition"))):
-        out.append(f"moves old versions to {t.get('StorageClass', 'another class')} "
+        cls = t.get("StorageClass") or "another class"           # owner words (fix round 1, M4)
+        out.append(f"moves old versions to {_storage_words(cls)} "
                    f"{_days(t.get('NoncurrentDays', '?'))} after being replaced")
     return out
 
@@ -490,22 +529,34 @@ def expiry(rule) -> tuple[float, int]:
     return _nce_pair(nce, 1)
 
 
-def tier_of(rule) -> tuple[str, int] | None:
-    """(storage class, days after being replaced) of a rule's earliest old-version move, or None."""
+def tier_of(rule) -> tuple[str, int, int] | None:
+    """(storage class, days after being replaced, newest kept out of the move) of a rule's
+    earliest old-version move that can actually fire, or None. A transition at or after the
+    rule's own UNCONDITIONAL expiry (no newest-N exemption on the expiry) never fires -- S3
+    removes the version first -- and doesn't count (fix round 1, M5: a first-apply baseline
+    merged from an overlapping legacy rule can carry exactly this kind of dead transition)."""
     r = rule or {}
     if r.get("Status") == "Disabled":
         return None
     ts = _as_list(r.get("NoncurrentVersionTransitions")) + _as_list(r.get("NoncurrentVersionTransition"))
     if not ts:
         return None
-    t = min(ts, key=lambda x: int(x.get("NoncurrentDays", 0) or 0))
-    return str(t.get("StorageClass", "")), int(t.get("NoncurrentDays", 0) or 0)
+    d, n = expiry(r)
+    live = [t for t in ts if not (n == 0 and int(t.get("NoncurrentDays", 0) or 0) >= d)]
+    if not live:
+        return None
+    t = min(live, key=lambda x: int(x.get("NoncurrentDays", 0) or 0))
+    return (str(t.get("StorageClass", "")), int(t.get("NoncurrentDays", 0) or 0),
+            int(t.get("NewerNoncurrentVersions", 0) or 0))
 
 
 def tier_keeps_less(before, after) -> bool:
-    """A tier added, moved earlier or switched to another class keeps less (spec §2)."""
+    """A tier added, moved earlier, switched to another class, or newly moving versions its own
+    newest-N used to protect, keeps less (spec §2; fix round 1, M5)."""
     bt, at = tier_of(before), tier_of(after)
-    return at is not None and (bt is None or at[0] != bt[0] or at[1] < bt[1])
+    if at is None:
+        return False
+    return bt is None or at[0] != bt[0] or at[1] < bt[1] or at[2] < bt[2]
 
 
 def keeps_less(before, after) -> bool:
@@ -524,7 +575,7 @@ def _keeps_words(rule) -> str:
     words = "every old version kept" if d == math.inf else _old_version_words(d, n)
     t = tier_of(rule)
     if t:
-        words += f"; moved to {vocab.CLASS_NAMES.get(t[0], t[0])} {_days(t[1])} after being replaced"
+        words += f"; moved to {_storage_words(t[0])} {_days(t[1])} after being replaced"
     return words
 
 
@@ -823,19 +874,43 @@ def read_lifecycle(bucket: str, creds: dict, region: str, *, run=provision._run_
     raise _fail(creds, cp.stderr)
 
 
-def read_rules(bucket: str, creds: dict, region: str, *, run=provision._run_aws) -> list[dict]:
-    return read_lifecycle(bucket, creds, region, run=run)[0]
+MIN_SIZE_FLAG = "--transition-default-minimum-object-size"
+# Probed once per `run` (production has exactly one: provision._run_aws) -- [(run, supported)],
+# a list rather than a dict keyed by id(run) so a garbage-collected run object's id can never be
+# reused and silently hand back a stale answer (fix round 1, #9 controller ruling).
+_MIN_SIZE_PROBED: list = []
+
+
+def _min_size_supported(run, creds, region) -> bool:
+    """Whether this process's aws CLI understands --transition-default-minimum-object-size
+    (added to botocore ~September 2024; Alpine 3.20's pinned aws-cli, 2.15.57, predates it).
+    Probed with a local `help` call -- no AWS reached, no bucket needed -- and cached; a failed
+    probe counts as unsupported (the safe direction: never send the flag, S3's own default
+    already applies)."""
+    for cached_run, supported in _MIN_SIZE_PROBED:
+        if cached_run is run:
+            return supported
+    try:
+        cp = _call(run, creds, region, ["s3api", "put-bucket-lifecycle-configuration", "help"])
+        supported = cp.returncode == 0 and MIN_SIZE_FLAG in (cp.stdout or "")
+    except Exception:                        # noqa: BLE001 -- a probe must never crash a sync
+        supported = False
+    _MIN_SIZE_PROBED.append((run, supported))
+    return supported
 
 
 def write_rules(bucket: str, rules: list[dict], creds: dict, region: str, *, run=provision._run_aws,
                 min_size: str | None = None) -> None:
     """Put the whole configuration (S3 replaces it). A small-object setting the owner chose
-    (anything but S3's default) is passed back so a put never resets it (#9); the app never
-    sets one itself."""
+    (anything but S3's default) is passed back so a put never resets it (#9) -- but only when
+    this process's aws CLI actually understands the flag; when it doesn't, the flag is simply
+    never sent (S3 then applies its own default, the benign direction -- `_reconcile_locked`
+    notes it via its "small files" detail, and records the reading for Task 18b's copy). The
+    app never SETS a min-size itself."""
     args = ["s3api", "put-bucket-lifecycle-configuration", "--bucket", bucket,
             "--lifecycle-configuration", json.dumps({"Rules": rules})]
-    if min_size and min_size != MIN_SIZE_DEFAULT:
-        args += ["--transition-default-minimum-object-size", min_size]
+    if min_size and min_size != MIN_SIZE_DEFAULT and _min_size_supported(run, creds, region):
+        args += [MIN_SIZE_FLAG, min_size]
     cp = _call(run, creds, region, args)
     if cp.returncode != 0:
         raise _fail(creds, cp.stderr)
@@ -930,12 +1005,17 @@ def load_console_fingerprint(cache_dir: str, bucket: str) -> dict | None:
     return fp if isinstance(fp, dict) else None
 
 
-def save_live(cache_dir: str, bucket: str, rules: list[dict], versioning: str | None = None) -> None:
+def save_live(cache_dir: str, bucket: str, rules: list[dict], versioning: str | None = None,
+             min_size: str | None = None) -> None:
     """What a pass last READ from S3 -- console rules included -- so the S3 rules screen shows
-    them without an AWS call on GET."""
+    them without an AWS call on GET. `min_size` (#9, fix round 1 M8) is the bucket's
+    TransitionDefaultMinimumObjectSize as read (None when S3 or this aws CLI didn't report one),
+    so Task 18b's copy can say the right thing without another AWS call."""
     doc = {"rules": rules, "read_at": _now_iso()}
     if versioning is not None:
         doc["versioning"] = versioning
+    if min_size is not None:
+        doc["min_size"] = min_size
     _write_atomic(Path(_state_dir(cache_dir), f"{bucket}.live.json"), json.dumps(doc))
 
 
@@ -1257,7 +1337,7 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
         live_ver, notes = None, [*notes, "this storage doesn't report versioning"]
     ver_managed = live_ver is not None
     detail = "; ".join(notes)
-    save_live(cache, bucket, live, versioning=live_ver)
+    save_live(cache, bucket, live, versioning=live_ver, min_size=min_size)
 
     doc = _resolve_in_flight(cache, bucket, doc, live, live_ver, ver_managed)   # fix round 2, (b)
     applied = doc.get("rules") if isinstance(doc, dict) and isinstance(doc.get("rules"), list) else None
@@ -1281,6 +1361,12 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
     waiting = [c for c in classify(before, want) if c.kind == KEEPS_LESS] if gated else []
     target_set = gate(before, want) if gated else want
     target, target_ver = list(target_set.rules.values()), target_set.versioning
+    # fix round 1, #9 controller ruling: whenever a tier is (still) wanted here and this aws
+    # CLI can't control the small-object threshold on a put, the owner should know why small
+    # files never move (S3's own default -- 128 KB -- silently governs every put we make).
+    if any(r.get("NoncurrentVersionTransitions") for r in target) and not _min_size_supported(run, creds, region):
+        notes = [*notes, "small files (under 128 KB) stay where they are"]
+        detail = "; ".join(notes)
     # I1: never forget a known folder -- a folder that once had a job (so may already have
     # data in S3) stays recorded even after that job is deleted, so if it's later reused
     # (the only way to change a job's type is delete + recreate under the same name) its new

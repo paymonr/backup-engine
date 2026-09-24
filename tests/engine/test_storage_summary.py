@@ -215,3 +215,16 @@ def test_moved_counts_what_a_tier_newly_moves():
     removed_first = dict(tier, NoncurrentVersionExpiration={"NoncurrentDays": 10})
     assert ss.moved(s, None, removed_first) == {"versions": 1, "bytes": 100}      # age 13 is removed instead
     assert ss.moved(s, tier, None) == {"versions": 0, "bytes": 0}
+
+
+def test_moved_never_pulls_a_version_back_to_a_warmer_class():
+    # fix round 1, M3a: S3 never moves an object back up to a warmer class. Every version here
+    # is already past day 1, so a prior Deep Archive tier already parked all of them there --
+    # switching the FOLDER RULE to a (warmer) Glacier Instant Retrieval tier can't claim any of
+    # them as newly moved.
+    s = _scan()
+    da = {"NoncurrentVersionTransitions": [{"NoncurrentDays": 1, "StorageClass": "DEEP_ARCHIVE"}]}
+    gir = {"NoncurrentVersionTransitions": [{"NoncurrentDays": 1, "StorageClass": "GLACIER_IR"}]}
+    assert ss.moved(s, da, gir) == {"versions": 0, "bytes": 0}
+    # the reverse (GIR -> DA) is a real further move once a version reaches the new, colder day.
+    assert ss.moved(s, gir, da) == {"versions": 3, "bytes": 1150}

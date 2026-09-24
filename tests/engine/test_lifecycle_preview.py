@@ -59,13 +59,14 @@ def test_a_change_that_keeps_more_needs_no_token(pcfg, monkeypatch):
     sync()/check()'s `run=provision._run_aws` default is bound at *definition* time, and
     preview() doesn't even take a `run` at all -- so that alone can never catch a regression.
     Patch the functions AWS-reaching code actually calls by name (looked up at call time, so a
-    module-level monkeypatch reaches them) instead: role_creds/read_rules/write_rules cover
-    sync()/check() (both funnel through _reconcile_locked), and check() itself is patched too
-    in case preview() were ever made to call it directly."""
+    module-level monkeypatch reaches them) instead: role_creds/read_lifecycle/write_rules cover
+    sync()/check() (both funnel through _reconcile_locked; fix round 1, M7: read_rules itself is
+    dead in production since _reconcile_locked was retargeted to read_lifecycle), and check()
+    itself is patched too in case preview() were ever made to call it directly."""
     cfg, fake = pcfg
     def boom(*a, **k):
         raise AssertionError("preview must never reach AWS")
-    for name in ("role_creds", "read_rules", "write_rules", "check"):
+    for name in ("role_creds", "read_lifecycle", "write_rules", "check"):
         monkeypatch.setattr(lc, name, boom)
     calls = len(fake.calls)
     pv = lc.preview(cfg, BASE, _manga_edit(cfg, {"type": "days", "days": 365}))

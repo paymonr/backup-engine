@@ -226,7 +226,9 @@ def impact(summary: dict, old_rule, new_rule) -> dict:
 def moved(summary: dict, old_rule, new_rule) -> dict:
     """Old versions `new_rule` moves to its cheaper tier that `old_rule` didn't (and that the
     new rule doesn't remove first): {"versions", "bytes"}. Objects under S3's minimum size for
-    a move are counted too -- the preview says they stay where they are."""
+    a move are counted too -- the preview says they stay where they are. S3 never moves a
+    version back UP to a warmer class (fix round 1, M3a): a version `old_rule` already parked
+    in a class at least as cold as `new_rule`'s target isn't newly moved by a class switch."""
     nt = lifecycle.tier_of(new_rule)
     if nt is None:
         return {"versions": 0, "bytes": 0}
@@ -236,7 +238,7 @@ def moved(summary: dict, old_rule, new_rule) -> dict:
     for age, rank, n, b in summary.get("noncurrent_by_age_rank") or []:
         if age < nt[1] or (age >= nd and rank > nn):
             continue
-        if ot is not None and ot[0] == nt[0] and age >= ot[1]:
+        if ot is not None and lifecycle.tier_rank(ot[0]) >= lifecycle.tier_rank(nt[0]) and age >= ot[1]:
             continue
         versions += n
         size += b
