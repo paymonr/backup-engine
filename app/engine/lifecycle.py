@@ -1263,7 +1263,11 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
             # keep alarming); once a LATER pass reaches a clean "ok" with nothing left
             # outstanding, set_status's own not_restored -> restored upgrade (fix round 2,
             # M1 broadened) fires without this pass needing to guess ahead of that (probe
-            # #10).
+            # #10). Fix round 4, item 4: the journal is KEPT on both branches here -- the
+            # versioning put may have landed although it reported an error (a timeout after
+            # S3 applied it), and this pass records the OLD versioning because it can't know;
+            # the next pass adopts the versioning half if live matches the journal, else
+            # judges it normally (the rules half it re-adopts is what was just recorded).
             if tampered:
                 # fix round 3, item 5: say what WAS and WASN'T restored, not a bare error
                 # detail -- rules_written is True here, so the rules half always landed.
@@ -1271,14 +1275,12 @@ def _reconcile_locked(cfg, bucket: str, *, run, trigger: str, gated: bool = True
                 status("not_restored", e.detail, {"kind": "not_restored", "at": _now_iso(), "lines": tamper_lines},
                       prior_alarm=true_prior_alarm)
                 save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver)
-                _delete_in_flight(cache, bucket)      # definitively recorded -- the journal's job is done
                 runs.record_system(cache, kind="s3-rules", summary=f"{TAMPERED} — NOT restored · {bucket}",
                                    lines=[*tamper_lines, f"{rules_word}; versioning couldn't be changed: {e.detail}",
                                           *console_note], outcome="failed", error=e.detail, trigger=trigger)
                 return "not_restored", None, e, stale
             status(_err_state(e), e.detail)
             save_applied(cache, bucket, target, console=live_fp, folders=folders, versioning=applied_ver)
-            _delete_in_flight(cache, bucket)          # definitively recorded -- the journal's job is done
             runs.record_system(cache, kind="s3-rules", summary=f"S3 rules updated · {bucket}",
                                lines=[*_change_lines(live, target), f"versioning couldn't be changed: {e.detail}",
                                       *console_note], trigger=trigger)

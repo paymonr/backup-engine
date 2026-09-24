@@ -441,6 +441,11 @@ def test_partial_record_then_an_outside_rules_change_keeps_alarming(cfg):
 
 
 def test_confirmed_partial_then_an_outside_suspend_is_restored_and_alarmed(cfg):
+    # Fix round 4, item 4: the partial pass keeps its journal (the failed versioning put may have
+    # landed), so an outside suspend to EXACTLY the confirmed target inside the journal's 6 h
+    # TTL is indistinguishable from that put having landed and is adopted (the accepted TTL
+    # trade-off -- a versioning-only confirmed suspend already behaved so). Once the journal is
+    # past its TTL, nothing vouches for it: restored and alarmed, as before.
     fake = FailOrKill()
     lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
     lc.sync(cfg, BASE, run=fake)
@@ -450,6 +455,7 @@ def test_confirmed_partial_then_an_outside_suspend_is_restored_and_alarmed(cfg):
     with pytest.raises(lc.LifecycleError):
         lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
     fake.mode = None
+    _age_journal(cfg, 6 * 3600 + 120)
     fake.versioning[BASE] = "Suspended"                     # someone outside suspends
     state = lc.check(cfg, BASE, run=fake)
     assert state == "restored" and fake.versioning[BASE] == "Enabled"
@@ -798,4 +804,33 @@ def test_a_kill_while_a_journal_is_being_adopted_never_loses_the_adoption(cfg, m
     assert _appd(fake.rules[BASE]) == {"NoncurrentDays": 10}, "a confirmed, landed write was reverted"
     assert state == "ok" and "alarm" not in _st(cfg)
     assert _appd(lc.load_applied(cfg["CACHE_DIR"], BASE)) == {"NoncurrentDays": 10}
+    assert not _journal_file(cfg).exists()
+
+
+# item 4: a rules write lands, then the versioning put of a CONFIRMED suspend lands too but reports
+# an error (e.g. a timeout after S3 applied it). That pass records the OLD versioning -- it can't
+# know -- so it must keep the journal: the next check adopts the landed suspend instead of
+# reverting it with a false tamper alarm.
+@pytest.mark.parametrize("rules_edit", [{"abort_uploads_days": 14},                        # keeps more
+                                        {"folders": {"appdata/": {"undo_days": 10}}}])      # keeps less
+def test_a_confirmed_suspend_that_lands_but_errors_after_a_rules_write_is_kept(cfg, rules_edit):
+    fake = Fake2()
+    lc.seed_new_bucket(cfg["CACHE_DIR"], BASE)
+    lc.sync(cfg, BASE, run=fake)
+    pv = lc.preview(cfg, BASE, {"kind": "settings",
+                               "settings": {"version": 1, "buckets": {BASE: {"versioning": "suspended", **rules_edit}}}})
+    assert "versioning" in {c.rule_id for c in pv.keeps_less}
+    fake.put_ver = "landed_err"
+    with pytest.raises(lc.LifecycleError):
+        lc.apply_confirmed(cfg, pv.token, BASE, run=fake)
+    live_rules = json.loads(json.dumps(fake.rules[BASE]))
+    assert _ver(fake) == "Suspended"                                 # it DID land, despite the error
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["versioning"] == "on"      # the pass couldn't know
+    fake.put_ver = None
+    state = lc.check(cfg, BASE, run=fake)
+    assert _ver(fake) == "Suspended", "a confirmed, landed suspend was reverted"
+    assert state == "ok" and "alarm" not in _st(cfg)
+    assert fake.rules[BASE] == live_rules                            # the landed rules untouched too
+    assert lc.load_applied_doc(cfg["CACHE_DIR"], BASE)["versioning"] == "suspended"
+    assert lc.outstanding(cfg, BASE) == (False, [])
     assert not _journal_file(cfg).exists()
