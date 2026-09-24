@@ -47,6 +47,17 @@ def test_no_warning_when_the_console_rule_keeps_at_least_as_long(cfg):
     assert s3_rules.setup_row(cfg)["state"] == "ok"
 
 
+# post-wave review, minor 2: a failing check must not stay hidden behind the console-cap
+# sentence (checked before "unsupported"/"error"/"Not checked yet" in the wave's ordering).
+def test_a_bucket_in_error_with_a_console_cap_shows_the_error_sentence(cfg):
+    _applied(cfg)
+    _live(cfg, GUIDED + list(lifecycle.desired(BASE, BASE, JOBS, {}).rules.values()))
+    lifecycle.set_status(cfg["CACHE_DIR"], BASE, "error", "AccessDenied")
+    row = s3_rules.setup_row(cfg)
+    assert row["state"] == "warn"
+    assert row["sentence"] == "S3 rules couldn't be checked — try Check now"
+
+
 def test_the_job_page_notes_the_console_rule(client, cfg):
     from tests.gui.test_vocabulary import forbidden_hits, mono_violations
     _applied(cfg)

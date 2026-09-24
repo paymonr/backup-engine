@@ -176,6 +176,16 @@ def _setup_state(cfg) -> tuple[dict | None, list[str], dict | None]:
         row.update(state="warn", sentence="S3 rules still differ from what your jobs need — try Check now")
     elif config:
         row.update(state="warn", sentence=config[0].upper() + config[1:])
+    # post-wave review, minor 2: a real failing check (error/unsupported/never-checked) must
+    # win over the console-cap sentence, which used to hide it -- and over the softer
+    # waiting/not-reached nudges too. Order: alarm -> not_restored -> config -> error ->
+    # unsupported -> not checked -> waiting/not-reached -> console cap -> ok.
+    elif "error" in states:
+        row.update(state="warn", sentence="S3 rules couldn't be checked — try Check now")
+    elif "unsupported" in states:
+        row.update(state="warn", sentence="This storage doesn't support S3 rules — Plain copy keeps all old versions")
+    elif None in states:
+        row.update(state="warn", sentence="Not checked yet")
     elif not_reached:
         row.update(state="warn", sentence="Your latest job settings haven't reached S3 yet — try Check now")
     elif waiting:
@@ -183,12 +193,6 @@ def _setup_state(cfg) -> tuple[dict | None, list[str], dict | None]:
                    sentence=f"{waiting} change{'' if waiting == 1 else 's'} waiting for your confirmation")
     elif cap := _console_cap(cfg, buckets):
         row.update(state="warn", fix_url="/setup/storage", sentence=console_cap_words(cap))
-    elif "unsupported" in states:
-        row.update(state="warn", sentence="This storage doesn't support S3 rules — Plain copy keeps all old versions")
-    elif "error" in states:
-        row.update(state="warn", sentence="S3 rules couldn't be checked — try Check now")
-    elif None in states:
-        row.update(state="warn", sentence="Not checked yet")
     else:
         row.update(state="ok", sentence="Your jobs' S3 rules are in place")
     return row, buckets, None

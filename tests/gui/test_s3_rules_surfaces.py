@@ -127,8 +127,10 @@ def test_row_warns_when_the_latest_job_settings_have_not_reached_s3(cfg):
     row = s3_rules.setup_row(cfg)
     assert row["state"] == "warn"
     assert row["sentence"] == "Your latest job settings haven't reached S3 yet — try Check now"
+    # post-wave review, minor 2: a real failing check now outranks the softer not-reached
+    # nudge (a bucket erroring on its check is more actionable than "hasn't reached S3 yet").
     _status(cfg, state="error", checked_at="2026-09-23T05:00:00Z", detail="AccessDenied")
-    assert s3_rules.setup_row(cfg)["sentence"] == "Your latest job settings haven't reached S3 yet — try Check now"
+    assert s3_rules.setup_row(cfg)["sentence"] == "S3 rules couldn't be checked — try Check now"
 
 
 def test_row_pending_check_never_calls_aws(cfg, monkeypatch):
