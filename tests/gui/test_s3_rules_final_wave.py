@@ -71,3 +71,27 @@ def test_the_wizard_notes_the_console_rule(client, cfg):
         assert "A rule you added in the AWS console (expire-media) removes old versions" in body, url
     _live(cfg, [])
     assert "A rule you added in the AWS console" not in client.get("/jobs/new").get_data(as_text=True)
+
+
+# --- M3: why a set tier is off -----------------------------------------------------------------
+
+def test_a_tier_no_colder_than_the_upload_class_says_so_not_that_s3_removes_first(client, cfg):
+    cold_jobs = [dict(JOBS[0], storage_class="DEEP_ARCHIVE"), JOBS[1]]
+    Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": cold_jobs}))
+    settings = {"version": 1, "buckets": {BASE: {"folders": {
+        "media/manga/": {"tier": {"class": "DEEP_ARCHIVE", "after_days": 30}}}}}}
+    lifecycle.save_settings(cfg["CONFIG_DIR"], settings)
+    _applied(cfg, jobs=cold_jobs, settings=settings)
+    body = html.unescape(client.get("/setup/storage").get_data(as_text=True))
+    assert "Off — files here already upload as Deep Archive, so this tier moves nothing." in body
+    assert "S3 removes these old versions before they would move" not in body
+
+
+def test_a_tier_s3_removes_first_keeps_its_own_wording(client, cfg):
+    settings = {"version": 1, "buckets": {BASE: {"folders": {
+        "media/manga/": {"tier": {"class": "DEEP_ARCHIVE", "after_days": 200}}}}}}
+    lifecycle.save_settings(cfg["CONFIG_DIR"], settings)
+    _applied(cfg, settings=settings)
+    body = html.unescape(client.get("/setup/storage").get_data(as_text=True))
+    assert "Off — S3 removes these old versions before they would move." in body
+    assert "already upload as" not in body

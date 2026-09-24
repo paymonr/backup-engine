@@ -298,8 +298,9 @@ def _bucket_view(cfg, bucket: str, base: str, jobs: list[dict], settings: dict) 
                      "kind": f.kind, "jobs": list(f.jobs), "type": vocab.TYPE_NAMES.get(types.get(f.jobs[0]), ""),
                      "keeps": {"days": None if d == float("inf") else d, "newer": n or None},
                      "waiting": w.words.split(": ", 1)[-1] if w else None, "note": f.note,
-                     "tier": _tier_view(rule), "tier_off": bool(set_tier) and
-                     lifecycle.tier_of(want.rules.get(rid)) is None})
+                     "tier": _tier_view(rule),
+                     "tier_off": (_tier_off_words(set_tier, lifecycle._folder_storage_class(jobs, f.jobs))
+                                  if set_tier and lifecycle.tier_of(want.rules.get(rid)) is None else None)})
     live = lifecycle.load_live(cache, bucket)
     live_versioning = (live or {}).get("versioning")
     # fix round 1, Minor: neutral chip styling when versioning is suspended/never-on BY THE
@@ -318,6 +319,15 @@ def _bucket_view(cfg, bucket: str, base: str, jobs: list[dict], settings: dict) 
             "housekeeping": {"key": f"{bucket}|*", "abort_days": bset["abort_uploads_days"],
                              "markers": bset["delete_marker_cleanup"]},
             "waiting": [c.words for c in waiting.values()]}
+
+
+def _tier_off_words(tier: dict, storage_class: str) -> str:
+    """Why a tier the owner set does nothing (final fix wave M3): the folder's files already
+    upload as that class or colder, or S3 removes the old versions before they'd move."""
+    if lifecycle.tier_rank(tier["class"]) <= lifecycle.tier_rank(storage_class):
+        return (f"Off — files here already upload as {lifecycle._storage_words(storage_class)}, "
+                "so this tier moves nothing.")
+    return "Off — S3 removes these old versions before they would move."
 
 
 def screen(cfg) -> dict:

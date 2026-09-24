@@ -78,7 +78,7 @@
                 {% if r.waiting %}<div class="hint" style="margin-top:var(--sp-1)">Waiting for your confirmation: {{ r.waiting }}</div>{% endif %}
                 {% if r.note %}<div class="hint" style="margin-top:var(--sp-1)">{{ r.note }}</div>{% endif %}</td>
               <td style="text-align:left">{% if r.tier %}{{ r.tier.label }} <code>{{ r.tier.class }}</code> after <span class="mono">{{ r.tier.days }}</span> days{% else %}—{% endif %}
-                {% if r.tier_off %}<div class="hint" style="margin-top:var(--sp-1)">Off — S3 removes these old versions before they would move.</div>{% endif %}</td>
+                {% if r.tier_off %}<div class="hint" style="margin-top:var(--sp-1)">{{ r.tier_off }}</div>{% endif %}</td>
               <td style="text-align:left"><a class="linklike" href="/setup/storage?edit={{ r.key|urlencode }}">Change…</a></td>
             </tr>
             {% endfor %}
