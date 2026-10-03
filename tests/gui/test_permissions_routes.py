@@ -228,3 +228,12 @@ def test_verify_failure_lists_probes_and_does_not_stamp(client, dirs, monkeypatc
 def test_commands_mode_explains_it_is_the_last_setup_step(client):
     body = client.get("/setup/permissions?mode=commands").get_data(as_text=True)
     assert "Last step of setup" in body
+
+
+def test_permissions_screen_explains_how_to_create_an_access_key(client):
+    # Saved from the permissions-converge feature: the same help Automated setup shows,
+    # as one shared include, so the two never drift.
+    body = client.get("/setup/permissions").get_data(as_text=True)
+    assert "How do I create an access key?" in body
+    assert "aws iam create-access-key --user-name" in body
+    assert "After the update, remove it:" in body

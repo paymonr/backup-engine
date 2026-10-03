@@ -78,6 +78,7 @@
       request, never written to disk or logs, and never shown again. Use a short-lived key and
       delete it afterwards.</div>
   </div>
+  {% with ak_after = 'the update', ak_verb = 'update permissions' %}{% include "_access_key_help.html" %}{% endwith %}
   <form method="post" action="{{ url_for('gui.permissions_update') }}" class="form" style="margin-top:var(--sp-4)">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="field"><label for="ak">Admin access key <code class="hint">ADMIN_ACCESS_KEY_ID</code></label>
