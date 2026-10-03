@@ -228,3 +228,58 @@ def test_moved_never_pulls_a_version_back_to_a_warmer_class():
     assert ss.moved(s, da, gir) == {"versions": 0, "bytes": 0}
     # the reverse (GIR -> DA) is a real further move once a version reaches the new, colder day.
     assert ss.moved(s, gir, da) == {"versions": 3, "bytes": 1150}
+
+
+# --- describe(): the verbose Activity lines (owner request 2026-10-03) ------------------------
+
+def test_describe_spells_out_the_summary_in_several_lines():
+    s = _scan()
+    lines = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 30}}, took_s=3.4)
+    assert lines[0] == f"storage summary: media/manga/ in {B}"
+    assert lines[1] == "current files: 2 (207 B)"
+    assert lines[2] == "old versions: 3 (1 KB) — the oldest was replaced 13 days ago"
+    assert lines[3] == "delete markers: 1 (files that were removed; their old versions are counted above)"
+    assert lines[4] == "rule: S3 removes old versions 30 days after they were replaced — nothing goes in the next 7 days"
+    assert lines[5] == "listed in 3 s"
+
+
+def test_describe_counts_what_goes_in_the_next_week():
+    s = _scan()
+    # ages 1, 3 and 13 days: a 15-day rule reaches the 13-day-old one within a week (50 B)
+    l15 = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 15}})
+    assert l15[4] == "rule: S3 removes old versions 15 days after they were replaced — about 1 (50 B) goes in the next 7 days"
+    # a 5-day rule: all three are at or past due (S3 removes them within about a day)
+    l5 = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 5}})
+    assert l5[4] == "rule: S3 removes old versions 5 days after they were replaced — about 3 (1 KB) go in the next 7 days"
+    # newest-N exemptions are honoured (rank 2 is the only one beyond the newest 1)
+    ln = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 5, "NewerNoncurrentVersions": 1}})
+    assert ln[4] == ("rule: S3 removes old versions 5 days after they were replaced, keeping the newest 1 per file"
+                     " — about 1 (50 B) goes in the next 7 days")
+
+
+def test_describe_without_a_rule_or_a_timing():
+    s = _scan()
+    # rule known to be absent / disabled: old versions stay for good
+    assert ss.describe(s, rule=None)[4] == "rule: old versions are kept for good"
+    assert ss.describe(s, rule={"Status": "Disabled"})[4] == "rule: old versions are kept for good"
+    # the rules were never checked: no rule line at all, and no timing line without took_s
+    lines = ss.describe(s, rule_known=False)
+    assert len(lines) == 4 and not any(l.startswith("rule:") for l in lines)
+
+
+def test_describe_handles_an_empty_folder_and_whole_bucket():
+    empty = {"bucket": B, "folder": "", "noncurrent_by_age_days": [], "noncurrent_by_rank": [],
+             "noncurrent_by_age_rank": [], "noncurrent_versions": 0, "noncurrent_bytes": 0,
+             "delete_markers": 0, "current_objects": 0, "current_bytes": 0}
+    lines = ss.describe(empty, rule=None)
+    assert lines[0] == f"storage summary: whole bucket in {B}"
+    assert lines[1] == "current files: 0 (0 B)"
+    assert lines[2] == "old versions: none"
+    assert lines[3] == "delete markers: 0"
+
+
+def test_stats_picks_the_record_figures():
+    s = _scan()
+    assert ss.stats(s) == {"current_objects": 2, "current_bytes": 207, "noncurrent_versions": 3,
+                           "noncurrent_bytes": 1150, "delete_markers": 1, "oldest_age_days": 13}
+    assert ss.stats(dict(s, noncurrent_by_age_days=[]))["oldest_age_days"] is None

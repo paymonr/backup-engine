@@ -324,3 +324,21 @@ def test_system_record_has_no_pending_state(client, example):
 
 def test_system_malformed_id_is_404(client, example):
     assert client.get("/activity/not-an-id").status_code == 404
+
+
+def test_what_it_did_for_a_storage_summary_record():
+    # owner request 2026-10-03: a storage summary's record page says what the scan found.
+    from datetime import datetime, timezone
+    from app.engine import runs
+    from app.gui import routes
+    def rec(stats):
+        return runs.RunRecord(id="20261003T050012Z-7c89", job=None, kind="storage-summary", trigger="scheduled",
+                              outcome="ok", started_at=datetime(2026, 10, 3, 5, tzinfo=timezone.utc),
+                              finished_at=None, duration_s=3, exit_code=0, error=None, stats=stats)
+    full = {"current_objects": 2847, "current_bytes": 50811379819, "noncurrent_versions": 2633,
+            "noncurrent_bytes": 46084895626, "delete_markers": 2633, "oldest_age_days": 13}
+    assert routes._what_it_did(rec(full)) == ("2,847 current files (47.32 GB) · 2,633 old versions (42.92 GB), "
+                                              "the oldest replaced 13 days ago")
+    assert routes._what_it_did(rec(dict(full, noncurrent_versions=0, noncurrent_bytes=0, oldest_age_days=None))) == \
+        "2,847 current files (47.32 GB) · no old versions"
+    assert routes._what_it_did(rec({})) is None

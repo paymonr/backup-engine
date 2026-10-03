@@ -61,6 +61,7 @@ class RunRecord:
     type: str | None = None
     storage_class: str | None = None
     params: dict = dataclasses.field(default_factory=dict)
+    stats: dict = dataclasses.field(default_factory=dict)   # op figures (storage-summary); only grows
     pid: int | None = None
     attempts: int | None = None
     backfilled: bool = False
@@ -205,6 +206,7 @@ def _fold_group(grp: dict) -> tuple[RunRecord, bool]:
         type=s("type"),
         storage_class=s("storage_class"),
         params=merged.get("params") if isinstance(merged.get("params"), dict) else {},
+        stats=merged.get("stats") if isinstance(merged.get("stats"), dict) else {},
         pid=num("pid"),
         attempts=num("attempts"),
         backfilled=bool(merged.get("backfilled")),

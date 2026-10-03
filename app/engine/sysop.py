@@ -245,17 +245,36 @@ def _summary_skip(cfg, params: dict | None) -> bool:
     return False
 
 
-def storage_summary_op(cfg, *, log, job=None, bucket=None, folder=None, run=provision._run_aws) -> None:
+def _folder_rule(cfg, bucket: str, folder: str) -> tuple[dict | None, bool]:
+    """(the app's last-applied rule for this folder, whether the rules were ever checked) --
+    from files only, never AWS. Feeds describe()'s "rule:" line; a caller treats any
+    failure here as "not known" (the line is a courtesy, never a reason to fail the scan)."""
+    from . import lifecycle                   # local: lifecycle imports sysop lazily too
+    ctx = {"CONFIG_DIR": cfg["CONFIG_DIR"], "CACHE_DIR": cfg["CACHE_DIR"]}
+    before, _want = lifecycle.applied_view(ctx, bucket)
+    if before is None:
+        return None, False
+    return before.rules.get(lifecycle.rule_id(folder)), True
+
+
+def storage_summary_op(cfg, *, log, job=None, bucket=None, folder=None, run=provision._run_aws) -> dict:
     target = _summary_target(cfg, {"job": job, "bucket": bucket, "folder": folder})
     if target is None:
         raise SysopError("nothing to scan: S3 rules aren't managed here, or the job has no folder")
     bucket, folder = target
     region = (config_io.read_backup_env(cfg["CONFIG_DIR"]).get("AWS_REGION") or "us-east-1").strip()
     key, secret = _runtime_key(cfg["CONFIG_DIR"])
+    t0 = time.monotonic()
     summary = storage_summary.scan(bucket, folder, region=region, key=key, secret=secret, run=run, log=log)
+    took = time.monotonic() - t0
     storage_summary.save(cfg["CACHE_DIR"], summary)
-    log(f"storage summary: {folder or 'whole bucket'} in {bucket} — {summary['noncurrent_versions']:,} old "
-        f"versions, {summary['current_objects']:,} current files, {summary['delete_markers']:,} delete markers")
+    try:
+        rule, known = _folder_rule(cfg, bucket, folder)
+    except Exception:                         # noqa: BLE001 -- the rule line is a courtesy
+        rule, known = None, False
+    for line in storage_summary.describe(summary, rule, rule_known=known, took_s=took):
+        log(line)
+    return {"stats": storage_summary.stats(summary)}
 
 
 _OPS = {"usage-refresh": usage_refresh, "billing-check": billing_check, "probe": probe,
@@ -305,6 +324,7 @@ def run(kind: str, params: dict | None = None) -> int:
         "started_at": _now_iso(started), "pid": os.getpid(), "log": log_rel})
 
     outcome, error = "ok", None
+    end_extra: dict = {}
     with open(Path(cache, log_rel), "a") as lf:
         def log(msg: str) -> None:
             lf.write(f"{_now_iso()} {msg}\n"); lf.flush()
@@ -312,7 +332,11 @@ def run(kind: str, params: dict | None = None) -> int:
             log(f"{kind} start")
             if skip_error is not None:
                 raise skip_error
-            _OPS[kind](cfg, log=log, **(params or {}))
+            # An op may hand back figures for its end record (storage-summary's `stats`);
+            # the record page reads them, the Activity row ignores them.
+            extra = _OPS[kind](cfg, log=log, **(params or {}))
+            if isinstance(extra, dict):
+                end_extra.update(extra)
             log(f"{kind} ok")
         except Exception as e:                      # noqa: BLE001 — any op failure -> failed end
             outcome = "failed"
@@ -323,7 +347,7 @@ def run(kind: str, params: dict | None = None) -> int:
         "v": 1, "id": run_id, "job": None, "kind": kind, "event": "end",
         "outcome": outcome, "finished_at": _now_iso(),
         "duration_s": int(time.time() - started),
-        "exit_code": 0 if outcome == "ok" else 1, "error": error})
+        "exit_code": 0 if outcome == "ok" else 1, "error": error, **end_extra})
 
     try:
         fcntl.flock(lockfh.fileno(), fcntl.LOCK_UN)

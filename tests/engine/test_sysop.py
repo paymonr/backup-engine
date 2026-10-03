@@ -465,3 +465,35 @@ def test_main_parses_the_storage_summary_arguments(monkeypatch):
     assert seen == {"kind": "storage-summary", "params": {"job": None, "bucket": "b", "folder": ""}}
     assert sysop.main(["storage-summary", "--job", "movies"]) == 0
     assert seen["params"] == {"job": "movies", "bucket": None, "folder": None}
+
+
+def test_storage_summary_logs_the_verbose_lines_and_records_its_figures(tmp_path, monkeypatch):
+    # owner request 2026-10-03: the one-line log became several lines, and the end record
+    # carries the figures so the record page can say what the scan found.
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    monkeypatch.setattr(sysop.storage_summary, "scan", _fake_scan([]))
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    recs = _system_records(cache)
+    log = Path(cache, recs[0]["log"]).read_text()
+    assert "storage summary: media/movies/ in my-bucket\n" in log
+    assert "current files: 2 (9 B)\n" in log
+    assert "old versions: 3 (1 B)\n" in log
+    assert "delete markers: 0\n" in log
+    assert "listed in " in log
+    end = recs[1]
+    assert end["outcome"] == "ok"
+    assert end["stats"] == {"current_objects": 2, "current_bytes": 9, "noncurrent_versions": 3,
+                            "noncurrent_bytes": 1, "delete_markers": 0, "oldest_age_days": None}
+
+
+def test_storage_summary_rule_line_never_breaks_the_scan(tmp_path, monkeypatch):
+    # The rule line is a courtesy: an unreadable rules state must not fail the summary.
+    cache, _ = _setup(tmp_path, monkeypatch, backup_env=_MANAGED, secrets=_RUNTIME)
+    monkeypatch.setattr(sysop.storage_summary, "scan", _fake_scan([]))
+    def boom(*a, **k):
+        raise RuntimeError("rules state unreadable")
+    monkeypatch.setattr(sysop, "_folder_rule", boom)
+    assert sysop.run("storage-summary", {"job": "movies"}) == 0
+    recs = _system_records(cache)
+    assert recs[1]["outcome"] == "ok"
+    assert "rule:" not in Path(cache, recs[0]["log"]).read_text()

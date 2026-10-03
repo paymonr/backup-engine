@@ -1189,6 +1189,17 @@ def _what_it_did(rec) -> str | None:
             return f"{head} written to {tgt}" if tgt else (f"{head} written" if head else None)
     if rec.kind == "thaw" and rec.objects_requested is not None:
         return f"{rec.objects_requested:,} files requested"
+    if rec.kind == "storage-summary" and rec.stats:
+        st = rec.stats
+        cur = f"{int(st.get('current_objects') or 0):,} current files ({_humanbytes(st.get('current_bytes') or 0)})"
+        n = int(st.get("noncurrent_versions") or 0)
+        if not n:
+            return f"{cur} · no old versions"
+        old = f"{n:,} old versions ({_humanbytes(st.get('noncurrent_bytes') or 0)})"
+        age = st.get("oldest_age_days")
+        if age is not None:
+            old += f", the oldest replaced {lifecycle._days(int(age))} ago"
+        return f"{cur} · {old}"
     return None
 
 

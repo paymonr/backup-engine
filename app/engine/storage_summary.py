@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import lifecycle
-from ..gui import provision
+from ..gui import provision, units
 
 RANK_CAP = 101          # ranks above S3's NewerNoncurrentVersions maximum (100) fold into 101
 PAGE_KEYS = 1000        # versions per ListObjectVersions page (S3's maximum)
@@ -243,3 +244,77 @@ def moved(summary: dict, old_rule, new_rule) -> dict:
         versions += n
         size += b
     return {"versions": versions, "bytes": size}
+
+
+# --- words (owner request 2026-10-03: the Activity log says what the scan found) ----------
+
+DUE_WINDOW_DAYS = 7     # "goes in the next 7 days": versions the folder's rule reaches within a week
+
+
+def stats(summary: dict) -> dict:
+    """The record figures of one summary (sysop writes them on the run's end event, the
+    record page's `What it did` reads them): counts, bytes and how long ago the oldest old
+    version was replaced (None when there are no old versions)."""
+    ages = [int(a) for a, _n, _b in summary.get("noncurrent_by_age_days") or []]
+    return {"current_objects": int(summary.get("current_objects") or 0),
+            "current_bytes": int(summary.get("current_bytes") or 0),
+            "noncurrent_versions": int(summary.get("noncurrent_versions") or 0),
+            "noncurrent_bytes": int(summary.get("noncurrent_bytes") or 0),
+            "delete_markers": int(summary.get("delete_markers") or 0),
+            "oldest_age_days": max(ages) if ages else None}
+
+
+def due_soon(summary: dict, rule, days: int = DUE_WINDOW_DAYS) -> dict:
+    """Old versions the folder's rule removes within `days` from now (including any already
+    at or past due, which S3 removes within about a day): {"versions", "bytes"}. A version is
+    reached once its age is at most `days` short of the rule's NoncurrentDays and it ranks
+    beyond the rule's newest-kept count -- the same reading as impact()."""
+    rd, rn = lifecycle.expiry(rule)
+    versions = size = 0
+    if rd != math.inf:
+        for age, rank, n, b in summary.get("noncurrent_by_age_rank") or []:
+            if age + days >= rd and rank > rn:
+                versions += n
+                size += b
+    return {"versions": versions, "bytes": size}
+
+
+def describe(summary: dict, rule=None, *, rule_known: bool = True, took_s: float | None = None) -> list[str]:
+    """The summary in owner words, one line each: where, what is current, what is old (and
+    how old), delete markers, what the folder's rule does next (omitted when the rules were
+    never checked: `rule_known=False`), and how long the listing took (when `took_s` is given).
+    Pure -- sysop logs these lines; tests pin them."""
+    st = stats(summary)
+    where = summary.get("folder") or "whole bucket"
+    lines = [f"storage summary: {where} in {summary.get('bucket', '')}",
+             f"current files: {st['current_objects']:,} ({units.fmt_bytes(st['current_bytes'])})"]
+    if st["noncurrent_versions"]:
+        old = f"old versions: {st['noncurrent_versions']:,} ({units.fmt_bytes(st['noncurrent_bytes'])})"
+        if st["oldest_age_days"] is not None:
+            old += f" — the oldest was replaced {lifecycle._days(st['oldest_age_days'])} ago"
+        lines.append(old)
+    else:
+        lines.append("old versions: none")
+    markers = f"delete markers: {st['delete_markers']:,}"
+    if st["delete_markers"]:
+        markers += " (files that were removed; their old versions are counted above)"
+    lines.append(markers)
+    if rule_known:
+        rd, rn = lifecycle.expiry(rule)
+        if rd == math.inf:
+            lines.append("rule: old versions are kept for good")
+        else:
+            head = f"rule: S3 removes old versions {lifecycle._days(int(rd))} after they were replaced"
+            if rn:
+                head += f", keeping the newest {rn} per file"
+            due = due_soon(summary, rule)
+            if due["versions"]:
+                verb = "goes" if due["versions"] == 1 else "go"
+                tail = (f"about {due['versions']:,} ({units.fmt_bytes(due['bytes'])}) {verb} "
+                        f"in the next {DUE_WINDOW_DAYS} days")
+            else:
+                tail = f"nothing goes in the next {DUE_WINDOW_DAYS} days"
+            lines.append(f"{head} — {tail}")
+    if took_s is not None:
+        lines.append(f"listed in {took_s:.0f} s")
+    return lines
