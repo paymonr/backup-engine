@@ -24,7 +24,14 @@ passed. Parked (all non-blocking):
   within 15 min of the app's own write is alarmed only after the window; an outside suspend matching a
   confirmed-but-unlanded suspend within 6 h is adopted; an errored-but-landed confirmed put that also carried a
   keeps-more part, then a stale read, sends the confirmed part back to "waiting".
-- Follow-ups: confirm the first storage summary after a nightly run; remove the smoke image/dir from the box.
+- ~~Follow-ups: confirm the first storage summary after a nightly run; remove the smoke image/dir from the box.~~
+  Done 2026-10-03 (summary lands daily since 2026-09-25; leftovers removed).
+- **Dedicated bucket, last job deleted:** `cache/state/lifecycle/<bucket>.applied.json` / `.live.json` / `.lock`
+  stay behind (inert — check-all and the alarm filter enumerate buckets from the jobs). Cleanup on delete when no
+  other job uses the bucket would be tidy. Seen in the 2026-10-03 E2E test.
+- **New dedicated bucket's applied record has `versioning: null`** although the bucket was created with versioning
+  on (E2E 2026-10-03, Plain copy job, `bucket_versioned` set). Check whether the intent should be recorded on
+  first apply so a later tamper read compares against something.
 
 ---
 

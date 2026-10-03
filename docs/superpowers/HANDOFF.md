@@ -3,7 +3,7 @@
 **Purpose:** let a fresh Claude session — on another computer, with none of the previous machine's
 auto-memory or scratch files — pick up exactly where work stopped. Read top to bottom.
 
-_Last updated: 2026-09-24. This repo is PUBLIC: never commit AWS account IDs, bucket names, keys or the
+_Last updated: 2026-10-03. This repo is PUBLIC: never commit AWS account IDs, bucket names, keys or the
 box's address here._
 
 ---
@@ -26,22 +26,32 @@ box's address here._
   - The live box has one job (a Snapshot job over appdata); no Plain copy or dedicated-bucket jobs.
 - **Sizes display** (follow-up, deployed): every size under 1 GB shows in MB (KB/B for tiny) via the shared
   `app/gui/units.py` + Jinja filters `size` / `size_gb`; JS mirrors it (`fmtBytes`/`fmtGb` in app.js).
+- **2026-10-03 follow-ups (on master, NOT yet deployed — owner deploys):**
+  - Storage summary is verbose: the Activity log says current files + size, old versions + size + how old the
+    oldest is, delete markers, what the folder's rule removes in the next 7 days, and the listing time
+    (`storage_summary.describe`/`stats`); the end record carries `stats` and the record page shows a
+    "What it did" line (`RunRecord.stats`, only grows).
+  - `/setup/permissions` has the "How do I create an access key?" help, as `_access_key_help.html` shared with
+    Automated setup (`ak_after` / `ak_verb` wording knobs).
+  - **Dedicated-bucket end-to-end test done on the box (2026-10-03):** a disabled Plain copy job with its own
+    `<base>-e2e-dedicated` bucket was created through the live GUI → bucket created, versioning on,
+    `backup-engine:housekeeping` applied by the S3 rules update, runtime key can list + read versioning but is
+    refused every bucket-config read and DeleteBucket (as designed) → job deleted through the GUI (bucket stays,
+    as designed) → the empty bucket removed via the bucket-admin role. Smoke leftovers (image + dir) removed
+    from the box. Two small observations went to `BACKLOG.md`.
 - **Suite:** `python3 -m pytest -q` → **1973 passed**; `bats tests/bats/` → 143, 0 failures;
   `shellcheck setup.sh scripts/*.sh scripts/lib/*.sh tests/smoke/run.sh tools/unraid/*.sh`;
   `(cd opentofu && tofu fmt -check)`.
 
 ## Next up (owner picks)
 
-1. **After the next nightly backup (05:00 on the box):** confirm the first storage summary for the job's
-   folder appears in Activity ("storage summary", setup group) — the last smoke-checklist item.
-2. **Clean up the smoke-test leftovers on the box** (ask the owner first; state-changing):
-   `docker image rm backup-engine:s3rules-smoke && rm -rf /root/backup-engine-smoke`
-   (keep `/root/s3rules-smoke-out/` — it holds the pre-level-4 snapshot of the live bucket's rules).
-3. **Saved from the permissions-converge feature:** (a) an end-to-end dedicated-bucket test — owner creates a
-   job with its own `<base>-…` bucket, verify read-only, owner deletes the job, delete the empty bucket only
-   after the owner confirms; (b) add the "How do I create an access key?" help to `/setup/permissions` as a
-   shared include with Automated setup.
-4. **Backlog:** `BACKLOG.md` (top section = S3 rules parked items).
+1. **Deploy master** (the 2026-10-03 follow-ups above) and `git push origin master`.
+2. **UI redesign** — the owner finds the app "a bit too complicated looking" (2026-10-03); start with the
+   brainstorming skill and real mockups of the contenders (working agreement: show options, don't pre-decide).
+3. **Backlog:** `BACKLOG.md` (top section = S3 rules parked items).
+
+Done since the last handoff: the first nightly storage summary landed 2026-09-25 and has run daily since;
+smoke-test leftovers cleaned; both permissions-converge leftovers (dedicated-bucket E2E, access-key help).
 
 ## How to resume on a new machine
 
