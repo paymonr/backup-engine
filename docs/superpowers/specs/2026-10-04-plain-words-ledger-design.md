@@ -44,8 +44,7 @@ Mockups the decisions were made on (private artifacts; copies in `docs/superpowe
 Daily screens: Board, Jobs list, Job, Activity, run record, Explore, Restore, Cost. Setup and its
 sub-screens (permissions, S3 rules, storage, provisioning, config, about) keep their technical names.
 
-Changes (everything else keeps its current name, including restore point, old-version-free "undo
-window", the tier phrases with their constants, bucket, S3, versioning, keep rule, streak, needs you):
+Changes (everything else keeps its current name, including restore point, undo window, the tier phrases with their constants, bucket, S3, versioning, keep rule, streak, needs you):
 
 | # | Today | From now on | Where |
 |---|---|---|---|
