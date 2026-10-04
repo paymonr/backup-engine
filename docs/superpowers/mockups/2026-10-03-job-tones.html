@@ -1,0 +1,1554 @@
+<title>Job Page Tones</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* app/gui/static/style.css — backup-engine control panel
+   NIGHT SHIFT design system (spec §6). Dark-committed: no light theme; body
+   paints its own ground so the page holds on a light host. Dense screens (Board,
+   Job, Cost, Activity) and reading screens follow the Night Shift mockup; the
+   create/edit form (`.form`) follows the Ledger Runbook blend. Exact hex/px/weights
+   are pulled from those two mockup <style> blocks; the spec governs structure.
+   Preserved from the old file (§2.3): the dark token set, the eyebrow→h1→lead
+   opening, tabular numerals, one global :focus-visible ring, prefers-reduced-motion,
+   and [hidden]{display:none !important}. */
+
+/* ============================================================
+   6.1 Tokens
+   ============================================================ */
+:root {
+  color-scheme: dark;  /* native form controls, scrollbars, UA chrome render dark */
+
+  /* ground + surfaces (preserved) */
+  --bg:#0E1116; --surface:#161A21; --surface-2:#1E232B;
+  --border:#2A313B; --border-strong:#3A434F;
+  --ink:#E6EAF0; --muted:#AAB2BF; --faint:#8A93A0;
+  --accent:#4C8DFF; --accent-hover:#6AA1FF; --accent-ink:#0B0E13; --accent-bg:#16233B;
+  --ok:#46C08A; --ok-bg:#10241B;
+  --warn:#E0B15A; --warn-bg:#2A2412; --warn-border:#4A3F22;
+  --danger:#F0616B; --danger-bg:#2A1417; --danger-border:#5A2A2E;
+
+  /* additions the mockups make */
+  --ink-strong:#F5F8FC;                         /* verdict line and flashing figures only */
+  --grid:#20262F;                               /* empty strip cells */
+  --ok-dim:#2C6B52; --warn-dim:#6B5326; --danger-dim:#7A3239;  /* strip: every cell 8+ from the right */
+
+  /* provenance marks — deliberately dimmer than the severity colour */
+  --prov-measured:rgba(70,192,138,.55);
+  --prov-assumed:rgba(224,177,90,.55);
+  --prov-invoiced:rgba(76,141,255,.55);
+
+  --radius:6px; --radius-sm:4px;
+  --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --font-mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --sp-1:.25rem; --sp-2:.5rem; --sp-3:.75rem; --sp-4:1rem; --sp-6:1.5rem; --sp-8:2rem;
+  --gutter:clamp(16px,2.6vw,24px);
+  --w-dense:1240px; --w-read:780px; --w-form:960px;
+}
+/* No web fonts are loaded (the GUI must work on a LAN without internet); the mono
+   stack falls back to ui-monospace. No new hues, no gradients, no tints on large
+   areas — the only saturated fills are the strip cells and the primary button. */
+
+*{ box-sizing:border-box; }
+/* The `hidden` attribute must always win — author rules like `.tok{display:...}`
+   otherwise override the UA `[hidden]{display:none}`, which drives all the
+   data-when-* conditional visibility (§2.3). */
+[hidden]{ display:none !important; }
+
+.app{ -webkit-text-size-adjust:100%; }
+.app{
+  margin:0; background:var(--bg); color:var(--ink);
+  font:15px/1.55 var(--font-sans);
+  padding-inline:var(--gutter);
+}
+
+/* ---------- 6.2 type scale ---------- */
+h1{ font-size:1.6rem; font-weight:680; letter-spacing:-.01em; margin:0; text-wrap:balance; }
+h2{ font-size:1.05rem; font-weight:640; letter-spacing:-.005em; margin:0; text-wrap:balance; }
+h3{ font-size:.92rem; font-weight:620; margin:0; }
+p{ margin:0; }
+a{ color:var(--accent); text-decoration:none; }
+a:hover{ text-decoration:underline; }
+ul{ margin:0; padding:0; list-style:none; }
+:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+code{ font-family:var(--font-mono); font-size:.88em; background:var(--surface-2);
+  border:1px solid var(--border); border-radius:2px; padding:.05em .3em; }
+pre{ font-family:var(--font-mono); font-size:.8rem; background:var(--bg);
+  border:1px solid var(--border); border-radius:var(--radius-sm);
+  padding:var(--sp-3); margin:var(--sp-2) 0; overflow-x:auto; color:var(--ink); }
+pre code{ background:none; border:0; padding:0; }
+details{ border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--surface-2); padding:.5rem .8rem; }
+details[open]{ padding-bottom:var(--sp-3); }
+summary{ cursor:pointer; font-weight:550; font-size:.88rem; color:var(--muted); }
+summary:hover{ color:var(--ink); }
+
+/* type utilities */
+.eyebrow{ font-size:.7rem; font-weight:640; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--faint); margin:0 0 var(--sp-3); }           /* reading-page opener (§2.3 preserve) */
+.h{ font-size:20px; line-height:1.3; font-weight:620; letter-spacing:-.005em; margin:0; text-wrap:balance; }
+.subh{ font-size:15px; line-height:1.4; font-weight:620; color:var(--ink); margin:0;
+  font-family:var(--font-sans); }
+.lbl{ font:11px/1.4 var(--font-mono); text-transform:uppercase; letter-spacing:.12em;
+  color:var(--faint); font-variant-numeric:tabular-nums; margin:0; }
+.lead{ color:var(--muted); max-width:66ch; }
+.hint{ color:var(--faint); font-size:.84rem; }
+.sm{ font-size:13px; line-height:1.5; }
+.muted{ color:var(--muted); }
+.faint{ color:var(--faint); }
+.mono{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+.measure{ max-width:64ch; }
+.stack{ display:grid; gap:var(--sp-3); }
+.stack-sm{ display:grid; gap:6px; }
+.grid2{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:var(--sp-4) var(--sp-6); }
+.grid4{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:var(--sp-4) var(--sp-6); }
+
+/* ============================================================
+   6.3 containers
+   ============================================================ */
+.dense{ max-width:var(--w-dense); margin:0 auto; }
+.read{ max-width:var(--w-read); margin:0 auto; }
+.form{ max-width:var(--w-form); margin:0 auto; padding-block:var(--sp-6) 72px; }
+
+/* ============================================================
+   Shared shell (5.15)
+   ============================================================ */
+.topbar{ position:sticky; top:0; z-index:30; background:var(--surface);
+  border-bottom:1px solid var(--border);
+  margin-inline:calc(var(--gutter) * -1); padding-inline:var(--gutter); }
+.topbar-in{ max-width:var(--w-dense); margin:0 auto; display:flex; align-items:center;
+  gap:var(--sp-4); min-height:56px; flex-wrap:wrap; padding-block:8px; }
+.brand{ display:inline-flex; align-items:center; gap:.5rem; font-weight:640; color:var(--ink);
+  letter-spacing:-.01em; }
+.brand b{ color:var(--accent); font-weight:640; }
+.switcher{ display:flex; gap:2px; background:var(--bg); border:1px solid var(--border);
+  border-radius:var(--radius-sm); padding:2px; }
+.switcher a, .switcher button{ font:inherit; font-size:.86rem; font-weight:550; color:var(--muted);
+  background:transparent; border:0; border-radius:2px; padding:.34rem .7rem; cursor:pointer;
+  white-space:nowrap; text-decoration:none; }
+.switcher a:hover, .switcher button:hover{ color:var(--ink); background:var(--surface-2); text-decoration:none; }
+.switcher a.active, .switcher a[aria-current="page"], .switcher button[aria-current="page"]{
+  color:var(--ink); background:var(--surface-2); box-shadow:inset 0 -2px 0 var(--accent); }
+.topbar-right{ margin-left:auto; display:flex; align-items:center; gap:var(--sp-3); flex-wrap:wrap; }
+.chip{ font-family:var(--font-mono); font-size:.7rem; font-weight:500; letter-spacing:.02em;
+  color:var(--faint); border:1px solid var(--border); border-radius:2px; padding:.2rem .4rem;
+  white-space:nowrap; }
+.chip-live{ color:var(--muted); }
+.clock{ font-family:var(--font-mono); font-size:.74rem; color:var(--faint);
+  font-variant-numeric:tabular-nums; white-space:nowrap; }
+.notices{ display:grid; gap:var(--sp-3); margin:var(--sp-4) 0 0; }
+.sitefoot{ max-width:var(--w-dense); margin:0 auto; border-top:1px solid var(--border);
+  padding-block:var(--sp-6) var(--sp-8); }
+
+/* work bar — 2px indeterminate strip under the topbar (6.4) */
+.workbar, #workbar{ position:sticky; top:56px; z-index:29; height:2px; background:var(--surface-2);
+  overflow:hidden; margin-inline:calc(var(--gutter) * -1); }
+.workbar::after, #workbar::after{ content:""; position:absolute; inset:0; width:38%;
+  background:var(--accent); animation:slide 1.2s linear infinite; }
+@keyframes slide{ from{ transform:translateX(-100%); } to{ transform:translateX(320%); } }
+
+/* Live job progress (5.5): a determinate bar wherever a running job is shown
+   (Activity, the home board, the job page). Falls back to the indeterminate
+   `slide` animation when the engine reports no percent. */
+.jobprog{ margin-top:6px; }
+.jobprog-top{ margin:12px 0 4px; }
+.jobprog-bar{ position:relative; height:6px; border-radius:999px; background:var(--surface-2); overflow:hidden; }
+.jobprog-fill{ position:absolute; inset:0 auto 0 0; width:0; background:var(--accent); border-radius:999px; transition:width .5s ease; }
+.jobprog-bar.indet .jobprog-fill{ width:38%; transition:none; animation:slide 1.2s linear infinite; }
+.jobprog-text{ display:block; margin-top:3px; color:var(--faint); }
+
+/* ============================================================
+   Bands + section labels (5.1, 5.8)
+   ============================================================ */
+.screen{ padding-block:var(--sp-8) 4rem; }
+.band{ border-top:1px solid var(--border); margin-top:var(--sp-8); padding-top:var(--sp-8); }
+.band:first-child{ border-top:0; margin-top:0; padding-top:0; }
+.slabel{ font-size:.72rem; font-weight:650; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--faint); margin:0 0 var(--sp-3); }
+.slabel .cnt, .cnt{ color:var(--muted); }
+.band-head{ display:flex; align-items:baseline; justify-content:space-between; gap:var(--sp-4); flex-wrap:wrap; }
+.band-head .more, .more{ font-size:.84rem; }
+/* form-screen sections */
+.sec{ margin-top:var(--sp-8); border-top:1px solid var(--border); padding-top:var(--sp-6); }
+.sechead{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between;
+  gap:8px 16px; margin-bottom:var(--sp-3); }
+.sechead .acts{ display:flex; gap:16px; font-size:13px; }
+
+/* ============================================================
+   4.6 figures + provenance
+   ============================================================ */
+.fig{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; letter-spacing:-.01em; color:var(--ink); }
+.fig.big, .big{ font-size:1.35rem; font-weight:500; }
+.p-measured{ border-bottom:1px solid var(--prov-measured); padding-bottom:1px; }
+.p-assumed{ border-bottom:1px dotted var(--prov-assumed); padding-bottom:1px; color:var(--muted); }
+.p-invoiced{ border-bottom:3px double var(--prov-invoiced); padding-bottom:0; }
+.p-projected{ border-bottom:0; }                 /* projected = no line at all (4.6) */
+.stamp{ font-family:var(--font-mono); font-size:.72rem; color:var(--faint); }
+.price-stamp{ display:inline-flex; align-items:center; gap:.35rem; font-family:var(--font-mono);
+  font-size:.72rem; color:var(--muted); border:1px solid var(--border); border-bottom-style:dotted;
+  border-radius:2px; padding:.15rem .4rem; }
+.price-stamp.is-live{ border-bottom-style:solid; border-color:var(--prov-measured); color:var(--ink); }
+.legend{ display:flex; gap:var(--sp-4); flex-wrap:wrap; font-family:var(--font-mono); font-size:.72rem;
+  color:var(--faint); margin-top:var(--sp-3); }
+.legend i{ font-style:normal; color:var(--muted); }
+.key-cell{ display:inline-block; width:9px; height:12px; vertical-align:-1px; margin-right:.3rem; }
+.delta{ font-family:var(--font-mono); font-size:.82rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+.delta b{ color:var(--ink); font-weight:500; }
+/* form-screen figure marks (`.n`) — provenance by texture on the figure itself */
+.n{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; color:var(--ink); }
+.n.assumed{ color:var(--muted); text-decoration:underline dotted; text-underline-offset:3px; }
+.n.obs{ border:1px solid var(--border-strong); background:var(--surface-2); padding:1px 6px; }
+/* every machine name is a dotted-underline link to the plain-words glossary */
+.term{ font-family:var(--font-mono); font-size:.92em; color:var(--faint);
+  text-decoration:underline dotted; text-underline-offset:3px; text-decoration-color:var(--border-strong);
+  font-variant-numeric:tabular-nums; cursor:help; }
+
+/* status figures (5.1 band 4, 5.2 strip) */
+.statusstrip{ display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:var(--sp-4) var(--sp-6); }
+.sfig{ display:grid; gap:2px; }
+.sfig .k{ font-size:.68rem; font-weight:650; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); }
+.sfig .v{ font-family:var(--font-mono); font-size:1.15rem; color:var(--ink); font-variant-numeric:tabular-nums; }
+.sfig .s{ font-family:var(--font-mono); font-size:.76rem; color:var(--faint); }
+
+/* ============================================================
+   4.7 state tokens
+   ============================================================ */
+.tok{ display:inline-flex; align-items:center; gap:.3rem; font-family:var(--font-mono); font-size:.68rem;
+  font-weight:600; letter-spacing:.06em; padding:.16rem .38rem; border-radius:0; border:1px solid;
+  white-space:nowrap; }
+.tok::before{ content:""; width:6px; height:6px; background:currentColor; }
+.tok-ok{ color:var(--ok); border-color:rgba(70,192,138,.35); background:var(--ok-bg); }
+.tok-failed{ color:var(--danger); border-color:var(--danger-border); background:var(--danger-bg); }
+.tok-running{ color:var(--accent); border-color:rgba(76,141,255,.4); background:var(--accent-bg); }
+.tok-running::before{ animation:pulse 1.6s ease-in-out infinite; }
+.tok-paused{ color:var(--muted); border-color:var(--border-strong); background:var(--surface-2); }
+.tok-overdue, .tok-warming{ color:var(--warn); border-color:var(--warn-border); background:var(--warn-bg); }
+.tok-notrun{ color:var(--faint); border-color:var(--border); background:var(--surface-2); }
+@keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.25; } }
+
+/* ============================================================
+   5.1 band 1 — verdict
+   ============================================================ */
+.verdict{ border-left:3px solid var(--danger); background:var(--surface); padding:var(--sp-4) var(--sp-6);
+  display:flex; gap:var(--sp-6); align-items:center; justify-content:space-between; flex-wrap:wrap; }
+.verdict h2{ color:var(--ink-strong); max-width:62ch; }
+.verdict .sub{ font-family:var(--font-mono); font-size:.82rem; color:var(--muted); margin-top:.4rem;
+  font-variant-numeric:tabular-nums; }
+
+/* ============================================================
+   4.5 signals — six levels; 5.1 band 2 needs-rows
+   ============================================================ */
+.sig{ display:grid; grid-template-columns:16px minmax(0,1fr); gap:var(--sp-3); align-items:start;
+  padding:var(--sp-3) var(--sp-4); border-left:2px solid transparent; }
+.sig .glyph{ margin-top:2px; }
+.sig svg{ flex:none; }
+.sig .label{ font-family:var(--font-mono); font-size:.68rem; font-weight:600; letter-spacing:.1em;
+  display:block; margin-bottom:.25rem; }
+.sig .body{ max-width:74ch; }
+.sig p + p{ margin-top:.35rem; }
+.sig-note{ border-left:0; padding-left:0; color:var(--faint); font-size:.88rem; grid-template-columns:minmax(0,1fr); }
+.sig-note .body{ color:var(--faint); }
+.sig-advice{ border-left-color:var(--accent); background:var(--surface); }
+.sig-advice .label{ color:var(--accent); }
+.sig-warning{ border-left-color:var(--warn); background:var(--warn-bg); }
+.sig-warning .label{ color:var(--warn); }
+.sig-blocker{ border-left:3px solid var(--danger); background:var(--danger-bg); }
+.sig-blocker .label{ color:var(--danger); }
+.sig-success{ border-left-color:var(--ok); background:var(--ok-bg); }
+.sig-success .label{ color:var(--ok); }
+.sig-failure{ border-left:3px solid var(--danger); background:var(--danger-bg); }
+.sig-failure .label{ color:var(--danger); }
+
+.needs{ display:grid; gap:var(--sp-3); }
+.needs-row{ display:grid; grid-template-columns:minmax(0,1fr) 170px; gap:var(--sp-3); align-items:center;
+  border:1px solid var(--border); border-left:0; }
+.needs-row.is-blocker{ border-color:var(--danger-border); }
+.needs-row.is-warning{ border-color:var(--warn-border); }
+.needs-row.is-advice{ border-color:var(--border); }
+.needs-row > .act{ padding-right:var(--sp-4); display:flex; justify-content:flex-end; }
+.errline{ font-family:var(--font-mono); font-size:.82rem; color:var(--ink); background:var(--bg);
+  border:1px solid var(--danger-border); padding:.4rem .5rem; display:block; overflow-x:auto;
+  white-space:pre; margin:.45rem 0; }
+.needsline{ display:grid; gap:.3rem; margin:var(--sp-4) 0; }
+.needsline div{ display:grid; grid-template-columns:18px minmax(0,1fr); gap:.5rem; font-size:.9rem; align-items:baseline; }
+.needsline .ok{ color:var(--ok); }
+.needsline .warn{ color:var(--warn); }
+.needsline .danger{ color:var(--danger); }
+
+/* ============================================================
+   6.3 buttons + controls
+   ============================================================ */
+.btn{ display:inline-flex; align-items:center; justify-content:center; gap:.4rem; font:inherit;
+  font-size:.86rem; font-weight:560; padding:.45rem .8rem; border-radius:var(--radius-sm);
+  border:1px solid var(--border-strong); background:var(--surface); color:var(--ink); cursor:pointer;
+  white-space:nowrap; text-align:center; }
+.btn:hover{ background:var(--surface-2); text-decoration:none; }
+.btn-primary{ background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.btn-primary:hover{ background:var(--accent-hover); }
+.btn-ghost{ background:transparent; border-color:transparent; color:var(--muted); }
+.btn-ghost:hover{ color:var(--ink); background:var(--surface-2); }
+.btn-danger{ background:transparent; color:var(--danger); border-color:var(--border); }
+.btn-danger:hover{ background:var(--danger-bg); }
+.btn-sm{ font-size:.78rem; padding:.3rem .55rem; }
+.btn-xs{ font-size:11px; font-family:var(--font-mono); text-transform:uppercase; letter-spacing:.12em;
+  padding:.2rem .5rem; }
+.btn[disabled]{ opacity:.45; cursor:not-allowed; }
+.btn[disabled]:hover{ background:var(--surface); }
+/* ONE inline link-style class across every screen (skeleton + create/edit). The
+   Ledger mockup called its create-screen variant `.linkish`; the spec names it
+   `.linklike` everywhere, so that is the single class and weight (Night Shift
+   mockup 176). */
+.linklike{ font:inherit; background:none; border:0; padding:0; color:var(--accent);
+  cursor:pointer; font-weight:560; }
+.linklike:hover{ text-decoration:underline; }
+
+/* form-screen buttons follow the Ledger blend (6.3; ledger mockup 136–150):
+   a visible border, radius 0, transparent ground, so ghost fixes read as buttons. */
+.form .btn{ border-radius:0; background:transparent; font-size:14px; padding:.44rem .85rem;
+  border:1px solid var(--border-strong); }
+.form .btn:hover{ background:var(--surface-2); }
+.form .btn-ghost{ border-color:var(--border); color:var(--ink); }
+.form .btn-primary{ background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.form .btn-primary:hover{ background:var(--accent-hover); }
+.form .btn-danger{ background:transparent; color:var(--danger); border-color:var(--border); }
+.form .btn[disabled]:hover{ background:transparent; }
+
+/* ============================================================
+   6.5 tables (sharp: radius 0 where it is data)
+   ============================================================ */
+.scroll, .tscroll, .table-scroll, .ledger-wrap{ overflow-x:auto; }
+.ledger-wrap{ padding-bottom:4px; }
+table{ width:100%; border-collapse:collapse; }
+thead th{ font-size:.72rem; font-weight:650; letter-spacing:.1em; text-transform:uppercase; color:var(--faint);
+  text-align:left; padding:0 var(--sp-3) var(--sp-2) 0; border-bottom:1px solid var(--border); white-space:nowrap; }
+tbody td{ padding:var(--sp-3) var(--sp-3) var(--sp-3) 0; border-bottom:1px solid var(--border); vertical-align:top; }
+.num{ text-align:right; font-family:var(--font-mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+thead th.num{ text-align:right; }
+.cell2{ display:grid; gap:1px; }
+.cell2 .v{ font-family:var(--font-mono); font-size:.92rem; color:var(--ink); font-variant-numeric:tabular-nums; }
+.cell2 .s{ font-size:.78rem; color:var(--faint); font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+.jobname{ font-weight:560; color:var(--ink); font-size:.98rem; }
+.jobpath{ font-family:var(--font-mono); font-size:.76rem; color:var(--faint); word-break:break-all; }
+tr.jobrow:hover td{ background:var(--surface); }
+.col-strip{ width:168px; }
+.compact-only{ display:none; }
+
+/* definition grid — job page "How it is set up" (5.2) */
+.defgrid{ display:grid; grid-template-columns:200px minmax(0,1fr); gap:.1rem var(--sp-4); }
+.defgrid dt{ font-size:.84rem; color:var(--faint); padding:.45rem 0; border-top:1px solid var(--border); }
+.defgrid dd{ margin:0; padding:.45rem 0; border-top:1px solid var(--border); }
+.defgrid dt:first-of-type, .defgrid dd:first-of-type{ border-top:0; }
+
+/* compact definition list — the create/edit form's locked Kind / Job-name /
+   "Where it goes" rows (5.8 §5, Ledger mockup 195–198) */
+.def{ display:grid; grid-template-columns:11ch minmax(0,1fr); gap:var(--sp-1) var(--sp-4);
+  align-items:baseline; }
+.def > dt{ font-size:13px; color:var(--faint); }
+.def > dd{ margin:0; }
+.def .subline{ font-size:13px; color:var(--faint); margin-top:2px; }
+
+/* restore-point rows (5.2, 5.4) */
+.rphead{ display:grid; grid-template-columns:22px 130px 92px minmax(0,1fr); gap:var(--sp-3);
+  padding:0 var(--sp-3) var(--sp-2); border-bottom:1px solid var(--border);
+  font-size:.68rem; font-weight:650; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); }
+.rp{ display:grid; grid-template-columns:22px 130px 92px minmax(0,1fr); gap:var(--sp-3); align-items:center;
+  padding:.5rem var(--sp-3); border-bottom:1px solid var(--border); cursor:pointer; margin:0; font-weight:400; }
+.rp:hover{ background:var(--surface); }
+.rp input{ margin:0; width:auto; }
+.rp .d{ font-family:var(--font-mono); font-size:.88rem; color:var(--ink); font-variant-numeric:tabular-nums; }
+.rp .id{ font-family:var(--font-mono); font-size:.82rem; color:var(--muted); }
+.rp .m{ font-family:var(--font-mono); font-size:.78rem; color:var(--faint); }
+
+/* form-screen storage-class table (5.8 §3.2) */
+table.classes{ border-collapse:collapse; width:100%; min-width:640px; font-size:14px; }
+table.classes th{ font:11px/1.4 var(--font-mono); text-transform:uppercase; letter-spacing:.12em;
+  color:var(--faint); text-align:right; padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:bottom; }
+table.classes th:first-child{ text-align:left; }
+table.classes td{ padding:10px 12px; border-bottom:1px solid var(--border); text-align:right;
+  font-family:var(--font-mono); font-variant-numeric:tabular-nums; vertical-align:top; }
+table.classes td:first-child{ text-align:left; font-family:var(--font-sans); }
+table.classes tr:last-child td{ border-bottom:0; }
+table.classes tr.blocked td{ color:var(--faint); }
+table.classes tr.blocked td.struck{ text-decoration:line-through; }
+td .reason{ display:block; font-family:var(--font-sans); font-size:13px; color:var(--danger);
+  text-align:left; margin-top:2px; }
+.cls{ display:flex; gap:8px; align-items:baseline; }
+.cls input{ accent-color:var(--accent); margin-top:2px; }
+
+/* cost-component lines (5.6, ledger job cost) */
+.comp{ display:grid; grid-template-columns:minmax(0,1fr) auto 9ch; gap:4px 16px; padding-block:8px;
+  border-bottom:1px solid var(--border); align-items:baseline; }
+.comp .qty{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; font-size:13px; color:var(--faint); }
+.comp .amt{ text-align:right; font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+
+/* ============================================================
+   6.5 run strip / ledger — the one bold element
+   ============================================================ */
+.strip{ display:flex; gap:2px; align-items:flex-end; }
+.cellx{ width:9px; height:18px; background:var(--grid); border-radius:0; display:block; text-decoration:none; }
+.ledger .cellx{ width:10px; height:20px; }
+.cellx.ok{ background:var(--ok); }
+.cellx.ok.dim{ background:var(--ok-dim); }
+.cellx.fail{ background:var(--danger); }
+.cellx.fail.dim{ background:var(--danger-dim); }
+.cellx.slow{ background:var(--warn); }
+.cellx.slow.dim{ background:var(--warn-dim); }
+.cellx.running{ background:var(--accent); animation:pulse 1.6s ease-in-out infinite; }
+a.cellx:hover{ text-decoration:none; }
+.bars{ display:flex; gap:2px; align-items:flex-end; height:20px; margin-top:3px; }
+.bar{ width:10px; background:var(--border-strong); display:block; }
+.bar.tall{ background:var(--muted); }
+.ledger{ min-width:358px; }
+.ledger-axis{ display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:.72rem;
+  color:var(--faint); margin-top:var(--sp-2); max-width:358px; }
+
+/* ============================================================
+   5.2 job page
+   ============================================================ */
+.jobgrid{ display:grid; grid-template-columns:minmax(0,1fr) 304px; gap:var(--sp-8); align-items:start; }
+.rail, .rail-inline{ border:1px solid var(--border); border-radius:var(--radius); background:var(--surface);
+  padding:var(--sp-4); }
+.rail{ position:sticky; top:76px; }
+.rail-inline{ display:none; margin-top:var(--sp-4); }           /* R7: shown ≤1000px, sticky one hidden */
+.rail h3, .rail-inline h3{ margin-bottom:var(--sp-3); }
+.rrow{ display:grid; grid-template-columns:14px minmax(0,1fr); gap:.5rem; padding:.55rem 0;
+  border-top:1px solid var(--border); }
+.rrow:first-of-type{ border-top:0; }
+.rrow .k{ font-size:.84rem; color:var(--muted); }
+.rrow .v{ font-family:var(--font-mono); font-size:.84rem; color:var(--ink); }
+.rrow .t{ font-family:var(--font-mono); font-size:.7rem; color:var(--faint); }
+.dot{ width:8px; height:8px; margin-top:6px; border-radius:0; background:var(--faint); }
+.dot-ok{ background:var(--ok); }
+.dot-warn{ background:var(--warn); }
+.dot-danger{ background:var(--danger); }
+.jobhead{ display:flex; gap:var(--sp-6); justify-content:space-between; flex-wrap:wrap; align-items:flex-start; }
+.jobhead .who{ display:grid; gap:.35rem; }
+.titleline{ display:flex; align-items:center; gap:var(--sp-3); flex-wrap:wrap; }
+.typeline{ color:var(--muted); font-size:.95rem; }
+.pathline{ font-family:var(--font-mono); font-size:.8rem; color:var(--faint); word-break:break-all; }
+.actions{ display:flex; gap:var(--sp-2); flex-wrap:wrap; align-items:flex-start; }
+
+/* ============================================================
+   Forms — inputs, guard, confirm (5.2, 5.4, 5.8)
+   ============================================================ */
+label.fld{ display:block; font-weight:520; color:var(--ink); margin:0 0 var(--sp-2); font-size:.9rem; }
+input, select, textarea{ font:inherit; width:100%; max-width:26rem; padding:.45rem .6rem;
+  background:var(--bg); color:var(--ink); border:1px solid var(--border-strong); border-radius:var(--radius-sm);
+  font-family:var(--font-mono); font-size:.88rem; }
+input[type=checkbox], input[type=radio]{ width:auto; max-width:none; padding:0; accent-color:var(--accent); }
+input[type=number]{ -moz-appearance:textfield; appearance:textfield; }
+input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button{ -webkit-appearance:none; margin:0; }
+input:focus, select:focus, textarea:focus{ outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
+/* the form screen grounds inputs on --surface-2 with square corners (6.3) */
+.form input, .form select, .form textarea{ background:var(--surface-2); border-radius:0; font-size:14px; }
+.form input[type=checkbox], .form input[type=radio]{ background:transparent; }
+.radio{ display:grid; grid-template-columns:auto minmax(0,1fr); gap:4px 10px; align-items:start;
+  padding-block:6px; cursor:pointer; }
+.radio input{ margin-top:4px; width:auto; max-width:none; }
+.radio .why{ grid-column:2; font-size:13px; color:var(--faint); }
+.inert{ color:var(--muted); }
+
+.confirm{ display:flex; gap:var(--sp-3); align-items:flex-end; flex-wrap:wrap; margin-top:var(--sp-3); }
+.confirm label.fld{ margin-bottom:.35rem; }
+.guard{ border:1px solid var(--danger-border); background:var(--danger-bg); padding:var(--sp-4);
+  border-radius:var(--radius-sm); }
+.guard input[type=text]{ max-width:16rem; }
+
+/* ============================================================
+   6.5 blocker / warning blocks on the form screen (5.8 §3.3, §3.7)
+   ============================================================ */
+.sev{ display:grid; gap:6px; padding:12px 14px; border-left:2px solid var(--faint); margin-block:12px; }
+.sev.rec{ border-left-color:var(--accent); background:none; color:var(--ink); }
+.sev.heads{ border-left-color:var(--warn); background:var(--warn-bg); }
+.sev.wont{ border-left-width:3px; border-left-color:var(--danger); background:var(--danger-bg); }
+.sev.failed{ border-left-width:3px; border-left-color:var(--danger); background:var(--danger-bg); }
+.sev.done{ border-left-color:var(--ok); background:var(--ok-bg); }
+.sev.note{ border-left:0; padding-inline:0; background:none; font-size:13px; color:var(--faint); }
+.sev-tab{ display:flex; align-items:center; gap:6px; font:11px/1.4 var(--font-mono);
+  text-transform:uppercase; letter-spacing:.12em; }
+.sev.rec .sev-tab{ color:var(--accent); }
+.sev.heads .sev-tab{ color:var(--warn); }
+.sev.wont .sev-tab, .sev.failed .sev-tab{ color:var(--danger); }
+.sev.done .sev-tab{ color:var(--ok); }
+.sev .acts, .acts{ display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; }
+.sev .acts{ margin-top:2px; }
+
+/* segmented control + WHOSE matrix (5.8 §3.6, 5.4 restore branch) */
+.seg{ display:flex; flex-wrap:wrap; gap:0; border-bottom:1px solid var(--border); }
+.seg button{ font:inherit; font-size:13px; background:none; border:0; border-bottom:2px solid transparent;
+  color:var(--faint); padding:8px 14px; cursor:pointer; margin-bottom:-1px; }
+.seg button:hover{ color:var(--ink); }
+.seg button[aria-selected="true"]{ color:var(--ink); border-bottom-color:var(--accent); font-weight:560; }
+.whose{ display:grid; grid-template-columns:minmax(0,1fr) 12ch; gap:2px 16px; margin-top:12px; }
+.whose .colhead{ grid-column:2; text-align:right; font:11px/1.4 var(--font-mono); text-transform:uppercase;
+  letter-spacing:.12em; color:var(--faint); padding-bottom:6px; border-bottom:1px solid var(--border); margin-bottom:6px; }
+.whose .k{ padding-block:6px; }
+.whose .v{ padding-block:6px; text-align:right; font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+.whose .k.total{ border-top:1px solid var(--border); padding-top:6px; }
+.whose .v.total{ border-top:1px solid var(--border); }
+
+/* sticky form footer — fixed height, cannot grow (5.8 §6) */
+.formfoot{ position:sticky; bottom:0; z-index:20; height:44px; display:flex; align-items:center; gap:12px;
+  padding-inline:14px; background:var(--surface); border-top:1px solid var(--border); margin-top:24px; }
+.formfoot .figs{ margin-left:auto; font-size:13px; color:var(--faint); white-space:nowrap; }
+.formfoot .figs .n{ color:var(--ink); }
+
+/* keep-rule delta chips (5.8 §3.5) + a section dimmed until a folder is picked
+   (5.8 §1: color faint, controls inert, NEVER hidden). */
+.k-delta{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; color:var(--ink); }
+/* diff-aware `was:` on the edit screen (5.9): a changed control gets a 2px accent
+   left rule and the old value in its own idiom. */
+.was-row{ border-left:2px solid var(--accent); padding-left:8px; font-size:13px; color:var(--muted);
+  margin:6px 0 0; }
+.was-row span{ font-family:var(--font-mono); }
+.sec.dimmed{ color:var(--faint); }
+.sec.dimmed .radio, .sec.dimmed label, .sec.dimmed input, .sec.dimmed select,
+.sec.dimmed button, .sec.dimmed .seg, .sec.dimmed table.classes{ pointer-events:none; }
+.sec.dimmed .n{ color:var(--faint); }
+.pickfirst{ font-size:13px; color:var(--faint); margin:6px 0 0; }
+
+/* ============================================================
+   6.5 cards, tree, shell block, step, levers
+   ============================================================ */
+.card{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
+.tree{ padding:10px 12px; max-height:320px; overflow:auto; display:grid; gap:2px; }
+.tree label{ display:flex; gap:8px; align-items:center; padding:4px 6px; font-size:14px; cursor:pointer; margin:0; }
+.tree label:hover{ background:var(--surface-2); }
+.tree input{ width:auto; max-width:none; accent-color:var(--accent); }
+.tree li{ display:flex; flex-wrap:wrap; align-items:center; }
+.tree li > ul.tree{ flex-basis:100%; }
+.tree .expand{ appearance:none; background:transparent; border:0; cursor:pointer; width:1.1rem;
+  color:var(--muted); font-family:var(--font-mono); font-size:inherit; line-height:1; padding:0; }
+.tree .expand:hover{ color:var(--ink); }
+.shell{ background:var(--surface-2); border:1px solid var(--border-strong); border-radius:var(--radius);
+  padding:12px 14px; display:grid; gap:8px; }
+.shell .line{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; }
+.shell code{ font-family:var(--font-mono); font-size:13px; color:var(--ink); overflow-x:auto; min-width:0;
+  white-space:pre; display:block; padding-block:2px; background:none; border:0; }
+.step{ border:1px solid var(--border); border-radius:var(--radius); background:var(--surface);
+  padding:var(--sp-4) var(--sp-6); }
+.steps{ display:grid; gap:var(--sp-4); }
+.levers{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:var(--sp-4); }
+
+/* command block + log viewer (5.3, 6.5) */
+.cmd{ position:relative; }
+.cmd .copy{ position:absolute; top:8px; right:8px; }
+pre#runlog{ max-height:60vh; overflow:auto; }
+.progress{ font-family:var(--font-mono); font-size:.82rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+
+/* ============================================================
+   5.6 cost workbench
+   ============================================================ */
+.projgrid{ display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:var(--sp-8); align-items:start; }
+.scrub{ font-family:var(--font-mono); font-size:.82rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+#cost-timeline .grid{ stroke:var(--border); stroke-width:1; }
+#cost-timeline .axis{ fill:var(--muted); font-size:11px; }
+
+/* the lever panel (5.6 band 3): each lever is a bounded fieldset; a lever whose
+   value differs from what is saved on the job gets a 2px accent left rule and a
+   `was:` readout (Task 7a left .levers/.scrub's changed state unstyled). */
+.levers-head{ margin-bottom:var(--sp-3); }
+.lever{ display:grid; gap:.35rem; border:0; border-left:2px solid transparent;
+  padding:.35rem 0 .6rem .75rem; margin:0 0 var(--sp-3); }
+.lever > legend{ font-size:.68rem; text-transform:uppercase; letter-spacing:.08em;
+  color:var(--faint); padding:0; }
+.lever.is-changed{ border-left-color:var(--accent); }
+.lever.is-changed > legend{ color:var(--accent); }
+.lever .was{ font-family:var(--font-mono); font-size:.72rem; color:var(--muted); }
+.lever .radio, .lever .check{ display:flex; align-items:center; gap:.4rem; font-size:.86rem; }
+.lever-acts{ display:flex; gap:var(--sp-3); align-items:center; margin-top:.35rem; }
+/* a figure whose lever just changed gets the same 400 ms flash as a polled figure */
+.scrub.is-changed, .levers .is-changed{ animation:flash .4s ease-out; }
+.band-head-actions{ display:flex; gap:var(--sp-2); }
+
+/* ============================================================
+   6.4 motion — change flash
+   ============================================================ */
+.flash{ animation:flash .4s ease-out; }
+.form .flash{ animation-duration:.2s; }
+@keyframes flash{ from{ background:var(--accent-bg); color:var(--ink-strong); } to{ background:transparent; } }
+
+/* ============================================================
+   6.6 responsive
+   ============================================================ */
+@media (max-width:1000px){
+  .jobgrid{ grid-template-columns:minmax(0,1fr); }
+  .rail{ display:none; }
+  .rail-inline{ display:block; }
+}
+@media (max-width:900px){
+  .col-strip, .col-took{ display:none; }
+  .compact-only{ display:block; }
+  .projgrid{ grid-template-columns:minmax(0,1fr); }
+}
+@media (max-width:640px){
+  .formfoot{ height:auto; flex-wrap:wrap; padding-block:8px; }
+  .formfoot .figs{ margin-left:0; flex-basis:100%; white-space:normal; }
+  .whose{ grid-template-columns:minmax(0,1fr) 10ch; }
+  .def{ grid-template-columns:minmax(0,1fr); }            /* locked rows stack (Ledger 261) */
+}
+@media (max-width:620px){
+  .needs-row{ grid-template-columns:minmax(0,1fr); }
+  .needs-row > .act{ justify-content:flex-start; padding:0 var(--sp-4) var(--sp-3) var(--sp-4); }
+  .rp, .rphead{ grid-template-columns:22px minmax(0,1fr); }
+  .rp .id, .rp .m, .rphead span:nth-child(3), .rphead span:nth-child(4){ display:none; }
+  .defgrid{ grid-template-columns:minmax(0,1fr); }
+  .defgrid dd{ border-top:0; padding-top:0; }
+  .verdict{ padding:var(--sp-4); }
+  .step{ padding:var(--sp-4); }
+}
+@media (max-width:560px){
+  .topbar-in{ gap:var(--sp-2); }
+  .switcher{ order:2; flex-basis:100%; }   /* nav drops to its own row */
+}
+
+/* ============================================================
+   6.4 §5 prefers-reduced-motion (§2.3 preserve)
+   ============================================================ */
+@media (prefers-reduced-motion:reduce){
+  /* Every animation duration -> .001ms, delays zeroed, pulses off, curves snap
+     (§6.4 §5 / §2.3 preserve) -- pseudo-elements included so the running pulse
+     and the work-bar sweep are covered too. */
+  *, *::before, *::after{
+    animation-duration:.001ms !important; animation-iteration-count:1 !important;
+    animation-delay:0ms !important; transition-duration:.001ms !important;
+    transition-delay:0ms !important; scroll-behavior:auto !important; }
+  .workbar::after, #workbar::after{ width:100%; animation:none;
+    background:repeating-linear-gradient(90deg, var(--accent) 0 8px, var(--surface-2) 8px 16px); }
+  .flash{ animation:none; box-shadow:inset 2px 0 0 var(--accent); }
+  .tok-running::before, .cellx.running{ animation:none; }
+}
+
+/* ---- comparison chrome (dark by choice: the app is dark-only) ---- */
+:root{ color-scheme:dark; --page-bg:#0A0D12; --page-ink:#E6EAF0; --page-muted:#AAB2BF; --page-faint:#8A93A0; --page-border:#2A313B; --page-accent:#4C8DFF; --page-surface:#161A21; }
+body{ margin:0; background:var(--page-bg); color:var(--page-ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+.cmp{ position:sticky; top:env(safe-area-inset-top,0px); z-index:20; background:var(--page-bg); border-bottom:1px solid var(--page-border); padding:0 16px; }
+.cmp-in{ max-width:1180px; margin:0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:.5rem 1rem; padding-block:.6rem; }
+.cmp h1{ font-size:.8rem; font-weight:500; letter-spacing:.08em; text-transform:uppercase; color:var(--page-faint); margin:0 .5rem 0 0; }
+.tabs{ display:flex; gap:.35rem; flex-wrap:wrap; }
+.tab{ appearance:none; border:1px solid var(--page-border); background:var(--page-surface); color:var(--page-muted); border-radius:6px; padding:.4rem .7rem; font:inherit; font-size:.84rem; cursor:pointer; display:inline-flex; gap:.5rem; align-items:baseline; }
+.tab .n{ font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.72rem; color:var(--page-faint); font-variant-numeric:tabular-nums; }
+.tab[aria-selected="true"]{ border-color:var(--page-accent); color:var(--page-ink); background:#16233B; }
+.tab:focus-visible{ outline:2px solid var(--page-accent); outline-offset:2px; }
+.cmp .note{ font-size:.8rem; color:var(--page-faint); flex-basis:100%; margin:0; }
+.app{ display:block; min-height:60vh; }
+.app a{ cursor:default; }
+.qm{ display:inline-flex; align-items:center; justify-content:center; width:1.05rem; height:1.05rem; border-radius:50%; border:1px solid var(--border-strong); color:var(--faint); font-size:.68rem; font-weight:600; text-decoration:none; vertical-align:middle; margin-left:.15rem; }
+.qm:hover{ color:var(--ink); border-color:var(--ink); }
+.hint.quiet{ margin-top:0; margin-bottom:var(--sp-3); }
+.how{ max-width:1180px; margin:0 auto; padding:2rem 16px 3rem; color:var(--page-muted); font-size:.9rem; line-height:1.55; }
+.how h2{ font-size:1rem; color:var(--page-ink); margin:0 0 .5rem; text-wrap:balance; }
+.how p{ max-width:65ch; margin:.4rem 0; }
+@media (prefers-reduced-motion:no-preference){ .app{ animation:fade .18s ease-out; } @keyframes fade{ from{opacity:.6} to{opacity:1} } }
+</style>
+<div class="cmp" role="tablist" aria-label="Versions">
+  <div class="cmp-in">
+    <h1>Job page · appdata_backups</h1>
+    <div class="tabs">
+      <button class="tab" role="tab" id="tab-today" aria-controls="v-today" aria-selected="false">Today <span class="n">8 hints · 1 notice</span></button>
+      <button class="tab" role="tab" id="tab-a" aria-controls="v-a" aria-selected="true">A · Terse <span class="n">0 hints · 0 notices</span></button>
+      <button class="tab" role="tab" id="tab-b" aria-controls="v-b" aria-selected="false">B · One quiet sentence <span class="n">6 hints · 0 notices</span></button>
+    </div>
+    <p class="note">Your real figures from this morning. A and B both apply the agreed words (earlier copies, AWS, temporary folder) and the three “?” marks. Links are inert.</p>
+  </div>
+</div>
+<section class="app" id="v-today" role="tabpanel" hidden>
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="/" aria-label="backup-engine home">backup<b>-</b>engine</a>
+    <nav class="switcher" aria-label="Screens">
+      <a href="/" aria-current=&#34;page&#34;>Board</a>
+      <a href="/cost" >Cost</a>
+      <a href="/activity" >Activity</a>
+      <a href="/explore" >Explore</a>
+      <a href="/setup" >Setup</a>
+    </nav>
+    <div class="topbar-right">
+      <a class="chip" href="/setup"
+         title="This GUI has no authentication — put it behind a reverse proxy or SSO. Never expose it directly to the internet.">LAN only &middot; no auth</a>
+      <time class="clock mono">14:36 UTC</time>
+    </div>
+  </div>
+</header>
+
+
+
+
+<main>
+
+<section class="screen read" aria-label="Job appdata_backups">
+
+  
+  <div class="jobhead" style="margin-bottom:var(--sp-6)">
+    <div class="who">
+      <div class="titleline">
+        <span class="tok tok-ok">OK</span>
+        <h1>appdata_backups</h1>
+      </div>
+      <p class="typeline">Snapshot backup — a point in time, so you can restore any date.</p>
+      <p class="pathline">/mnt/user/appdata_backups &nbsp;→&nbsp; s3://unraid-backup-<account>/appdata/ · tag appdata_backups</p>
+      
+    </div>
+    <div class="actions">
+      <form method="post" action="/jobs/appdata_backups/run" style="display:inline">
+        <input type="hidden" name="csrf" value="x">
+        <button type="submit" class="btn">Run now</button>
+      </form>
+      
+      
+      <a class="btn btn-primary" href="#restore-band" data-scroll="restore-band">Get data back</a>
+      <details class="menu" style="display:inline-block;position:relative">
+        <summary class="btn btn-ghost" aria-label="More actions" style="list-style:none">···</summary>
+        <div class="menu-pop" style="position:absolute;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.4rem;min-width:160px;display:grid;gap:.2rem">
+          
+          <form method="post" action="/jobs/appdata_backups/pause"><input type="hidden" name="csrf" value="x"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Pause schedule</button></form>
+          
+          <a class="btn btn-sm btn-ghost" href="/jobs/appdata_backups/edit" style="text-align:left">Edit →</a>
+          
+          <form method="post" action="/jobs/appdata_backups/delete"
+                data-confirm-name="appdata_backups"
+                data-confirm="Type appdata_backups to delete this job. Its run history and restore-point cache on this machine go with it; nothing in the bucket is deleted.">
+            <input type="hidden" name="csrf" value="x">
+            <button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left;color:var(--danger)">Delete…</button>
+          </form>
+          
+        </div>
+      </details>
+    </div>
+  </div>
+
+  
+  
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Destination reachable</div>
+  <div class="v">Write, read, delete — all OK</div>
+  <div class="t">probed 3 Oct 13:46</div>
+</div></div>
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Old versions protected</div>
+  <div class="v">Bucket versioning on</div>
+  <div class="t">checked 3 Oct 13:46</div>
+</div></div>
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Dates you can go back to</div>
+  
+  <div class="v">14 · back to 19 Sep</div>
+  <div class="t">13 days of cover</div>
+  
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Restore ever tested</div>
+  <div class="v">Tested 3 Oct</div>
+  <div class="t"><span class="mono">AniBridge.tar.gz</span>, kept under /mnt/user/restore/appdata_backups/test/</div>
+</div></div>
+
+
+<form method="post" action="/jobs/appdata_backups/test-restore"><input type="hidden" name="csrf" value="x">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — one file, ~$0.01</button></form>
+<p class="hint" style="margin-top:var(--sp-2)">Pulls a single file into a scratch folder, checks it, deletes it, and writes today's date into this row.</p>
+
+</aside>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">Last 30 runs</p>
+          <p class="slabel"><span class="mono">13 OK · 2 failed</span></p>
+        </div>
+        <div class="ledger-wrap">
+          <div class="ledger" style="min-width:358px">
+            <div class="strip" role="img" aria-label="Last 15 runs for appdata_backups: 13 OK, 2 failed (Mon 21 Sep).">
+              <span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260919T162831Z-2701" title="Sat 19 Sep 16:28 · ok"></a><a class="cellx fail dim" href="/jobs/appdata_backups/runs/20260920T050000Z-1b19" title="Sun 20 Sep 05:00 · failed"></a><a class="cellx fail dim" href="/jobs/appdata_backups/runs/20260921T050000Z-7562" title="Mon 21 Sep 05:00 · failed"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260922T050002Z-1d71" title="Tue 22 Sep 05:00 · ok"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260923T050000Z-73e2" title="Wed 23 Sep 05:00 · ok"></a><a class="cellx ok dim" href="/jobs/appdata_backups/runs/20260924T050000Z-7653" title="Thu 24 Sep 05:00 · ok"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260925T050000Z-519b" title="Fri 25 Sep 05:00 · ok"></a><a class="cellx ok dim" href="/jobs/appdata_backups/runs/20260926T050000Z-6c94" title="Sat 26 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260927T050000Z-f262" title="Sun 27 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260928T050000Z-3d28" title="Mon 28 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260929T050000Z-2c8e" title="Tue 29 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260930T050000Z-4013" title="Wed 30 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261001T050000Z-140c" title="Thu 1 Oct 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261002T050000Z-0aa5" title="Fri 2 Oct 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261003T050000Z-49f4" title="Sat 3 Oct 05:00 · ok"></a>
+            </div>
+            <div class="bars" aria-hidden="true">
+              <span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar tall" style="height:20px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span>
+            </div>
+            <div class="ledger-axis"><span>19 Sep</span><span>last 7 runs →</span><span>latest</span></div>
+          </div>
+        </div>
+        <p class="hint" style="margin-top:var(--sp-3)">15 runs on record, 2 failed. The bars under the strip are how long each run took — the tall one is Sat 19 Sep at <span class="mono">4 m 58 s</span>, 30× the usual — slower than it should be. Hover any run for its date, outcome and restore point.</p>
+      </div>
+
+      
+      <div class="band" data-band="restore">
+        <p class="slabel">Get data back</p>
+        <p class="lead" style="margin-bottom:var(--sp-4)">Pick the date you want back. Files are written into a new folder — the live <span class="mono">/mnt/user/appdata_backups</span> is never touched or overwritten.</p>
+        <p style="margin-bottom:var(--sp-4)"><a class="linklike" href="/explore/appdata_backups">Browse contents →</a></p>
+
+        
+
+        
+        
+        
+        
+        
+        
+        
+
+        
+        
+        <div class="guard" style="margin-top:var(--sp-4)">
+          <strong>Nowhere to put restored files yet.</strong> Add a path mapping to this container — host <span class="mono">/mnt/user/restore</span> → container <span class="mono">/restore</span>, read/write — then restart it. Until then, restores run from the command line into <span class="mono">/cache/restore/appdata_backups</span> (see the README).
+        </div>
+        
+      </div>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">What this job costs</p>
+          <p class="band-head more"><a class="linklike" href="/cost">Open the full cost view →</a></p>
+        </div>
+        
+        
+        <div class="grid4" style="margin-bottom:var(--sp-4)">
+          <div class="sfig"><span class="k">First bill</span>
+            <span class="v">$1.00</span>
+            <span class="s">month 1 · projected</span></div>
+          <div class="sfig"><span class="k">By month 6</span>
+            <span class="v">$0.99</span>
+            <span class="s">old versions have built up</span></div>
+          <div class="sfig"><span class="k">Every month after</span>
+            <span class="v">$0.99</span>
+            <span class="s">settles from month 6 — it stops rising</span></div>
+          <div class="sfig"><span class="k">In the bucket now</span>
+            <span class="v"><span class="mono p-measured">42.92 GB</span></span>
+            <span class="s">measured 2026-09-19 15:51 UTC</span></div>
+        </div>
+
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Where the money goes</th><th>How much of it</th><th>Where that number came from</th></tr></thead>
+            <tbody>
+              <tr><td>Storing your files</td>
+                <td class="mono"><span class="mono p-measured">42.92 GB</span> · 2,565 files</td>
+                <td class="hint">Walked the folder on 2026-09-19 15:51 UTC.</td></tr>
+              <tr><td>Getting data out of Amazon</td>
+                <td class="mono">$0.00</td>
+                <td class="hint">Only charged when you restore.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        
+        <div class="sig sig-note">
+          <div class="body">Per-job is not available: Amazon's cost report returns one account-wide figure, so this job's own share of the bill cannot be shown honestly yet.</div>
+        </div>
+        
+        <div class="legend"><span class="price-stamp">prices: aws-price-list (live) table 2026-09-28T23:04:16Z</span></div>
+        
+      </div>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">How it is set up</p>
+          <p class="band-head more"><a class="linklike" href="/jobs/appdata_backups/edit">Edit →</a></p>
+        </div>
+        <dl class="defgrid">
+          <dt>Name</dt><dd>appdata_backups <span class="hint">Set at creation — to rename, create a new job and delete this one.</span></dd>
+          <dt>What it protects</dt><dd class="mono">/mnt/user/appdata_backups</dd>
+          <dt>What happens to it</dt><dd>Snapshot backup — a point in time, restore any date <span class="hint">Set at creation.</span></dd>
+          <dt>Storage tier</dt><dd>Instant · STANDARD — readable the second you ask</dd>
+          <dt>How much changes between runs</dt><dd>Nothing — files only get added <span class="hint">(an assumption you set, used for every cost figure above)</span></dd>
+          <dt>Keep rule</dt><dd>Last 3 · one a day for 7 days · one a week for 4 weeks · one a month for 6 months</dd>
+          <dt>History in S3</dt><dd data-s3-history>S3 keeps what this job removed for <span class="mono">30</span> more days (the undo window)
+              <a class="linklike" href="/setup/storage">S3 rules →</a></dd>
+          <dt>When it runs</dt><dd>Every day at 05:00</dd>
+          <dt>Where it goes</dt><dd class="mono">s3://unraid-backup-<account>/appdata/ <span class="hint">Set at creation.</span></dd>
+          <dt>State</dt><dd>Scheduled</dd>
+          <dt>Created</dt><dd>19 Sep 2026</dd>
+        </dl>
+      </div>
+
+      
+      <div class="band">
+        <details class="tooldetail">
+          <summary>Tool detail — what actually runs</summary>
+          
+          <p class="hint" style="margin:var(--sp-3) 0">Snapshot backups are made by <strong>restic</strong>. All snapshot jobs share one encrypted store, which is why two of them must never start in the same minute — the second would find the store locked.</p>
+          <div class="cmd">
+            <pre>restic -r s3:s3.amazonaws.com/unraid-backup-<account>/appdata \
+  backup /mnt/user/appdata_backups --tag appdata_backups</pre>
+            <button type="button" class="btn btn-sm copy" data-copy="restic -r s3:s3.amazonaws.com/unraid-backup-<account>/appdata backup /mnt/user/appdata_backups --tag appdata_backups">Copy</button>
+          </div><p class="hint">Last snapshot id <span class="mono">084d6e3d</span> · tag <span class="mono">appdata_backups</span> · repository password comes from the recovery passphrase. <a class="linklike" href="/setup/about">What these tools are →</a></p>
+          
+          <p class="hint">cron <span class="mono">0 5 * * *</span>.</p>
+        </details>
+      </div>
+
+    </div>
+
+    
+    <aside class="rail">
+<h3>Recovery readiness</h3>
+<p class="hint" style="margin-bottom:var(--sp-3)">Could you actually get this back right now?</p>
+
+
+<div class="rrow"><span class="dot dot-danger"></span><div>
+  <div class="k">Recovery passphrase</div>
+  <div class="v" style="color:var(--danger)">Not set — still the shipped example</div>
+  <div class="t">checked 19 Sep 14:18</div>
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Destination reachable</div>
+  <div class="v">Write, read, delete — all OK</div>
+  <div class="t">probed 3 Oct 13:46</div>
+</div></div>
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Old versions protected</div>
+  <div class="v">Bucket versioning on</div>
+  <div class="t">checked 3 Oct 13:46</div>
+</div></div>
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Dates you can go back to</div>
+  
+  <div class="v">14 · back to 19 Sep</div>
+  <div class="t">13 days of cover</div>
+  
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Restore ever tested</div>
+  <div class="v">Tested 3 Oct</div>
+  <div class="t"><span class="mono">AniBridge.tar.gz</span>, kept under /mnt/user/restore/appdata_backups/test/</div>
+</div></div>
+
+
+<form method="post" action="/jobs/appdata_backups/test-restore"><input type="hidden" name="csrf" value="x">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — one file, ~$0.01</button></form>
+<p class="hint" style="margin-top:var(--sp-2)">Pulls a single file into a scratch folder, checks it, deletes it, and writes today's date into this row.</p>
+
+</aside>
+  </div>
+</section>
+
+
+
+</main>
+
+<footer class="sitefoot">
+  <details>
+    <summary>How to read this screen &mdash; the marks and the six levels</summary>
+    <div class="grid2" style="margin-top:var(--sp-4)">
+      <div>
+        <p class="slabel">Where a number came from</p>
+        <p style="margin-bottom:.4rem"><span class="fig p-measured">52.71 GB</span> <span class="hint">&mdash; measured. Something walked the folder or read the bucket, on a date it will tell you.</span></p>
+        <p style="margin-bottom:.4rem"><span class="fig p-assumed">~11.6 GB</span> <span class="hint">&mdash; assumed. Dotted, and printed dimmer, because it rests on a guess you made.</span></p>
+        <p style="margin-bottom:.4rem"><span class="fig p-invoiced">$3.98</span> <span class="hint">&mdash; invoiced. This is the bill Amazon actually sent.</span></p>
+        <p><span class="fig">$1.85</span> <span class="hint">&mdash; projected, no line at all. A projection takes the weakest mark of everything that fed it.</span></p>
+      </div>
+      <div>
+        <p class="slabel">How loudly it is telling you</p>
+        <div class="sig sig-note"><div class="body">Note &mdash; background explanation. No box, no colour, nothing to do.</div></div>
+        <div class="sig sig-advice"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6" cy="6" r="5"/><circle cx="6" cy="6" r="1.5" fill="currentColor" stroke="none"/></svg></span><div class="body"><span class="label">Advice</span>Take it or leave it. Usually comes with a one-click accept.</div></div>
+        <div class="sig sig-warning"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M6 1.4 11.1 10.6H0.9Z"/><path d="M6 4.6v2.6"/><path d="M6 8.9v.2"/></svg></span><div class="body"><span class="label">Warning</span>Will cost you money or surprise you later. Nothing is stopped.</div></div>
+        <div class="sig sig-blocker"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill="currentColor"/></svg></span><div class="body"><span class="label">Blocker</span>Stops the button. Names the two ways out and jumps you to the control.</div></div>
+        <div class="sig sig-success"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6" cy="6" r="5"/><path d="M3.6 6.2 5.3 7.9 8.5 4.4"/></svg></span><div class="body"><span class="label">Done</span>Only ever a moment after you press something. Then it clears itself.</div></div>
+        <div class="sig sig-failure"><span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4"/><path d="M4.4 4.4 7.6 7.6M7.6 4.4 4.4 7.6"/></svg></span><div class="body"><span class="label">Failed</span>A run that ended badly. Carries a time, the exact error, and a record you can open. Never shares a shape with Done.</div></div>
+        <p class="hint" style="margin-top:var(--sp-3)">States a job can be in:
+          <span class="tok tok-ok">OK</span>
+          <span class="tok tok-failed">Failed</span>
+          <span class="tok tok-running">Running</span>
+          <span class="tok tok-paused">Paused</span>
+          <span class="tok tok-overdue">Overdue</span>
+          <span class="tok tok-notrun">Not run yet</span></p>
+      </div>
+    </div>
+  </details>
+  <p class="hint" style="margin-top:var(--sp-4)">Times follow the container's clock (TZ=UTC).
+    <a href="/setup/about">About &amp; licences</a></p>
+</footer>
+
+
+
+</section>
+<section class="app" id="v-a" role="tabpanel">
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="/" aria-label="backup-engine home">backup<b>-</b>engine</a>
+    <nav class="switcher" aria-label="Screens">
+      <a href="/" aria-current=&#34;page&#34;>Board</a>
+      <a href="/cost" >Cost</a>
+      <a href="/activity" >Activity</a>
+      <a href="/explore" >Explore</a>
+      <a href="/setup" >Setup</a>
+    </nav>
+    <div class="topbar-right">
+      <a class="chip" href="/setup"
+         title="This GUI has no authentication — put it behind a reverse proxy or SSO. Never expose it directly to the internet.">LAN only &middot; no auth</a>
+      <time class="clock mono">14:36 UTC</time>
+    </div>
+  </div>
+</header>
+
+
+
+
+<main>
+
+<section class="screen read" aria-label="Job appdata_backups">
+
+  
+  <div class="jobhead" style="margin-bottom:var(--sp-6)">
+    <div class="who">
+      <div class="titleline">
+        <span class="tok tok-ok">OK</span>
+        <h1>appdata_backups</h1>
+      </div>
+      <p class="typeline">Snapshot backup — a point in time, so you can restore any date.</p>
+      <p class="pathline">/mnt/user/appdata_backups &nbsp;→&nbsp; s3://unraid-backup-<account>/appdata/ · tag appdata_backups</p>
+      
+    </div>
+    <div class="actions">
+      <form method="post" action="/jobs/appdata_backups/run" style="display:inline">
+        <input type="hidden" name="csrf" value="x">
+        <button type="submit" class="btn">Run now</button>
+      </form>
+      
+      
+      <a class="btn btn-primary" href="#restore-band" data-scroll="restore-band">Get data back</a>
+      <details class="menu" style="display:inline-block;position:relative">
+        <summary class="btn btn-ghost" aria-label="More actions" style="list-style:none">···</summary>
+        <div class="menu-pop" style="position:absolute;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.4rem;min-width:160px;display:grid;gap:.2rem">
+          
+          <form method="post" action="/jobs/appdata_backups/pause"><input type="hidden" name="csrf" value="x"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Pause schedule</button></form>
+          
+          <a class="btn btn-sm btn-ghost" href="/jobs/appdata_backups/edit" style="text-align:left">Edit →</a>
+          
+          <form method="post" action="/jobs/appdata_backups/delete"
+                data-confirm-name="appdata_backups"
+                data-confirm="Type appdata_backups to delete this job. Its run history and restore-point cache on this machine go with it; nothing in the bucket is deleted.">
+            <input type="hidden" name="csrf" value="x">
+            <button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left;color:var(--danger)">Delete…</button>
+          </form>
+          
+        </div>
+      </details>
+    </div>
+  </div>
+
+  
+  
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Destination reachable</div>
+  <div class="v">Write, read, delete — all OK</div>
+  <div class="t">probed 3 Oct 13:46</div>
+</div></div>
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Earlier copies protected</div>
+  <div class="v">Bucket versioning on</div>
+  <div class="t">checked 3 Oct 13:46</div>
+</div></div>
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Dates you can go back to</div>
+  
+  <div class="v">14 · back to 19 Sep</div>
+  <div class="t">13 days of cover</div>
+  
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Restore ever tested</div>
+  <div class="v">Tested 3 Oct</div>
+  <div class="t"><span class="mono">AniBridge.tar.gz</span>, kept under /mnt/user/restore/appdata_backups/test/</div>
+</div></div>
+
+
+<form method="post" action="/jobs/appdata_backups/test-restore"><input type="hidden" name="csrf" value="x">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — one file, ~$0.01</button></form>
+
+</aside>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">Last 30 runs</p>
+          <p class="slabel"><span class="mono">13 OK · 2 failed</span></p>
+        </div>
+        <div class="ledger-wrap">
+          <div class="ledger" style="min-width:358px">
+            <div class="strip" role="img" aria-label="Last 15 runs for appdata_backups: 13 OK, 2 failed (Mon 21 Sep).">
+              <span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260919T162831Z-2701" title="Sat 19 Sep 16:28 · ok"></a><a class="cellx fail dim" href="/jobs/appdata_backups/runs/20260920T050000Z-1b19" title="Sun 20 Sep 05:00 · failed"></a><a class="cellx fail dim" href="/jobs/appdata_backups/runs/20260921T050000Z-7562" title="Mon 21 Sep 05:00 · failed"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260922T050002Z-1d71" title="Tue 22 Sep 05:00 · ok"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260923T050000Z-73e2" title="Wed 23 Sep 05:00 · ok"></a><a class="cellx ok dim" href="/jobs/appdata_backups/runs/20260924T050000Z-7653" title="Thu 24 Sep 05:00 · ok"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260925T050000Z-519b" title="Fri 25 Sep 05:00 · ok"></a><a class="cellx ok dim" href="/jobs/appdata_backups/runs/20260926T050000Z-6c94" title="Sat 26 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260927T050000Z-f262" title="Sun 27 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260928T050000Z-3d28" title="Mon 28 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260929T050000Z-2c8e" title="Tue 29 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260930T050000Z-4013" title="Wed 30 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261001T050000Z-140c" title="Thu 1 Oct 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261002T050000Z-0aa5" title="Fri 2 Oct 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261003T050000Z-49f4" title="Sat 3 Oct 05:00 · ok"></a>
+            </div>
+            <div class="bars" aria-hidden="true">
+              <span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar tall" style="height:20px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span>
+            </div>
+            <div class="ledger-axis"><span>19 Sep</span><span>last 7 runs →</span><span>latest</span></div>
+          </div>
+        </div>
+      </div>
+
+      
+      <div class="band" data-band="restore">
+        <p class="slabel">Get data back</p>
+        <p class="lead" style="margin-bottom:var(--sp-4)">Pick the date you want back. Files are written into a new folder — the live <span class="mono">/mnt/user/appdata_backups</span> is never touched or overwritten.</p>
+        <p style="margin-bottom:var(--sp-4)"><a class="linklike" href="/explore/appdata_backups">Browse contents →</a></p>
+
+        
+
+        
+        
+        
+        
+        
+        
+        
+
+        
+        
+        <div class="guard" style="margin-top:var(--sp-4)">
+          <strong>Nowhere to put restored files yet.</strong> Add a path mapping to this container — host <span class="mono">/mnt/user/restore</span> → container <span class="mono">/restore</span>, read/write — then restart it. Until then, restores run from the command line into <span class="mono">/cache/restore/appdata_backups</span> (see the README).
+        </div>
+        
+      </div>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">What this job costs</p>
+          <p class="band-head more"><a class="linklike" href="/cost">Open the full cost view →</a></p>
+        </div>
+        
+        
+        <div class="grid4" style="margin-bottom:var(--sp-4)">
+          <div class="sfig"><span class="k">First bill</span>
+            <span class="v">$1.00</span>
+            <span class="s">month 1 · projected</span></div>
+          <div class="sfig"><span class="k">By month 6</span>
+            <span class="v">$0.99</span>
+            <span class="s">earlier copies have built up</span></div>
+          <div class="sfig"><span class="k">Every month after</span>
+            <span class="v">$0.99</span>
+            <span class="s">settles from month 6 — it stops rising</span></div>
+          <div class="sfig"><span class="k">In the bucket now</span>
+            <span class="v"><span class="mono p-measured">42.92 GB</span></span>
+            <span class="s">measured 2026-09-19 15:51 UTC</span></div>
+        </div>
+
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Where the money goes</th><th>How much of it</th><th>Where that number came from</th></tr></thead>
+            <tbody>
+              <tr><td>Storing your files</td>
+                <td class="mono"><span class="mono p-measured">42.92 GB</span> · 2,565 files</td>
+                <td class="hint">Walked the folder on 2026-09-19 15:51 UTC.</td></tr>
+              <tr><td>Getting data out of AWS</td>
+                <td class="mono">$0.00</td>
+                <td class="hint">Only charged when you restore.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        
+        <div class="legend"><span class="price-stamp">prices: aws-price-list (live) table 2026-09-28T23:04:16Z</span></div>
+        
+      </div>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">How it is set up</p>
+          <p class="band-head more"><a class="linklike" href="/jobs/appdata_backups/edit">Edit →</a></p>
+        </div>
+        <dl class="defgrid">
+          <dt>Name</dt><dd>appdata_backups</dd>
+          <dt>What it protects</dt><dd class="mono">/mnt/user/appdata_backups</dd>
+          <dt>What happens to it</dt><dd>Snapshot backup — a point in time, restore any date</dd>
+          <dt>Storage tier <a class="qm" href="#how" title="How it works" aria-label="How it works">?</a></dt><dd>Instant · STANDARD — readable the second you ask</dd>
+          <dt>How much changes between runs</dt><dd>Nothing — files only get added</dd>
+          <dt>Keep rule <a class="qm" href="#how" title="How it works" aria-label="How it works">?</a></dt><dd>Last 3 · one a day for 7 days · one a week for 4 weeks · one a month for 6 months</dd>
+          <dt>History in S3</dt><dd data-s3-history>S3 keeps earlier copies of what this job removed for <span class="mono">30</span> more days (the undo window)
+              <a class="linklike" href="/setup/storage">S3 rules →</a></dd>
+          <dt>When it runs</dt><dd>Every day at 05:00</dd>
+          <dt>Where it goes</dt><dd class="mono">s3://unraid-backup-<account>/appdata/</dd>
+          <dt>State</dt><dd>Scheduled</dd>
+          <dt>Created</dt><dd>19 Sep 2026</dd>
+        </dl>
+      </div>
+
+      
+      <div class="band">
+        <details class="tooldetail">
+          <summary>Tool detail — what actually runs</summary>
+          <div class="cmd">
+            <pre>restic -r s3:s3.amazonaws.com/unraid-backup-<account>/appdata \
+  backup /mnt/user/appdata_backups --tag appdata_backups</pre>
+            <button type="button" class="btn btn-sm copy" data-copy="restic -r s3:s3.amazonaws.com/unraid-backup-<account>/appdata backup /mnt/user/appdata_backups --tag appdata_backups">Copy</button>
+          </div>
+        </details>
+      </div>
+
+    </div>
+
+    
+    <aside class="rail">
+<h3>Recovery readiness</h3>
+
+
+<div class="rrow"><span class="dot dot-danger"></span><div>
+  <div class="k">Recovery passphrase</div>
+  <div class="v" style="color:var(--danger)">Not set — still the shipped example</div>
+  <div class="t">checked 19 Sep 14:18</div>
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Destination reachable</div>
+  <div class="v">Write, read, delete — all OK</div>
+  <div class="t">probed 3 Oct 13:46</div>
+</div></div>
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Earlier copies protected</div>
+  <div class="v">Bucket versioning on</div>
+  <div class="t">checked 3 Oct 13:46</div>
+</div></div>
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Dates you can go back to</div>
+  
+  <div class="v">14 · back to 19 Sep</div>
+  <div class="t">13 days of cover</div>
+  
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Restore ever tested</div>
+  <div class="v">Tested 3 Oct</div>
+  <div class="t"><span class="mono">AniBridge.tar.gz</span>, kept under /mnt/user/restore/appdata_backups/test/</div>
+</div></div>
+
+
+<form method="post" action="/jobs/appdata_backups/test-restore"><input type="hidden" name="csrf" value="x">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — one file, ~$0.01</button></form>
+
+</aside>
+  </div>
+</section>
+
+
+
+</main>
+
+<footer class="sitefoot"><p class="hint">Times are UTC. <a href="#how">How it works</a> · <a href="#">About &amp; licences</a></p></footer>
+
+
+
+</section>
+<section class="app" id="v-b" role="tabpanel" hidden>
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="/" aria-label="backup-engine home">backup<b>-</b>engine</a>
+    <nav class="switcher" aria-label="Screens">
+      <a href="/" aria-current=&#34;page&#34;>Board</a>
+      <a href="/cost" >Cost</a>
+      <a href="/activity" >Activity</a>
+      <a href="/explore" >Explore</a>
+      <a href="/setup" >Setup</a>
+    </nav>
+    <div class="topbar-right">
+      <a class="chip" href="/setup"
+         title="This GUI has no authentication — put it behind a reverse proxy or SSO. Never expose it directly to the internet.">LAN only &middot; no auth</a>
+      <time class="clock mono">14:36 UTC</time>
+    </div>
+  </div>
+</header>
+
+
+
+
+<main>
+
+<section class="screen read" aria-label="Job appdata_backups">
+
+  
+  <div class="jobhead" style="margin-bottom:var(--sp-6)">
+    <div class="who">
+      <div class="titleline">
+        <span class="tok tok-ok">OK</span>
+        <h1>appdata_backups</h1>
+      </div>
+      <p class="typeline">Snapshot backup — a point in time, so you can restore any date.</p>
+      <p class="pathline">/mnt/user/appdata_backups &nbsp;→&nbsp; s3://unraid-backup-<account>/appdata/ · tag appdata_backups</p>
+      
+    </div>
+    <div class="actions">
+      <form method="post" action="/jobs/appdata_backups/run" style="display:inline">
+        <input type="hidden" name="csrf" value="x">
+        <button type="submit" class="btn">Run now</button>
+      </form>
+      
+      
+      <a class="btn btn-primary" href="#restore-band" data-scroll="restore-band">Get data back</a>
+      <details class="menu" style="display:inline-block;position:relative">
+        <summary class="btn btn-ghost" aria-label="More actions" style="list-style:none">···</summary>
+        <div class="menu-pop" style="position:absolute;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.4rem;min-width:160px;display:grid;gap:.2rem">
+          
+          <form method="post" action="/jobs/appdata_backups/pause"><input type="hidden" name="csrf" value="x"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Pause schedule</button></form>
+          
+          <a class="btn btn-sm btn-ghost" href="/jobs/appdata_backups/edit" style="text-align:left">Edit →</a>
+          
+          <form method="post" action="/jobs/appdata_backups/delete"
+                data-confirm-name="appdata_backups"
+                data-confirm="Type appdata_backups to delete this job. Its run history and restore-point cache on this machine go with it; nothing in the bucket is deleted.">
+            <input type="hidden" name="csrf" value="x">
+            <button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left;color:var(--danger)">Delete…</button>
+          </form>
+          
+        </div>
+      </details>
+    </div>
+  </div>
+
+  
+  
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Destination reachable</div>
+  <div class="v">Write, read, delete — all OK</div>
+  <div class="t">probed 3 Oct 13:46</div>
+</div></div>
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Earlier copies protected</div>
+  <div class="v">Bucket versioning on</div>
+  <div class="t">checked 3 Oct 13:46</div>
+</div></div>
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Dates you can go back to</div>
+  
+  <div class="v">14 · back to 19 Sep</div>
+  <div class="t">13 days of cover</div>
+  
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Restore ever tested</div>
+  <div class="v">Tested 3 Oct</div>
+  <div class="t"><span class="mono">AniBridge.tar.gz</span>, kept under /mnt/user/restore/appdata_backups/test/</div>
+</div></div>
+
+
+<form method="post" action="/jobs/appdata_backups/test-restore"><input type="hidden" name="csrf" value="x">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — one file, ~$0.01</button></form>
+<p class="hint quiet">One file, checked, then deleted again.</p>
+
+</aside>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">Last 30 runs</p>
+          <p class="slabel"><span class="mono">13 OK · 2 failed</span></p>
+        </div>
+        <p class="hint quiet">Each bar is how long a run took. Hover one for its date and restore point.</p>
+        <div class="ledger-wrap">
+          <div class="ledger" style="min-width:358px">
+            <div class="strip" role="img" aria-label="Last 15 runs for appdata_backups: 13 OK, 2 failed (Mon 21 Sep).">
+              <span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><span class="cellx" title="no run on record yet"></span><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260919T162831Z-2701" title="Sat 19 Sep 16:28 · ok"></a><a class="cellx fail dim" href="/jobs/appdata_backups/runs/20260920T050000Z-1b19" title="Sun 20 Sep 05:00 · failed"></a><a class="cellx fail dim" href="/jobs/appdata_backups/runs/20260921T050000Z-7562" title="Mon 21 Sep 05:00 · failed"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260922T050002Z-1d71" title="Tue 22 Sep 05:00 · ok"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260923T050000Z-73e2" title="Wed 23 Sep 05:00 · ok"></a><a class="cellx ok dim" href="/jobs/appdata_backups/runs/20260924T050000Z-7653" title="Thu 24 Sep 05:00 · ok"></a><a class="cellx slow dim" href="/jobs/appdata_backups/runs/20260925T050000Z-519b" title="Fri 25 Sep 05:00 · ok"></a><a class="cellx ok dim" href="/jobs/appdata_backups/runs/20260926T050000Z-6c94" title="Sat 26 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260927T050000Z-f262" title="Sun 27 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260928T050000Z-3d28" title="Mon 28 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260929T050000Z-2c8e" title="Tue 29 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20260930T050000Z-4013" title="Wed 30 Sep 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261001T050000Z-140c" title="Thu 1 Oct 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261002T050000Z-0aa5" title="Fri 2 Oct 05:00 · ok"></a><a class="cellx ok" href="/jobs/appdata_backups/runs/20261003T050000Z-49f4" title="Sat 3 Oct 05:00 · ok"></a>
+            </div>
+            <div class="bars" aria-hidden="true">
+              <span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar tall" style="height:20px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span><span class="bar" style="height:2px"></span>
+            </div>
+            <div class="ledger-axis"><span>19 Sep</span><span>last 7 runs →</span><span>latest</span></div>
+          </div>
+        </div>
+      </div>
+
+      
+      <div class="band" data-band="restore">
+        <p class="slabel">Get data back</p>
+        <p class="lead" style="margin-bottom:var(--sp-4)">Pick the date you want back. Files are written into a new folder — the live <span class="mono">/mnt/user/appdata_backups</span> is never touched or overwritten.</p>
+        <p style="margin-bottom:var(--sp-4)"><a class="linklike" href="/explore/appdata_backups">Browse contents →</a></p>
+
+        
+
+        
+        
+        
+        
+        
+        
+        
+
+        
+        
+        <div class="guard" style="margin-top:var(--sp-4)">
+          <strong>Nowhere to put restored files yet.</strong> Add a path mapping to this container — host <span class="mono">/mnt/user/restore</span> → container <span class="mono">/restore</span>, read/write — then restart it. Until then, restores run from the command line into <span class="mono">/cache/restore/appdata_backups</span> (see the README).
+        </div>
+        
+      </div>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">What this job costs</p>
+          <p class="band-head more"><a class="linklike" href="/cost">Open the full cost view →</a></p>
+        </div>
+        <p class="hint quiet">Projected from what was measured on 19 Sep. AWS bills the whole account as one figure.</p>
+        
+        
+        <div class="grid4" style="margin-bottom:var(--sp-4)">
+          <div class="sfig"><span class="k">First bill</span>
+            <span class="v">$1.00</span>
+            <span class="s">month 1 · projected</span></div>
+          <div class="sfig"><span class="k">By month 6</span>
+            <span class="v">$0.99</span>
+            <span class="s">earlier copies have built up</span></div>
+          <div class="sfig"><span class="k">Every month after</span>
+            <span class="v">$0.99</span>
+            <span class="s">settles from month 6 — it stops rising</span></div>
+          <div class="sfig"><span class="k">In the bucket now</span>
+            <span class="v"><span class="mono p-measured">42.92 GB</span></span>
+            <span class="s">measured 2026-09-19 15:51 UTC</span></div>
+        </div>
+
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Where the money goes</th><th>How much of it</th><th>Where that number came from</th></tr></thead>
+            <tbody>
+              <tr><td>Storing your files</td>
+                <td class="mono"><span class="mono p-measured">42.92 GB</span> · 2,565 files</td>
+                <td class="hint">Walked the folder on 2026-09-19 15:51 UTC.</td></tr>
+              <tr><td>Getting data out of AWS</td>
+                <td class="mono">$0.00</td>
+                <td class="hint">Only charged when you restore.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        
+        <div class="legend"><span class="price-stamp">prices: aws-price-list (live) table 2026-09-28T23:04:16Z</span></div>
+        
+      </div>
+
+      
+      <div class="band">
+        <div class="band-head">
+          <p class="slabel">How it is set up</p>
+          <p class="band-head more"><a class="linklike" href="/jobs/appdata_backups/edit">Edit →</a></p>
+        </div>
+        <p class="hint quiet">Name, kind and destination are fixed at creation. Everything else can be edited.</p>
+        <dl class="defgrid">
+          <dt>Name</dt><dd>appdata_backups</dd>
+          <dt>What it protects</dt><dd class="mono">/mnt/user/appdata_backups</dd>
+          <dt>What happens to it</dt><dd>Snapshot backup — a point in time, restore any date</dd>
+          <dt>Storage tier <a class="qm" href="#how" title="How it works" aria-label="How it works">?</a></dt><dd>Instant · STANDARD — readable the second you ask</dd>
+          <dt>How much changes between runs</dt><dd>Nothing — files only get added</dd>
+          <dt>Keep rule <a class="qm" href="#how" title="How it works" aria-label="How it works">?</a></dt><dd>Last 3 · one a day for 7 days · one a week for 4 weeks · one a month for 6 months</dd>
+          <dt>History in S3</dt><dd data-s3-history>S3 keeps earlier copies of what this job removed for <span class="mono">30</span> more days (the undo window)
+              <a class="linklike" href="/setup/storage">S3 rules →</a></dd>
+          <dt>When it runs</dt><dd>Every day at 05:00</dd>
+          <dt>Where it goes</dt><dd class="mono">s3://unraid-backup-<account>/appdata/</dd>
+          <dt>State</dt><dd>Scheduled</dd>
+          <dt>Created</dt><dd>19 Sep 2026</dd>
+        </dl>
+      </div>
+
+      
+      <div class="band">
+        <details class="tooldetail">
+          <summary>Tool detail — what actually runs</summary>
+          <div class="cmd">
+            <pre>restic -r s3:s3.amazonaws.com/unraid-backup-<account>/appdata \
+  backup /mnt/user/appdata_backups --tag appdata_backups</pre>
+            <button type="button" class="btn btn-sm copy" data-copy="restic -r s3:s3.amazonaws.com/unraid-backup-<account>/appdata backup /mnt/user/appdata_backups --tag appdata_backups">Copy</button>
+          </div>
+        </details>
+      </div>
+
+    </div>
+
+    
+    <aside class="rail">
+<h3>Recovery readiness</h3>
+<p class="hint quiet">Could you get this back right now?</p>
+
+
+<div class="rrow"><span class="dot dot-danger"></span><div>
+  <div class="k">Recovery passphrase</div>
+  <div class="v" style="color:var(--danger)">Not set — still the shipped example</div>
+  <div class="t">checked 19 Sep 14:18</div>
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Destination reachable</div>
+  <div class="v">Write, read, delete — all OK</div>
+  <div class="t">probed 3 Oct 13:46</div>
+</div></div>
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Earlier copies protected</div>
+  <div class="v">Bucket versioning on</div>
+  <div class="t">checked 3 Oct 13:46</div>
+</div></div>
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Dates you can go back to</div>
+  
+  <div class="v">14 · back to 19 Sep</div>
+  <div class="t">13 days of cover</div>
+  
+</div></div>
+
+
+<div class="rrow"><span class="dot dot-ok"></span><div>
+  <div class="k">Restore ever tested</div>
+  <div class="v">Tested 3 Oct</div>
+  <div class="t"><span class="mono">AniBridge.tar.gz</span>, kept under /mnt/user/restore/appdata_backups/test/</div>
+</div></div>
+
+
+<form method="post" action="/jobs/appdata_backups/test-restore"><input type="hidden" name="csrf" value="x">
+  <button type="submit" class="btn" style="width:100%;margin-top:var(--sp-4)">Test restore — one file, ~$0.01</button></form>
+<p class="hint quiet">One file, checked, then deleted again.</p>
+
+</aside>
+  </div>
+</section>
+
+
+
+</main>
+
+<footer class="sitefoot"><p class="hint">Times are UTC. <a href="#how">How it works</a> · <a href="#">About &amp; licences</a></p></footer>
+
+
+
+</section>
+<div class="how" id="how">
+  <h2>Where the “?” marks lead</h2>
+  <p>In the real app each “?” opens the matching section of one “How it works” page: what a restore point is and how the keep rule thins them out, what the storage tiers mean for how fast and how cheaply you get files back, and how earlier copies and the undo window protect you from a bad run.</p>
+  <p>In B, the counted hints are the five one-sentence lines under section headings plus the “Get data back” safety sentence, which stays in both.</p>
+</div>
+<script>
+(function(){
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+  function show(id){
+    tabs.forEach(function(t){
+      var on = t.getAttribute('aria-controls') === id;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+    try { localStorage.setItem('jobtone', id); } catch (e) {}
+  }
+  tabs.forEach(function(t){ t.addEventListener('click', function(){ show(t.getAttribute('aria-controls')); window.scrollTo({top:0}); }); });
+  try { var saved = localStorage.getItem('jobtone'); if (saved && document.getElementById(saved)) show(saved); } catch (e) {}
+  // inert links and forms inside the mockups
+  document.querySelectorAll('.app a').forEach(function(a){ if ((a.getAttribute('href')||'').charAt(0) !== '#') a.addEventListener('click', function(e){ e.preventDefault(); }); });
+  document.querySelectorAll('.app form').forEach(function(f){ f.addEventListener('submit', function(e){ e.preventDefault(); }); });
+})();
+</script>
