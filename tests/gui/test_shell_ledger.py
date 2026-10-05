@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 import pytest
-from app.gui import create_app, vocab
+from app.gui import create_app
 
 ROOT = Path(__file__).resolve().parents[2]
 CSS = ROOT / "app" / "gui" / "static" / "style.css"
@@ -70,3 +70,31 @@ def test_how_it_works_renders_every_anchor(app):
     for anchor in ("jobs", "restore-points", "earlier-copies", "tiers", "numbers", "notices", "tools"):
         assert f'id="{anchor}"' in body, anchor
     assert "earlier copies" in body and "Amazon" not in body
+
+
+def _rule(css: str, selector: str) -> str:
+    m = re.search(re.escape(selector) + r"\s*\{([^{}]*)\}", css)
+    assert m, f"no rule for {selector}"
+    return m.group(1).replace(" ", "")
+
+
+def test_legacy_markup_keeps_working_under_the_new_core():
+    # Unreworked screens still use these (review of task 2): the work strip, the Board
+    # needs-row, the form footer figures, two utilities, and a danger-styled guard.
+    css = CSS.read_text()
+    wb = _rule(css, ".workbar, #workbar")
+    assert "height:2px" in wb and "max-width:var(--maxw)" in wb
+    assert "animation:slide" in _rule(css, ".workbar::after, #workbar::after")
+    assert "minmax(0,1fr)170px" in _rule(css, ".needs-row")
+    assert "12px1fr" in _rule(css, ".rrow")
+    assert "display:inline" in _rule(css, ".formfoot .figs")
+    assert "display:none" in _rule(css, ".compact-only")
+    assert "overflow-x:auto" in _rule(css, ".tscroll")
+    guard = _rule(css, ".guard")
+    assert "var(--danger)" in guard and "var(--danger-bg)" in guard
+
+
+def test_ofl_notice_names_every_bundled_family():
+    ofl = (FONTS / "OFL.txt").read_text()
+    for owner in ("Fraunces Project Authors", "Adobe", "IBM Corp"):
+        assert owner in ofl, owner
