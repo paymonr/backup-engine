@@ -40,11 +40,10 @@ def tmp_jobs(app):
                                         "storage_class": "DEEP_ARCHIVE", "retention_days": 90}]}))
     return p
 
-def test_jobs_renders_the_list_not_a_redirect(client):
-    # Ledger spec 2026-10-04 §6.1 retires ruling R-H's redirect: `/jobs` is the Jobs
-    # list (tiles). With no jobs it shows the Getting started steps.
+def test_jobs_redirects_to_board(client):
+    # 5.1 / ruling R-H: `/jobs` is now a permanent redirect to the Board home.
     r = client.get("/jobs")
-    assert r.status_code == 200 and "Getting started" in r.get_data(as_text=True)
+    assert r.status_code == 301 and r.headers["Location"].endswith("/")
 
 def test_board_empty_verdict_when_no_jobs(client):
     # `Getting started` -> the Board empty verdict (10.2). With no jobs, `/` renders
@@ -305,19 +304,3 @@ def test_wizard_has_retention_policy_selector(client):
     assert re.search(
         r'<label[^>]*\bdata-when-type="versioned"[^>]*>\s*'
         r'<input[^>]*\bname="retention_type"[^>]*\bvalue="tiered"', body)
-
-
-# --- plain words + Ledger (spec 2026-10-04 §6.1): the Jobs list as tiles -----
-from tests.gui.test_vocabulary import full_app  # noqa: F401,E402
-
-
-def test_jobs_list_renders_the_board_tiles(full_app):
-    r = full_app.test_client().get("/jobs")
-    assert r.status_code == 200
-    body = r.get_data(as_text=True)
-    assert body.count('class="tile"') == 2                     # appdata + manga
-    assert body.index('data-tile="manga"') < body.index('data-tile="appdata"')   # worst first
-    assert 'id="board-tok-manga"' in body and 'class="board-strip"' in body
-    assert "+ New job" not in body and 'href="/jobs/new"' in body
-    for engine in ("(restic)", "(catalog)", "(rclone)"):
-        assert engine not in body

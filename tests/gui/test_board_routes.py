@@ -164,12 +164,10 @@ def test_root_redirects_to_provision_when_unprovisioned(dirs, source_root, templ
     assert "/provision" in r.headers["Location"] or "/setup" in r.headers["Location"]
 
 
-def test_jobs_renders_the_jobs_list(client, example):
-    # Ledger spec 2026-10-04 §6.1: `/jobs` is the Jobs list again (the Board's
-    # tiles on their own page), no longer a permanent redirect to `/`.
+def test_jobs_redirects_permanently_to_board(client, example):
     r = client.get("/jobs")
-    assert r.status_code == 200
-    assert 'data-tile="manga"' in r.get_data(as_text=True)
+    assert r.status_code == 301
+    assert r.headers["Location"].endswith("/")   # -> the Board at `/`
 
 
 # --- band 1: verdict --------------------------------------------------------
@@ -291,6 +289,8 @@ def test_board_tiles_jobs_and_keeps_the_estimate_word(full_app):
     assert "Amazon" not in body and "old versions" not in body
     assert 'href="/how-it-works#notices"' in body and 'href="/how-it-works#numbers"' in body
     assert "+ New job" not in body and "New job" in body
+    for engine in ("(restic)", "(catalog)", "(rclone)"):   # no engine names on the tiles
+        assert engine not in body
 
 
 def test_board_failed_job_sorts_first_with_red_verdict(full_app):
@@ -299,3 +299,4 @@ def test_board_failed_job_sorts_first_with_red_verdict(full_app):
     assert body.index('data-tile="manga"') < body.index('data-tile="appdata"')
     assert 'class="verdict" style="border-left-color:var(--danger)"' in body
     assert 'href="/jobs/manga/runs/' in body        # the Needs you row links to the record
+    assert '<p class="when" data-when="2026-09-13T05:07:47Z">13 Sep 05:07</p>' in body   # ...and keeps its time

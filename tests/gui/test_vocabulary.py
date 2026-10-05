@@ -368,7 +368,7 @@ def test_allowed_tier_phrase_survives_on_the_cold_job(full_app):
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "app" / "gui" / "templates"
 
 DAILY_PAGES = [
-    "/", "/jobs", "/jobs/appdata", "/jobs/manga",
+    "/", "/jobs/appdata", "/jobs/manga",
     f"/jobs/appdata/runs/{APPDATA_RUN}", f"/jobs/manga/runs/{MANGA_FAIL_RUN}",
     "/activity", "/explore", "/cost", "/jobs/new", "/jobs/appdata/edit",
     "/jobs/appdata/restore", "/jobs/manga/restore",

@@ -122,7 +122,7 @@ DAILY_FORBIDDEN_TERMS: set[str] = {
 # Daily templates and their hint budget (spec §4). The budget counts elements with
 # class "hint" in the template SOURCE; "safe" and "when" are separate classes.
 DAILY_TEMPLATES: list[str] = [
-    "board.html", "jobs.html", "job.html", "activity.html", "run_record.html",
+    "board.html", "job.html", "activity.html", "run_record.html",
     "explore.html", "explore_index.html", "restore.html", "cost.html", "job_form.html",
 ]
 HINT_BUDGET = 3

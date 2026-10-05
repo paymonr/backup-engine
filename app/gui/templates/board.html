@@ -2,12 +2,11 @@
 {#- Board — the split status/cost home (spec 5.1, 8.1; Ledger spec 2026-10-04 §6.1).
     Server-rendered from status.board() + the cache-only cost object; the client
     polls /status.json every 30 s (spec 5.1) to flash changed tokens and tick the
-    clock/countdown. Jobs render as tiles (the tile macro in _macros.html, shared
-    with the Jobs list). Times are ISO UTC in data-* attributes. -#}
+    clock/countdown. Jobs render as tiles (the tile macro in _macros.html).
+    Times are ISO UTC in data-* attributes. -#}
 {% set MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'] %}
-{% set MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
-
 {% import "_macros.html" as m with context %}
+{% set MON = m.MON %}
 {% set money, dur, hhmm, datelabel, prov = m.money, m.dur, m.hhmm, m.datelabel, m.prov %}
 {%- macro smoney(v) -%}{% if v is not none %}{{ '+' if v >= 0 else '−' }}${{ '{:,.2f}'.format(v|abs) }}{% else %}—{% endif %}{%- endmacro -%}
 
@@ -45,6 +44,7 @@
         <div class="rrow"><span class="dot {{ {'blocker':'dot-danger','warning':'dot-warn'}.get(lvl, 'dot-ok') }}"></span><div>
           <p>{% if row.strong %}<strong>{{ row.strong }}</strong> {% endif %}{{ row.text }}{% if row.record %} <a href="{{ row.record }}">Open the record</a>{% endif %}</p>
           {% if row.errline %}<code class="errline">{{ row.errline }}</code>{% endif %}
+          {% if row.when %}<p class="when" data-when="{{ row.when }}">{{ datelabel(row.when) }} {{ hhmm(row.when) }}</p>{% endif %}
         </div></div>
         <div class="act">
           {% if row.fix %}<a class="btn btn-primary btn-sm" href="{{ row.fix.href }}">{{ row.fix.label }}</a>{% endif %}

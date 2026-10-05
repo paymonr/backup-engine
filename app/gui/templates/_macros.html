@@ -1,5 +1,5 @@
-{#- Shared figure macros + the job tile (spec 2026-10-04 §6.1): the Board and the
-    Jobs list both render jobs as tiles, so the tile lives here once.
+{#- Shared figure macros + the job tile (spec 2026-10-04 §6.1), used by the Board.
+    Exports MON for the importing template's own date labels.
     Import with `{% import "_macros.html" as m with context %}`. -#}
 {% set MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
 

@@ -1921,9 +1921,10 @@ def provision_automated_run():
 
 @bp.get("/jobs")
 def jobs_page():
-    # The Jobs list (Ledger spec 2026-10-04 §6.1): the Board's job tiles on their own
-    # page, from the same payload the Board renders. Save/run/delete redirect here.
-    return render_template("jobs.html", status=_board_payload(current_app.config))
+    # The job table folded into the Board (spec 5.1, ruling R-H): `/jobs` is now a
+    # permanent redirect home. Save/run/delete still redirect here by name, which
+    # lands the user on the Board.
+    return redirect(url_for("gui.index"), code=301)
 
 # --- create/edit job wizard (spec 5.8 / 5.9 / 8.6 / 8.10) ------------------
 #
