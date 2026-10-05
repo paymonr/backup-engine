@@ -200,7 +200,7 @@
         <span>{{ label }} &nbsp;<span class="mono faint">({{ '0%' if val == 0 else '~' ~ val ~ '%' }})</span></span></label>
       {% endfor %}
     </div>
-    <p class="sm faint">{{ vocab.ASSUMED }}. It never changes what gets backed up.</p>
+    <p class="sm faint">This is {{ vocab.ASSUMED|lower }}. It never changes what gets backed up.</p>
     {{ wasrow('change_rate_pct') }}
 
     <!-- How long to keep earlier copies -->
@@ -352,9 +352,9 @@
     {{ wasrow('schedule') }}
   </section>
 
-  <!-- Name and kind (job name) -->
+  <!-- Name (job name) -->
   <section class="band sec{{ dim }}" id="band-name">
-    <div class="band-head"><p class="slabel">Name and kind</p></div>
+    <div class="band-head"><p class="slabel">Name</p></div>
     {% set dest = ('s3://' ~ bucket ~ '/appdata/') if fv.type == 'versioned' else ('s3://' ~ bucket ~ '/media/' ~ (fv.name or '<name>') ~ '/') %}
     {% if is_edit %}
     <dl class="def"><dt>Job name</dt><dd><span class="mono">{{ fv.name }}</span>
@@ -377,9 +377,9 @@
     {% if errors.get('size') %}<p class="sm" style="color:var(--danger)">{{ errors.get('size') }}</p>{% endif %}
   </section>
 
-  <!-- Storage tier (bucket) -->
+  <!-- Bucket -->
   <section class="band sec{{ dim }}" id="band-bucket">
-    <div class="band-head"><p class="slabel">Storage tier</p></div>
+    <div class="band-head"><p class="slabel">Bucket</p></div>
     {% if is_edit %}
     {#- The bucket is LOCKED after creation (5.9), just like the kind and the name: a
         dedicated bucket already holds this job's data, so the edit screen shows it as

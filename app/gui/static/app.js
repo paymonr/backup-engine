@@ -398,20 +398,20 @@ function fmtGb(gb) {
     if (!head) return;
     var change = d.breakdown ? d.breakdown.change_rate_pct : 0;
     if (change === 0) {
-      head.innerHTML = 'How long to keep old versions <span style="font-weight:400;font-size:13px;color:var(--warn)">' +
+      head.innerHTML = 'How long to keep earlier copies <span style="font-weight:400;font-size:13px;color:var(--warn)">' +
         '— no cost effect at 0% change · still bounds how far back you can restore</span>';
       if (block) block.classList.add("inert");
-      if (cons) cons.innerHTML = 'Nothing gets replaced, so there are no old versions to store — every option above adds ' +
+      if (cons) cons.innerHTML = 'Nothing gets replaced, so there are no earlier copies to store — every option above adds ' +
         '<span class="n">$0.00</span>. It is still a real choice: it bounds how far back you can restore, and how much ' +
         'one bad night can cost you.';
     } else {
-      head.textContent = "How long to keep old versions";
+      head.textContent = "How long to keep earlier copies";
       if (block) block.classList.remove("inert");
       if (cons) {
         if (d.projection.unbounded) {
           cons.innerHTML = 'Keep everything never plateaus, so no typical month is printed for it — only "still growing".';
         } else {
-          cons.innerHTML = "At ~" + Math.round(change) + "% change, old versions settle at about " +
+          cons.innerHTML = "At ~" + Math.round(change) + "% change, earlier copies settle at about " +
             (d.breakdown.old_multiplier).toFixed(2) + "× your data — <span class=\"n\">" + money(d.breakdown.versioning) +
             "</span> of the <span class=\"n\">" + money(d.this_job_monthly) +
             "</span>. Keeping less also limits how far back you can restore, which is worth something at 0% too.";
@@ -445,7 +445,7 @@ function fmtGb(gb) {
         ? ' <span id="foot-was"' + (footChanged(d) ? "" : " hidden") + ">(was <span>" +
           money(savedCmp.typical) + "</span>)</span>" : "";
       foot.innerHTML = lead + ' — this job <span class="n" id="foot-job">' + jt + '</span>' + wasHtml +
-        ' · all jobs <span class="n" id="foot-all">' + at + '</span> &nbsp;<a href="/cost">over time →</a>';
+        ' · all jobs <span class="n" id="foot-all">' + at + '</span> &nbsp;<a href="/cost">over time</a>';
     }
     var wt = $("#working-text");
     if (wt && d.breakdown) {
@@ -611,7 +611,7 @@ function fmtGb(gb) {
       setRadio(k, v);
     });
   }
-  // mark the change rate "set" the first time a radio is clicked (5.8 §3.1 tri-state)
+  // mark change_rate_pct "set" the first time a radio is clicked (5.8 §3.1 tri-state)
   $$('input[name="change_rate_pct"]', form).forEach(function (r) {
     r.addEventListener("change", function () { var h = $("#change-rate-touched"); if (h) h.value = "1"; });
   });

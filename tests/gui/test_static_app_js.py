@@ -72,3 +72,21 @@ def test_dedicated_bucket_hint_covers_the_empty_suffix_case():
     m = re.search(r"function updateHint\(\) \{.*?\n  \}", src, re.S)
     assert m, "updateHint() not found in app.js"
     assert 'v !== base + "-"' in m.group(0)
+
+
+def test_app_js_uses_plain_words_no_arrow_links():
+    # Plain-words lint (spec 2026-10-04 §3/§4), app.js scope (Task 8 fix round): the
+    # repaint functions build the same prose the server renders, so they must carry
+    # the same banned-word ban. Whole-word (\b) so a JSON/data key like
+    # `old_versions_gb` or a selector never trips this.
+    src = APP_JS.read_text()
+    banned = ["old version", "old versions", "delete marker", "delete markers",
+              "Amazon", "scratch folder", "The model says", "assumption",
+              "assumptions", "change rate"]
+    hits = [w for w in banned if re.search(r"\b" + re.escape(w) + r"\b", src)]
+    assert hits == [], f"banned word(s) in app.js: {hits}"
+    # No arrow glued to link text (tone, spec §5): neither straight into a closing
+    # tag/quote nor immediately before one.
+    assert "→<" not in src
+    assert not re.search(r"→\s*</a>", src)
+    assert not re.search(r"→\s*\"", src)

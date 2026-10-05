@@ -73,7 +73,8 @@ def test_new_form_renders_numbered_sections(client):
     # Ledger band grammar (Task 8): the numbered "N · Heading" headings were
     # dropped in favour of margin slabels on each band.
     body = client.get("/jobs/new").get_data(as_text=True)
-    for slabel in ("Source", "Name and kind", "Storage tier", "What it keeps", "Cost", "Schedule"):
+    for slabel in ("Source", "Name and kind", "Storage tier", "What it keeps", "Cost", "Schedule",
+                   "Name", "Bucket"):
         assert f'<p class="slabel">{slabel}</p>' in body, slabel
     # fresh (no folder): sections 2-4 dimmed with the reason (never hidden).
     assert "sec dimmed" in body
