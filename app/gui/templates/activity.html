@@ -30,6 +30,8 @@
   <p class="slabel">Activity</p>
   <h1>What this machine has done</h1>
 
+  <section class="band band-wide" id="band-activity">
+  <p class="slabel">Activity</p>
   {# ---- filters (submit as query parameters) ---------------------------- #}
   <form method="get" action="/activity" class="filterrow" style="display:flex;flex-wrap:wrap;gap:var(--sp-3);margin:var(--sp-5) 0" id="activity-filters">
     <label class="fld">Job
@@ -98,6 +100,7 @@
   </p>
   {% endif %}
   {% endif %}
+  </section>
 
   <div class="band-head" style="margin-top:var(--sp-6);border-top:1px solid var(--rule);padding-top:var(--sp-4)">
     <a class="linklike" href="/logs">Raw shared log</a>

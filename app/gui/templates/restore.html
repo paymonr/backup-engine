@@ -25,6 +25,8 @@
   </h1>
   <p class="lead">Here is exactly what is about to happen, what it costs, and how long it takes. Nothing has started yet.</p>
 
+  <section class="band" id="band-get-back">
+  <p class="slabel">Get data back</p>
   {% if blocker %}
   <div class="guard" style="margin-top:var(--sp-5)">
     <strong>{{ blocker }}</strong>
@@ -103,6 +105,7 @@
 
   <p style="margin-top:var(--sp-4)"><a class="linklike" href="/jobs/{{ name }}">← back to {{ name }}</a></p>
   {% endif %}
+  </section>
 </section>
 
 <script>

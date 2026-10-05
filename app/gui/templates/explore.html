@@ -18,6 +18,8 @@
   <p class="slabel"><a href="{{ url_for('gui.explore_index') }}">Explore</a></p>
   <h1>{{ name }}</h1>
 
+  <section class="band band-wide" id="band-contents">
+  <p class="slabel">Contents</p>
   {#- Task 9 hook: app.js finds this pane, swaps its innerHTML in place on
       directory-link clicks (fetching the same ?path= HTML and reusing it
       verbatim), and falls back to a normal navigation on any failure. The
@@ -112,5 +114,6 @@
   </table>
   {% endif %}
   </div>
+  </section>
 </section>
 {% endblock %}

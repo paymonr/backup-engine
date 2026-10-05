@@ -132,3 +132,13 @@ def test_job_form_blocked_storage_tiers_are_styled():
     assert "display:block" in reason and "var(--danger)" in reason
     assert "var(--faint)" in _rule(css, "table.classes tr.blocked td")
     assert "td.struck{" in css.replace(" ", "") and ".reason{" in css.replace(" ", "")
+
+
+@pytest.mark.parametrize("template,title", [
+    ("activity.html", "Activity"), ("run_record.html", "Record"),
+    ("explore_index.html", "Your backups"), ("explore.html", "Contents"),
+    ("restore.html", "Get data back")])
+def test_plain_screens_use_the_band_grammar(template, title):
+    # spec §6.1: the main content sits in a band with its margin title (fix wave G).
+    src = (ROOT / "app" / "gui" / "templates" / template).read_text()
+    assert re.search(r'<section class="band[^"]*"[^>]*>\s*<p class="slabel">' + re.escape(title) + "</p>", src), template

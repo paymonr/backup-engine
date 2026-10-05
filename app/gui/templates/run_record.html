@@ -22,6 +22,8 @@
   </div>
   <p class="lead" id="run-lead" style="margin-top:var(--sp-3)">{{ lead }}</p>
 
+  <section class="band band-wide" id="band-record">
+  <p class="slabel">Record</p>
   {% if pending %}
   {# ---- pending: the landing page of every launch (5.3) ------------------ #}
   <div class="step" style="margin-top:var(--sp-5)" data-base="{{ base_url }}" id="pending-card">
@@ -91,6 +93,7 @@
     {% endif %}
   </div>
   {% endif %}
+  </section>
 
   <p style="margin-top:var(--sp-5)">
     <a class="linklike" href="{{ back_href }}">{{ back_label }}</a>

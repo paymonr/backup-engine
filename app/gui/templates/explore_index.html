@@ -12,6 +12,8 @@
 <section class="screen dense" aria-label="Explore">
   <p class="slabel">Explore</p>
   <h1>Browse your backups</h1>
+  <section class="band band-wide" id="band-backups">
+  <p class="slabel">Your backups</p>
   {% if jobs %}
   <div class="tiles">
     {% for j in jobs %}
@@ -21,5 +23,6 @@
   {% else %}
   <p class="lead">No jobs yet.</p>
   {% endif %}
+  </section>
 </section>
 {% endblock %}
