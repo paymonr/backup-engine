@@ -508,3 +508,12 @@ def test_explore_pages_are_terse(client, example):
     assert "Browse your backups" in idx and "→" not in idx
     page = client.get("/explore/appdata").get_data(as_text=True)
     assert "Restore point" in page and "→" not in page
+
+
+def test_explore_tiles_show_the_schedule_state_not_ok(client, example):
+    # fix wave I: a tile's token is the schedule state (Scheduled / Paused); "OK"
+    # claimed a health the Explore list never checks.
+    import re
+    body = client.get("/explore").get_data(as_text=True)
+    toks = re.findall(r'<span class="tok tok-(?:ok|paused)">([^<]*)</span>', body)
+    assert toks and set(toks) <= {"Scheduled", "Paused"}, toks

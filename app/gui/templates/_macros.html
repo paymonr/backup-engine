@@ -63,7 +63,7 @@
 {%- macro explore_tile(j) -%}
 <article class="tile" data-tile="{{ j.name }}">
   <div>
-    <span class="tok tok-{{ 'ok' if j.enabled else 'paused' }}">{{ vocab.STATE_NAMES.OK if j.enabled else vocab.STATE_NAMES.PAUSED }}</span>
+    <span class="tok tok-{{ 'ok' if j.enabled else 'paused' }}">{{ 'Scheduled' if j.enabled else vocab.STATE_NAMES.PAUSED }}</span>
     <div class="name"><a href="/explore/{{ j.name }}">{{ j.name }}</a></div>
     <p class="kindl">{{ vocab.TYPE_NAMES.get(j.type, j.type) }}</p>
   </div>
