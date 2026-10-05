@@ -139,7 +139,7 @@
             <button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left;color:var(--danger)">Delete…</button>
           </form>
           {% if job.dedicated and job.bucket %}
-          <p class="hint" style="margin-top:var(--sp-2)">Deleting this job won't delete its bucket <code>{{ job.bucket }}</code> or its data (it stays in S3 and keeps billing).</p>
+          <p class="safe" style="margin-top:var(--sp-2)">Deleting this job won't delete its bucket <code>{{ job.bucket }}</code> or its data (it stays in S3 and keeps billing).</p>
           {% endif %}
         </div>
       </details>
@@ -402,7 +402,7 @@
         {% if cost.delta %}
         <p class="delta" style="margin-top:var(--sp-4)">Projection against the real bill, whole account: model <b>{{ money(cost.model_monthly) }}</b> · invoice <b>{{ money(cost.invoice.amount) }}</b> · <b>{{ cost.delta.short.split(' · ')[0] }}</b></p>
         {% endif %}
-        <p class="when">The bill is one figure for the whole account, so it is not split per job.</p>
+        <p class="when">Not split per job.</p>
         {% if cost.price %}
         <div class="legend"><span class="price-stamp" id="price-stamp">prices: {{ cost.price.kind }} table {{ cost.price.date }}</span></div>
         {% endif %}

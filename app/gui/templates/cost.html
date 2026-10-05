@@ -55,7 +55,7 @@
   </div>
   {% if cost.delta %}<p class="delta">{{ vocab.ESTIMATE|lower }} <b>{{ money(cost.monthly_total) }}</b> · invoice <b>{{ money(inv.amount) }}</b> · <b>{{ cost.delta.short.split(' · ')[0] }}</b> — {{ cost.delta.verdict }}.</p>{% endif %}
   {% if inv and not inv.tag_scoped and cost.billing.connected %}
-  <p class="sig-note">This invoice is the whole {{ vocab.AWS }} account, not just these backups. Until a cost-allocation tag scopes it (Keys &amp; secrets → Billing), the difference above compares an estimate for two folders against everything you pay {{ vocab.AWS }}.</p>
+  <p class="sig-note">This invoice is the whole {{ vocab.AWS }} account until a cost-allocation tag scopes it under Keys &amp; secrets.</p>
   {% elif not cost.billing.connected %}
   <p class="sig-note">Last invoice is empty — <a class="linklike" href="/setup/keys#billing">Connect {{ vocab.AWS }} billing</a></p>
   {% endif %}
@@ -166,7 +166,7 @@
       </tbody>
     </table>
   </div>
-  <p class="sm faint measure">Getting it back is warm-up plus download out of {{ vocab.AWS }}. It does not get cheaper when the storage does.</p>
+  <p class="sm faint measure">Getting it back is warm-up plus download out of {{ vocab.AWS }}.</p>
 </section>
 
 {# ================= Band 5 — What we assumed, and billing ================= #}
@@ -181,7 +181,7 @@
     <dt>Retrieval speed</dt><dd>{{ cost.assumptions.scenario.retrieval_tier }}</dd>
   </dl>
 
-  <p class="lead">Optional and read-only: a separate Cost Explorer credential, never the runtime backup key.</p>
+  <p class="lead">Billing uses its own read-only key, never the backup key.</p>
   {% if cost.billing.connected %}
   <p>Billing: connected · read-only Cost Explorer credential · {% if cost.billing.tag %}tag {{ cost.billing.tag }}{% else %}tag not scoped{% endif %} · <a class="linklike" href="/setup/keys#billing">Change under Keys &amp; secrets</a></p>
   {% else %}
