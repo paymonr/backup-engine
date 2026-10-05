@@ -477,7 +477,7 @@ def test_storage_summary_logs_the_verbose_lines_and_records_its_figures(tmp_path
     log = Path(cache, recs[0]["log"]).read_text()
     assert "storage summary: media/movies/ in my-bucket\n" in log
     assert "current files: 2 (9 B)\n" in log
-    assert "old versions: 3 (1 B)\n" in log
+    assert "earlier copies: 3 (1 B)\n" in log
     assert "delete markers: 0\n" in log
     assert "listed in " in log
     end = recs[1]

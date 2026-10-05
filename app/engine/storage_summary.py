@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import lifecycle
-from ..gui import provision, units
+from ..gui import provision, units, vocab
 
 RANK_CAP = 101          # ranks above S3's NewerNoncurrentVersions maximum (100) fold into 101
 PAGE_KEYS = 1000        # versions per ListObjectVersions page (S3's maximum)
@@ -289,22 +289,22 @@ def describe(summary: dict, rule=None, *, rule_known: bool = True, took_s: float
     lines = [f"storage summary: {where} in {summary.get('bucket', '')}",
              f"current files: {st['current_objects']:,} ({units.fmt_bytes(st['current_bytes'])})"]
     if st["noncurrent_versions"]:
-        old = f"old versions: {st['noncurrent_versions']:,} ({units.fmt_bytes(st['noncurrent_bytes'])})"
+        old = f"{vocab.EARLIER_COPIES}: {st['noncurrent_versions']:,} ({units.fmt_bytes(st['noncurrent_bytes'])})"
         if st["oldest_age_days"] is not None:
-            old += f" — the oldest was replaced {lifecycle._days(st['oldest_age_days'])} ago"
+            old += f", the oldest was replaced {lifecycle._days(st['oldest_age_days'])} ago"
         lines.append(old)
     else:
-        lines.append("old versions: none")
+        lines.append(f"{vocab.EARLIER_COPIES}: none")
     markers = f"delete markers: {st['delete_markers']:,}"
     if st["delete_markers"]:
-        markers += " (files that were removed; their old versions are counted above)"
+        markers += f" (files that were removed; their {vocab.EARLIER_COPIES} are counted above)"
     lines.append(markers)
     if rule_known:
         rd, rn = lifecycle.expiry(rule)
         if rd == math.inf:
-            lines.append("rule: old versions are kept for good")
+            lines.append(f"rule: {vocab.EARLIER_COPIES} are kept for good")
         else:
-            head = f"rule: S3 removes old versions {lifecycle._days(int(rd))} after they were replaced"
+            head = f"rule: S3 removes {vocab.EARLIER_COPIES} {lifecycle._days(int(rd))} after they were replaced"
             if rn:
                 head += f", keeping the newest {rn} per file"
             due = due_soon(summary, rule)
@@ -314,7 +314,7 @@ def describe(summary: dict, rule=None, *, rule_known: bool = True, took_s: float
                         f"in the next {DUE_WINDOW_DAYS} days")
             else:
                 tail = f"nothing goes in the next {DUE_WINDOW_DAYS} days"
-            lines.append(f"{head} — {tail}")
+            lines.append(f"{head}; {tail}")
     if took_s is not None:
         lines.append(f"listed in {took_s:.0f} s")
     return lines

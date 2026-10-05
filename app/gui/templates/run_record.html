@@ -38,28 +38,33 @@
 
     {% if live %}<p class="progress" id="run-progress" style="margin-bottom:var(--sp-4)">working… {{ ('%d m %02d s'|format(elapsed_s // 60, elapsed_s % 60)) if elapsed_s is not none else '' }}</p>{% endif %}
 
+    <div class="statusstrip" style="margin-bottom:var(--sp-4)">
+      <div class="sfig"><span class="k">Started</span>
+        <span class="v mono">{{ detail.started_full or '—' }}</span></div>
+      <div class="sfig"><span class="k">Finished</span>
+        <span class="v mono">{{ detail.finished_full or '—' }}</span></div>
+      <div class="sfig"><span class="k">Took</span>
+        <span class="v">{{ detail.took_txt or '—' }}</span>
+        {% if detail.typical_txt %}<span class="s">{{ detail.typical_txt }}</span>{% endif %}</div>
+      <div class="sfig"><span class="k">Started by</span>
+        <span class="v">{{ detail.started_by }}</span></div>
+    </div>
+
+    {% if detail.restore_point or detail.what_it_did or rec.exit_code is not none or rec.error %}
     <dl class="defgrid">
-      <dt>Outcome</dt><dd><span class="tok {{ tokcls }}">{{ outcome_label }}</span></dd>
-      <dt>Started</dt><dd class="mono">{{ detail.started_full or '—' }}</dd>
-      <dt>Finished</dt><dd class="mono">{{ detail.finished_full or '—' }}</dd>
-      <dt>Took</dt><dd>{{ detail.took_txt or '—' }}{% if detail.typical_txt %} <span class="hint">{{ detail.typical_txt }}</span>{% endif %}</dd>
-      <dt>Started by</dt><dd>{{ detail.started_by }}</dd>
       {% if detail.restore_point %}<dt>Restore point</dt><dd class="mono">{{ detail.restore_point }}</dd>{% endif %}
       {% if detail.what_it_did %}<dt>What it did</dt><dd>{{ detail.what_it_did }}</dd>{% endif %}
       {% if rec.exit_code is not none %}<dt>Exit code</dt><dd class="mono">{{ rec.exit_code }}</dd>{% endif %}
       {% if rec.error %}<dt>Error</dt><dd><code class="errline">{{ rec.error }}</code></dd>{% endif %}
     </dl>
+    {% endif %}
 
     {% if error_class %}
-    {# ---- recognised error class: why / what to do (7.4) ----------------- #}
-    <div class="grid2" style="margin-top:var(--sp-5)">
-      <div>
-        <p class="slabel">Why this happens</p>
-        <p>{% if rec.phase == 'prune' %}The files themselves were copied; the clean-up of old versions was refused, so the keep rule is not being applied. {% endif %}{{ error_class.cause }}</p>
-      </div>
-      <div>
-        <p class="slabel">What to do</p>
-        <p>{{ error_class.fix }}</p>
+    {# ---- recognised error class: why it happened and the fix (7.4) ------ #}
+    <div class="sig sig-failure" style="margin-top:var(--sp-5)">
+      <div class="body">
+        <p>{% if rec.phase == 'prune' %}The files themselves were copied; the clean-up of {{ vocab.EARLIER_COPIES }} was refused, so the keep rule is not being applied. {% endif %}{{ error_class.cause }}</p>
+        <p style="margin-top:var(--sp-2)">{{ error_class.fix }}</p>
         {% if error_class.fix_label %}<p style="margin-top:var(--sp-3)"><a class="btn btn-primary" href="{{ error_class.fix_route.replace('<name>', name) if error_class.fix_route and name else (error_class.fix_route or '#') }}">{{ error_class.fix_label }}</a></p>{% endif %}
       </div>
     </div>
@@ -82,7 +87,7 @@
     {% if rec.log %}
     <pre id="runlog" data-offset="{{ log_offset }}" data-eof="{{ 1 if log_eof else 0 }}">{{ log_text }}</pre>
     {% else %}
-    <p class="hint">This run predates run history; only the shared log exists. <a class="linklike" href="/logs">Open the shared log →</a></p>
+    <p class="hint">This run predates run history; only the shared log exists. <a class="linklike" href="/logs">Open the shared log</a></p>
     {% endif %}
   </div>
   {% endif %}
@@ -90,7 +95,7 @@
   <p style="margin-top:var(--sp-5)">
     <a class="linklike" href="{{ back_href }}">{{ back_label }}</a>
     &nbsp;·&nbsp;
-    <a class="linklike" href="/activity">All activity →</a>
+    <a class="linklike" href="/activity">All activity</a>
   </p>
 </section>
 

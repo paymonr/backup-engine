@@ -237,9 +237,9 @@ def test_describe_spells_out_the_summary_in_several_lines():
     lines = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 30}}, took_s=3.4)
     assert lines[0] == f"storage summary: media/manga/ in {B}"
     assert lines[1] == "current files: 2 (207 B)"
-    assert lines[2] == "old versions: 3 (1 KB) — the oldest was replaced 13 days ago"
-    assert lines[3] == "delete markers: 1 (files that were removed; their old versions are counted above)"
-    assert lines[4] == "rule: S3 removes old versions 30 days after they were replaced — nothing goes in the next 7 days"
+    assert lines[2] == "earlier copies: 3 (1 KB), the oldest was replaced 13 days ago"
+    assert lines[3] == "delete markers: 1 (files that were removed; their earlier copies are counted above)"
+    assert lines[4] == "rule: S3 removes earlier copies 30 days after they were replaced; nothing goes in the next 7 days"
     assert lines[5] == "listed in 3 s"
 
 
@@ -247,21 +247,21 @@ def test_describe_counts_what_goes_in_the_next_week():
     s = _scan()
     # ages 1, 3 and 13 days: a 15-day rule reaches the 13-day-old one within a week (50 B)
     l15 = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 15}})
-    assert l15[4] == "rule: S3 removes old versions 15 days after they were replaced — about 1 (50 B) goes in the next 7 days"
+    assert l15[4] == "rule: S3 removes earlier copies 15 days after they were replaced; about 1 (50 B) goes in the next 7 days"
     # a 5-day rule: all three are at or past due (S3 removes them within about a day)
     l5 = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 5}})
-    assert l5[4] == "rule: S3 removes old versions 5 days after they were replaced — about 3 (1 KB) go in the next 7 days"
+    assert l5[4] == "rule: S3 removes earlier copies 5 days after they were replaced; about 3 (1 KB) go in the next 7 days"
     # newest-N exemptions are honoured (rank 2 is the only one beyond the newest 1)
     ln = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 5, "NewerNoncurrentVersions": 1}})
-    assert ln[4] == ("rule: S3 removes old versions 5 days after they were replaced, keeping the newest 1 per file"
-                     " — about 1 (50 B) goes in the next 7 days")
+    assert ln[4] == ("rule: S3 removes earlier copies 5 days after they were replaced, keeping the newest 1 per file"
+                     "; about 1 (50 B) goes in the next 7 days")
 
 
 def test_describe_without_a_rule_or_a_timing():
     s = _scan()
-    # rule known to be absent / disabled: old versions stay for good
-    assert ss.describe(s, rule=None)[4] == "rule: old versions are kept for good"
-    assert ss.describe(s, rule={"Status": "Disabled"})[4] == "rule: old versions are kept for good"
+    # rule known to be absent / disabled: earlier copies stay for good
+    assert ss.describe(s, rule=None)[4] == "rule: earlier copies are kept for good"
+    assert ss.describe(s, rule={"Status": "Disabled"})[4] == "rule: earlier copies are kept for good"
     # the rules were never checked: no rule line at all, and no timing line without took_s
     lines = ss.describe(s, rule_known=False)
     assert len(lines) == 4 and not any(l.startswith("rule:") for l in lines)
@@ -274,8 +274,14 @@ def test_describe_handles_an_empty_folder_and_whole_bucket():
     lines = ss.describe(empty, rule=None)
     assert lines[0] == f"storage summary: whole bucket in {B}"
     assert lines[1] == "current files: 0 (0 B)"
-    assert lines[2] == "old versions: none"
+    assert lines[2] == "earlier copies: none"
     assert lines[3] == "delete markers: 0"
+
+
+def test_describe_never_says_old_versions():
+    s = _scan()
+    text = "\n".join(ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 30}}, took_s=1))
+    assert "old version" not in text and "earlier copies" in text
 
 
 def test_stats_picks_the_record_figures():

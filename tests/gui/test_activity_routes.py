@@ -214,3 +214,17 @@ def test_provision_validate_success_writes_provision_record(client, app, monkeyp
     assert len(setups) == 1
     assert setups[0]["what"] == "destination setup"
     assert client.get(setups[0]["record"]).status_code == 200
+
+
+# --- plain words + Ledger: terse Activity and run record (2026-10-05) -------
+
+from tests.gui.test_vocabulary import full_app, MANGA_FAIL_RUN  # noqa: F401
+
+
+def test_activity_and_record_are_terse(full_app):
+    client = full_app.test_client()
+    body = client.get("/activity").get_data(as_text=True)
+    assert "What this machine has done" in body and "Raw shared log →" not in body and "Raw shared log" in body
+    rec = client.get(f"/jobs/manga/runs/{MANGA_FAIL_RUN}").get_data(as_text=True)
+    assert 'class="sig sig-failure"' in rec and "old versions" not in rec and "earlier copies" in rec
+    assert "Open the shared log →" not in rec
