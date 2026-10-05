@@ -753,4 +753,4 @@ def test_job_form_keeps_its_fields_and_uses_plain_words(full_app):
     for name in ("name", "type", "source", "schedule", "storage_class", "retention_type"):
         assert f'name="{name}"' in body, name
     assert "assumption" not in body and "old versions" not in body
-    assert "How much changes each month" in body and "earlier copies" in body
+    assert "How much changes each backup" in body and "earlier copies" in body

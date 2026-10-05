@@ -221,7 +221,7 @@ def _apply_job_params(j: JobInputs, params: Mapping) -> JobInputs:
         backups_per_month=_num(params, f"{name}_backups_per_month", j.backups_per_month,
                                label=f"{name} backups per month"),
         change_rate_pct=_num(params, f"{name}_change_rate_pct", j.change_rate_pct,
-                             label=f"{name} {vocab.CHANGE_EACH_MONTH.lower()}"),
+                             label=f"{name}: {vocab.CHANGE_EACH_BACKUP.lower()}"),
     )
 
 
@@ -633,7 +633,7 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
     override: dict = {}
     if str(params.get("change_rate_pct", "")).strip() != "":
         override["change_rate_pct"] = _num(params, "change_rate_pct",
-                                            _ENGINE_CHANGE.get(engine, 10.0), label=vocab.CHANGE_EACH_MONTH.lower())
+                                            _ENGINE_CHANGE.get(engine, 10.0), label=vocab.CHANGE_EACH_BACKUP.lower())
     # Bundling ("my source files are packed into ~N GB archives, e.g. .cbz") — a
     # modeling input for archive / versioned-files jobs: it collapses the effective
     # object count, which is what drives the one-time upload and the cold per-object

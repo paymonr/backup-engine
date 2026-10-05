@@ -68,7 +68,7 @@ def test_cost_page_restore_note_and_no_cost_explorer_form(client):
 
 def test_cost_page_lever_form_is_get_with_noscript_recalculate(client):
     body = client.get("/cost").get_data(as_text=True)
-    assert 'id="est-form"' in body and 'method="get"' in body
+    assert 'id="lever-form"' in body and 'method="get"' in body
     assert "<noscript>" in body and "Recalculate" in body
     # the scenario Apply is a POST sibling by formaction (5.6)
     assert 'formaction="/costs/scenario"' in body

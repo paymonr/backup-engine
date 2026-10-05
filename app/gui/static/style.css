@@ -162,6 +162,8 @@ main{ width:100%; max-width:var(--maxw); margin-inline:auto; padding:2rem var(--
 .stamp, .price-stamp{ font-family:var(--font-mono); font-size:.72rem; color:var(--faint); }
 .legend{ display:flex; gap:1rem; flex-wrap:wrap; font-size:.78rem; color:var(--muted); align-items:center; }
 .key-cell{ display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:-1px; margin-right:.3rem; background:var(--grid); }
+/* Cost chart legend: app.js drawCostChart() reads its stroke colours from these */
+.swatch-primary{ background:var(--accent); } .swatch-roll{ background:var(--ok); } .swatch-nover{ background:var(--muted); }
 .delta{ font-family:var(--font-mono); font-size:.82rem; color:var(--muted); font-variant-numeric:tabular-nums; }
 .n, .num{ font-variant-numeric:tabular-nums; }
 .formfoot .figs{ display:inline; border:0; }

@@ -99,3 +99,12 @@ def test_ofl_notice_names_every_bundled_family():
     ofl = (FONTS / "OFL.txt").read_text()
     for owner in ("Fraunces Project Authors", "Adobe", "IBM Corp"):
         assert owner in ofl, owner
+
+
+def test_cost_chart_swatches_read_tokens(app):
+    # app.js drawCostChart() strokeColor() reads these; without them it falls back to
+    # hard-coded Night Shift colours (final fix wave C).
+    css = CSS.read_text()
+    assert "var(--accent)" in _rule(css, ".swatch-primary")
+    assert "var(--ok)" in _rule(css, ".swatch-roll")
+    assert "var(--muted)" in _rule(css, ".swatch-nover")

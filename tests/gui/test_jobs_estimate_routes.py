@@ -335,7 +335,7 @@ def test_jobs_estimate_churn_param_changes_monthly(client):
 def test_wizard_page_has_change_rate_radios_and_when_matrix(client):
     body = client.get("/jobs/new").get_data(as_text=True)
     assert 'name="change_rate_pct"' in body          # change-rate radios (5.8 §3.4)
-    assert "How much changes each month" in body  # plain words (Task 8): vocab.CHANGE_EACH_MONTH
+    assert "How much changes each backup" in body  # plain words (Task 8): vocab.CHANGE_EACH_BACKUP
     assert 'id="fig-job"' in body                    # WHEN x WHOSE this-job cell (5.8 §3.6)
     assert 'id="new-working"' in body                # Show working disclosure
 

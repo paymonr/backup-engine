@@ -281,7 +281,7 @@ def due_soon(summary: dict, rule, days: int = DUE_WINDOW_DAYS) -> dict:
 
 def describe(summary: dict, rule=None, *, rule_known: bool = True, took_s: float | None = None) -> list[str]:
     """The summary in owner words, one line each: where, what is current, what is old (and
-    how old), delete markers, what the folder's rule does next (omitted when the rules were
+    how old), removed files, what the folder's rule does next (omitted when the rules were
     never checked: `rule_known=False`), and how long the listing took (when `took_s` is given).
     Pure -- sysop logs these lines; tests pin them."""
     st = stats(summary)
@@ -295,9 +295,9 @@ def describe(summary: dict, rule=None, *, rule_known: bool = True, took_s: float
         lines.append(old)
     else:
         lines.append(f"{vocab.EARLIER_COPIES}: none")
-    markers = f"delete markers: {st['delete_markers']:,}"
+    markers = f"removed files: {st['delete_markers']:,}"
     if st["delete_markers"]:
-        markers += f" (files that were removed; their {vocab.EARLIER_COPIES} are counted above)"
+        markers += f" (their {vocab.EARLIER_COPIES} are counted above)"
     lines.append(markers)
     if rule_known:
         rd, rn = lifecycle.expiry(rule)

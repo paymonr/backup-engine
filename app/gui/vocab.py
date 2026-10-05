@@ -111,7 +111,8 @@ AWS = "AWS"                                # never "Amazon" as the actor or the 
 TEMP_FOLDER = "temporary folder"           # never "scratch folder"
 ESTIMATE = "Estimate"                      # the Cost/Board figure formerly "The model says"
 ASSUMED = "What we assumed"                # formerly "Assumptions"
-CHANGE_EACH_MONTH = "How much changes each month"   # formerly "change rate"
+CHANGE_EACH_BACKUP = "How much changes each backup"   # formerly "change rate"; per backup, not
+# per month: the estimator multiplies change_rate_pct by backups_per_month, so "each month" was wrong
 
 # Banned on daily screens only (case-sensitive, whole word; Setup is exempt).
 DAILY_FORBIDDEN_TERMS: set[str] = {

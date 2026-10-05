@@ -238,7 +238,7 @@ def test_describe_spells_out_the_summary_in_several_lines():
     assert lines[0] == f"storage summary: media/manga/ in {B}"
     assert lines[1] == "current files: 2 (207 B)"
     assert lines[2] == "earlier copies: 3 (1 KB), the oldest was replaced 13 days ago"
-    assert lines[3] == "delete markers: 1 (files that were removed; their earlier copies are counted above)"
+    assert lines[3] == "removed files: 1 (their earlier copies are counted above)"
     assert lines[4] == "rule: S3 removes earlier copies 30 days after they were replaced; nothing goes in the next 7 days"
     assert lines[5] == "listed in 3 s"
 
@@ -275,13 +275,16 @@ def test_describe_handles_an_empty_folder_and_whole_bucket():
     assert lines[0] == f"storage summary: whole bucket in {B}"
     assert lines[1] == "current files: 0 (0 B)"
     assert lines[2] == "earlier copies: none"
-    assert lines[3] == "delete markers: 0"
+    assert lines[3] == "removed files: 0"
 
 
 def test_describe_never_says_old_versions():
     s = _scan()
-    text = "\n".join(ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 30}}, took_s=1))
+    from tests.gui.test_vocabulary import daily_hits
+    lines = ss.describe(s, rule={"NoncurrentVersionExpiration": {"NoncurrentDays": 30}}, took_s=1)
+    text = "\n".join(lines)
     assert "old version" not in text and "earlier copies" in text
+    assert daily_hits("<p>" + "\n".join(lines) + "</p>") == []
 
 
 def test_stats_picks_the_record_figures():

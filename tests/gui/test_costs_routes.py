@@ -253,7 +253,14 @@ def test_cost_page_uses_the_plain_words(full_app):
     body = full_app.test_client().get("/cost").get_data(as_text=True)
     for gone in ("The model says", "Assumptions and billing", "change rate", "Amazon", "old versions"):
         assert gone not in body, gone
-    for kept in ("Estimate", "What we assumed", "How much changes each month", "earlier copies", "AWS"):
+    for kept in ("Estimate", "What we assumed", "How much changes each backup", "earlier copies", "AWS"):
         assert kept in body, kept
     assert 'href="/how-it-works#numbers"' in body
-    assert 'id="cost-timeline"' in body and 'id="est-form"' in body and 'id="proj-data"' in body
+    assert 'id="cost-timeline"' in body and 'id="proj-data"' in body
+
+
+def test_cost_chart_legend_renders_the_three_swatches(full_app):
+    body = full_app.test_client().get("/cost").get_data(as_text=True)
+    for sw in ("swatch-primary", "swatch-roll", "swatch-nover"):
+        assert sw in body, sw
+    assert 'id="est-form"' not in body and 'form="est-form"' not in body

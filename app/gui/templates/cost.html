@@ -92,10 +92,11 @@
   <div class="projgrid">
     <div>
       <svg id="cost-timeline" viewBox="0 0 720 260" role="img" aria-label="Projected monthly cost over 24 months" style="width:100%;max-width:720px;height:auto"></svg>
+      <div class="legend" id="cost-legend"><span><span class="key-cell swatch-primary"></span>Your jobs</span><span><span class="key-cell swatch-roll"></span>Keep 30 days</span><span><span class="key-cell swatch-nover"></span>No {{ vocab.EARLIER_COPIES }}</span></div>
       <script type="application/json" id="proj-data">{{ cost.projection|tojson }}</script>
       {%- set m = cost.projection.primary.months[scrub_month - 1] -%}
       <label class="fld" for="month">Month</label>
-      <input type="range" id="month" name="month" min="1" max="{{ cost.projection.primary.months|length }}" value="{{ scrub_month }}" form="est-form">
+      <input type="range" id="month" name="month" min="1" max="{{ cost.projection.primary.months|length }}" value="{{ scrub_month }}" form="lever-form">
       <p class="scrub mono" id="scrub-readout">Month {{ scrub_month }} · storing your files {{ money(m.storage) }} · {{ vocab.EARLIER_COPIES }} {{ money(m.versioning) }} · uploading {{ money(m.ingest) }} · replacing {{ vocab.EARLIER_COPIES }} {{ money(m.rotation) }} · total {{ money(m.total) }}</p>
       {% if cost.projection.primary.unbounded %}<p class="hint">Still climbing at month {{ cost.projection.primary.months|length }}; keep everything never settles.</p>{% else %}<p class="s">Settles month {{ cost.projection.steady_state_month }}.</p>{% endif %}
       {% if tier_note %}<p class="sig-note" data-tier-note>{{ vocab.ESTIMATE }} doesn't include moving {{ vocab.EARLIER_COPIES }} to a cheaper tier.</p>{% endif %}
@@ -103,13 +104,13 @@
     </div>
 
     {# ---- the lever panel: one GET form; JS intercepts, no-JS submits ---- #}
-    <form class="levers card" id="est-form" method="get" action="{{ url_for('gui.cost_page_view') }}">
+    <form class="levers card" id="lever-form" method="get" action="{{ url_for('gui.cost_page_view') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <div class="levers-head"><span class="chip">scratch — not saved</span></div>
       {% for p in cost.per_job %}
       {%- set a = cost.assumptions.jobs[p.name] -%}
       <fieldset class="lever{{ changed(p.name + '_change_rate_pct') }}">
-        <legend>{{ p.name }} · {{ vocab.CHANGE_EACH_MONTH }}</legend>
+        <legend>{{ p.name }} · {{ vocab.CHANGE_EACH_BACKUP }}</legend>
         {% for opt, label in [(0,'Nothing (0%)'),(1,'A little (~1%)'),(10,'Some (~10%)'),(30,'A lot (~30%)')] %}
         <label class="radio"><input type="radio" name="{{ p.name }}_change_rate_pct" value="{{ opt }}"{% if a.change_rate_pct|round|int == opt %} checked{% endif %}> {{ label }}</label>
         {% endfor %}
@@ -208,7 +209,7 @@
 // form, so with JS off nothing is a dead control. Every read is guarded.
 (function () {
   "use strict";
-  var form = document.getElementById("est-form");
+  var form = document.getElementById("lever-form");
   var dataTag = document.getElementById("proj-data");
   var proj = null;
   try { proj = dataTag ? JSON.parse(dataTag.textContent) : null; } catch (e) { proj = null; }
