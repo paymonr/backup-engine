@@ -298,7 +298,9 @@ tr:last-child td{ border-bottom:0; }
 .rp .id{ font-size:.82rem; color:var(--muted); }
 .rp .m{ font-size:.8rem; color:var(--muted); }
 @media (max-width:640px){ .rp, .rphead{ grid-template-columns:22px minmax(0,1fr); } .rp .id, .rp .m, .rphead span:nth-child(n+3){ display:none; } }
-.needsline{ display:grid; gap:.35rem; }
+.needsline{ display:grid; gap:.35rem; margin-top:var(--sp-3); }
+/* the band's child margins stop at the form edge: space the form's own rows */
+.restore-form > * + *:not(.rp):not(input):not(select){ margin-top:var(--sp-3); }   /* picker rows stay ruled; a field sits on its label */
 .needsline > div{ display:grid; grid-template-columns:18px minmax(0,1fr); gap:.5rem; font-size:.92rem; align-items:baseline; }
 .needsline .ok{ color:var(--ok); } .needsline .warn{ color:var(--warn); }
 

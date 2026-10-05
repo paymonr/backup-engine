@@ -532,10 +532,15 @@ def test_job_page_is_terse_and_marks_the_three_questions(full_app):
 
 
 def test_job_page_rail_markup_order(full_app):
-    # Phone width: the inline rail (shown ≤820px) precedes the main column; the
-    # sticky rail follows it. Both render the same readiness rows.
+    # The figures row spans the page above the grid (spec §6.1); at phone width
+    # the inline rail (shown ≤820px) is the main column's first child, so a phone
+    # reads figures, readiness, bands. The sticky rail follows. Both rails render
+    # the same readiness rows.
     body = full_app.test_client().get("/jobs/appdata").get_data(as_text=True)
-    assert body.index('class="rail-inline"') < body.index('class="band"') < body.index('class="rail"')
+    assert (body.index('class="statusstrip"') < body.index('class="rail-inline"')
+            < body.index('class="band"') < body.index('class="rail"'))
+    # the figures row is outside the grid, not inside its left column
+    assert body.index('class="statusstrip"') < body.index('class="jobgrid"')
     assert body.count("Recovery readiness") == 2
 
 
@@ -544,3 +549,14 @@ def test_cold_job_keeps_tier_phrase_and_thaw_warning(full_app):
     assert "Thaw first, hours" in body
     assert "hours" in body and "Get data back" in body
     assert "Amazon" not in body and "old versions" not in body
+
+
+def test_missing_restore_mount_is_a_blocker_on_the_job_page(full_app, tmp_path):
+    # No restore mount: the whole Get-data-back form is blocked (5.2 / 7.5.1), so the
+    # notice is a blocker signal, never a warning or the danger-confirm .guard.
+    full_app.config["RESTORE_ROOT"] = str(tmp_path / "no-such-mount")
+    body = full_app.test_client().get("/jobs/appdata").get_data(as_text=True)
+    i = body.index("Nowhere to put restored files yet.")
+    opener = body.rindex('<div class="sig', 0, i)
+    assert body.startswith('<div class="sig sig-blocker">', opener)
+    assert 'id="restore-form"' not in body

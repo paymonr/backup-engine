@@ -152,64 +152,65 @@
     <div class="body"><span class="label">Done</span><p></p></div>
   </div>
 
+  {# ---- failure record (only when the last run failed) --------------- #}
+  {% if s.state == 'FAILED' and s.last %}
+  {% set ec = s.error_class %}
+  <div class="sig sig-failure" style="margin-bottom:var(--sp-5)">
+    <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill="currentColor"/></svg></span>
+    <div class="body">
+      <span class="label">Failed</span>
+      <p>{{ datelabel(s.last.started_at) }} {{ hhmm(s.last.started_at) }} · {% if s.last.outcome == 'aborted' %}stopped without reporting{% else %}stopped after {{ dur(s.last.duration_s) }} · exit code {{ s.last.exit_code if s.last.exit_code is not none else '—' }}{% endif %}</p>
+      {% if s.last.error %}<code class="errline">{{ s.last.error }}</code>{% endif %}
+      <div class="grid2" style="margin-top:var(--sp-4)">
+        {% if ec %}
+        <div>
+          <p class="slabel">Why this happens</p>
+          <p>{% if s.last.phase == 'prune' %}The files themselves were copied; the clean-up of {{ vocab.EARLIER_COPIES }} was refused, so the keep rule is not being applied. {% endif %}{{ ec.cause }}</p>
+        </div>
+        <div>
+          <p class="slabel">What to do</p>
+          <p>{{ ec.fix }}</p>
+          {% if ec.fix_label %}<p style="margin-top:var(--sp-3)"><a class="btn btn-primary" href="{{ ec.fix_route.replace('<name>', s.name) if ec.fix_route else ('/jobs/' + s.name + '/runs/' + s.last.id) }}">{{ ec.fix_label }}</a> &nbsp; <a class="linklike" href="/jobs/{{ s.name }}/runs/{{ s.last.id }}">open the run record</a></p>{% endif %}
+        </div>
+        {% else %}
+        <div style="grid-column:1/-1"><p>The tool reported an error this app does not recognise. Read the log in the run record; the last lines usually name the reason. <a class="linklike" href="/jobs/{{ s.name }}/runs/{{ s.last.id }}">open the run record</a></p></div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ---- status strip ------------------------------------------------- #}
+  <div class="statusstrip" style="margin-bottom:var(--sp-5)">
+    <div class="sfig"><span class="k">Last run</span>
+      <span class="v">{{ hhmm(s.last.started_at) if s.last else '—' }}</span>
+      <span class="s">{% if s.last %}{{ datelabel(s.last.finished_at or s.last.started_at) }}{% else %}never{% endif %}</span></div>
+    <div class="sfig"><span class="k">Took</span>
+      <span class="v">{{ dur(s.last.duration_s) if s.last and s.last.duration_s is not none else '—' }}</span>
+      <span class="s">{% if s.median_s %}~{{ dur(s.median_s) }} typical{% else %}no typical yet{% endif %}</span></div>
+    <div class="sfig"><span class="k">Next run</span>
+      <span class="v">{{ hhmm(s.next_run) if s.next_run else '—' }}</span>
+      <span class="s">{% if s.next_run %}{{ datelabel(s.next_run) }}{% else %}{{ s.next_run_note or 'paused' }}{% endif %}</span></div>
+    <div class="sfig"><span class="k">Streak</span>
+      <span class="v">{{ s.streak }} run{{ '' if s.streak == 1 else 's' }}</span>
+      <span class="s">{% if ledger.failed == 0 %}no failures on record{% else %}broken{% if s.last and s.last.outcome in ['failed','aborted'] %} {{ dowdate(s.last.finished_at or s.last.started_at) }}{% endif %}{% endif %}</span></div>
+    {% if is_archive %}
+    <div class="sfig"><span class="k">Copies</span>
+      <span class="v">{{ rjob.points_count if rjob else 0 }}</span>
+      <span class="s">what is there now</span></div>
+    {% else %}
+    <div class="sfig"><span class="k">Restore points <a class="qm" href="/how-it-works#restore-points" aria-label="How it works">?</a></span>
+      <span class="v">{{ pv.count }}</span>
+      <span class="s">{% if pv.oldest %}back to {{ dateyear(pv.oldest) }}{% else %}none yet{% endif %}</span></div>
+    {% endif %}
+  </div>
+
   <div class="jobgrid">
     <div>
 
-      {# ---- status strip ------------------------------------------------- #}
-      <div class="statusstrip">
-        <div class="sfig"><span class="k">Last run</span>
-          <span class="v">{{ hhmm(s.last.started_at) if s.last else '—' }}</span>
-          <span class="s">{% if s.last %}{{ datelabel(s.last.finished_at or s.last.started_at) }}{% else %}never{% endif %}</span></div>
-        <div class="sfig"><span class="k">Took</span>
-          <span class="v">{{ dur(s.last.duration_s) if s.last and s.last.duration_s is not none else '—' }}</span>
-          <span class="s">{% if s.median_s %}~{{ dur(s.median_s) }} typical{% else %}no typical yet{% endif %}</span></div>
-        <div class="sfig"><span class="k">Next run</span>
-          <span class="v">{{ hhmm(s.next_run) if s.next_run else '—' }}</span>
-          <span class="s">{% if s.next_run %}{{ datelabel(s.next_run) }}{% else %}{{ s.next_run_note or 'paused' }}{% endif %}</span></div>
-        <div class="sfig"><span class="k">Streak</span>
-          <span class="v">{{ s.streak }} run{{ '' if s.streak == 1 else 's' }}</span>
-          <span class="s">{% if ledger.failed == 0 %}no failures on record{% else %}broken{% if s.last and s.last.outcome in ['failed','aborted'] %} {{ dowdate(s.last.finished_at or s.last.started_at) }}{% endif %}{% endif %}</span></div>
-        {% if is_archive %}
-        <div class="sfig"><span class="k">Copies</span>
-          <span class="v">{{ rjob.points_count if rjob else 0 }}</span>
-          <span class="s">what is there now</span></div>
-        {% else %}
-        <div class="sfig"><span class="k">Restore points <a class="qm" href="/how-it-works#restore-points" aria-label="How it works">?</a></span>
-          <span class="v">{{ pv.count }}</span>
-          <span class="s">{% if pv.oldest %}back to {{ dateyear(pv.oldest) }}{% else %}none yet{% endif %}</span></div>
-        {% endif %}
-      </div>
-
-      {# ---- failure record (only when the last run failed) --------------- #}
-      {% if s.state == 'FAILED' and s.last %}
-      {% set ec = s.error_class %}
-      <div class="sig sig-failure" style="margin-top:var(--sp-5)">
-        <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12"><polygon points="4,1 8,1 11,4 11,8 8,11 4,11 1,8 1,4" fill="currentColor"/></svg></span>
-        <div class="body">
-          <span class="label">Failed</span>
-          <p>{{ datelabel(s.last.started_at) }} {{ hhmm(s.last.started_at) }} · {% if s.last.outcome == 'aborted' %}stopped without reporting{% else %}stopped after {{ dur(s.last.duration_s) }} · exit code {{ s.last.exit_code if s.last.exit_code is not none else '—' }}{% endif %}</p>
-          {% if s.last.error %}<code class="errline">{{ s.last.error }}</code>{% endif %}
-          <div class="grid2" style="margin-top:var(--sp-4)">
-            {% if ec %}
-            <div>
-              <p class="slabel">Why this happens</p>
-              <p>{% if s.last.phase == 'prune' %}The files themselves were copied; the clean-up of {{ vocab.EARLIER_COPIES }} was refused, so the keep rule is not being applied. {% endif %}{{ ec.cause }}</p>
-            </div>
-            <div>
-              <p class="slabel">What to do</p>
-              <p>{{ ec.fix }}</p>
-              {% if ec.fix_label %}<p style="margin-top:var(--sp-3)"><a class="btn btn-primary" href="{{ ec.fix_route.replace('<name>', s.name) if ec.fix_route else ('/jobs/' + s.name + '/runs/' + s.last.id) }}">{{ ec.fix_label }}</a> &nbsp; <a class="linklike" href="/jobs/{{ s.name }}/runs/{{ s.last.id }}">open the run record</a></p>{% endif %}
-            </div>
-            {% else %}
-            <div style="grid-column:1/-1"><p>The tool reported an error this app does not recognise. Read the log in the run record; the last lines usually name the reason. <a class="linklike" href="/jobs/{{ s.name }}/runs/{{ s.last.id }}">open the run record</a></p></div>
-            {% endif %}
-          </div>
-        </div>
-      </div>
-      {% endif %}
-
-      {# ---- the rail, inline copy for ≤820px (ruling R7) ----------------- #}
-      <aside class="rail-inline" style="margin-top:var(--sp-5)">{{ rail() }}</aside>
+      {# ---- the rail, inline copy for ≤820px (ruling R7): first in the main
+             column, so a phone reads figures, then readiness, then the bands -- #}
+      <aside class="rail-inline">{{ rail() }}</aside>
 
       {# ---- ledger — Last 30 runs --------------------------------------- #}
       <div class="band">
@@ -264,7 +265,7 @@
 
         {% if not restore.mount_ok %}
         {# Restore mount missing → the whole form is a BLOCKER (5.2 / 7.5.1). #}
-        <div class="sig sig-warning"><div class="body">
+        <div class="sig sig-blocker"><div class="body">
           <strong>Nowhere to put restored files yet.</strong> Add a path mapping to this container, host <span class="mono">/mnt/user/restore</span> to container <span class="mono">/restore</span>, read and write, then restart it. Until then, restores run from the command line into <span class="mono">/cache/restore/{{ s.name }}</span> (see the README).
         </div></div>
         {% else %}
@@ -273,7 +274,7 @@
            confirmation page (5.4). Its POST siblings (List them now, Check now)
            live outside it and are associated by the HTML5 `form=` attribute, so no
            <form> is ever nested inside another. #}
-        <form method="get" action="/jobs/{{ s.name }}/restore" id="restore-form">
+        <form method="get" action="/jobs/{{ s.name }}/restore" id="restore-form" class="restore-form">
           <input type="hidden" name="intent" value="{{ band_intent }}">
 
           {% if is_versioned or job.type == 'versioned-files' %}
@@ -368,7 +369,7 @@
           <p class="band-head more"><a class="linklike" href="/cost">Open the full cost view</a></p>
         </div>
         {% if tier_note %}<p class="sig-note" data-tier-note style="margin-bottom:var(--sp-3)">Estimate doesn't include moving {{ vocab.EARLIER_COPIES }} to a cheaper tier.</p>{% endif %}
-        {% if combined_note %}<p class="sig-note" data-combined-note style="margin-bottom:var(--sp-3)">Estimate counts a Plain copy job that keeps the newest {{ vocab.EARLIER_COPIES }} plus a number of days as keeping only those newest versions.</p>{% endif %}
+        {% if combined_note %}<p class="sig-note" data-combined-note style="margin-bottom:var(--sp-3)">Estimate counts a Plain copy job that keeps the newest {{ vocab.EARLIER_COPIES }} plus a number of days as keeping only those newest copies.</p>{% endif %}
         <div class="grid4" style="margin-bottom:var(--sp-4)">
           <div class="sfig"><span class="k">First bill</span>
             <span class="v">{% if cost.first_bill is not none %}{{ prov(money(cost.first_bill), cost.first_bill_provenance) }}{% else %}—{% endif %}</span>
