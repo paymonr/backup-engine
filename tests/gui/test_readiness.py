@@ -1,9 +1,11 @@
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.gui import readiness
 from app.engine import runs
+from tests.gui.test_vocabulary import full_app  # noqa: F401
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 16, 7, 42, tzinfo=UTC)
@@ -254,3 +256,11 @@ def test_recovery_summary_destination_never_probed(dirs, monkeypatch):
     s = readiness.recovery_summary(cfg, None, now=NOW)
     assert s["destination"]["state"] == "never"
     assert s["versioning"]["state"] in ("unknown", "never", "off", "on")
+
+
+def test_setup_screens_drop_arrows_and_say_aws(full_app):
+    client = full_app.test_client()
+    for url in ("/setup", "/setup/destination", "/setup/keys", "/setup/permissions", "/setup/storage", "/setup/about"):
+        body = client.get(url).get_data(as_text=True)
+        assert not re.search(r">[^<]*→\s*</a>", body), f"arrow on a link on {url}"
+        assert "Amazon" not in body, url

@@ -3,13 +3,14 @@
 {# About = the glossary (spec 5.13). This is the one screen where the tool names
    are explained in plain language, so it is exempt from the forbidden-term list
    (vocab.TERM_EXEMPTIONS["/setup/about"]). #}
-<section class="screen read" aria-label="About backup-engine">
+<div class="screen read" aria-label="About backup-engine">
   <p class="eyebrow">Setup · about</p>
   <h1>backup-engine</h1>
   <p><span class="fig big">{{ version }}</span> <span class="stamp">built {{ build_date }}</span></p>
 
-  <p class="slabel" style="margin-top:var(--sp-6)">The tools this app drives</p>
-  <dl class="defgrid" style="margin-top:var(--sp-3)">
+  <section class="band" id="band-tools">
+  <p class="slabel">The tools this app drives</p>
+  <dl class="defgrid">
     <dt id="restic">restic</dt>
     <dd>restic — makes the snapshot backups and keeps their history in one encrypted store.</dd>
 
@@ -26,9 +27,11 @@
     <dt id="supercronic">supercronic</dt>
     <dd>supercronic — runs the schedule inside the container.</dd>
   </dl>
+  </section>
 
-  <p class="slabel" id="tiers" style="margin-top:var(--sp-6)">Storage tiers</p>
-  <table class="classes" style="margin-top:var(--sp-3)">
+  <section class="band" id="tiers">
+  <p class="slabel">Storage tiers</p>
+  <table class="classes">
     <thead>
       <tr>
         <th style="text-align:left">Plain phrase</th>
@@ -45,8 +48,10 @@
       <tr><td>Thaw first, hours</td><td><code>DEEP_ARCHIVE</code></td><td>Warm up (up to 48 h), then read</td><td>180 days</td></tr>
     </tbody>
   </table>
+  </section>
 
-  <p class="slabel" style="margin-top:var(--sp-6)">Licences</p>
+  <section class="band" id="band-licences">
+  <p class="slabel">Licences</p>
   <p class="hint">Each tool is bundled and invoked under its own licence; the full texts ship
      alongside the tools in the container image.</p>
   <dl class="defgrid" style="margin-top:var(--sp-3)">
@@ -59,5 +64,6 @@
   <p style="margin-top:var(--sp-5)">
     <a href="https://github.com/paymonr/backup-engine" target="_blank" rel="noopener noreferrer">github.com/paymonr/backup-engine</a>
   </p>
-</section>
+  </section>
+</div>
 {% endblock %}

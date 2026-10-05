@@ -1,73 +1,83 @@
 {% extends "base.html" %}{% block title %}Guided-manual — backup-engine{% endblock %}
 {% block body %}
-<section class="screen read" aria-label="Guided-manual destination setup">
+<div class="screen read" aria-label="Guided-manual destination setup">
   <p class="eyebrow">Setup · destination · guided-manual</p>
   <h1>Guided-manual setup</h1>
   <p class="lead">No admin credentials leave your browser. Enter your bucket and region,
      then follow the walkthrough to create everything in the AWS console. Nothing is
      saved until validation passes.</p>
 
-  {% if error %}
-  <div class="sig sig-failure" data-flash="failure" style="margin-top:var(--sp-4)">
-    <span class="glyph" aria-hidden="true"></span><div class="body">{{ error }}</div>
-  </div>
-  {% endif %}
-  {% if error_detail %}
-  <details class="error-detail" open style="margin-top:var(--sp-3)">
-    <summary>What AWS reported</summary>
-    <div class="errline" style="margin-top:var(--sp-2)">{{ error_detail }}</div>
-  </details>
-  {% endif %}
+  <section class="band" id="band-bucket">
+    <p class="slabel">Bucket &amp; region</p>
 
-  <form method="post" action="{{ url_for('gui.provision_manual_render') }}" class="form" style="margin-top:var(--sp-5)">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="field"><label for="bucket">Bucket name</label>
-      <input id="bucket" name="bucket" value="{{ bucket }}" placeholder="unraid-backup-123456789012" required></div>
-    <div class="field"><label for="region">Region</label>
-      <input id="region" name="region" value="{{ region }}" required></div>
-    <p class="hint">Tip: name it <code>unraid-backup-&lt;your-account-id&gt;</code> to match the automated mode.</p>
-    <div class="formfoot"><button type="submit" class="btn btn-primary">Render policy &amp; steps</button></div>
-  </form>
+    {% if error %}
+    <div class="sig sig-failure" data-flash="failure">
+      <span class="glyph" aria-hidden="true"></span><div class="body">{{ error }}</div>
+    </div>
+    {% endif %}
+    {% if error_detail %}
+    <details class="error-detail" open style="margin-top:var(--sp-3)">
+      <summary>What AWS reported</summary>
+      <div class="errline" style="margin-top:var(--sp-2)">{{ error_detail }}</div>
+    </details>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('gui.provision_manual_render') }}" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="field fld"><label for="bucket">Bucket name</label>
+        <input id="bucket" name="bucket" value="{{ bucket }}" placeholder="unraid-backup-123456789012" required></div>
+      <div class="field fld"><label for="region">Region</label>
+        <input id="region" name="region" value="{{ region }}" required></div>
+      <p class="hint">Tip: name it <code>unraid-backup-&lt;your-account-id&gt;</code> to match the automated mode.</p>
+      <div class="formfoot"><button type="submit" class="btn btn-primary">Render policy &amp; steps</button></div>
+    </form>
+  </section>
 
   {% if policy %}
-  <p class="slabel" style="margin-top:var(--sp-6)">1 · Copy the least-privilege IAM policy</p>
-  <p class="hint">Object read/write only under <code>appdata/*</code> and <code>media/*</code> —
-     plus reading bucket versioning — never bucket configuration. Paste it in step 2
-     (IAM → your backup user → Add permissions → Create inline policy → JSON tab).</p>
-  <div class="cmd" style="margin-top:var(--sp-2)">
-    <pre>{{ policy }}</pre>
-    <button type="button" class="btn btn-sm copy" data-copy="{{ policy }}">Copy</button>
-  </div>
-
-  <p class="slabel" style="margin-top:var(--sp-6)">2 · Create the bucket &amp; IAM user</p>
-  <p class="hint">Do these in the AWS console, signed in as an admin. Follow them in order:</p>
-  <ol>{% for s in console.steps %}<li>{{ s }}</li>{% endfor %}</ol>
-  <details style="margin-top:var(--sp-3)">
-    <summary>Prefer the CLI? (needs admin creds in your shell)</summary>
+  <section class="band" id="band-policy">
+    <p class="slabel">1 · Copy the least-privilege IAM policy</p>
+    <p class="hint">Object read/write only under <code>appdata/*</code> and <code>media/*</code> —
+       plus reading bucket versioning — never bucket configuration. Paste it in step 2
+       (IAM → your backup user → Add permissions → Create inline policy → JSON tab).</p>
     <div class="cmd" style="margin-top:var(--sp-2)">
-      <pre>{% for c in console.cli %}{{ c }}
-{% endfor %}</pre>
-      <button type="button" class="btn btn-sm copy" data-copy="{{ console.cli | join('\n') }}">Copy</button>
+      <pre>{{ policy }}</pre>
+      <button type="button" class="btn btn-sm copy" data-copy="{{ policy }}">Copy</button>
     </div>
-  </details>
+  </section>
 
-  <p class="slabel" style="margin-top:var(--sp-6)">3 · Test &amp; Validate the runtime key</p>
-  <p class="hint">Paste the access key you created in step 2. We do a real list → put → get →
-     delete under <code>appdata/</code> to prove the key works before saving anything.</p>
-  <form method="post" action="{{ url_for('gui.provision_validate') }}" class="form" style="margin-top:var(--sp-3)">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <input type="hidden" name="bucket" value="{{ bucket }}">
-    <input type="hidden" name="region" value="{{ region }}">
-    <div class="field"><label for="ak">Access key <code class="hint">AWS_ACCESS_KEY_ID</code></label>
-      <input id="ak" name="AWS_ACCESS_KEY_ID" autocomplete="off" required></div>
-    <div class="field"><label for="sk">Secret key <code class="hint">AWS_SECRET_ACCESS_KEY</code></label>
-      <input id="sk" name="AWS_SECRET_ACCESS_KEY" type="password" autocomplete="off" required></div>
-    <div class="formfoot" data-progress="Validating…">
-      <button type="submit" class="btn btn-primary">Test &amp; Validate</button>
-    </div>
-  </form>
-  <p class="hint" style="margin-top:var(--sp-3)">On success the key is saved write-only, the
-     region/bucket are set, and you land back on Setup.</p>
+  <section class="band" id="band-console">
+    <p class="slabel">2 · Create the bucket &amp; IAM user</p>
+    <p class="hint">Do these in the AWS console, signed in as an admin. Follow them in order:</p>
+    <ol>{% for s in console.steps %}<li>{{ s }}</li>{% endfor %}</ol>
+    <details style="margin-top:var(--sp-3)">
+      <summary>Prefer the CLI? (needs admin creds in your shell)</summary>
+      <div class="cmd" style="margin-top:var(--sp-2)">
+        <pre>{% for c in console.cli %}{{ c }}
+{% endfor %}</pre>
+        <button type="button" class="btn btn-sm copy" data-copy="{{ console.cli | join('\n') }}">Copy</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="band" id="band-validate">
+    <p class="slabel">3 · Test &amp; Validate the runtime key</p>
+    <p class="hint">Paste the access key you created in step 2. We do a real list → put → get →
+       delete under <code>appdata/</code> to prove the key works before saving anything.</p>
+    <form method="post" action="{{ url_for('gui.provision_validate') }}" class="form" style="margin-top:var(--sp-3)">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="bucket" value="{{ bucket }}">
+      <input type="hidden" name="region" value="{{ region }}">
+      <div class="field fld"><label for="ak">Access key <code class="hint">AWS_ACCESS_KEY_ID</code></label>
+        <input id="ak" name="AWS_ACCESS_KEY_ID" autocomplete="off" required></div>
+      <div class="field fld"><label for="sk">Secret key <code class="hint">AWS_SECRET_ACCESS_KEY</code></label>
+        <input id="sk" name="AWS_SECRET_ACCESS_KEY" type="password" autocomplete="off" required></div>
+      <div class="formfoot" data-progress="Validating…">
+        <button type="submit" class="btn btn-primary">Test &amp; Validate</button>
+      </div>
+    </form>
+    <p class="hint" style="margin-top:var(--sp-3)">On success the key is saved write-only, the
+       region/bucket are set, and you land back on Setup.</p>
+  </section>
   {% endif %}
-</section>
+</div>
 {% endblock %}

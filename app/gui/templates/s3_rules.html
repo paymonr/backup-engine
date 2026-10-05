@@ -12,7 +12,7 @@
 {%- endif -%}
 {%- endmacro -%}
 {% block body %}
-<section class="screen dense" aria-label="S3 rules">
+<div class="screen dense" aria-label="S3 rules">
   <p class="eyebrow">Setup · S3 rules</p>
   <h1>What S3 keeps, and for how long</h1>
   <p class="lead">These rules run inside AWS, even when this machine is off. Plain copy history lives
@@ -20,19 +20,27 @@
      for data they already removed.</p>
 
   {% if not v.provisioned %}
-  <p class="hint" style="margin-top:var(--sp-5)">Set up the destination first —
-     <a class="linklike" href="/setup/destination">Where backups go →</a></p>
+  <section class="band" id="band-unprovisioned">
+    <p class="slabel">Status</p>
+    <p class="hint">Set up the destination first —
+       <a class="linklike" href="/setup/destination">Where backups go</a></p>
+  </section>
   {% elif not v.managed %}
-  <div class="sig sig-warning" style="margin-top:var(--sp-5)" data-s3-state="not-managed">
-    <span class="glyph" aria-hidden="true"></span>
-    <div class="body">backup-engine keeps these rules in step with your jobs after a one-time AWS
-      permissions update. Nothing here changes until then.
-      <a class="linklike" href="/setup/permissions">Needs the permissions update →</a></div>
-  </div>
+  <section class="band" id="band-unmanaged">
+    <p class="slabel">Status</p>
+    <div class="sig sig-warning" data-s3-state="not-managed">
+      <span class="glyph" aria-hidden="true"></span>
+      <div class="body">backup-engine keeps these rules in step with your jobs after a one-time AWS
+        permissions update. Nothing here changes until then.
+        <a class="linklike" href="/setup/permissions">Needs the permissions update</a></div>
+    </div>
+  </section>
   {% else %}
   {% set st = v.status %}
+  <section class="band" id="band-status">
+  <p class="slabel">Status</p>
   <div class="sig sig-{{ 'blocker' if st.level == 'blocker' else ('success' if st.level == 'ok' else 'warning') }}"
-       style="margin-top:var(--sp-5)" data-s3-state="{{ st.level }}">
+       data-s3-state="{{ st.level }}">
     <span class="glyph" aria-hidden="true"></span>
     <div class="body">{{ st.sentence }}{% if st.checked_human %} · checked <span class="stamp">{{ st.checked_human }}</span>{% endif %}
       <div class="actions" style="margin-top:var(--sp-2)">
@@ -52,8 +60,11 @@
       </div>
     </div>
   </div>
+  </section>
 
-  <div class="jobgrid" style="margin-top:var(--sp-6)">
+  <section class="band" id="band-buckets">
+  <p class="slabel">Buckets</p>
+  <div class="jobgrid">
     <div class="stack">
       {% for b in v.buckets %}
       {% if b.broken %}
@@ -142,6 +153,7 @@
       {% endif %}
     </aside>
   </div>
+  </section>
   {% endif %}
-</section>
+</div>
 {% endblock %}
