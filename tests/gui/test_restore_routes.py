@@ -536,8 +536,11 @@ def test_cold_test_restore_check_now_ready_writes_tested(client, example, launch
 # --- Task 6: terse, AWS, hint budget ----------------------------------------
 
 def test_restore_page_is_terse_and_uses_aws(full_app):
+    import re
     body = full_app.test_client().get("/jobs/manga/restore").get_data(as_text=True)
     assert "Amazon" not in body and "AWS" in body
     assert 'class="safe"' in body                      # the never-overwrites sentence
+    safe = re.search(r'<span class="safe">(.*?)</span>', body, re.S)
+    assert safe and "/mnt/user/media/manga" in safe.group(1)  # names the real folder, not the job
     assert "Disabled until the name matches." in body  # the confirm guard keeps its one line
     assert body.count('class="hint') <= 3

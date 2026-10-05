@@ -659,9 +659,14 @@ def _render_confirm(cfg, job, form, *, errors=None, blocker=None, status_code=20
     if point_label is None and pv.get("points"):
         point_label = pv["points"][0].get("label")
 
+    # The "never touched" safety sentence names the real source PATH, not the job
+    # name (job.html's same `ident.source_display or job.source` convention) --
+    # the live folder being protected, which is what must never be overwritten.
+    source_display = _job_identity(cfg, job).get("source_display") or job.get("source")
+
     return render_template(
         "restore.html", job=job, name=name, intent=intent, choice=choice,
-        rec=rec, rjob=rjob, pv=pv, cold=cold, cls=cls,
+        rec=rec, rjob=rjob, pv=pv, cold=cold, cls=cls, source_display=source_display,
         is_versioned=(typ == "versioned"), is_archive=(typ == "archive"),
         is_vfiles=(typ == "versioned-files"),
         size_bytes=size_bytes, size_provenance=size_provenance, file_count=file_count,

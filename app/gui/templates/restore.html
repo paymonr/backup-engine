@@ -40,7 +40,7 @@
       <dt>What</dt>
       <dd>{% if choice.scope == 'file' and choice.path %}One file: <span class="mono">{{ choice.path }}</span>{% elif choice.scope and choice.scope != '.' %}Only <span class="mono">{{ choice.scope }}</span>{% else %}Everything in this point{% endif %}</dd>
       <dt>Writes to</dt>
-      <dd><span class="mono">{{ choice.target }}</span> <span class="safe">{% if is_versioned %}Inside it the files keep their original path.{% else %}This never touches {{ name }} — the folder it protects.{% endif %}</span></dd>
+      <dd><span class="mono">{{ choice.target }}</span> <span class="safe">The live <span class="mono">{{ source_display }}</span> is never touched or overwritten.</span></dd>
       {% endif %}
       <dt>Size</dt>
       <dd>{% if size_bytes is not none %}<span class="mono p-{{ size_provenance }}">{{ size_bytes | size }}</span>{% if file_count %} · {{ '{:,}'.format(file_count) }} files{% endif %}{% else %}not measured yet{% endif %}</dd>
