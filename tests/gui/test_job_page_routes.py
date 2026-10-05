@@ -533,7 +533,7 @@ def test_job_page_is_terse_and_marks_the_three_questions(full_app):
 
 def test_job_page_rail_markup_order(full_app):
     # The figures row spans the page above the grid (spec §6.1); at phone width
-    # the inline rail (shown ≤820px) is the main column's first child, so a phone
+    # the inline rail (shown ≤1180px) is the main column's first child, so a phone
     # reads figures, readiness, bands. The sticky rail follows. Both rails render
     # the same readiness rows.
     body = full_app.test_client().get("/jobs/appdata").get_data(as_text=True)

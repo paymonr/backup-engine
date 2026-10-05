@@ -114,3 +114,11 @@ def test_dockerignore_drops_bak_copies_in_every_directory():
     # Docker's matcher does not cross directories for "*.bak"; "**/*.bak" does.
     lines = (ROOT / ".dockerignore").read_text().splitlines()
     assert "**/*.bak" in lines
+
+
+def test_job_and_cost_grids_collapse_at_mid_width():
+    # At 821-1180px a kept 340px rail / 300px column squeezed the bands to ~155px.
+    css = CSS.read_text().replace(" ", "")
+    assert "@media(max-width:1180px){.jobgrid{grid-template-columns:1fr;}.rail{display:none;}.rail-inline{display:grid;" in css
+    assert "@media(max-width:1180px){.projgrid{grid-template-columns:1fr;}}" in css
+    assert "@media(max-width:820px){.jobgrid" not in css and "@media(max-width:820px){.projgrid" not in css
