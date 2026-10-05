@@ -159,5 +159,5 @@ before the redesign started, as the other way to recover the old copies. 26 file
 Remove them (owner's call, once satisfied with the deployed look) with:
 
 ```
-git rm app/gui/templates/*.bak app/gui/static/style.css.bak && sed -i '/^\*\.bak$/d;/safety copies of the pre-Ledger/d' .dockerignore
+git rm app/gui/templates/*.bak app/gui/static/style.css.bak && sed -i '/^\*\*\/\*\.bak$/d;/safety copies of the pre-Ledger/d' .dockerignore
 ```

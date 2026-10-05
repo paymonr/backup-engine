@@ -9,4 +9,4 @@ tests/
 **/.terraform/
 
 # temporary safety copies of the pre-Ledger templates (spec 2026-10-04 §7)
-*.bak
+**/*.bak

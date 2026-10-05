@@ -108,3 +108,9 @@ def test_cost_chart_swatches_read_tokens(app):
     assert "var(--accent)" in _rule(css, ".swatch-primary")
     assert "var(--ok)" in _rule(css, ".swatch-roll")
     assert "var(--muted)" in _rule(css, ".swatch-nover")
+
+
+def test_dockerignore_drops_bak_copies_in_every_directory():
+    # Docker's matcher does not cross directories for "*.bak"; "**/*.bak" does.
+    lines = (ROOT / ".dockerignore").read_text().splitlines()
+    assert "**/*.bak" in lines
