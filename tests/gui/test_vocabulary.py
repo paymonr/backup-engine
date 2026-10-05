@@ -370,10 +370,12 @@ def daily_hits(markup: str) -> list:
     return sorted(t for t in vocab.DAILY_FORBIDDEN_TERMS if re.search(rf"\b{re.escape(t)}\b", text))
 
 
+_HINT_OPEN = re.compile(r'<[a-zA-Z][^>]*\sclass="([^"]*)"', re.S)
+
 def hint_count(template_name: str) -> int:
     src = (TEMPLATES_DIR / template_name).read_text()
     src = re.sub(r"{#.*?#}", "", src, flags=re.S)          # template comments are not markup
-    return len(re.findall(r'<(?:p|span|div|small|td|li)\s+class="hint(?:\s|")', src))
+    return sum(1 for m in _HINT_OPEN.finditer(src) if "hint" in m.group(1).split())
 
 
 @pytest.mark.parametrize("url", DAILY_PAGES)

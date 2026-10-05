@@ -116,7 +116,7 @@ CHANGE_EACH_MONTH = "How much changes each month"   # formerly "change rate"
 # Banned on daily screens only (case-sensitive, whole word; Setup is exempt).
 DAILY_FORBIDDEN_TERMS: set[str] = {
     "old version", "old versions", "delete marker", "delete markers", "noncurrent",
-    "Amazon", "scratch folder", "The model says", "assumption", "assumptions", "change rate",
+    "Amazon", "scratch folder", "The model says", "assumption", "assumptions", "Assumption", "Assumptions", "change rate",
 }
 
 # Daily templates and their hint budget (spec §4). The budget counts elements with
