@@ -23,12 +23,12 @@
       verbatim), and falls back to a normal navigation on any failure. The
       no-JS ?path=/?snapshot= full-page navigation below is unchanged. #}
   <div id="explore-pane" data-explore-job="{{ name }}">
-  <nav class="hint mono" aria-label="Breadcrumb" style="margin-bottom:var(--sp-3)">
+  <nav class="when mono" aria-label="Breadcrumb" style="margin-bottom:var(--sp-3)">
     {%- if segments -%}
     <a href="/explore/{{ name }}{% if snapshot %}?snapshot={{ snapshot | urlencode }}{% endif %}">{{ name }}</a>
     {%- for seg in segments %} / {% if loop.last %}<span>{{ seg }}</span>{% else %}<a href="/explore/{{ name }}?path={{ (segments[:loop.index] | join('/')) | urlencode }}{% if snapshot %}&amp;snapshot={{ snapshot | urlencode }}{% endif %}">{{ seg }}</a>{% endif %}{% endfor -%}
     {%- else -%}
-    <span>{{ name }} <span class="hint">/ root</span></span>
+    <span>{{ name }} <span class="s">/ root</span></span>
     {%- endif -%}
   </nav>
 
@@ -64,7 +64,7 @@
       <td>{{ e.name }}</td>
       <td class="mono">{% if e.size is not none %}{{ e.size | size }}{% endif %}</td>
       <td>{% if e.storage_class %}<span class="mono">{{ e.storage_class }}</span>{% endif %}{% if e.storage_class in cold_classes %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
-      <td class="hint">{{ e.modified or '' }}</td>
+      <td class="when">{{ e.modified or '' }}</td>
       <td>
         {% if job.type == 'versioned-files' and e.versions %}
         <details style="margin-bottom:var(--sp-2)">
@@ -73,9 +73,9 @@
             {% for v in e.versions %}
             <tr>
               <td class="mono">{{ v.uploaded_at }}</td>
-              <td class="hint">{{ v.storage_class }}{% if v.storage_class in cold_classes %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
-              <td class="hint">{% if v.size is not none %}{{ v.size | size }}{% endif %}</td>
-              <td class="hint">{% if v.deleted %}deleted{% endif %}</td>
+              <td class="when">{{ v.storage_class }}{% if v.storage_class in cold_classes %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
+              <td class="when">{% if v.size is not none %}{{ v.size | size }}{% endif %}</td>
+              <td class="when">{% if v.deleted %}deleted{% endif %}</td>
             </tr>
             {% endfor %}
           </tbody></table>
@@ -89,7 +89,7 @@
           <input type="hidden" name="snapshot" value="{{ snapshot }}">
           {% endif %}
           {% if job.type == 'versioned-files' and e.versions %}
-          <label class="hint" for="version-{{ loop.index }}">Version</label>
+          <label class="fld" for="version-{{ loop.index }}">Version</label>
           <select id="version-{{ loop.index }}" name="asof" class="mono" style="max-width:20rem">
             <option value="">Latest</option>
             {% for v in e.versions %}
@@ -97,7 +97,7 @@
             {% endfor %}
           </select>
           {% endif %}
-          <label class="hint" for="target-{{ loop.index }}">Write to</label>
+          <label class="fld" for="target-{{ loop.index }}">Write to</label>
           <input type="text" id="target-{{ loop.index }}" name="target" class="mono"
                  placeholder="{{ name }}/{{ e.name }}" style="max-width:16rem">
           <button type="submit" class="btn btn-sm">{% if e.storage_class in cold_classes %}Warm up{% elif job.type == 'archive' %}Download{% else %}Restore{% endif %}</button>

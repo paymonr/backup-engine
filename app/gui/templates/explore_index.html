@@ -1,5 +1,9 @@
 {% extends "base.html" %}
-{#- explore_index.html — Explore job list (Task 6 skeleton; Task 8 enriches).
+{% import "_macros.html" as m with context %}
+{#- explore_index.html — Explore job list (Task 6): the jobs rendered as tiles,
+    reusing the Ledger tile shell (spec §6.1) via `m.explore_tile` — a small
+    macro beside `m.tile` in _macros.html, since this list has no run figures
+    or strip, just state / name / kind line / Browse (see that macro's note).
     The type label reads the single vocabulary source (vocab.TYPE_NAMES,
     app/gui/vocab.py) rather than hand-rolled strings, matching how job.html
     renders the same concept (vocab.TYPE_LINES/TYPE_NAMES). #}
@@ -9,14 +13,11 @@
   <p class="slabel">Explore</p>
   <h1>Browse your backups</h1>
   {% if jobs %}
-  <ul class="list">
+  <div class="tiles">
     {% for j in jobs %}
-    <li>
-      <a href="{{ url_for('gui.explore_job', name=j.name) }}">{{ j.name }}</a>
-      <span class="hint">{{ vocab.TYPE_NAMES.get(j.type, j.type) }}</span>
-    </li>
+    {{ m.explore_tile(j) }}
     {% endfor %}
-  </ul>
+  </div>
   {% else %}
   <p class="lead">No jobs yet.</p>
   {% endif %}

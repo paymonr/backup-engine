@@ -56,6 +56,21 @@
 </article>
 {%- endmacro -%}
 
+{#- A minimal tile for the Explore job list (Task 6): state, serif name, kind
+    line, and a "Browse" link. The full `tile` macro above needs a status.board()
+    row (last/next run, the strip) that explore_index's raw jobs_io.load() list
+    doesn't have, so this is its own small macro rather than a reuse of `tile`. -#}
+{%- macro explore_tile(j) -%}
+<article class="tile" data-tile="{{ j.name }}">
+  <div>
+    <span class="tok tok-{{ 'ok' if j.enabled else 'paused' }}">{{ vocab.STATE_NAMES.OK if j.enabled else vocab.STATE_NAMES.PAUSED }}</span>
+    <div class="name"><a href="/explore/{{ j.name }}">{{ j.name }}</a></div>
+    <p class="kindl">{{ vocab.TYPE_NAMES.get(j.type, j.type) }}</p>
+  </div>
+  <p><a class="linklike" href="/explore/{{ j.name }}">Browse</a></p>
+</article>
+{%- endmacro -%}
+
 {#- The key line under the tiles (spec §6.1 "a key line"). -#}
 {%- macro strip_key() -%}
 <div class="legend">

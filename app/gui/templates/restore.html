@@ -16,7 +16,7 @@
 
 {% block body %}
 <section class="screen read" aria-label="Get data back — {{ name }}">
-  <p class="slabel">{{ name }} · get data back</p>
+  <p class="slabel">Get data back</p>
   <h1>
     {%- if intent == 'thaw' -%}Warm up {{ name }}
     {%- elif intent == 'download' -%}Download {{ name }}
@@ -40,21 +40,21 @@
       <dt>What</dt>
       <dd>{% if choice.scope == 'file' and choice.path %}One file: <span class="mono">{{ choice.path }}</span>{% elif choice.scope and choice.scope != '.' %}Only <span class="mono">{{ choice.scope }}</span>{% else %}Everything in this point{% endif %}</dd>
       <dt>Writes to</dt>
-      <dd><span class="mono">{{ choice.target }}</span>{% if is_versioned %} <span class="hint">Inside it the files keep their original path.</span>{% endif %}</dd>
+      <dd><span class="mono">{{ choice.target }}</span> <span class="safe">{% if is_versioned %}Inside it the files keep their original path.{% else %}This never touches {{ name }} — the folder it protects.{% endif %}</span></dd>
       {% endif %}
       <dt>Size</dt>
       <dd>{% if size_bytes is not none %}<span class="mono p-{{ size_provenance }}">{{ size_bytes | size }}</span>{% if file_count %} · {{ '{:,}'.format(file_count) }} files{% endif %}{% else %}not measured yet{% endif %}</dd>
       <dt>Needs</dt>
       <dd>
         {% if is_versioned %}<div>{% if rec.passphrase.state == 'set' %}Recovery passphrase: set, and not the shipped example.{% else %}<span style="color:var(--danger)">Recovery passphrase: not set — still the shipped example.</span>{% endif %}</div>{% endif %}
-        {% if cold %}<div>Not ready yet — this job is on the thaw-first tier <code>{{ cls }}</code>. Amazon warms it up first: up to {{ hi }} hours.</div>{% else %}<div>Ready now — instant tier <code>{{ cls }}</code>, no waiting.</div>{% endif %}
+        {% if cold %}<div>Not ready yet — this job is on the thaw-first tier <code>{{ cls }}</code>. {{ vocab.AWS }} warms it up first: up to {{ hi }} hours.</div>{% else %}<div>Ready now — instant tier <code>{{ cls }}</code>, no waiting.</div>{% endif %}
       </dd>
       <dt>Costs</dt>
       <dd>
         {% if cold %}
-          {% if quote and quote.amount is not none %}≈ {{ money(quote.amount) }} at {{ choice.tier }} speed{% if alt_quote and alt_quote.amount is not none %} · about {{ money(alt_quote.amount) }} at {{ alt_quote.tier }}{% endif %} <span class="hint">(warm-up + data out)</span>{% else %}<span class="hint">not priced yet</span>{% endif %}
+          {% if quote and quote.amount is not none %}≈ {{ money(quote.amount) }} at {{ choice.tier }} speed{% if alt_quote and alt_quote.amount is not none %} · about {{ money(alt_quote.amount) }} at {{ alt_quote.tier }}{% endif %} <span class="s">fetch and data out</span>{% else %}<span class="s">not priced yet</span>{% endif %}
         {% else %}
-          {% if quote and quote.amount is not none %}≈ {{ money(quote.amount) }} <span class="hint">one time</span>{% else %}<span class="hint">not priced yet</span>{% endif %}
+          {% if quote and quote.amount is not none %}≈ {{ money(quote.amount) }} <span class="s">one time</span>{% else %}<span class="s">not priced yet</span>{% endif %}
         {% endif %}
       </dd>
       <dt>Takes</dt>
@@ -82,7 +82,7 @@
 
       <div class="guard" style="margin-top:var(--sp-4)">
         {% if intent == 'thaw' %}
-        <strong>This asks Amazon to warm up the files, one request each — the request itself takes hours to send — and starts a charged warm-up.</strong> Type the job name to confirm.
+        <strong>This asks {{ vocab.AWS }} to warm up the files, one request each — the request itself takes hours to send — and starts a charged warm-up.</strong> Type the job name to confirm.
         {% else %}
         <strong>This writes {{ size_bytes | size }} to your array and starts a charged download.</strong> Type the job name to confirm.
         {% endif %}
@@ -93,7 +93,7 @@
           <button type="submit" class="btn btn-primary" id="start-restore">{{ verb }}{% if intent == 'thaw' %} — up to {{ hi }} h{% endif %}</button>
         </div>
         {% if errors.confirm %}
-        <p class="hint" id="confirm-hint" style="color:var(--danger)">{{ errors.confirm }}</p>
+        <p class="s" id="confirm-hint" style="color:var(--danger)">{{ errors.confirm }}</p>
         {% else %}
         <p class="hint" id="confirm-hint">Disabled until the name matches.</p>
         {% endif %}

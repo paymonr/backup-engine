@@ -23,6 +23,7 @@ import pytest
 
 from app.engine import runs
 from app.gui import config_io, create_app, jobs_io, ops
+from tests.gui.test_vocabulary import full_app  # noqa: F401
 
 UTC = timezone.utc
 RESTORE_HOST = "/mnt/user/restore"
@@ -259,7 +260,7 @@ def test_get_confirm_cold_shows_both_speeds(client, example):
     assert 'name="tier"' in body
     # both retrieval speeds are PRICED now (real estimate_io.restore_quote, Task 12)
     assert "at Standard speed" in body and "at Bulk" in body
-    assert "(warm-up + data out)" in body            # the priced path, not "not priced yet"
+    assert "fetch and data out" in body              # the priced path, not "not priced yet"
     costs = body.split("Costs")[1].split("Takes")[0]
     amounts = re.findall(r"\$[\d,]+\.\d{2}", costs)
     assert len(amounts) >= 2 and amounts[0] != amounts[1]   # two distinct priced quotes
@@ -530,3 +531,13 @@ def test_cold_test_restore_check_now_ready_writes_tested(client, example, launch
     assert "Tested" in body                          # rail flipped to Tested
     assert "x.bin" in body                           # the kept path/basename
     assert launched == []
+
+
+# --- Task 6: terse, AWS, hint budget ----------------------------------------
+
+def test_restore_page_is_terse_and_uses_aws(full_app):
+    body = full_app.test_client().get("/jobs/manga/restore").get_data(as_text=True)
+    assert "Amazon" not in body and "AWS" in body
+    assert 'class="safe"' in body                      # the never-overwrites sentence
+    assert "Disabled until the name matches." in body  # the confirm guard keeps its one line
+    assert body.count('class="hint') <= 3

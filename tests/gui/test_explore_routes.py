@@ -499,3 +499,12 @@ def test_explore_file_sizes_scale_their_unit(client, example, monkeypatch):
     body = client.get("/explore/manga").get_data(as_text=True)
     assert "5.0 MB" in body and "300 B" in body
     assert "5242880" not in body
+
+
+# --- Task 6: terse, no appended arrows --------------------------------------
+
+def test_explore_pages_are_terse(client, example):
+    idx = client.get("/explore").get_data(as_text=True)
+    assert "Browse your backups" in idx and "→" not in idx
+    page = client.get("/explore/appdata").get_data(as_text=True)
+    assert "Restore point" in page and "→" not in page
