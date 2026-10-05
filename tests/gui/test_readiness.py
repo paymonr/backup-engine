@@ -260,7 +260,27 @@ def test_recovery_summary_destination_never_probed(dirs, monkeypatch):
 
 def test_setup_screens_drop_arrows_and_say_aws(full_app):
     client = full_app.test_client()
-    for url in ("/setup", "/setup/destination", "/setup/keys", "/setup/permissions", "/setup/storage", "/setup/about"):
-        body = client.get(url).get_data(as_text=True)
+    urls = ("/setup", "/setup/destination", "/setup/destination/manual",
+            "/setup/destination/automated", "/setup/destination/scripted",
+            "/setup/keys", "/setup/permissions", "/setup/storage", "/setup/about")
+    for url in urls:
+        r = client.get(url)
+        assert r.status_code == 200, f"{url} did not render (status {r.status_code})"
+        body = r.get_data(as_text=True)
         assert not re.search(r">[^<]*→\s*</a>", body), f"arrow on a link on {url}"
         assert "Amazon" not in body, url
+
+
+def test_destination_first_run_label_is_neutral(dirs, template_path):
+    # full_app (above) is already provisioned -- it writes AWS creds + S3_BUCKET
+    # in its fixture setup, so it is not the right state to exercise the
+    # first-run label. A bare create_app (no secrets/backup.env written) IS
+    # unprovisioned, which is what provision_home.html's "Re-provision" vs
+    # "Ways to set it up" title actually branches on.
+    from app.gui import create_app
+    app = create_app({"CONFIG_DIR": dirs["config"], "CACHE_DIR": dirs["cache"],
+                      "SCRIPTS_DIR": "/app/scripts", "TEMPLATE_PATH": template_path,
+                      "SECRET_KEY": "test", "TESTING": True})
+    body = app.test_client().get("/setup/destination").get_data(as_text=True)
+    assert "Re-provision" not in body
+    assert "Ways to set it up" in body

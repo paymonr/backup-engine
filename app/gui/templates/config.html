@@ -32,7 +32,7 @@
       {% endif %}
 
       {% for row in g.rows %}
-      <div class="field fld" style="margin:var(--sp-3) 0">
+      <div class="field" style="margin:var(--sp-3) 0">
         <label for="{{ row.key }}">
           {{ LABELS.get(row.key, row.key) }} <code class="hint">{{ row.key }}</code>
           {% if row.secret %}
@@ -71,11 +71,10 @@
 
     <section class="band" id="band-resume">
       <div class="band-head"><p class="slabel">When a backup is interrupted</p></div>
-      <div class="field fld" style="margin:var(--sp-3) 0">
+      <div class="field" style="margin:var(--sp-3) 0">
         <label><input type="checkbox" name="AUTO_RESUME_ON_BOOT" value="true"
            {% if auto_resume_on_boot %}checked{% endif %}> Resume interrupted backups on restart
            <code class="hint">AUTO_RESUME_ON_BOOT</code></label>
-        <p class="hint">Automatically resume a backup that was interrupted by a restart.</p>
       </div>
 
       <p class="hint" style="margin-top:var(--sp-3)">

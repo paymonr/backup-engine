@@ -140,6 +140,10 @@ main{ width:100%; max-width:var(--maxw); margin-inline:auto; padding:2rem var(--
   .band > *{ grid-column:1; }
   .band > .band-head, .band > .slabel:first-child{ grid-row:auto; margin-bottom:.6rem; }
 }
+/* .band-wide: content that needs the full measure (e.g. a main+aside grid) runs
+   under its title instead of beside it in the margin column. */
+.band-wide > *{ grid-column:1 / -1; }
+.band-wide > .band-head, .band-wide > .slabel:first-child{ grid-row:auto; margin-bottom:.6rem; }
 .grid2{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1.5rem; }
 
 /* ============================================================

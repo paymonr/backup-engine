@@ -22,7 +22,7 @@
   {% endif %}
 
   <section class="band" id="band-modes">
-    <p class="slabel">Re-provision</p>
+    <p class="slabel">{% if provisioned %}Re-provision{% else %}Ways to set it up{% endif %}</p>
     <div class="steps">
       <div class="step">
         <p class="eyebrow">No admin creds</p>

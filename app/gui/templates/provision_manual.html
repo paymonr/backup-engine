@@ -24,9 +24,9 @@
 
     <form method="post" action="{{ url_for('gui.provision_manual_render') }}" class="form">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <div class="field fld"><label for="bucket">Bucket name</label>
+      <div class="field"><label for="bucket">Bucket name</label>
         <input id="bucket" name="bucket" value="{{ bucket }}" placeholder="unraid-backup-123456789012" required></div>
-      <div class="field fld"><label for="region">Region</label>
+      <div class="field"><label for="region">Region</label>
         <input id="region" name="region" value="{{ region }}" required></div>
       <p class="hint">Tip: name it <code>unraid-backup-&lt;your-account-id&gt;</code> to match the automated mode.</p>
       <div class="formfoot"><button type="submit" class="btn btn-primary">Render policy &amp; steps</button></div>
@@ -67,9 +67,9 @@
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input type="hidden" name="bucket" value="{{ bucket }}">
       <input type="hidden" name="region" value="{{ region }}">
-      <div class="field fld"><label for="ak">Access key <code class="hint">AWS_ACCESS_KEY_ID</code></label>
+      <div class="field"><label for="ak">Access key <code class="hint">AWS_ACCESS_KEY_ID</code></label>
         <input id="ak" name="AWS_ACCESS_KEY_ID" autocomplete="off" required></div>
-      <div class="field fld"><label for="sk">Secret key <code class="hint">AWS_SECRET_ACCESS_KEY</code></label>
+      <div class="field"><label for="sk">Secret key <code class="hint">AWS_SECRET_ACCESS_KEY</code></label>
         <input id="sk" name="AWS_SECRET_ACCESS_KEY" type="password" autocomplete="off" required></div>
       <div class="formfoot" data-progress="Validating…">
         <button type="submit" class="btn btn-primary">Test &amp; Validate</button>
