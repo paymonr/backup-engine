@@ -28,6 +28,11 @@ def about_page():
                            version=current_app.config.get("VERSION", "0.1.0-dev"),
                            build_date=current_app.config.get("BUILD_DATE", "unknown"))
 
+@bp.get("/how-it-works")
+def how_it_works():
+    # The one explanation page (spec 2026-10-04 §4): the "?" marks link to its anchors.
+    return render_template("how_it_works.html")
+
 @bp.get("/about")
 def about_redirect():
     # Old bookmark → the glossary's new home (spec 4.1 / 5.13).

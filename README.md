@@ -582,6 +582,9 @@ tools in the container image). The GUI's **About** page (footer link) shows the 
 | [AWS CLI](https://github.com/aws/aws-cli) | S3 usage + Cost Explorer calls | Apache-2.0 |
 | [OpenTofu](https://opentofu.org) | provisioning (bucket + least-privilege IAM) | MPL-2.0 |
 | [Flask](https://flask.palletsprojects.com) | web GUI framework | BSD-3-Clause |
+| [Fraunces](https://github.com/undercasetype/Fraunces) | GUI typeface (titles and figures) | OFL-1.1 |
+| [Source Sans 3](https://github.com/adobe-fonts/source-sans) | GUI typeface (text) | OFL-1.1 |
+| [IBM Plex Mono](https://github.com/IBM/plex) | GUI typeface (paths, ids, commands) | OFL-1.1 |
 | [Waitress](https://github.com/Pylons/waitress) | production WSGI server | ZPL-2.1 |
 
 ## Development

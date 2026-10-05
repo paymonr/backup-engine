@@ -16,6 +16,12 @@ THIRD_PARTY: list[dict[str, str]] = [
      "role": "provisioning (bucket + least-privilege IAM)"},
     {"name": "Flask", "license": "BSD-3-Clause", "url": "https://flask.palletsprojects.com",
      "role": "web GUI framework"},
+    {"name": "Fraunces", "license": "OFL-1.1", "url": "https://github.com/undercasetype/Fraunces",
+     "role": "GUI typeface (titles and figures)"},
+    {"name": "Source Sans 3", "license": "OFL-1.1", "url": "https://github.com/adobe-fonts/source-sans",
+     "role": "GUI typeface (text)"},
+    {"name": "IBM Plex Mono", "license": "OFL-1.1", "url": "https://github.com/IBM/plex",
+     "role": "GUI typeface (paths, ids, commands)"},
     {"name": "Waitress", "license": "ZPL-2.1", "url": "https://github.com/Pylons/waitress",
      "role": "production WSGI server"},
 ]

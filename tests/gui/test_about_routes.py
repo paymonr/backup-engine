@@ -57,3 +57,9 @@ def test_about_shows_version(client):
 def test_footer_links_to_about_on_every_page(client):
     # base.html footer is shared, so any rendering page carries the About link.
     assert b"/setup/about" in client.get("/jobs/new").data
+
+
+def test_about_lists_the_bundled_fonts(client):
+    body = client.get("/setup/about").get_data(as_text=True)
+    for name in ("Fraunces", "Source Sans 3", "IBM Plex Mono"):
+        assert name in body and "OFL-1.1" in body

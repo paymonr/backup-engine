@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}How it works · backup-engine{% endblock %}
+{% block body %}
+<section class="screen read measure" aria-label="How it works">
+  <p class="slabel">How it works</p>
+  <h1>What this app does with your files</h1>
+  <p class="lead" style="margin-top:.6rem">Plain answers to the questions the “?” marks lead here from. Nothing on this page is a control.</p>
+
+  <div class="band" id="jobs">
+    <p class="slabel">Three kinds of job</p>
+    <p><strong>Snapshot backup</strong> takes a point in time, so you can restore any date. Only what changed since the last run is sent, so daily runs stay small.</p>
+    <p><strong>Plain copy</strong> is a straight copy of big, static files, such as a media library. There is no history, just what is there now.</p>
+    <p><strong>File history</strong> keeps every version of every file, one file at a time. Pick it for documents you edit.</p>
+  </div>
+
+  <div class="band" id="restore-points">
+    <p class="slabel">Restore points and the keep rule</p>
+    <p>A restore point is one completed Snapshot backup: the folder exactly as it was at that moment. The Job page counts them and shows how far back they reach.</p>
+    <p>The keep rule thins them out over time. “Last 3, one a day for 7 days, one a week for 4 weeks, one a month for 6 months” keeps every recent run and fewer older ones, so the count on the Job page settles instead of growing forever. Restore points that no rule keeps are removed after the next run.</p>
+  </div>
+
+  <div class="band" id="earlier-copies">
+    <p class="slabel">Earlier copies and the undo window</p>
+    <p>When a run replaces or deletes a file in S3, S3 keeps the earlier copy for a while instead of destroying it at once. That is the undo window, set under Setup, S3 rules. Inside the window a bad run can be undone; after it, S3 removes the earlier copies for good.</p>
+    <p>The storage summary in Activity counts those earlier copies for each job folder, how much space they take, and what the window will remove in the coming week.</p>
+  </div>
+
+  <div class="band" id="tiers">
+    <p class="slabel">Storage tiers</p>
+    <p><strong>Instant</strong> tiers read the moment you ask and cost the most per month. <strong>Thaw first</strong> tiers cost a fraction to keep, but a file has to be fetched before it can be read, which takes minutes to hours and is charged per request.</p>
+    <p>Snapshot backups must stay on an Instant tier because every run reads the previous one. Plain copies of files you rarely need are the natural fit for a Thaw-first tier.</p>
+  </div>
+
+  <div class="band" id="numbers">
+    <p class="slabel">Where a number came from</p>
+    <p>Every figure carries a mark. <span class="fig p-measured">measured</span>: something walked the folder or read the bucket, on a date it tells you. <span class="fig p-assumed">assumed</span>: dotted and dimmer, because it rests on a guess you made, such as how much changes each month. <span class="fig p-invoiced">invoiced</span>: the bill AWS actually sent. No line at all means projected: an estimate built from the others, which takes the weakest mark of everything that fed it.</p>
+  </div>
+
+  <div class="band" id="notices">
+    <p class="slabel">What the notices mean</p>
+    <p><strong>Needs you</strong> on the Board lists anything that will not fix itself: a failed run, a key that cannot write, a restore with nowhere to go.</p>
+    <p>A <strong>Warning</strong> will cost money or surprise you later; nothing is stopped. A <strong>Blocker</strong> stops the button and names the ways out. <strong>Done</strong> appears for a moment after you press something. <strong>Failed</strong> is a run that ended badly, with a time, the exact error and a record you can open.</p>
+  </div>
+
+  <div class="band" id="tools">
+    <p class="slabel">What actually runs</p>
+    <p>Snapshot backups are made by restic, which keeps one encrypted store per machine; two Snapshot jobs must not start in the same minute. Plain copies and File history are made by rclone, one folder per job. The exact command for each job is under “Tool detail” on its Job page. <a href="/setup/about">About and licences</a> names every tool and its licence.</p>
+  </div>
+</section>
+{% endblock %}
