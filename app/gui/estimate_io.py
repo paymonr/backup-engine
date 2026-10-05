@@ -930,9 +930,9 @@ def delta_verdict(model_value: float, invoice_value: float) -> str:
         return ("close enough to trust, and it errs on the expensive side" if high
                 else "close enough to trust, and it errs on the cheap side")
     if ap <= 30:
-        return ("model runs high — worth a look at the assumptions" if high
-                else "model runs low — worth a look at the assumptions")
-    return "far apart — check the assumptions and whether the invoice covers more than these backups"
+        return ("model runs high — worth a look at what we assumed" if high
+                else "model runs low — worth a look at what we assumed")
+    return "far apart — check what we assumed and whether the invoice covers more than these backups"
 
 
 def provenance_of(inputs) -> str:

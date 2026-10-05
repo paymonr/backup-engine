@@ -300,13 +300,13 @@ def _next_scheduled(ctxs):
 # --- verdict (§5.1) --------------------------------------------------------
 
 def _open_button(name):
-    return {"label": f"Open {name} →", "href": f"/jobs/{name}"}
+    return {"label": f"Open {name}", "href": f"/jobs/{name}"}
 
 
 def verdict(ctxs, now, tz, stale=False) -> dict:
     if not ctxs:
         return {"state": "none", "job": None, "h2": "Nothing is being backed up yet.",
-                "sub": None, "button": {"label": "Create the first job →", "href": "/jobs/new"}}
+                "sub": None, "button": {"label": "Create the first job", "href": "/jobs/new"}}
 
     failed = [c for c in ctxs if c["state"] == FAILED]
     overdue_c = [c for c in ctxs if c["state"] == OVERDUE]
@@ -318,7 +318,7 @@ def verdict(ctxs, now, tz, stale=False) -> dict:
         since = _weekday(c["last_ok"].finished_at, tz) if c["last_ok"] else "its last successful run"
         second = ec.get("verdict") or _UNKNOWN_VERDICT
         h2 = f"{c['name']} has not backed up since {since}. {second}"
-        label = ec.get("fix_label") or "Open the run record →"
+        label = ec.get("fix_label") or "Open the run record"
         route = ec.get("fix_route")
         href = route.replace("<name>", c["name"]) if route else _record_href(c)
         return {"state": "failed", "job": c["name"], "h2": h2, "sub": None,
@@ -339,7 +339,7 @@ def verdict(ctxs, now, tz, stale=False) -> dict:
     if running:
         c = running[0]
         return {"state": "running", "job": c["name"], "h2": f"{c['name']} is running now.",
-                "sub": None, "button": {"label": "Watch it in Activity →", "href": "/activity"}}
+                "sub": None, "button": {"label": "Watch it in Activity", "href": "/activity"}}
 
     # Only OK / Paused / Not-run-yet remain — nothing is WRONG.
     oks = [c for c in ctxs if c["state"] == OK]

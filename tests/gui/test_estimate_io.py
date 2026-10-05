@@ -356,16 +356,16 @@ def test_delta_verdict_close_enough_cheap_side():
 
 
 def test_delta_verdict_model_runs_high_band():
-    assert estimate_io.delta_verdict(120.0, 100.0) == "model runs high — worth a look at the assumptions"
+    assert estimate_io.delta_verdict(120.0, 100.0) == "model runs high — worth a look at what we assumed"
 
 
 def test_delta_verdict_model_runs_low_band():
-    assert estimate_io.delta_verdict(80.0, 100.0) == "model runs low — worth a look at the assumptions"
+    assert estimate_io.delta_verdict(80.0, 100.0) == "model runs low — worth a look at what we assumed"
 
 
 def test_delta_verdict_far_apart_band():
     v = estimate_io.delta_verdict(140.0, 100.0)
-    assert v == "far apart — check the assumptions and whether the invoice covers more than these backups"
+    assert v == "far apart — check what we assumed and whether the invoice covers more than these backups"
 
 
 # --- provenance_of (4.6/7.9): only "assumed" or "projected" ----------------

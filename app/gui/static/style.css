@@ -86,8 +86,6 @@ button,input,select,textarea{ font:inherit; color:inherit; }
 .linklike:hover{ text-decoration:underline; }
 .scroll,.table-scroll{ overflow-x:auto; }
 .tscroll{ overflow-x:auto; }
-.compact-only{ display:none; }
-@media (max-width:900px){ .col-strip, .col-took{ display:none; } .compact-only{ display:block; } }
 
 /* ============================================================
    4. Shell — sidebar + content column (spec §6.1)
@@ -270,6 +268,7 @@ tr:last-child td{ border-bottom:0; }
 @media (max-width:420px){ .tiles{ grid-template-columns:1fr; } }
 .tile{ border:1px solid var(--rule); border-radius:var(--radius); background:var(--surface); padding:1rem 1.1rem 1.1rem; display:grid; gap:.75rem; min-width:0; }
 .tile .name{ font-family:var(--font-display); font-size:1.3rem; font-weight:500; letter-spacing:-.01em; color:var(--ink); }
+.tile .name a{ color:inherit; }
 .tile .kindl{ color:var(--muted); font-size:.9rem; margin-top:.1rem; }
 .tile .figs{ border-bottom:0; }
 .tile .sfig{ padding:.6rem .8rem .2rem 0; padding-left:.8rem; }

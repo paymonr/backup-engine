@@ -290,6 +290,16 @@ def full_app(tmp_path, template_path, monkeypatch):
         return real_job(config_dir, cache_dir, scripts_dir, name, **kw)
 
     monkeypatch.setattr(routes.status, "job", _pinned)
+
+    # The Board and the Jobs list derive states from status.board(): pin its clock
+    # too, so manga reads Failed (not Overdue by the wall clock) on every run.
+    real_board = routes.status.board
+
+    def _pinned_board(config_dir, cache_dir, scripts_dir, **kw):
+        kw.setdefault("now", NOW); kw.setdefault("tz", UTC)
+        return real_board(config_dir, cache_dir, scripts_dir, **kw)
+
+    monkeypatch.setattr(routes.status, "board", _pinned_board)
     return app
 
 

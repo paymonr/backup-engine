@@ -164,10 +164,12 @@ def test_root_redirects_to_provision_when_unprovisioned(dirs, source_root, templ
     assert "/provision" in r.headers["Location"] or "/setup" in r.headers["Location"]
 
 
-def test_jobs_redirects_permanently_to_board(client, example):
+def test_jobs_renders_the_jobs_list(client, example):
+    # Ledger spec 2026-10-04 §6.1: `/jobs` is the Jobs list again (the Board's
+    # tiles on their own page), no longer a permanent redirect to `/`.
     r = client.get("/jobs")
-    assert r.status_code == 301
-    assert r.headers["Location"].endswith("/")   # -> the Board at `/`
+    assert r.status_code == 200
+    assert 'data-tile="manga"' in r.get_data(as_text=True)
 
 
 # --- band 1: verdict --------------------------------------------------------
@@ -194,7 +196,7 @@ def test_needs_you_shows_iam_blocker_row(client, example):
 
 def test_both_jobs_render_worst_first(client, example):
     body = client.get("/").get_data(as_text=True)
-    # manga (Failed) sorts above appdata (OK) in the jobs table
+    # manga (Failed) tiles above appdata (OK)
     assert body.index("board-tok-manga") < body.index("board-tok-appdata")
     # state tokens
     assert 'class="tok tok-failed"' in body
@@ -217,7 +219,7 @@ def test_cost_strip_renders_from_caches(client, example, no_cost_explorer):
     body = client.get("/").get_data(as_text=True)
     assert "In the bucket now" in body
     assert "Last invoice" in body
-    assert "The model says" in body
+    assert "Estimate" in body and "The model says" not in body   # vocab.ESTIMATE
     assert no_cost_explorer["ce"] is False                       # no CE during render
 
 
@@ -275,3 +277,25 @@ def test_status_json_no_cost_explorer_even_when_billing_cache_absent(client, exa
     js = client.get("/status.json").get_json()
     assert js["cost"]["invoice"] is None
     assert no_cost_explorer["ce"] is False
+
+
+# --- plain words + Ledger (spec 2026-10-04): tiles, verdict rule, Estimate ---
+from tests.gui.test_vocabulary import full_app  # noqa: F401,E402
+
+
+def test_board_tiles_jobs_and_keeps_the_estimate_word(full_app):
+    body = full_app.test_client().get("/").get_data(as_text=True)
+    assert body.count('class="tile"') == 2            # appdata + manga
+    assert 'class="verdict"' in body and "Needs you" in body
+    assert "Estimate" in body and "The model says" not in body
+    assert "Amazon" not in body and "old versions" not in body
+    assert 'href="/how-it-works#notices"' in body and 'href="/how-it-works#numbers"' in body
+    assert "+ New job" not in body and "New job" in body
+
+
+def test_board_failed_job_sorts_first_with_red_verdict(full_app):
+    body = full_app.test_client().get("/").get_data(as_text=True)
+    # manga's last run failed (prune refused): it tiles first and the verdict rule is red
+    assert body.index('data-tile="manga"') < body.index('data-tile="appdata"')
+    assert 'class="verdict" style="border-left-color:var(--danger)"' in body
+    assert 'href="/jobs/manga/runs/' in body        # the Needs you row links to the record

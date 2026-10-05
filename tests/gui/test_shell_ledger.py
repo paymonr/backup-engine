@@ -88,7 +88,8 @@ def test_legacy_markup_keeps_working_under_the_new_core():
     assert "minmax(0,1fr)170px" in _rule(css, ".needs-row")
     assert "12px1fr" in _rule(css, ".rrow")
     assert "display:inline" in _rule(css, ".formfoot .figs")
-    assert "display:none" in _rule(css, ".compact-only")
+    # the Board table's 900px column swap died with the tiles (Task 4)
+    assert ".compact-only" not in css and ".col-strip" not in css and ".col-took" not in css
     assert "overflow-x:auto" in _rule(css, ".tscroll")
     guard = _rule(css, ".guard")
     assert "var(--danger)" in guard and "var(--danger-bg)" in guard

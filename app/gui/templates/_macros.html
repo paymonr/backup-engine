@@ -1,0 +1,68 @@
+{#- Shared figure macros + the job tile (spec 2026-10-04 §6.1): the Board and the
+    Jobs list both render jobs as tiles, so the tile lives here once.
+    Import with `{% import "_macros.html" as m with context %}`. -#}
+{% set MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+
+{%- macro money(v) -%}{% if v is not none %}${{ '{:,.2f}'.format(v) }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro dur(s) -%}
+{%- if s is none -%}—
+{%- elif s < 60 -%}{{ s|int }} s
+{%- elif s < 3600 -%}{{ (s // 60)|int }} m {{ '%02d'|format((s % 60)|int) }} s
+{%- elif s < 86400 -%}{{ (s // 3600)|int }} h {{ '%02d'|format(((s % 3600) // 60)|int) }} m
+{%- else -%}{{ (s // 86400)|int }} d {{ '%02d'|format(((s % 86400) // 3600)|int) }} h
+{%- endif -%}
+{%- endmacro -%}
+{%- macro hhmm(iso) -%}{% if iso %}{{ iso[11:16] }}{% else %}—{% endif %}{%- endmacro -%}
+{%- macro datelabel(iso) -%}{% if iso %}{{ iso[8:10]|int }} {{ MON[iso[5:7]|int - 1] }}{% endif %}{%- endmacro -%}
+{%- macro prov(text, p) -%}{% if p in ['measured','assumed','invoiced'] %}<span class="mono p-{{ p }}">{{ text }}</span>{% else %}{{ text }}{% endif %}{%- endmacro -%}
+
+{#- One tile per job (spec §6.1 Board): state, serif name, kind line, three ruled
+    figures (Last run, Next run, Size with monthly cost) and the 14-run strip.
+    `per_job` is status.cost.per_job (or none). Hooks the live code reads:
+    #board-tok-<name> (the Board poller flashes a changed token) and
+    [data-progress-job] (app.js fills the progress bar). The tile is marked
+    data-tile, never data-job: app.js rewrites the text of every [data-job]. -#}
+{%- macro tile(j, per_job) -%}
+{% set pj = (per_job | selectattr('name', 'equalto', j.name) | list | first) if per_job else none %}
+<article class="tile" data-tile="{{ j.name }}">
+  <div>
+    <span class="tok tok-{{ 'notrun' if j.state == 'NOT_RUN_YET' else j.state|lower }}" id="board-tok-{{ j.name }}">{{ j.label }}</span>
+    <div class="name"><a href="/jobs/{{ j.name }}">{{ j.name }}</a></div>
+    <p class="kindl">{{ vocab.TYPE_LINES.get(j.type, j.type_label) }}</p>
+    {% if j.state == 'RUNNING' %}<div class="jobprog" data-progress-job="{{ j.name }}"><div class="jobprog-bar"><div class="jobprog-fill" style="width:0"></div></div><span class="jobprog-text sm mono">working…</span></div>{% endif %}
+  </div>
+  <div class="figs">
+    <div class="sfig"><span class="k">Last run</span>
+      {% if j.last %}<span class="v">{{ hhmm(j.last.started_at) }}</span><span class="s" data-when="{{ j.last.finished_at }}">{{ datelabel(j.last.finished_at) }}{% if j.last.duration_s is not none %}, {{ dur(j.last.duration_s) }}{% endif %}</span>
+      {% else %}<span class="v">—</span><span class="s">never</span>{% endif %}</div>
+    <div class="sfig"><span class="k">Next run</span>
+      {% if j.next_run %}<span class="v">{{ hhmm(j.next_run) }}</span><span class="s" data-when="{{ j.next_run }}">{{ datelabel(j.next_run) }}</span>
+      {% else %}<span class="v">—</span><span class="s">{{ j.next_run_note or 'paused' }}</span>{% endif %}</div>
+    <div class="sfig"><span class="k">Size</span>
+      {% if pj %}<span class="v">{{ prov(pj.size_bytes | size, pj.size_provenance) }}</span><span class="s">{% if pj.monthly is not none %}{{ prov(money(pj.monthly), pj.monthly_provenance) }} a month{% else %}no price yet{% endif %}</span>
+      {% else %}<span class="v">—</span><span class="s">not measured yet</span>{% endif %}</div>
+  </div>
+  <div class="board-strip">
+    <div class="strip" role="img" aria-label="Last {{ j.strip|length }} runs for {{ j.name }}.">
+      {% for cell in j.strip -%}
+      {%- set color = 'fail' if cell.outcome in ['failed','aborted'] else ('running' if cell.outcome == 'running' else ('slow' if cell.slow else ('ok' if cell.outcome == 'ok' else ''))) -%}
+      {%- set dimc = ' dim' if (color and loop.index0 < (j.strip|length - 7)) else '' -%}
+      {%- if cell.run_id -%}<a class="cellx{{ (' ' + color) if color }}{{ dimc }}" href="/jobs/{{ j.name }}/runs/{{ cell.run_id }}" title="{{ cell.title }}"></a>
+      {%- else -%}<span class="cellx" title="{{ cell.title }}"></span>{%- endif -%}
+      {% endfor %}
+    </div>
+    <div class="ledger-axis"><span>{{ j.strip|length }} runs</span><span>latest</span></div>
+  </div>
+</article>
+{%- endmacro -%}
+
+{#- The key line under the tiles (spec §6.1 "a key line"). -#}
+{%- macro strip_key() -%}
+<div class="legend">
+  <span><span class="key-cell" style="background:var(--ok)"></span>OK</span>
+  <span><span class="key-cell" style="background:var(--danger)"></span>failed</span>
+  <span><span class="key-cell" style="background:var(--warn)"></span>slow, three times its usual</span>
+  <span><span class="key-cell" style="background:var(--grid)"></span>no run yet</span>
+  <span><span class="key-cell" style="background:var(--ok-dim)"></span>older than the last 7</span>
+</div>
+{%- endmacro -%}
