@@ -5,6 +5,26 @@ resumed after a break. Design items follow the brainstorming → spec → plan f
 
 ---
 
+## plain-words + Ledger redesign — complete on branch, awaiting owner merge/deploy (2026-10-05); parked items
+Built via subagent-driven development (10 tasks; ledger `.superpowers/sdd/2026-10-05-plain-words-ledger/`),
+each task reviewed, whole-branch review clean. Tag `ui-before-plain-words` marks the pre-redesign commit.
+Parked (all non-blocking):
+- **Explicit theme toggle**: the Ledger stylesheet ships light + dark, but there's no in-app switch — the
+  owner reviews the dark theme in their own browser after deploy (no headless-Chromium flag renders it
+  reliably for a pre-deploy screenshot).
+- **A fourth Board column above 1920px**: the Board's tile grid caps at three columns; a wider viewport than
+  tested (1920px) leaves unused width.
+- Explore tiles show OK/Paused only — no run state shown on the tile itself.
+- Needs-you rows no longer show the long fix explanation inline (it is still on the record, one click away).
+- `errors.py` strings are literals, not routed through `vocab`.
+- The restore-form spacing rule is a generic sibling selector (not scoped to the specific fields it was
+  written for).
+- Unindented children in the `s3_rules`/`about` template sections (cosmetic only).
+- `test_new_form_renders_numbered_sections` is a stale test name (the form no longer numbers its sections).
+- `.needs-row` keeps its 170px action column reserved even when there is no action to show.
+
+---
+
 ## S3 rules — SHIPPED (merged + deployed 2026-09-24, level 4 live); parked items
 Spec `specs/2026-09-23-s3-rules-design.md`, plan `plans/2026-09-23-s3-rules.md`, decision log
 `specs/2026-09-23-s3-rules-rulings.md`. Real-AWS smoke test (`tests/smoke/`, run via `tools/unraid/smoke-build.sh`)

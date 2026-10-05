@@ -3,14 +3,32 @@
 **Purpose:** let a fresh Claude session — on another computer, with none of the previous machine's
 auto-memory or scratch files — pick up exactly where work stopped. Read top to bottom.
 
-_Last updated: 2026-10-03. This repo is PUBLIC: never commit AWS account IDs, bucket names, keys or the
+_Last updated: 2026-10-05. This repo is PUBLIC: never commit AWS account IDs, bucket names, keys or the
 box's address here._
 
 ---
 
 ## Current state
 
-- **`master` = `origin/master` = what's deployed** on the owner's Unraid box. Nothing in flight, no open branches.
+- **plain-words + Ledger redesign complete on branch `plain-words-ledger`, awaiting owner merge/deploy.**
+  Full rewrite of visible copy to plain words (no `prune`/`retention`/`restic`/`OpenTofu` on screen) plus
+  the "Linen & wine" Ledger visual pass (bundled fonts, light+dark stylesheet, sidebar shell) across Board,
+  Job, Job form, Cost, Explore, Restore, Activity/run record and Setup. Built via subagent-driven development
+  (10 tasks), each task reviewed, whole-branch review clean. Tag `ui-before-plain-words` marks the commit
+  immediately before this redesign started, for comparison/rollback reference.
+  - **Suite:** `python3 -m pytest -q` → **2028 passed**; the `vocab.DAILY_TEMPLATES` hint-count check (every
+    template's `hint_count` via `tests/gui/test_vocabulary.hint_count`) → every template ≤ 3 (board.html 0,
+    job.html 2, activity.html 0, run_record.html 1, explore.html 2, explore_index.html 0, restore.html 1,
+    cost.html 1, job_form.html 0); `bats tests/bats/` → 143 passed, 0 failures; `shellcheck setup.sh
+    scripts/*.sh scripts/lib/*.sh tests/smoke/run.sh tools/unraid/*.sh` → unchanged from before this branch
+    (no shell file touched in this redesign; the two pre-existing SC2029 info notes in
+    `tools/unraid/smoke-build.sh` are untouched); `(cd opentofu && tofu fmt -check)` → clean.
+  - No browser (chromium/chromium-browser/google-chrome) is available on this machine, so the planned
+    screenshots at three widths were skipped; the owner reviews the look (including dark theme, which no
+    headless Chromium flag renders reliably across versions) on the box after deploy.
+  - Merge, push and deploy from here are the **owner's calls** — this branch is not merged or deployed yet.
+- **`master` = `origin/master` = what's deployed** on the owner's Unraid box (pre-redesign state). Nothing
+  else in flight beyond `plain-words-ledger` above.
 - **S3 rules** (spec `specs/2026-09-23-s3-rules-design.md`, plan `plans/2026-09-23-s3-rules.md`, decision log
   `specs/2026-09-23-s3-rules-rulings.md`) is **complete, merged, deployed and live**:
   - Phases A (engine + safety), B (keeps-less gate, previews + typed confirmation, storage summaries,
@@ -45,10 +63,12 @@ box's address here._
 
 ## Next up (owner picks)
 
-1. **Deploy master** (the 2026-10-03 follow-ups above) and `git push origin master`.
-2. **UI redesign** — the owner finds the app "a bit too complicated looking" (2026-10-03); start with the
-   brainstorming skill and real mockups of the contenders (working agreement: show options, don't pre-decide).
-3. **Backlog:** `BACKLOG.md` (top section = S3 rules parked items).
+1. **Merge, push and deploy `plain-words-ledger`** — the plain-words + Ledger redesign above is complete and
+   reviewed; merging to master, pushing, and running the deploy are the owner's calls.
+2. Once deployed: review the dark theme and the three widths on the box's own browser (no headless Chromium
+   on the dev machine to pre-screenshot it); delete the `.bak` safety copies once the owner is satisfied
+   (see "Safety copies" below).
+3. **Backlog:** `BACKLOG.md` (top section = S3 rules parked items; plain-words + Ledger follow-ups near the top).
 
 Done since the last handoff: the first nightly storage summary landed 2026-09-25 and has run daily since;
 smoke-test leftovers cleaned; both permissions-converge leftovers (dedicated-bucket E2E, access-key help).
@@ -101,3 +121,43 @@ smoke-test leftovers cleaned; both permissions-converge leftovers (dedicated-buc
   notified only (owner decision 2026-09-24); nothing that keeps less history reaches S3 without the owner's
   preview + typed bucket name; a failed or killed check never blocks a backup.
 - Persisted contracts (`jobs.json`, `config/storage.json`, state files, `runs.jsonl`) only grow.
+no browser on this machine: screenshots skipped; the owner reviews on the box after deploy
+
+## Safety copies (delete when the owner says so)
+
+The plain-words + Ledger redesign kept a pre-redesign `.bak` copy beside every template/stylesheet it touched,
+so any screen can be diffed back to its exact pre-redesign text. Tag `ui-before-plain-words` marks the commit
+before the redesign started, as the other way to recover the old copies. 26 files:
+
+- `app/gui/static/style.css.bak`
+- `app/gui/templates/_access_key_help.html.bak`
+- `app/gui/templates/_console_cap.html.bak`
+- `app/gui/templates/_s3_editor.html.bak`
+- `app/gui/templates/_s3_preview.html.bak`
+- `app/gui/templates/about.html.bak`
+- `app/gui/templates/activity.html.bak`
+- `app/gui/templates/base.html.bak`
+- `app/gui/templates/board.html.bak`
+- `app/gui/templates/config.html.bak`
+- `app/gui/templates/cost.html.bak`
+- `app/gui/templates/error.html.bak`
+- `app/gui/templates/explore.html.bak`
+- `app/gui/templates/explore_index.html.bak`
+- `app/gui/templates/job.html.bak`
+- `app/gui/templates/job_form.html.bak`
+- `app/gui/templates/jobs.html.bak`
+- `app/gui/templates/permissions.html.bak`
+- `app/gui/templates/provision_automated.html.bak`
+- `app/gui/templates/provision_home.html.bak`
+- `app/gui/templates/provision_manual.html.bak`
+- `app/gui/templates/provision_scripted.html.bak`
+- `app/gui/templates/restore.html.bak`
+- `app/gui/templates/run_record.html.bak`
+- `app/gui/templates/s3_rules.html.bak`
+- `app/gui/templates/setup.html.bak`
+
+Remove them (owner's call, once satisfied with the deployed look) with:
+
+```
+git rm app/gui/templates/*.bak app/gui/static/style.css.bak && sed -i '/^\*\.bak$/d;/safety copies of the pre-Ledger/d' .dockerignore
+```
