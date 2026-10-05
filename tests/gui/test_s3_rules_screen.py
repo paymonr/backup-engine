@@ -323,7 +323,7 @@ def test_a_change_that_keeps_less_shows_the_preview_and_saves_nothing(client, cf
     r = _preview(client, keep="days", days="30")
     body = r.get_data(as_text=True)
     assert r.status_code == 200 and "Preview — nothing has changed yet" in body
-    assert 'permanently delete about <span class="mono">3</span> old versions' in body
+    assert 'permanently delete about <span class="mono">3</span> earlier copies' in body
     assert '<span class="mono">3.00 GB</span>' in body and "oldest from" in body
     assert f'placeholder="{BASE}"' in body and 'name="token"' in body
     assert 'action="/setup/storage/refresh"' in body                        # Refresh now beside the figures
@@ -729,7 +729,7 @@ def test_shortening_plain_copy_history_in_the_wizard_previews_instead_of_saving(
     body = r.get_data(as_text=True)
     assert r.status_code == 200 and 'id="s3-history-preview"' in body
     assert 'action="/jobs/history/confirm"' in body and 'name="name" value="manga"' in body
-    assert 'permanently delete about <span class="mono">3</span> old versions' in body
+    assert 'permanently delete about <span class="mono">3</span> earlier copies' in body
     assert jobs_io.get(cfg["CONFIG_DIR"], "manga")["retention"] == {"type": "days", "days": 180}
 
 
@@ -1101,7 +1101,7 @@ def test_adding_a_tier_is_previewed_with_its_warnings(client, cfg):
     assert "Preview — nothing has changed yet" in body and f'placeholder="{BASE}"' in body
     assert "charged for at least 180 days" in body and "under 128 KB are not moved" in body
     assert "takes hours and costs money" in body
-    assert 'S3 moves about <span class="mono">3</span> old versions' in body
+    assert 'S3 moves about <span class="mono">3</span> earlier copies' in body
     assert "tier" not in (lifecycle.load_settings(cfg["CONFIG_DIR"])["buckets"].get(BASE) or {}).get("folders", {}).get(
         "media/manga/", {})
 

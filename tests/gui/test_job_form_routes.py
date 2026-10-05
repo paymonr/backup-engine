@@ -70,9 +70,11 @@ SMALL_MEASURED = str(int(0.35 * 1024 ** 3))          # the owner's own "0.35 GB"
 # --- the numbered sections + dim state (5.8 §1) ----------------------------
 
 def test_new_form_renders_numbered_sections(client):
+    # Ledger band grammar (Task 8): the numbered "N · Heading" headings were
+    # dropped in favour of margin slabels on each band.
     body = client.get("/jobs/new").get_data(as_text=True)
-    for head in ("1 · Which folder", "2 · The plan", "3 · How often", "4 · Name it"):
-        assert head in body
+    for slabel in ("Source", "Name and kind", "Storage tier", "What it keeps", "Cost", "Schedule"):
+        assert f'<p class="slabel">{slabel}</p>' in body, slabel
     # fresh (no folder): sections 2-4 dimmed with the reason (never hidden).
     assert "sec dimmed" in body
     assert "Pick a folder first — everything below is priced for it." in body
@@ -732,3 +734,22 @@ def test_job_save_does_not_seed_an_already_owned_bucket(client, app, monkeypatch
         "enabled": "1", "retention_type": "days", "retention_days": "180",
         "dedicated": "1", "bucket": "bw-backups-photos", "bucket_versioned": "1"})
     assert r.status_code in (302, 303)
+
+
+from tests.gui.test_vocabulary import full_app  # noqa: F401
+
+
+def test_job_form_keeps_its_fields_and_uses_plain_words(full_app):
+    body = full_app.test_client().get("/jobs/new").get_data(as_text=True)
+    # Note: "est-form" is not an id on this page (it belongs to cost.html's lever
+    # form); job_form.html's own cost-estimate JS binds to #job-form (app.js ~L271).
+    for fid in ("job-form", "sched-builder", "sched-input", "source-input", "source-tree"):
+        assert f'id="{fid}"' in body, fid
+    # "dedicated"/"bucket" are left out of this sweep: full_app's config carries no
+    # AWS-permissions stamp, so dedicated_ok is False and that whole branch (locked
+    # for a reason unrelated to this task) renders neither field — covered instead
+    # by this file's own app/client fixtures (which do set up permissions).
+    for name in ("name", "type", "source", "schedule", "storage_class", "retention_type"):
+        assert f'name="{name}"' in body, name
+    assert "assumption" not in body and "old versions" not in body
+    assert "How much changes each month" in body and "earlier copies" in body

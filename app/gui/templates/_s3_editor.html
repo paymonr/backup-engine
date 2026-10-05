@@ -18,7 +18,7 @@
       stepMismatch -- the server already turns it into an owner-word form error. -#}
   {% if ed.kind == 'plain' %}
   <p class="hint">This is also {{ ed.job }}'s history setting — the same value is saved to the job.</p>
-  <p class="lbl" style="margin-top:var(--sp-3)">Keep old versions</p>
+  <p class="lbl" style="margin-top:var(--sp-3)">Keep {{ vocab.EARLIER_COPIES }}</p>
   <label class="radio"><input type="radio" name="keep" value="days" {{ 'checked' if ed.keep == 'days' }}>
     <span>for <input type="number" step="any" name="days" value="{{ ed.days }}" class="mono" style="width:5rem" data-radio="days"> days after being replaced</span></label>
   <label class="radio"><input type="radio" name="keep" value="count" {{ 'checked' if ed.keep == 'count' }}>
@@ -26,7 +26,7 @@
   <label class="radio"><input type="radio" name="keep" value="both" {{ 'checked' if ed.keep == 'both' }}>
     <span>both — the newest of each file, and older ones for the days above</span></label>
   <label class="radio"><input type="radio" name="keep" value="all" {{ 'checked' if ed.keep == 'all' }}>
-    <span>forever — every old version</span></label>
+    <span>forever — every earlier copy</span></label>
   {% elif ed.kind == 'undo' %}
   <p class="hint">What {{ ed.jobs|join(', ') }} already removed stays recoverable in S3 this long.</p>
   <label class="fld" for="s3-undo" style="margin-top:var(--sp-3)">Undo window</label>
@@ -38,14 +38,14 @@
     <span>Clear leftover delete markers</span></label>
   <p class="lbl" style="margin-top:var(--sp-3)">Versioning</p>
   <label class="radio"><input type="radio" name="versioning" value="on" {{ 'checked' if ed.versioning == 'on' }}>
-    <span>On — S3 keeps the old versions Plain copy history and the undo window rely on</span></label>
+    <span>On — S3 keeps the {{ vocab.EARLIER_COPIES }} Plain copy history and the undo window rely on</span></label>
   <label class="radio"><input type="radio" name="versioning" value="suspended" {{ 'checked' if ed.versioning == 'suspended' }}>
     <span>Suspended — overwritten or deleted files are gone at once</span></label>
   {% endif %}
   {% if ed.kind in ('plain', 'undo') %}
-  <p class="lbl" style="margin-top:var(--sp-3)">Cheaper tier for old versions</p>
+  <p class="lbl" style="margin-top:var(--sp-3)">Cheaper tier for {{ vocab.EARLIER_COPIES }}</p>
   <select name="tier_class" style="margin-top:var(--sp-1)">
-    <option value=""{{ ' selected' if not ed.tier_class }}>None — old versions stay where they are</option>
+    <option value=""{{ ' selected' if not ed.tier_class }}>None — {{ vocab.EARLIER_COPIES }} stay where they are</option>
     {% for c, name in ed.tier_classes %}<option value="{{ c }}"{{ ' selected' if ed.tier_class == c }}>{{ name }}</option>{% endfor %}
   </select>
   <span style="display:block;margin-top:var(--sp-1)">after <input type="number" step="any" name="tier_days" value="{{ ed.tier_days }}" class="mono" style="width:5rem"> days</span>

@@ -44,7 +44,7 @@
 {% if not is_edit %}
 <p class="measure muted" style="margin-top:10px">Three kinds of thing on this page:
   <b>settings</b> change what gets backed up, <b>measured facts</b> come off disk, and
-  <b>assumptions</b> are your estimate and only move the forecast.</p>
+  <b>what we assumed</b> is your estimate and only moves the forecast.</p>
 {% endif %}
 
 <form id="job-form" method="post" action="{{ url_for('gui.job_save') }}"
@@ -70,9 +70,9 @@
   <input type="hidden" name="name" value="{{ fv.name }}">
   {% endif %}
 
-  <!-- 1 · Which folder -->
-  <section class="sec">
-    <h2 class="lbl">1 · Which folder</h2>
+  <!-- Which folder -->
+  <section class="band sec" id="band-source">
+    <div class="band-head"><p class="slabel">Source</p></div>
     <p class="mono sm faint" style="margin-block:10px 8px">{{ source_root_host }}</p>
     <ul class="tree card" id="source-tree" data-selected="{{ fv.source }}" data-single="1"
         style="max-width:34rem;list-style:none;margin:0"></ul>
@@ -91,9 +91,9 @@
 
   {% set dim = '' if fv.source else ' dimmed' %}
 
-  <!-- 2 · The plan -->
-  <section class="sec{{ dim }}">
-    <h2 class="lbl">2 · The plan</h2>
+  <!-- Name and kind (what kind of backup) -->
+  <section class="band sec{{ dim }}" id="band-kind">
+    <div class="band-head"><p class="slabel">Name and kind</p></div>
     {% if not fv.source %}<p class="pickfirst">Pick a folder first — everything below is priced for it.</p>{% endif %}
 
     {% if est_error %}<div class="sev note" id="est-error">{{ est_error }}</div>{% endif %}
@@ -129,9 +129,12 @@
       <div class="sm faint measure" style="margin-top:4px">Set at creation. Changing the kind would leave what is already
         stored under a different recovery model. To change it, create a new job.</div></dd></dl>
     {% endif %}
+  </section>
 
-    <!-- 2b · Where it's stored -->
-    <h3 class="subh" style="margin-top:24px">Where it's stored —
+  <!-- Storage tier (where it's stored) -->
+  <section class="band sec{{ dim }}" id="band-tier">
+    <div class="band-head"><p class="slabel">Storage tier</p></div>
+    <h3 class="subh" style="margin-top:0">Where it's stored —
       priced for {% if measured %}your <span class="n">{{ est.breakdown.billed_gb | size_gb }}</span>{% else %}an assumed <span class="n assumed">20 GB</span>{% endif %}</h3>
     <div class="tscroll card" style="margin-top:8px">
       <table class="classes">
@@ -183,9 +186,12 @@
         <span class="sm faint">records an acknowledgement on the job</span>
       </div>
     </div>
+  </section>
 
-    <!-- 2c · How much of it changes (5.8 §3.4) — the lever above the keep rule -->
-    <h3 class="subh" style="margin-top:24px">How much of it changes each backup?</h3>
+  <!-- What it keeps (change rate + keep rule + type-specific settings) -->
+  <section class="band sec{{ dim }}" id="band-keeps">
+    <div class="band-head"><p class="slabel">What it keeps</p></div>
+    <h3 class="subh" style="margin-top:0">{{ vocab.CHANGE_EACH_MONTH }}</h3>
     <div style="margin-top:6px">
       {% for val, label in [(0, 'Nothing — files only get added'), (1, 'A little — rare replacements'),
                             (10, 'Some — regular edits'), (30, 'A lot — churny')] %}
@@ -194,12 +200,12 @@
         <span>{{ label }} &nbsp;<span class="mono faint">({{ '0%' if val == 0 else '~' ~ val ~ '%' }})</span></span></label>
       {% endfor %}
     </div>
-    <p class="sm faint">An assumption. It never changes what gets backed up.</p>
+    <p class="sm faint">{{ vocab.ASSUMED }}. It never changes what gets backed up.</p>
     {{ wasrow('change_rate_pct') }}
 
-    <!-- 2d · How long to keep old versions (5.8 §3.5) -->
+    <!-- How long to keep earlier copies -->
     {% set ko = {} %}{% for o in (est.keep_options if est else []) %}{% set _ = ko.update({o.key: o}) %}{% endfor %}
-    <h3 class="subh" id="keep-head" style="margin-top:24px">How long to keep old versions</h3>
+    <h3 class="subh" id="keep-head" style="margin-top:24px">How long to keep {{ vocab.EARLIER_COPIES }}</h3>
     <div id="keep-block" style="margin-top:6px">
       <label class="radio" for="k-all"><input type="radio" id="k-all" name="retention_type" value="keep_all" {{ 'checked' if fv.retention_type == 'keep_all' }}>
         <span>Keep everything</span>
@@ -237,15 +243,15 @@
       <label class="radio" for="k-nd" data-when-type="archive"><input type="radio" id="k-nd" name="retention_type" value="count_days" {{ 'checked' if fv.retention_type == 'count_days' }}>
         <span>Keep the newest <input type="number" step="any" name="retention_nd_count" value="{{ fv.retention_nd_count }}" style="width:4rem" class="mono"> versions,
           older ones for <input type="number" step="any" name="retention_nd_days" value="{{ fv.retention_nd_days }}" style="width:4rem" class="mono"> days</span>
-        <span class="why">S3 keeps the newest N old versions indefinitely (even after the file is deleted); older ones go D days after being replaced</span></label>
+        <span class="why">S3 keeps the newest N {{ vocab.EARLIER_COPIES }} indefinitely (even after the file is deleted); older ones go D days after being replaced</span></label>
     </div>
     <p class="sm faint measure" id="keep-consequence" style="margin-top:6px">
-      {% if est and est.breakdown.change_rate_pct == 0 %}Nothing gets replaced, so there are no old versions to store —
+      {% if est and est.breakdown.change_rate_pct == 0 %}Nothing gets replaced, so there are no {{ vocab.EARLIER_COPIES }} to store —
         every option above adds <span class="n">$0.00</span>. It is still a real choice: it bounds how far back you can
         restore, and how much one bad night can cost you.
       {% elif est and est.projection.unbounded %}Keep everything never plateaus, so no typical month is printed for it —
         only "still growing".
-      {% elif est %}At ~{{ est.breakdown.change_rate_pct|int }}% change, old versions settle at about
+      {% elif est %}At ~{{ est.breakdown.change_rate_pct|int }}% change, {{ vocab.EARLIER_COPIES }} settle at about
         {{ '%.2f'|format(est.breakdown.old_multiplier) }}× your data — <span class="n">{{ money(est.breakdown.versioning) }}</span>
         of the <span class="n">{{ money(est.this_job_monthly) }}</span>. Keeping less also limits how far back you can restore,
         which is worth something at 0% too.{% endif %}</p>
@@ -255,19 +261,19 @@
     {% if s3_copy.managed and not s3_copy.unsupported %}
     <p class="sm faint measure" data-when-type="archive" style="margin-top:6px">Kept by S3 inside AWS — this
       setting is the folder's S3 rule, so it holds even while this machine is off.
-      <a class="linklike" href="/setup/storage">S3 rules →</a></p>
+      <a class="linklike" href="/setup/storage">S3 rules</a></p>
     <p class="sm faint measure" data-when-type="versioned versioned-files" style="margin-top:6px">What a run
       removes stays recoverable in S3 for an undo window — <span class="mono">{{ s3_copy.undo_days }}</span> days unless you change it.
-      <a class="linklike" href="/setup/storage">S3 rules →</a></p>
+      <a class="linklike" href="/setup/storage">S3 rules</a></p>
     {% if s3_copy.console_cap %}{% with cap = s3_copy.console_cap %}
     <p class="sm faint measure" data-when-type="{{ s3_copy.console_cap_types }}" data-console-cap style="margin-top:6px">{% include "_console_cap.html" %}</p>
     {% endwith %}{% endif %}
     {% elif not s3_copy.managed %}
     <p class="sm faint measure" data-when-type="archive versioned versioned-files" style="margin-top:6px">S3 rules need the
-      AWS permissions update to keep old versions in AWS — <a class="linklike" href="/setup/permissions">Update permissions →</a></p>
+      AWS permissions update to keep {{ vocab.EARLIER_COPIES }} in AWS — <a class="linklike" href="/setup/permissions">Update permissions</a></p>
     {% else %}
     <p class="sm faint measure" data-when-type="archive versioned versioned-files" style="margin-top:6px">This storage
-      doesn't support S3 rules, so old versions aren't kept there.</p>
+      doesn't support S3 rules, so {{ vocab.EARLIER_COPIES }} aren't kept there.</p>
     {% endif %}
     {{ wasrow('retention_type') }}
 
@@ -283,10 +289,12 @@
     <label class="sm" data-when-type="archive versioned-files" data-when-packing="1" style="display:block;margin-left:34px">
       Typical archive size <input type="number" name="pack_member_gb" value="{{ fv.pack_member_gb }}" step="any" min="0.001" style="width:5rem" class="mono"> GB each
       <span class="faint"> — cost estimate only; the tool copies files as they are and won't bundle for you.</span></label>
+  </section>
 
-    <!-- 2e · What it costs — WHEN × WHOSE (5.8 §3.6) -->
-    <hr class="hair" style="margin:24px 0 16px">
-    <p class="lbl">What it costs · pick a <b style="color:var(--ink)">when</b>, read the <b style="color:var(--ink)">whose</b> row</p>
+  <!-- Cost — WHEN × WHOSE -->
+  <section class="band sec{{ dim }}" id="band-cost">
+    <div class="band-head"><p class="slabel">Cost</p></div>
+    <p class="measure">Pick a <b style="color:var(--ink)">when</b>, read the <b style="color:var(--ink)">whose</b> row</p>
     <div class="seg" role="tablist" aria-label="When" style="margin-top:10px">
       <button type="button" role="tab" data-when="first" aria-selected="false">Your first bill</button>
       <button type="button" role="tab" data-when="typical" aria-selected="true">A typical month</button>
@@ -312,9 +320,9 @@
     </div>
   </section>
 
-  <!-- 3 · How often -->
-  <section class="sec{{ dim }}">
-    <h2 class="lbl">3 · How often</h2>
+  <!-- Schedule (how often) -->
+  <section class="band sec{{ dim }}" id="band-schedule">
+    <div class="band-head"><p class="slabel">Schedule</p></div>
     <div class="sched-builder" id="sched-builder" hidden style="margin-top:12px">
       <div style="display:flex;flex-wrap:wrap;gap:16px">
         <label class="sm faint">Frequency
@@ -344,9 +352,9 @@
     {{ wasrow('schedule') }}
   </section>
 
-  <!-- 4 · Name it -->
-  <section class="sec{{ dim }}">
-    <h2 class="lbl">4 · Name it</h2>
+  <!-- Name and kind (job name) -->
+  <section class="band sec{{ dim }}" id="band-name">
+    <div class="band-head"><p class="slabel">Name and kind</p></div>
     {% set dest = ('s3://' ~ bucket ~ '/appdata/') if fv.type == 'versioned' else ('s3://' ~ bucket ~ '/media/' ~ (fv.name or '<name>') ~ '/') %}
     {% if is_edit %}
     <dl class="def"><dt>Job name</dt><dd><span class="mono">{{ fv.name }}</span>
@@ -369,9 +377,9 @@
     {% if errors.get('size') %}<p class="sm" style="color:var(--danger)">{{ errors.get('size') }}</p>{% endif %}
   </section>
 
-  <!-- 5 · Storage -->
-  <section class="sec{{ dim }}">
-    <h2 class="lbl">5 · Storage</h2>
+  <!-- Storage tier (bucket) -->
+  <section class="band sec{{ dim }}" id="band-bucket">
+    <div class="band-head"><p class="slabel">Storage tier</p></div>
     {% if is_edit %}
     {#- The bucket is LOCKED after creation (5.9), just like the kind and the name: a
         dedicated bucket already holds this job's data, so the edit screen shows it as
@@ -400,13 +408,13 @@
         This name must start with <span class="mono">{{ bucket }}-</span> — backup-engine can only
         reach buckets named that way.</p>
       <label class="radio" for="bucket_versioned" style="margin-top:10px"><input type="checkbox" id="bucket_versioned" name="bucket_versioned" value="1" {{ 'checked' if fv.bucket_versioned == '1' }}>
-        <span>Keep old versions in this bucket too</span></label>
+        <span>Keep {{ vocab.EARLIER_COPIES }} in this bucket too</span></label>
     </div>
     {% else %}
     <label class="radio" for="dedicated"><input type="checkbox" id="dedicated" disabled>
       <span>Give this job its own bucket</span></label>
     <p class="sm faint measure" style="margin-top:4px">Needs a one-time AWS permissions update —
-      <a class="linklike" href="/setup/permissions">update permissions →</a>. Until then every job
+      <a class="linklike" href="/setup/permissions">update permissions</a>. Until then every job
       shares <span class="mono">s3://{{ bucket }}</span>.</p>
     {% endif %}
     {% endif %}
@@ -418,7 +426,7 @@
     <a class="linklike" href="{{ url_for('gui.job_page', name=fv.name) if is_edit else url_for('gui.index') }}">Cancel</a>
     <span class="figs" id="foot-figs">a typical month — this job <span class="n" id="foot-job">{{ dash(fv.source, this_typical) }}</span><!--
       -->{% if is_edit %} <span id="foot-was" {{ '' if (diff or {}).get('footer_was') else 'hidden' }}>(was <span>{{ (diff or {}).get('footer_was') }}</span>)</span>{% endif %} ·
-      all jobs <span class="n" id="foot-all">{{ dash(fv.source, all_typical) }}</span> &nbsp;<a href="{{ url_for('gui.cost_page_view') }}">over time →</a></span>
+      all jobs <span class="n" id="foot-all">{{ dash(fv.source, all_typical) }}</span> &nbsp;<a href="{{ url_for('gui.cost_page_view') }}">over time</a></span>
   </div>
   <p class="sm" id="create-why" style="margin-top:8px;color:var(--danger)" {{ '' if unacked or not fv.source else 'hidden' }}>
     {% if unacked %}Fix the blocker above first.{% elif not fv.source %}Pick a folder first.{% endif %}</p>

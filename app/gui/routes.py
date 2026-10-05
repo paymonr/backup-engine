@@ -2284,7 +2284,7 @@ def job_assumptions(name):
     except jobs_io.JobsFileError as e:
         flash(str(e))
         return redirect(url_for("gui.cost_page_view"))
-    flash(f"Saved assumptions for {name}.", "success")
+    flash(f"Saved what we assumed for {name}.", "success")
     return redirect(url_for("gui.cost_page_view"))
 
 

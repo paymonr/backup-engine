@@ -14,7 +14,7 @@
       {% else %}
       <div class="sig sig-warning" style="margin-top:var(--sp-2)">
         <span class="glyph" aria-hidden="true"></span>
-        <div class="body">S3 will permanently delete about <span class="mono">{{ row.impact.versions }}</span> old versions
+        <div class="body">S3 will permanently delete about <span class="mono">{{ row.impact.versions }}</span> {{ vocab.EARLIER_COPIES }}
           (<span class="mono">{{ row.impact.bytes }}</span>){% if row.impact.oldest %}, oldest from <span class="mono">{{ row.impact.oldest }}</span>{% endif %},
           within about a day of applying · as of <span class="stamp">{{ row.impact.as_of }}</span></div>
       </div>
@@ -23,7 +23,7 @@
     <p class="hint" style="margin-top:var(--sp-1)">No storage summary for this folder yet.{% if refresh_ok %} Refresh now for exact figures.{% endif %} Confirming still needs the bucket name.</p>
     {% endif %}
     {% if row.impact and row.impact.moved %}
-    <p class="hint" style="margin-top:var(--sp-1)">S3 moves about <span class="mono">{{ row.impact.moved.versions }}</span> old versions (<span class="mono">{{ row.impact.moved.bytes }}</span>) to the cheaper tier.</p>
+    <p class="hint" style="margin-top:var(--sp-1)">S3 moves about <span class="mono">{{ row.impact.moved.versions }}</span> {{ vocab.EARLIER_COPIES }} (<span class="mono">{{ row.impact.moved.bytes }}</span>) to the cheaper tier.</p>
     {% endif %}
     {% for n in row.notes %}<p class="hint" style="margin-top:var(--sp-1)">{{ n }}</p>{% endfor %}
     {% if row.refresh and refresh_ok %}

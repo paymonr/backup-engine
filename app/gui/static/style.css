@@ -378,6 +378,13 @@ input:focus, select:focus, textarea:focus{ outline:2px solid var(--accent); outl
   padding-inline:14px; background:var(--surface); border-top:1px solid var(--border); margin-top:24px; }
 .formfoot .figs{ margin-left:auto; font-size:13px; color:var(--faint); white-space:nowrap; }
 .formfoot .figs .n{ color:var(--ink); }
+/* narrow screens: the footer can't hold "when" + the whose figures on one 44px row,
+   so it wraps instead (Task 2 carried this forward without its responsive case). */
+@media (max-width:640px){
+  .formfoot{ height:auto; flex-wrap:wrap; padding-block:8px; }
+  .formfoot .figs{ margin-left:0; flex-basis:100%; white-space:normal; }
+  .whose{ grid-template-columns:minmax(0,1fr) 10ch; }
+}
 
 /* keep-rule delta chips (5.8 §3.5) + a section dimmed until a folder is picked
    (5.8 §1: color faint, controls inert, NEVER hidden). */
