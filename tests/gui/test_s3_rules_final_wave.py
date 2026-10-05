@@ -203,9 +203,9 @@ def test_the_wizard_confirm_says_so_too(client, cfg, monkeypatch):
 
 # --- M6: the cost screens note that "newest N + days" is estimated as newest N ----------------
 
-COMBINED = "keeps the newest old versions plus a number of days as keeping only those newest versions"
+COMBINED = "keeps the newest earlier copies plus a number of days as keeping only those newest copies"
 JOB_COMBINED = "keeps the newest earlier copies plus a number of days as keeping only those newest copies"
-_COMBINED_BY_URL = {"/cost": COMBINED, "/jobs/manga": JOB_COMBINED}   # the Job page uses plain words
+_COMBINED_BY_URL = {"/cost": COMBINED, "/jobs/manga": JOB_COMBINED}   # both use plain words now
 
 
 def test_cost_screens_note_the_combined_form(client, cfg):

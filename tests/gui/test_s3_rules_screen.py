@@ -1081,7 +1081,7 @@ TIERED = {"version": 1, "buckets": {BASE: {"folders": {"media/manga/": {
 # so desired_rules/with_tier drops it; storage.json still HAS it (fix round 1, I2).
 DEAD_TIER = {"version": 1, "buckets": {BASE: {"folders": {"media/manga/": {
     "tier": {"class": "DEEP_ARCHIVE", "after_days": 200}}}}}}
-NOTE = "Estimate doesn't include moving old versions to a cheaper tier"          # the Cost screen
+NOTE = "Estimate doesn't include moving earlier copies to a cheaper tier"        # the Cost screen (plain words)
 JOB_NOTE = "Estimate doesn't include moving earlier copies to a cheaper tier"     # the Job page (plain words)
 
 

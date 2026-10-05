@@ -9,6 +9,7 @@ import pytest
 from app.gui import create_app, config_io, estimate_io
 from app.estimator import usage, billing
 from app.estimator.prices import load_prices
+from tests.gui.test_vocabulary import full_app  # noqa: F401
 
 AJOB = {"name": "movies", "type": "archive", "source": "movies",
         "schedule": "0 4 * * 0", "enabled": True, "storage_class": "DEEP_ARCHIVE",
@@ -164,9 +165,9 @@ def test_small_measured_job_shows_mb_on_the_per_job_row(client, dirs):
     # `old_versions_gb` (from li.versioning / rate) used to print a flat
     # "%.1f GB" regardless of magnitude -- this job's is small enough (~250 MB)
     # that the bug would have shown "0.2 GB" or "0.3 GB" here.
-    assert "of old versions" in body
-    assert "250.9 MB of old versions" in body
-    assert " GB of old versions" not in body
+    assert "of earlier copies" in body
+    assert "250.9 MB of earlier copies" in body
+    assert " GB of earlier copies" not in body
 
 
 # --- estimate_io.current_costs -----------------------------------------------
@@ -246,3 +247,13 @@ def test_billing_view_parses_stubbed_data_when_connected(tmp_path, monkeypatch):
                       "months": [{"month": "2026-07", "amount": 1.0}],
                       "forecast": {"month": "2026-08", "amount": 2.0},
                       "tag": None}
+
+
+def test_cost_page_uses_the_plain_words(full_app):
+    body = full_app.test_client().get("/cost").get_data(as_text=True)
+    for gone in ("The model says", "Assumptions and billing", "change rate", "Amazon", "old versions"):
+        assert gone not in body, gone
+    for kept in ("Estimate", "What we assumed", "How much changes each month", "earlier copies", "AWS"):
+        assert kept in body, kept
+    assert 'href="/how-it-works#numbers"' in body
+    assert 'id="cost-timeline"' in body and 'id="est-form"' in body and 'id="proj-data"' in body

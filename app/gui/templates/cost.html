@@ -15,7 +15,7 @@
 {% block body %}
 <div class="screen dense">
 <p class="slabel">Cost</p>
-<h1 class="h">What will this cost, and is the model telling the truth?</h1>
+<h1 class="h">What this will cost</h1>
 
 {% if error %}<div class="sig sig-failure" data-flash="failure"><div class="body"><span class="label">Failed</span>{{ error }}</div></div>{% endif %}
 
@@ -46,18 +46,18 @@
     <div class="sfig"><span class="k">Last invoice</span>
       <span class="v">{% if inv %}{{ prov(money(inv.amount), 'invoiced') }}{% else %}—{% endif %}</span>
       <span class="s">{% if inv %}{{ inv.month }} · the real bill{% if not inv.tag_scoped %} · whole account, not just these backups{% endif %}{% else %}billing not connected{% endif %}</span></div>
-    <div class="sfig"><span class="k">The model says</span>
+    <div class="sfig"><span class="k">{{ vocab.ESTIMATE }}</span>
       <span class="v">{{ prov(money(cost.monthly_total), cost.model_monthly_provenance) }}<span class="s"> /mo</span></span>
       <span class="s">all jobs, once settled</span></div>
     <div class="sfig"><span class="k">Difference</span>
       <span class="v">{% if cost.delta %}<span{% if cost.delta.pct|abs > 10 %} style="color:var(--warn)"{% else %} style="color:var(--ok)"{% endif %}>{{ smoney(cost.delta.amount) }}</span>{% else %}—{% endif %}</span>
       <span class="s">{% if cost.delta %}{{ cost.delta.short }}{% else %}no invoice to compare{% endif %}</span></div>
   </div>
-  {% if cost.delta %}<p class="delta">model <b>{{ money(cost.monthly_total) }}</b> · invoice <b>{{ money(inv.amount) }}</b> · <b>{{ cost.delta.short.split(' · ')[0] }}</b> — {{ cost.delta.verdict }}.</p>{% endif %}
+  {% if cost.delta %}<p class="delta">{{ vocab.ESTIMATE|lower }} <b>{{ money(cost.monthly_total) }}</b> · invoice <b>{{ money(inv.amount) }}</b> · <b>{{ cost.delta.short.split(' · ')[0] }}</b> — {{ cost.delta.verdict }}.</p>{% endif %}
   {% if inv and not inv.tag_scoped and cost.billing.connected %}
-  <p class="sig-note">This invoice is the whole AWS account, not just these backups. Until a cost-allocation tag scopes it (Keys &amp; secrets → Billing), the difference above compares a projection for two folders against everything you pay Amazon.</p>
+  <p class="sig-note">This invoice is the whole {{ vocab.AWS }} account, not just these backups. Until a cost-allocation tag scopes it (Keys &amp; secrets → Billing), the difference above compares an estimate for two folders against everything you pay {{ vocab.AWS }}.</p>
   {% elif not cost.billing.connected %}
-  <p class="sig-note">Last invoice is empty — <a class="linklike" href="/setup/keys#billing">Connect AWS billing →</a></p>
+  <p class="sig-note">Last invoice is empty — <a class="linklike" href="/setup/keys#billing">Connect {{ vocab.AWS }} billing</a></p>
   {% endif %}
   <div class="legend"><span class="price-stamp" id="price-stamp">prices: {{ cost.price.kind }} table {{ cost.price.date }}</span></div>
 </section>
@@ -72,11 +72,11 @@
         {% for p in cost.per_job %}
         <tr>
           <td>{{ p.name }}</td>
-          <td>{{ prov(p.size_bytes | size, p.size_provenance) if p.size_bytes is not none else 'not measured yet' }}{% if p.old_versions_gb %} + ~{{ p.old_versions_gb | size_gb }} of old versions{% endif %}</td>
+          <td>{{ prov(p.size_bytes | size, p.size_provenance) if p.size_bytes is not none else 'not measured yet' }}{% if p.old_versions_gb %} + ~{{ p.old_versions_gb | size_gb }} of {{ vocab.EARLIER_COPIES }}{% endif %}</td>
           <td>{{ p.tier_label }} <code>{{ p.storage_class }}</code></td>
           <td class="num">{{ prov(money(p.monthly), p.monthly_provenance) }} <span class="s">/mo</span></td>
           <td>{% if p.in_bucket_monthly is not none %}{{ prov(p.in_bucket_bytes | size, 'measured') }} · {{ money(p.in_bucket_monthly) }} <span class="s">priced now</span>{% else %}—{% endif %}</td>
-          <td class="num">{% if p.shared_store %}— <span class="hint">not comparable — one shared store</span>{% elif p.delta is not none %}{{ smoney(p.delta) }}{% else %}—{% endif %}</td>
+          <td class="num">{% if p.shared_store %}— <span class="s">not comparable, one shared store</span>{% elif p.delta is not none %}{{ smoney(p.delta) }}{% else %}—{% endif %}</td>
         </tr>
         {% endfor %}
         <tr class="totals-row"><td>All jobs</td><td></td><td></td>
@@ -86,30 +86,30 @@
   </div>
 </section>
 
-{# ================= Band 3 — Projection ================= #}
+{# ================= Band 3 — Estimate ================= #}
 <section class="band" id="band-projection">
-  <p class="slabel">Projection</p>
+  <p class="slabel">{{ vocab.ESTIMATE }} <a class="qm" href="/how-it-works#numbers" aria-label="How it works">?</a></p>
   <div class="projgrid">
     <div>
       <svg id="cost-timeline" viewBox="0 0 720 260" role="img" aria-label="Projected monthly cost over 24 months" style="width:100%;max-width:720px;height:auto"></svg>
       <script type="application/json" id="proj-data">{{ cost.projection|tojson }}</script>
       {%- set m = cost.projection.primary.months[scrub_month - 1] -%}
       <label class="fld" for="month">Month</label>
-      <input type="range" id="month" name="month" min="1" max="{{ cost.projection.primary.months|length }}" value="{{ scrub_month }}" form="lever-form">
-      <p class="scrub mono" id="scrub-readout">Month {{ scrub_month }} · storing your files {{ money(m.storage) }} · old versions {{ money(m.versioning) }} · uploading {{ money(m.ingest) }} · replacing old versions {{ money(m.rotation) }} · total {{ money(m.total) }}</p>
-      {% if cost.projection.primary.unbounded %}<p class="hint">Still climbing at month {{ cost.projection.primary.months|length }} — Keep everything never plateaus.</p>{% else %}<p class="hint">Settles month {{ cost.projection.steady_state_month }}.</p>{% endif %}
-      {% if tier_note %}<p class="sig-note" data-tier-note>Estimate doesn't include moving old versions to a cheaper tier.</p>{% endif %}
-      {% if combined_note %}<p class="sig-note" data-combined-note>Estimate counts a Plain copy job that keeps the newest old versions plus a number of days as keeping only those newest versions.</p>{% endif %}
+      <input type="range" id="month" name="month" min="1" max="{{ cost.projection.primary.months|length }}" value="{{ scrub_month }}" form="est-form">
+      <p class="scrub mono" id="scrub-readout">Month {{ scrub_month }} · storing your files {{ money(m.storage) }} · {{ vocab.EARLIER_COPIES }} {{ money(m.versioning) }} · uploading {{ money(m.ingest) }} · replacing {{ vocab.EARLIER_COPIES }} {{ money(m.rotation) }} · total {{ money(m.total) }}</p>
+      {% if cost.projection.primary.unbounded %}<p class="hint">Still climbing at month {{ cost.projection.primary.months|length }}; keep everything never settles.</p>{% else %}<p class="s">Settles month {{ cost.projection.steady_state_month }}.</p>{% endif %}
+      {% if tier_note %}<p class="sig-note" data-tier-note>{{ vocab.ESTIMATE }} doesn't include moving {{ vocab.EARLIER_COPIES }} to a cheaper tier.</p>{% endif %}
+      {% if combined_note %}<p class="sig-note" data-combined-note>{{ vocab.ESTIMATE }} counts a Plain copy job that keeps the newest {{ vocab.EARLIER_COPIES }} plus a number of days as keeping only those newest copies.</p>{% endif %}
     </div>
 
     {# ---- the lever panel: one GET form; JS intercepts, no-JS submits ---- #}
-    <form class="levers card" id="lever-form" method="get" action="{{ url_for('gui.cost_page_view') }}">
+    <form class="levers card" id="est-form" method="get" action="{{ url_for('gui.cost_page_view') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <div class="levers-head"><span class="chip">scratch — not saved</span></div>
       {% for p in cost.per_job %}
       {%- set a = cost.assumptions.jobs[p.name] -%}
       <fieldset class="lever{{ changed(p.name + '_change_rate_pct') }}">
-        <legend>{{ p.name }} · Change rate</legend>
+        <legend>{{ p.name }} · {{ vocab.CHANGE_EACH_MONTH }}</legend>
         {% for opt, label in [(0,'Nothing (0%)'),(1,'A little (~1%)'),(10,'Some (~10%)'),(30,'A lot (~30%)')] %}
         <label class="radio"><input type="radio" name="{{ p.name }}_change_rate_pct" value="{{ opt }}"{% if a.change_rate_pct|round|int == opt %} checked{% endif %}> {{ label }}</label>
         {% endfor %}
@@ -159,22 +159,22 @@
           <td>{% if r.warmup %}up to {{ r.warmup.hours[1] or '—' }} h{% else %}none — instant tier{% endif %}</td>
           <td>{% if r.warmup %}{{ r.tier }}{% else %}—{% endif %}</td>
           <td class="num">{{ money(r.amount) }}{% if r.alt_amount is not none %}<span class="s"> · {{ r.alt_tier }} {{ money(r.alt_amount) }}</span>{% endif %}</td>
-          <td><a class="btn btn-sm" href="/jobs/{{ r.name }}/restore">Get data back →</a></td>
+          <td><a class="btn btn-sm" href="/jobs/{{ r.name }}/restore">Get data back</a></td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-  <p class="sm faint measure">Getting it back is warm-up plus download out of Amazon. It does not get cheaper when the storage does.</p>
+  <p class="sm faint measure">Getting it back is warm-up plus download out of {{ vocab.AWS }}. It does not get cheaper when the storage does.</p>
 </section>
 
-{# ================= Band 5 — Assumptions and billing ================= #}
+{# ================= Band 5 — What we assumed, and billing ================= #}
 <section class="band" id="band-assumptions">
-  <p class="slabel">Assumptions and billing</p>
+  <p class="slabel">What we assumed, and billing</p>
   <dl class="defgrid">
     {% for name, a in cost.assumptions.jobs.items() %}
     <dt>{{ name }} — how much changes</dt>
-    <dd>{{ prov('%g%%'|format(a.change_rate_pct), 'assumed') }}{% if a.set_at %} <span class="hint">set {{ a.set_at[8:10]|int }} {{ MON[a.set_at[5:7]|int - 1] }}</span>{% endif %}</dd>
+    <dd>{{ prov('%g%%'|format(a.change_rate_pct), 'assumed') }}{% if a.set_at %} <span class="when">set {{ a.set_at[8:10]|int }} {{ MON[a.set_at[5:7]|int - 1] }}</span>{% endif %}</dd>
     {% endfor %}
     <dt>How much you'd get back</dt><dd>{{ prov(cost.assumptions.scenario.restore_fraction, 'assumed') }}</dd>
     <dt>Retrieval speed</dt><dd>{{ cost.assumptions.scenario.retrieval_tier }}</dd>
@@ -182,19 +182,19 @@
 
   <p class="lead">Optional and read-only: a separate Cost Explorer credential, never the runtime backup key.</p>
   {% if cost.billing.connected %}
-  <p>Billing: connected · read-only Cost Explorer credential · {% if cost.billing.tag %}tag {{ cost.billing.tag }}{% else %}tag not scoped{% endif %} · <a class="linklike" href="/setup/keys#billing">Change under Keys &amp; secrets →</a></p>
+  <p>Billing: connected · read-only Cost Explorer credential · {% if cost.billing.tag %}tag {{ cost.billing.tag }}{% else %}tag not scoped{% endif %} · <a class="linklike" href="/setup/keys#billing">Change under Keys &amp; secrets</a></p>
   {% else %}
-  <p>Billing: not connected — the invoice column stays empty. <a class="linklike" href="/setup/keys#billing">Connect AWS billing →</a></p>
+  <p>Billing: not connected — the invoice column stays empty. <a class="linklike" href="/setup/keys#billing">Connect {{ vocab.AWS }} billing</a></p>
   {% endif %}
 
   <details>
     <summary>How this is calculated</summary>
     <ul>
-      <li>Amazon bills every object as at least 128 KB on the cold tiers.</li>
+      <li>{{ vocab.AWS }} bills every object as at least 128 KB on the cold tiers.</li>
       <li>Data out is priced at the first-tier rate.</li>
       <li>Replacing a file on a tier with a minimum stay is charged for the whole minimum.</li>
-      <li>Snapshot backups keep old versions according to the keep rule; Plain copies keep replaced files for the days you chose.</li>
-      <li>One bundled price table (us-east-1) stamped with its capture date, or the live AWS list when you switch it on.</li>
+      <li>Snapshot backups keep {{ vocab.EARLIER_COPIES }} according to the keep rule; Plain copies keep replaced files for the days you chose.</li>
+      <li>One bundled price table (us-east-1) stamped with its capture date, or the live {{ vocab.AWS }} list when you switch it on.</li>
     </ul>
   </details>
 </section>
@@ -208,7 +208,7 @@
 // form, so with JS off nothing is a dead control. Every read is guarded.
 (function () {
   "use strict";
-  var form = document.getElementById("lever-form");
+  var form = document.getElementById("est-form");
   var dataTag = document.getElementById("proj-data");
   var proj = null;
   try { proj = dataTag ? JSON.parse(dataTag.textContent) : null; } catch (e) { proj = null; }
@@ -222,8 +222,8 @@
     var m = proj.primary.months[Math.max(0, Math.min(proj.primary.months.length - 1, slider.value - 1))];
     if (!m) return;
     readout.textContent = "Month " + slider.value + " · storing your files " + money(m.storage)
-      + " · old versions " + money(m.versioning) + " · uploading " + money(m.ingest)
-      + " · replacing old versions " + money(m.rotation) + " · total " + money(m.total);
+      + " · {{ vocab.EARLIER_COPIES }} " + money(m.versioning) + " · uploading " + money(m.ingest)
+      + " · replacing {{ vocab.EARLIER_COPIES }} " + money(m.rotation) + " · total " + money(m.total);
   }
   if (slider) { slider.addEventListener("input", paintScrub); }
 

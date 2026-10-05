@@ -221,7 +221,7 @@ def _apply_job_params(j: JobInputs, params: Mapping) -> JobInputs:
         backups_per_month=_num(params, f"{name}_backups_per_month", j.backups_per_month,
                                label=f"{name} backups per month"),
         change_rate_pct=_num(params, f"{name}_change_rate_pct", j.change_rate_pct,
-                             label=f"{name} change rate"),
+                             label=f"{name} {vocab.CHANGE_EACH_MONTH.lower()}"),
     )
 
 
@@ -567,10 +567,10 @@ def _first_bill_reason(first: float, typical: float, versioning: float,
     ramp = versioning > 0 and steady_month > 1
     upload = upload_onetime >= 0.05
     if ramp and upload:
-        return "both", (f"because no old versions exist yet, and uploading {eoc:,} objects "
+        return "both", (f"because no {vocab.EARLIER_COPIES} exist yet, and uploading {eoc:,} objects "
                         f"costs ${upload_onetime:,.2f}, once.")
     if ramp:
-        return "ramp", "because no old versions exist yet"
+        return "ramp", f"because no {vocab.EARLIER_COPIES} exist yet"
     if upload:
         return "upload", (f"because uploading {eoc:,} objects to a cold tier costs "
                           f"${put_1k:,.2f} per 1,000 requests — ${upload_onetime:,.2f}, once. "
@@ -633,7 +633,7 @@ def wizard_estimate(params: Mapping, config_dir, source_root, prices, *, saved_c
     override: dict = {}
     if str(params.get("change_rate_pct", "")).strip() != "":
         override["change_rate_pct"] = _num(params, "change_rate_pct",
-                                            _ENGINE_CHANGE.get(engine, 10.0), label="change rate")
+                                            _ENGINE_CHANGE.get(engine, 10.0), label=vocab.CHANGE_EACH_MONTH.lower())
     # Bundling ("my source files are packed into ~N GB archives, e.g. .cbz") — a
     # modeling input for archive / versioned-files jobs: it collapses the effective
     # object count, which is what drives the one-time upload and the cold per-object

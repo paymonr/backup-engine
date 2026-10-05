@@ -61,14 +61,14 @@ def test_cost_page_has_timeline_scrubber_and_calc(client):
 
 def test_cost_page_restore_note_and_no_cost_explorer_form(client):
     body = client.get("/cost").get_data(as_text=True)
-    assert "Getting it back is warm-up plus download out of Amazon." in body
+    assert "Getting it back is warm-up plus download out of AWS." in body
     # the Cost Explorer credential is edited only at Keys & secrets now (5.6 band 5)
     assert "COST_EXPLORER_" not in body
 
 
 def test_cost_page_lever_form_is_get_with_noscript_recalculate(client):
     body = client.get("/cost").get_data(as_text=True)
-    assert 'id="lever-form"' in body and 'method="get"' in body
+    assert 'id="est-form"' in body and 'method="get"' in body
     assert "<noscript>" in body and "Recalculate" in body
     # the scenario Apply is a POST sibling by formaction (5.6)
     assert 'formaction="/costs/scenario"' in body
@@ -79,7 +79,7 @@ def test_cost_page_renders_recomputed_server_side_with_js_off(client):
     # change rate moves the figures, no JS needed.
     body = client.get("/cost?appdata_change_rate_pct=30").get_data(as_text=True)
     assert body.count('id="cost-timeline"') == 1     # a fully re-rendered page, 200
-    assert "The model says" in body
+    assert "Estimate" in body
 
 
 def test_cost_page_bad_input_shows_error_not_crash(client):
