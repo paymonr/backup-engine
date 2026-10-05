@@ -191,7 +191,7 @@ def test_failed_record_renders_error_class(client, example):
     body = r.get_data(as_text=True)
     assert "tok-failed" in body
     assert "AccessDenied: s3:DeleteObjectVersion" in body      # verbatim error line
-    assert "Fix the permission →" in body                      # errors.classify fix
+    assert "Fix the permission" in body                       # errors.classify fix
     assert "/setup/permissions" in body                         # the fix route
 
 
@@ -337,8 +337,8 @@ def test_what_it_did_for_a_storage_summary_record():
                               finished_at=None, duration_s=3, exit_code=0, error=None, stats=stats)
     full = {"current_objects": 2847, "current_bytes": 50811379819, "noncurrent_versions": 2633,
             "noncurrent_bytes": 46084895626, "delete_markers": 2633, "oldest_age_days": 13}
-    assert routes._what_it_did(rec(full)) == ("2,847 current files (47.32 GB) · 2,633 old versions (42.92 GB), "
+    assert routes._what_it_did(rec(full)) == ("2,847 current files (47.32 GB) · 2,633 earlier copies (42.92 GB), "
                                               "the oldest replaced 13 days ago")
     assert routes._what_it_did(rec(dict(full, noncurrent_versions=0, noncurrent_bytes=0, oldest_age_days=None))) == \
-        "2,847 current files (47.32 GB) · no old versions"
+        "2,847 current files (47.32 GB) · no earlier copies"
     assert routes._what_it_did(rec({})) is None

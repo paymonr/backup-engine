@@ -175,7 +175,7 @@ def test_jobs_redirects_permanently_to_board(client, example):
 def test_verdict_is_the_manga_failure(client, example):
     body = client.get("/").get_data(as_text=True)
     assert "manga has not backed up since Sunday" in body        # verdict h2 (5.1)
-    assert "Amazon refused a delete" in body                     # error class `verdict`
+    assert "AWS refused a delete" in body                        # error class `verdict`
     assert "Fix the permission" in body                          # the fix button label
 
 

@@ -641,7 +641,7 @@ def test_dedicated_post_without_permissions_is_refused_without_aws(unstamped_cli
 
 # --- #6: S3 keeps at most 100 old versions per file (Plain copy "keep the last N") ----------
 
-COUNT_CAP_MSG = ("S3 can keep at most 100 old versions per file — pick 100 or fewer, "
+COUNT_CAP_MSG = ("S3 can keep at most 100 earlier copies per file — pick 100 or fewer, "
                  "or keep a number of days")
 
 

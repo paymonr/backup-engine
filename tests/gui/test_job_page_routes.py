@@ -180,7 +180,7 @@ def test_ok_job_renders_status_strip(client, example):
 def test_ok_job_renders_30_run_ledger_with_bars(client, example):
     body = client.get("/jobs/appdata").get_data(as_text=True)
     assert "Last 30 runs" in body
-    assert "30 OK · 0 failed" in body
+    assert "30 OK, 0 failed" in body
     assert body.count('class="cellx') == 30           # exactly 30 ledger cells
     assert 'class="bar' in body                        # decorative duration bars
 
@@ -191,7 +191,7 @@ def test_ok_job_renders_needs_line(client, example):
     assert "Recovery passphrase:" in body              # versioned needs-line row 1
     assert "Ready now:" in body                        # instant STANDARD tier row 2
     # restore COST is now priced by the real estimate_io.restore_quote (Task 12)
-    assert "Data out of Amazon:" in body
+    assert "Data out of AWS:" in body
     assert "not priced yet" not in body
 
 
@@ -234,7 +234,7 @@ def test_ok_job_has_edit_link_with_locked_fields(client, example):
     body = client.get("/jobs/appdata").get_data(as_text=True)
     assert "How it is set up" in body
     assert '/jobs/appdata/edit' in body                # the edit link (Task 14)
-    assert "Set at creation" in body                   # locked-field indication (5.9)
+    assert "Set at creation" not in body               # locked fields are no longer explained inline (plain words)
     # the §7.8 change-rate assumption surfaces here now that Cost owns it (Task 12)
     assert "How much changes between runs" in body
 
@@ -260,10 +260,10 @@ def test_failed_job_renders_failure_record_and_fix(client, example):
     assert 'class="tok tok-failed"' in body
     assert "sig-failure" in body
     assert "AccessDenied: s3:DeleteObjectVersion" in body       # the verbatim errline
-    assert "Fix the permission →" in body                       # from errors.classify
+    assert "Fix the permission" in body                        # from errors.classify
     assert "/setup/permissions" in body                          # the fix route
     # the prune case adds its first line to the cause (7.1.6 / 5.2)
-    assert "the clean-up of old versions was refused" in body
+    assert "the clean-up of earlier copies was refused" in body
 
 
 def test_failed_job_is_a_plain_copy_with_what_is_there_now(client, example):
@@ -507,3 +507,40 @@ def test_job_page_manual_commands_use_base_bucket_for_non_dedicated(client, exam
     body = client.get("/jobs/appdata").get_data(as_text=True)
     assert "s3://bw-backups/appdata/" in body          # identity uses the base bucket
     assert "s3:s3.amazonaws.com/bw-backups/appdata" in body   # restic manual command
+
+
+# --- plain words + Ledger (spec 2026-10-04, Task 3) -------------------------
+
+from tests.gui.test_vocabulary import full_app  # noqa: F401,E402
+
+
+def test_job_page_is_terse_and_marks_the_three_questions(full_app):
+    body = full_app.test_client().get("/jobs/appdata").get_data(as_text=True)
+    # the three "?" marks, each a link to the explanation page
+    assert body.count('class="qm"') == 3
+    assert body.count('href="/how-it-works#restore-points"') == 2      # Restore points figure + Keep rule
+    assert body.count('href="/how-it-works#tiers"') == 1               # Storage tier
+    # teaching paragraphs are gone
+    for gone in ("Could you actually get this back right now?", "Set at creation",
+                 "Pulls a single file into a", "The bars under the strip are how long",
+                 "Snapshot backups are made by", "an assumption you set"):
+        assert gone not in body, gone
+    # the safety sentence stays, as a safe line, not a hint
+    assert 'class="safe"' in body and "never touched or overwritten" in body
+    # no arrows glued to links
+    assert "cost view →" not in body and "Edit →" not in body
+
+
+def test_job_page_rail_markup_order(full_app):
+    # Phone width: the inline rail (shown ≤820px) precedes the main column; the
+    # sticky rail follows it. Both render the same readiness rows.
+    body = full_app.test_client().get("/jobs/appdata").get_data(as_text=True)
+    assert body.index('class="rail-inline"') < body.index('class="band"') < body.index('class="rail"')
+    assert body.count("Recovery readiness") == 2
+
+
+def test_cold_job_keeps_tier_phrase_and_thaw_warning(full_app):
+    body = full_app.test_client().get("/jobs/manga").get_data(as_text=True)
+    assert "Thaw first, hours" in body
+    assert "hours" in body and "Get data back" in body
+    assert "Amazon" not in body and "old versions" not in body

@@ -32,29 +32,29 @@ CLASSES: dict[str, ErrorClass] = {
     "iam-version-perms": ErrorClass(
         code="iam-version-perms",
         short="AccessDenied",
-        verdict="Amazon refused a delete or a version listing — the key this machine uses doesn't allow it.",
-        cause=("Amazon refused to delete or list old versions of files. Old versions are removed by the "
-               "bucket's S3 rules now, never by the key this machine uses, so a refused delete of an old "
-               "version comes from an earlier version of backup-engine and won't come back. A refused "
+        verdict="AWS refused a delete or a version listing — the key this machine uses doesn't allow it.",
+        cause=("AWS refused to delete or list earlier copies of files. Earlier copies are removed by the "
+               "bucket's S3 rules now, never by the key this machine uses, so a refused delete comes "
+               "from an earlier release of backup-engine and won't come back. A refused "
                "listing means the key's permissions are out of date."),
-        board=("Amazon refused a delete or a version listing, so every {dow} run stops at the same point "
-               "(since {since}). Old versions are removed by the bucket's S3 rules now — bring the key's "
+        board=("AWS refused a delete or a version listing, so every {dow} run stops at the same point "
+               "(since {since}). Earlier copies are removed by the bucket's S3 rules now — bring the key's "
                "permissions up to date."),
         fix=("Open Setup → AWS permissions and update them: that brings the key this machine uses to "
-             "what this version of backup-engine needs. It never needs to delete old versions itself — "
+             "what this version of backup-engine needs. It never needs to delete earlier copies itself — "
              "the bucket's S3 rules do that."),
-        fix_label="Fix the permission →",
+        fix_label="Fix the permission",
         fix_route="/setup/permissions",
         blocker=True,
     ),
     "access-denied": ErrorClass(
         code="access-denied",
         short="AccessDenied",
-        verdict="Amazon refused a request — one permission is missing from the key this machine uses.",
-        cause="Amazon refused a request — the key this machine uses lacks a permission for it.",
+        verdict="AWS refused a request — one permission is missing from the key this machine uses.",
+        cause="AWS refused a request — the key this machine uses lacks a permission for it.",
         board=None,
         fix="Re-apply the key policy with ./setup.sh, or compare the key's policy with the one Setup shows.",
-        fix_label="Check the key →",
+        fix_label="Check the key",
         fix_route="/setup/destination",
         blocker=True,
     ),
@@ -65,7 +65,7 @@ CLASSES: dict[str, ErrorClass] = {
         cause="Two snapshot backups tried to use the store at the same minute, and the second found it locked.",
         board=None,
         fix="Give the two jobs different minutes. Nothing is damaged; this job runs normally next time.",
-        fix_label="Edit the schedule →",
+        fix_label="Edit the schedule",
         fix_route="/jobs/<name>/edit",
         blocker=False,
     ),
@@ -77,18 +77,18 @@ CLASSES: dict[str, ErrorClass] = {
         board=None,
         fix=("Enter the passphrase that was used when the store was created, under Keys & secrets. "
              "Without it no snapshot can be read."),
-        fix_label="Set it →",
+        fix_label="Set it",
         fix_route="/setup/keys#RESTIC_PASSWORD",
         blocker=True,
     ),
     "cold-object": ErrorClass(
         code="cold-object",
         short="not warmed up",
-        verdict="The files are still cold — Amazon has to warm them up before anything can read them.",
+        verdict="The files are still cold — AWS has to warm them up before anything can read them.",
         cause="These files are on a thaw-first tier and have not been warmed up.",
         board=None,
         fix="Warm up first, wait the stated hours, then download again.",
-        fix_label="Warm up →",
+        fix_label="Warm up",
         fix_route="/jobs/<name>#restore-band",
         blocker=False,
     ),
@@ -100,7 +100,7 @@ CLASSES: dict[str, ErrorClass] = {
                "not mounted yet."),
         board=None,
         fix="Check the path mapping for the container and that the share exists; then Run now.",
-        fix_label="Edit the job →",
+        fix_label="Edit the job",
         fix_route="/jobs/<name>/edit",
         blocker=True,
     ),

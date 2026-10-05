@@ -1199,8 +1199,8 @@ def _what_it_did(rec) -> str | None:
         cur = f"{int(st.get('current_objects') or 0):,} current files ({_humanbytes(st.get('current_bytes') or 0)})"
         n = int(st.get("noncurrent_versions") or 0)
         if not n:
-            return f"{cur} · no old versions"
-        old = f"{n:,} old versions ({_humanbytes(st.get('noncurrent_bytes') or 0)})"
+            return f"{cur} · no {vocab.EARLIER_COPIES}"
+        old = f"{n:,} {vocab.EARLIER_COPIES} ({_humanbytes(st.get('noncurrent_bytes') or 0)})"
         age = st.get("oldest_age_days")
         if age is not None:
             old += f", the oldest replaced {lifecycle._days(int(age))} ago"
@@ -1939,7 +1939,7 @@ _RETENTION_DEFAULT_BY_TYPE = {"versioned": "tiered", "versioned-files": "days",
 
 # S3 keeps at most 100 old versions per file (lifecycle NewerNoncurrentVersions): a
 # Plain copy "keep the last N" above that is refused on save, never silently capped.
-PLAIN_COUNT_CAP = (f"S3 can keep at most {lifecycle.MAX_NEWER} old versions per file — pick "
+PLAIN_COUNT_CAP = (f"S3 can keep at most {lifecycle.MAX_NEWER} {vocab.EARLIER_COPIES} per file — pick "
                    f"{lifecycle.MAX_NEWER} or fewer, or keep a number of days")
 
 DEDICATED_NEEDS_UPDATE = ("Dedicated buckets need a one-time AWS permissions update first — "

@@ -806,7 +806,7 @@ def test_the_wizard_offers_newest_n_plus_days_for_plain_copy(client, cfg, monkey
 def test_the_combined_option_is_capped_at_100(client, cfg):
     body = _save_manga(client, name="comics", retention_type="count_days",
                        retention_nd_count="500", retention_nd_days="30").get_data(as_text=True)
-    assert "S3 can keep at most 100 old versions per file" in html.unescape(body)
+    assert "S3 can keep at most 100 earlier copies per file" in html.unescape(body)
     assert jobs_io.get(cfg["CONFIG_DIR"], "comics") is None
 
 
@@ -814,11 +814,11 @@ def test_the_job_page_says_what_s3_keeps(client, cfg):
     from tests.gui.test_vocabulary import forbidden_hits, mono_violations
     _applied(cfg)
     body = client.get("/jobs/manga").get_data(as_text=True)
-    assert "History in S3" in body and 'S3 keeps old versions <span class="mono">180</span> days' in body
+    assert "History in S3" in body and 'S3 keeps earlier copies <span class="mono">180</span> days' in body
     line = re.search(r"<dd data-s3-history>.*?</dd>", body, re.S).group(0)
     assert forbidden_hits(line) == [] and mono_violations(line) == []
     body = client.get("/jobs/appdata_backups").get_data(as_text=True)
-    assert 'S3 keeps what this job removed for <span class="mono">30</span> more days' in body
+    assert 'S3 keeps earlier copies of what this job removed for <span class="mono">30</span> more days' in body
 
 
 def test_the_job_page_mentions_a_change_waiting_for_confirmation(client, cfg):
@@ -956,7 +956,7 @@ def test_the_job_page_unsupported_message_differs_by_job_type(client, cfg):
     _applied(cfg)
     lifecycle.set_status(cfg["CACHE_DIR"], BASE, "unsupported", "no lifecycle")
     body = client.get("/jobs/manga").get_data(as_text=True)               # Plain copy
-    assert "Plain copy keeps all old versions" in body
+    assert "Plain copy keeps all earlier copies" in body
     body = client.get("/jobs/appdata_backups").get_data(as_text=True)     # Snapshot backup (undo)
     assert "an undo window can't be set there" in body
 
@@ -1081,7 +1081,8 @@ TIERED = {"version": 1, "buckets": {BASE: {"folders": {"media/manga/": {
 # so desired_rules/with_tier drops it; storage.json still HAS it (fix round 1, I2).
 DEAD_TIER = {"version": 1, "buckets": {BASE: {"folders": {"media/manga/": {
     "tier": {"class": "DEEP_ARCHIVE", "after_days": 200}}}}}}
-NOTE = "Estimate doesn't include moving old versions to a cheaper tier"
+NOTE = "Estimate doesn't include moving old versions to a cheaper tier"          # the Cost screen
+JOB_NOTE = "Estimate doesn't include moving earlier copies to a cheaper tier"     # the Job page (plain words)
 
 
 def test_the_screen_and_editor_show_the_tier(client, cfg):
@@ -1124,8 +1125,8 @@ def test_the_cost_screens_say_the_tier_is_not_priced(client, cfg):
     assert NOTE not in client.get("/cost").get_data(as_text=True)
     lifecycle.save_settings(cfg["CONFIG_DIR"], TIERED)
     assert NOTE in client.get("/cost").get_data(as_text=True)
-    assert NOTE in client.get("/jobs/manga").get_data(as_text=True)
-    assert NOTE not in client.get("/jobs/appdata_backups").get_data(as_text=True)
+    assert JOB_NOTE in client.get("/jobs/manga").get_data(as_text=True)
+    assert JOB_NOTE not in client.get("/jobs/appdata_backups").get_data(as_text=True)
 
 
 def test_the_job_page_names_the_tier(client, cfg):

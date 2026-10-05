@@ -444,8 +444,8 @@ def test_verdict_failed_uses_error_class_sentence(tmp_path):
     b = status.board(cfg, cache, "/s", now=now, tz=UTC, source_root=root)
     assert b["verdict"]["state"] == "failed" and b["verdict"]["job"] == "manga"
     # 5.1: the second sentence is the class's `verdict` string, not its cause.
-    assert "Amazon refused a delete" in b["verdict"]["h2"]
-    assert b["verdict"]["button"]["label"] == "Fix the permission →"
+    assert "AWS refused a delete" in b["verdict"]["h2"]
+    assert b["verdict"]["button"]["label"] == "Fix the permission"
     assert b["verdict"]["button"]["href"] == "/setup/permissions"
 
 
@@ -500,7 +500,7 @@ def test_needs_you_iam_blocker_fills_dow_and_since(tmp_path):
     # {dow} filled from dow_word("0 4 * * 0") == "Sunday"; {since} from the last OK run's date
     assert "every Sunday run stops at the same point" in row["text"]
     assert "6 September" in row["text"]
-    assert row["fix"]["label"] == "Fix the permission →"
+    assert row["fix"]["label"] == "Fix the permission"
 
 
 def test_needs_you_since_first_run_when_no_prior_ok(tmp_path):

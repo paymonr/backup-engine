@@ -66,7 +66,7 @@ def test_the_job_page_notes_the_console_rule(client, cfg):
     body = client.get("/jobs/manga").get_data(as_text=True)
     line = re.search(r"<dd data-s3-history>.*?</dd>", body, re.S).group(0)
     text = html.unescape(re.sub(r"<[^>]+>", "", line))
-    assert "A rule you added in the AWS console (expire-media) removes old versions after 30 days" in text
+    assert "A rule you added in the AWS console (expire-media) removes earlier copies after 30 days" in text
     assert "delete it there to keep the longer history" in text
     assert forbidden_hits(line) == [] and mono_violations(line) == []
     # Snapshot's undo window (30) isn't shortened by a 30-day rule on media/ -- no note there
@@ -79,7 +79,7 @@ def test_the_wizard_notes_the_console_rule(client, cfg):
     _live(cfg, GUIDED)
     for url in ("/jobs/manga/edit", "/jobs/new"):
         body = html.unescape(re.sub(r"<[^>]+>", "", client.get(url).get_data(as_text=True)))
-        assert "A rule you added in the AWS console (expire-media) removes old versions" in body, url
+        assert "A rule you added in the AWS console (expire-media) removes earlier copies" in body, url
     _live(cfg, [])
     assert "A rule you added in the AWS console" not in client.get("/jobs/new").get_data(as_text=True)
 
@@ -204,6 +204,8 @@ def test_the_wizard_confirm_says_so_too(client, cfg, monkeypatch):
 # --- M6: the cost screens note that "newest N + days" is estimated as newest N ----------------
 
 COMBINED = "keeps the newest old versions plus a number of days as keeping only those newest versions"
+JOB_COMBINED = "keeps the newest earlier copies plus a number of days as keeping only those newest versions"
+_COMBINED_BY_URL = {"/cost": COMBINED, "/jobs/manga": JOB_COMBINED}   # the Job page uses plain words
 
 
 def test_cost_screens_note_the_combined_form(client, cfg):
@@ -213,10 +215,10 @@ def test_cost_screens_note_the_combined_form(client, cfg):
     Path(cfg["CONFIG_DIR"], "jobs.json").write_text(json.dumps({"jobs": jobs}))
     for url in ("/cost", "/jobs/manga"):
         body = client.get(url).get_data(as_text=True)
-        assert COMBINED in body, url
+        assert _COMBINED_BY_URL[url] in body, url
         note = re.search(r"<p[^>]*data-combined-note[^>]*>.*?</p>", body, re.S).group(0)
         assert forbidden_hits(note) == [] and mono_violations(note) == []
-    assert COMBINED not in client.get("/jobs/appdata_backups").get_data(as_text=True)
+    assert JOB_COMBINED not in client.get("/jobs/appdata_backups").get_data(as_text=True)
 
 
 def test_no_combined_note_without_the_combined_form(client, cfg):
