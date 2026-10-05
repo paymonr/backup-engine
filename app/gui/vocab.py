@@ -117,6 +117,7 @@ CHANGE_EACH_BACKUP = "How much changes each backup"   # formerly "change rate"; 
 # Banned on daily screens only (case-sensitive, whole word; Setup is exempt).
 DAILY_FORBIDDEN_TERMS: set[str] = {
     "old version", "old versions", "delete marker", "delete markers", "noncurrent",
+    "Old version", "Old versions", "Delete marker", "Delete markers", "Noncurrent",
     "Amazon", "scratch folder", "The model says", "assumption", "assumptions", "Assumption", "Assumptions", "change rate",
 }
 

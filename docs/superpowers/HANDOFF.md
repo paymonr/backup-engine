@@ -14,7 +14,8 @@ box's address here._
   Full rewrite of visible copy to plain words (no `prune`/`retention`/`restic`/`OpenTofu` on screen) plus
   the "Linen & wine" Ledger visual pass (bundled fonts, light+dark stylesheet, sidebar shell) across Board,
   Job, Job form, Cost, Explore, Restore, Activity/run record and Setup. Built via subagent-driven development
-  (10 tasks), each task reviewed, whole-branch review clean. Tag `ui-before-plain-words` marks the commit
+  (10 tasks), each task reviewed, whole-branch review done; fix wave applied (see ledger rulings in the final
+  message). Tag `ui-before-plain-words` marks the commit
   immediately before this redesign started, for comparison/rollback reference.
   - **Suite:** `python3 -m pytest -q` → **2028 passed**; the `vocab.DAILY_TEMPLATES` hint-count check (every
     template's `hint_count` via `tests/gui/test_vocabulary.hint_count`) → every template ≤ 3 (board.html 0,
@@ -114,14 +115,14 @@ smoke-test leftovers cleaned; both permissions-converge leftovers (dedicated-buc
 ## Global constraints (do not violate)
 
 - Estimator math is **frozen** (`app/estimator/`); extend cost behaviour only via `app/gui/estimate_io.py`.
-- One vocabulary, enforced by `tests/gui/test_vocabulary.py` (no `prune`, `retention`, `restic`, `OpenTofu`
-  in visible text; bare numbers under a mono-class ancestor).
+- One vocabulary on the daily screens, enforced by `tests/gui/test_vocabulary.py` (no `prune`, `retention`,
+  `restic`, `OpenTofu` in visible text; bare numbers under a mono-class ancestor). Engine words still appear
+  in Tool detail and under Setup.
 - AWS only via the `aws` CLI subprocess (never boto3); no AWS calls on any GET; every POST CSRF-checked.
 - S3 rules: console rules (non-`backup-engine:` IDs) are never modified — a new destructive one is alarmed +
   notified only (owner decision 2026-09-24); nothing that keeps less history reaches S3 without the owner's
   preview + typed bucket name; a failed or killed check never blocks a backup.
 - Persisted contracts (`jobs.json`, `config/storage.json`, state files, `runs.jsonl`) only grow.
-no browser on this machine: screenshots skipped; the owner reviews on the box after deploy
 
 ## Safety copies (delete when the owner says so)
 

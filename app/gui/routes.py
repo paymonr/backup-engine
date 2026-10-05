@@ -1526,7 +1526,7 @@ def setup_probe():
         abort(400, description="csrf")
     cfg = current_app.config
     ops.launch_py(cfg, "app.engine.sysop", ["probe"], kind="probe")
-    flash("Probing the destination — watch it in Activity →", "note")
+    flash("Probing the destination — watch it in Activity", "note")
     return redirect(url_for("gui.setup_page"))
 
 
@@ -2587,7 +2587,7 @@ def costs_refresh():
     # Detached sysop op (spec 5.6 / 7.7.3): the refresh runs as an operation record,
     # NOT synchronously in the request — no live network at render.
     ops.launch_py(cfg, "app.engine.sysop", ["usage-refresh"], kind="usage-refresh")
-    flash("Refreshing usage — watch it in Activity →", "note")
+    flash("Refreshing usage — watch it in Activity", "note")
     return redirect(url_for("gui.cost_page_view"))
 
 
@@ -2597,7 +2597,7 @@ def costs_billing_refresh():
         abort(400, description="csrf")
     cfg = current_app.config
     ops.launch_py(cfg, "app.engine.sysop", ["billing-check"], kind="billing-check")
-    flash("Checking the bill — watch it in Activity →", "note")
+    flash("Checking the bill — watch it in Activity", "note")
     return redirect(url_for("gui.cost_page_view"))
 
 

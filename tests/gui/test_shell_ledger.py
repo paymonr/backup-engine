@@ -142,3 +142,21 @@ def test_plain_screens_use_the_band_grammar(template, title):
     # spec §6.1: the main content sits in a band with its margin title (fix wave G).
     src = (ROOT / "app" / "gui" / "templates" / template).read_text()
     assert re.search(r'<section class="band[^"]*"[^>]*>\s*<p class="slabel">' + re.escape(title) + "</p>", src), template
+
+
+def test_small_ledger_rules_from_the_fix_wave():
+    css = CSS.read_text()
+    for sel in (".lever > legend", ".sev-tab", ".whose .colhead"):
+        assert "uppercase" not in _rule(css, sel), sel
+    assert "var(--accent)" in _rule(css, ".strip .cellx.running")
+    phone = re.search(r"@media \(max-width:820px\)\{\s*\.shell\{[^}]*\}\s*\.sidebar\{([^}]*)\}", css)
+    assert phone and "flex-wrap:wrap" in phone.group(1).replace(" ", "")
+
+
+def test_job_page_and_flashes_carry_no_arrows():
+    # fix wave J1: no "→" in the Job page's buttons/axis or the "watch it in Activity" flashes.
+    src = re.sub(r"{#.*?#}", "", (ROOT / "app" / "gui" / "templates" / "job.html").read_text(), flags=re.S)
+    assert "→" not in src
+    routes = (ROOT / "app" / "gui" / "routes.py").read_text()
+    assert "watch it in Activity →" not in routes and routes.count("watch it in Activity\"") == 3
+    assert "border-radius:6px" not in src

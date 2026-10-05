@@ -123,7 +123,7 @@
       <a class="btn btn-primary" href="#restore-band" data-scroll="restore-band">Get data back</a>
       <details class="menu" style="display:inline-block;position:relative">
         <summary class="btn btn-ghost" aria-label="More actions" style="list-style:none">···</summary>
-        <div class="menu-pop" style="position:absolute;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.4rem;min-width:160px;display:grid;gap:.2rem">
+        <div class="menu-pop" style="position:absolute;right:0;z-index:5;background:var(--surface);border:1px solid var(--border);padding:.4rem;min-width:160px;display:grid;gap:.2rem">
           {% if s.enabled %}
           <form method="post" action="/jobs/{{ s.name }}/pause"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="btn btn-sm btn-ghost" style="width:100%;text-align:left">Pause schedule</button></form>
           {% else %}
@@ -231,7 +231,7 @@
             <div class="bars" aria-hidden="true">
               {% for cell in ledger.cells %}<span class="bar{{ ' tall' if cell.tall }}" style="height:{{ cell.bar_px }}px"></span>{% endfor %}
             </div>
-            <div class="ledger-axis"><span>{{ datelabel(ledger.oldest) }}</span><span>last 7 runs →</span><span>latest</span></div>
+            <div class="ledger-axis"><span>{{ datelabel(ledger.oldest) }}</span><span>last 7 runs</span><span>latest</span></div>
           </div>
         </div>
       </div>
@@ -344,7 +344,7 @@
             <strong>This writes {{ (rjob.size_bytes if rjob else none) | size }} to your array and starts a charged download.</strong> The next screen shows the full cost and asks you to type the job name.
             {% endif %}
             <div class="confirm">
-              <button type="submit" class="btn btn-primary" id="go-restore">{% if band_intent == 'thaw' %}Warm up first — up to {{ hours_hi }} h →{% elif band_intent == 'download' %}Download now →{% else %}Start restore →{% endif %}</button>
+              <button type="submit" class="btn btn-primary" id="go-restore">{% if band_intent == 'thaw' %}Warm up first — up to {{ hours_hi }} h{% elif band_intent == 'download' %}Download now{% else %}Start restore{% endif %}</button>
               <span class="hint" id="go-hint">Next: confirm what this will do.</span>
             </div>
           </div>

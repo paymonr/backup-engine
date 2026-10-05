@@ -413,3 +413,15 @@ def test_no_google_fonts_anywhere():
     bad = [p for p in TEMPLATES_DIR.glob("*.html") if "fonts.googleapis.com" in p.read_text()]
     css = (TEMPLATES_DIR.parent / "static" / "style.css").read_text()
     assert bad == [] and "fonts.googleapis.com" not in css
+
+
+def test_daily_lint_catches_capitalised_engine_terms():
+    # fix wave J5: the lint is case-sensitive, so a sentence-initial term needs its own entry.
+    for t in ("Old version", "Old versions", "Delete marker", "Delete markers", "Noncurrent"):
+        assert t in vocab.DAILY_FORBIDDEN_TERMS, t
+    assert daily_hits("<p>Delete markers: 3</p>") == ["Delete markers"]
+
+
+def test_how_it_works_says_what_keep_everything_removes(full_app):
+    body = full_app.test_client().get("/how-it-works").get_data(as_text=True)
+    assert "the keep rule no longer covers are removed after the next run; with keep everything, nothing is removed." in body
