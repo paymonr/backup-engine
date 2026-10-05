@@ -122,3 +122,13 @@ def test_job_and_cost_grids_collapse_at_mid_width():
     assert "@media(max-width:1180px){.jobgrid{grid-template-columns:1fr;}.rail{display:none;}.rail-inline{display:grid;" in css
     assert "@media(max-width:1180px){.projgrid{grid-template-columns:1fr;}}" in css
     assert "@media(max-width:820px){.jobgrid" not in css and "@media(max-width:820px){.projgrid" not in css
+
+
+def test_job_form_blocked_storage_tiers_are_styled():
+    # app.js toggles .struck on a blocked tier's figures; the reason shows in red.
+    css = CSS.read_text()
+    assert "line-through" in _rule(css, "table.classes td.struck")
+    reason = _rule(css, "td .reason")
+    assert "display:block" in reason and "var(--danger)" in reason
+    assert "var(--faint)" in _rule(css, "table.classes tr.blocked td")
+    assert "td.struck{" in css.replace(" ", "") and ".reason{" in css.replace(" ", "")

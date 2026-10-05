@@ -240,6 +240,17 @@ tr:last-child td{ border-bottom:0; }
 .defgrid dt{ color:var(--muted); }
 .defgrid dd{ min-width:0; overflow-wrap:anywhere; }
 @media (max-width:520px){ .defgrid{ grid-template-columns:1fr; gap:.15rem; } .defgrid dd{ margin-bottom:.6rem; } }
+/* Job form storage-tier table (ported from style.css.bak 358-371, re-tokenised): numeric
+   columns right-aligned; a blocked tier is faint, its figures struck (app.js toggles
+   .struck), with the reason in red under the name. */
+table.classes th, table.classes td{ text-align:right; padding-left:.6rem; }
+table.classes th:first-child, table.classes td:first-child{ text-align:left; padding-left:0; }
+table.classes td{ font-variant-numeric:tabular-nums; }
+table.classes tr.blocked td{ color:var(--faint); }
+table.classes td.struck{ text-decoration:line-through; }
+td .reason{ display:block; color:var(--danger); font-size:.86rem; text-align:left; margin-top:.1rem; }
+.cls{ display:flex; gap:.5rem; align-items:baseline; }
+.cls input{ accent-color:var(--accent); }
 
 /* ============================================================
    11. Run strip and duration bars (the one bold element)
