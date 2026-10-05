@@ -1,0 +1,49 @@
+{% extends "base.html" %}{% block title %}Destination — backup-engine{% endblock %}
+{% block body %}
+{# Destination (spec 5.11): the preserved three-path provisioning picker, restyled
+   onto the reading container. The provisioning safety model (provision.py) is
+   unchanged; this is presentation only. #}
+<section class="screen read" aria-label="Where backups go">
+  <p class="eyebrow">Setup · destination</p>
+  <h1>Where backups go</h1>
+  <p class="lead">A bucket this container can write to and nothing else.</p>
+
+  {% if provisioned %}
+  <div class="sig sig-success" style="margin-top:var(--sp-5)">
+    <span class="glyph" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="6" cy="6" r="5"/><path d="M3.6 6.2 5.3 7.9 8.5 4.4"/></svg></span>
+    <div class="body">Destination set — bucket <span class="mono">{{ bucket }}</span>{% if region %} in <span class="mono">{{ region }}</span>{% endif %}. Re-provision below to change it.</div>
+  </div>
+  <p class="hint" style="margin-top:var(--sp-3)" data-perm-line="{{ perm.state }}">AWS permissions:
+    {% if perm.state == 'current' %}up to date{% elif perm.state == 'behind' %}an update is available{% else %}not checked for this version{% endif %}{% if perm_checked %} · checked <span class="stamp">{{ perm_checked }}</span>{% endif %}
+    · <a class="linklike" href="/setup/permissions">Check &amp; update →</a></p>
+  {% endif %}
+
+  <div class="steps" style="margin-top:var(--sp-5)">
+    <div class="step">
+      <p class="eyebrow">No admin creds</p>
+      <h3>Guided-manual</h3>
+      <p class="hint">We render the exact least-privilege IAM policy and walk you through
+         creating the bucket in the AWS console. You validate the key you make.</p>
+      <p><a class="linklike" href="{{ url_for('gui.provision_manual') }}">Walk me through it →</a></p>
+    </div>
+    <div class="step">
+      <p class="eyebrow">Your shell</p>
+      <h3>Scripted</h3>
+      <p class="hint">Run <code>setup.sh</code> from a shell that already has your admin
+         credentials. They never touch this container.</p>
+      <p><a class="linklike" href="{{ url_for('gui.provision_scripted') }}">Show the command →</a></p>
+    </div>
+    <div class="step">
+      <p class="eyebrow">Transient creds</p>
+      <h3>Automated</h3>
+      <p class="hint">Paste short-lived admin credentials. We create the bucket with OpenTofu,
+         save the runtime key, and discard the admin creds.</p>
+      <p><a class="linklike" href="{{ url_for('gui.provision_automated') }}">Provision for me →</a></p>
+    </div>
+  </div>
+
+  <p class="hint" style="margin-top:var(--sp-5)">Unsure? <strong>Guided-manual</strong> is
+     the safest — it never sees your admin credentials. All three end the same way: a
+     least-privilege runtime key saved to this container.</p>
+</section>
+{% endblock %}

@@ -99,3 +99,30 @@ TERM_EXEMPTIONS: dict[str, set[str]] = {
     # makes the exemption intentional.
     "/setup/keys": {"restic", "repository"},
 }
+
+TERM_EXEMPTIONS["/how-it-works"] = set(FORBIDDEN_TERMS)
+
+# --- Plain words (spec 2026-10-04 §3, decisions D6) -------------------------
+# The four changes the owner approved. Templates and Python that print these
+# concepts on a DAILY screen import them from here; everything else keeps its
+# current name (restore point, undo window, bucket, S3, tier phrases...).
+EARLIER_COPIES = "earlier copies"          # old versions / noncurrent versions / delete markers
+AWS = "AWS"                                # never "Amazon" as the actor or the biller
+TEMP_FOLDER = "temporary folder"           # never "scratch folder"
+ESTIMATE = "Estimate"                      # the Cost/Board figure formerly "The model says"
+ASSUMED = "What we assumed"                # formerly "Assumptions"
+CHANGE_EACH_MONTH = "How much changes each month"   # formerly "change rate"
+
+# Banned on daily screens only (case-sensitive, whole word; Setup is exempt).
+DAILY_FORBIDDEN_TERMS: set[str] = {
+    "old version", "old versions", "delete marker", "delete markers", "noncurrent",
+    "Amazon", "scratch folder", "The model says", "assumption", "assumptions", "change rate",
+}
+
+# Daily templates and their hint budget (spec §4). The budget counts elements with
+# class "hint" in the template SOURCE; "safe" and "when" are separate classes.
+DAILY_TEMPLATES: list[str] = [
+    "board.html", "jobs.html", "job.html", "activity.html", "run_record.html",
+    "explore.html", "explore_index.html", "restore.html", "cost.html", "job_form.html",
+]
+HINT_BUDGET = 3

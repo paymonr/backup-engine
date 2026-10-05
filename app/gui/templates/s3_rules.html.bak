@@ -1,0 +1,147 @@
+{% extends "base.html" %}{% block title %}S3 rules — backup-engine{% endblock %}
+{#- S3 rules (spec 2026-09-23 §5): A's overview (a card per bucket) + B's side editor. Everything
+    here comes from state files — no AWS call on GET. Check now, Refresh now, Preview and Apply
+    are CSRF POSTs. Numbers sit in mono spans (the mono law). -#}
+{%- macro keeps(k, kind) -%}
+{%- if kind == 'undo' -%}
+  {%- if k.days -%}Undo window <span class="mono">{{ k.days }}</span> days{%- else -%}No undo window{%- endif -%}
+{%- elif not k.days -%}Every old version, no limit
+{%- elif k.newer and k.days > 1 -%}Newest <span class="mono">{{ k.newer }}</span> old versions per file; older ones <span class="mono">{{ k.days }}</span> days
+{%- elif k.newer -%}Newest <span class="mono">{{ k.newer }}</span> old versions per file
+{%- else -%}Old versions for <span class="mono">{{ k.days }}</span> days
+{%- endif -%}
+{%- endmacro -%}
+{% block body %}
+<section class="screen dense" aria-label="S3 rules">
+  <p class="eyebrow">Setup · S3 rules</p>
+  <h1>What S3 keeps, and for how long</h1>
+  <p class="lead">These rules run inside AWS, even when this machine is off. Plain copy history lives
+     here; Snapshot backup and File history keep their own history and use S3 only as an undo window
+     for data they already removed.</p>
+
+  {% if not v.provisioned %}
+  <p class="hint" style="margin-top:var(--sp-5)">Set up the destination first —
+     <a class="linklike" href="/setup/destination">Where backups go →</a></p>
+  {% elif not v.managed %}
+  <div class="sig sig-warning" style="margin-top:var(--sp-5)" data-s3-state="not-managed">
+    <span class="glyph" aria-hidden="true"></span>
+    <div class="body">backup-engine keeps these rules in step with your jobs after a one-time AWS
+      permissions update. Nothing here changes until then.
+      <a class="linklike" href="/setup/permissions">Needs the permissions update →</a></div>
+  </div>
+  {% else %}
+  {% set st = v.status %}
+  <div class="sig sig-{{ 'blocker' if st.level == 'blocker' else ('success' if st.level == 'ok' else 'warning') }}"
+       style="margin-top:var(--sp-5)" data-s3-state="{{ st.level }}">
+    <span class="glyph" aria-hidden="true"></span>
+    <div class="body">{{ st.sentence }}{% if st.checked_human %} · checked <span class="stamp">{{ st.checked_human }}</span>{% endif %}
+      <div class="actions" style="margin-top:var(--sp-2)">
+        {% if v.alarm %}
+        <form method="post" action="/setup/s3-rules/acknowledge" style="display:inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="seen" value="{{ v.alarm_seen or '' }}">
+          <input type="hidden" name="back" value="storage">
+          <button type="submit" class="btn btn-sm">I've seen this</button>
+        </form>
+        {% endif %}
+        <form method="post" action="/setup/s3-rules/check" style="display:inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="back" value="storage">
+          <button type="submit" class="btn btn-sm">Check now</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="jobgrid" style="margin-top:var(--sp-6)">
+    <div class="stack">
+      {% for b in v.buckets %}
+      {% if b.broken %}
+      <div class="card" style="padding:var(--sp-4)" data-bucket="{{ b.name }}">
+        <p class="slabel">{{ 'Dedicated bucket' if b.dedicated else 'Shared bucket' }} · <span class="mono">{{ b.name }}</span></p>
+        <div class="sig sig-warning" style="margin-top:var(--sp-3)" data-broken="{{ b.name }}">
+          <span class="glyph" aria-hidden="true"></span>
+          <div class="body">This bucket's saved S3 rules record couldn't be read — press Check now.</div>
+        </div>
+      </div>
+      {% else %}
+      <div class="card" style="padding:var(--sp-4)" data-bucket="{{ b.name }}">
+        <p class="slabel">{{ 'Dedicated bucket' if b.dedicated else 'Shared bucket' }} · <span class="mono">{{ b.name }}</span>
+          {% if b.versioning %}&nbsp;<span class="tok {{ 'tok-ok' if b.versioning_ok else 'tok-overdue' }}">versioning {{ {'on': 'on', 'suspended': 'suspended', 'never': 'never turned on'}[b.versioning] }}</span>{% endif %}</p>
+        {% if not b.applied %}<p class="hint" style="margin-top:var(--sp-2)">Not checked yet — press Check now to read this bucket's rules.</p>{% endif %}
+        <div class="scroll" style="margin-top:var(--sp-3)">
+        <table class="classes">
+          <thead><tr>
+            <th style="text-align:left">Folder</th>
+            <th style="text-align:left">Job</th>
+            <th style="text-align:left">What S3 keeps</th>
+            <th style="text-align:left">Cheaper tier</th>
+            <th style="text-align:left" aria-label="Change"></th>
+          </tr></thead>
+          <tbody>
+            {% for r in b.rows %}
+            <tr data-row="{{ r.key }}">
+              <td style="text-align:left" class="mono">{{ r.where }}</td>
+              <td style="text-align:left">{{ r.jobs|join(', ') }} · {{ r.type }}</td>
+              <td style="text-align:left">{{ keeps(r.keeps, r.kind) }}{% if r.first_pending %} <span class="hint">· after the first check</span>{% endif %}
+                {% if r.waiting %}<div class="hint" style="margin-top:var(--sp-1)">Waiting for your confirmation: {{ r.waiting }}</div>{% endif %}
+                {% if r.note %}<div class="hint" style="margin-top:var(--sp-1)">{{ r.note }}</div>{% endif %}</td>
+              <td style="text-align:left">{% if r.tier %}{{ r.tier.label }} <code>{{ r.tier.class }}</code> after <span class="mono">{{ r.tier.days }}</span> days{% else %}—{% endif %}
+                {% if r.tier_off %}<div class="hint" style="margin-top:var(--sp-1)">{{ r.tier_off }}</div>{% endif %}</td>
+              <td style="text-align:left"><a class="linklike" href="/setup/storage?edit={{ r.key|urlencode }}">Change…</a></td>
+            </tr>
+            {% endfor %}
+            {% for c in b.console %}
+            <tr class="blocked" data-console="{{ c.id }}">
+              <td style="text-align:left" class="mono">{{ c.where }}</td>
+              <td style="text-align:left">Added in the AWS console · <span class="mono">{{ c.id }}</span></td>
+              <td style="text-align:left">{{ c.words }}
+                {% if c.danger %}<div style="margin-top:var(--sp-1)"><span class="tok tok-failed">deletes or moves current backups</span></div>{% endif %}
+                {% if c.overlap %}<div style="margin-top:var(--sp-1)"><span class="tok tok-overdue">overlaps an app folder</span>
+                  <span class="hint">S3 applies the shorter expiry where rules overlap</span></div>{% endif %}</td>
+              <td style="text-align:left">—</td>
+              <td style="text-align:left" class="hint">read-only</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+        <p class="hint" style="margin-top:var(--sp-3)" data-bucketwide="{{ b.name }}">Bucket-wide: abandoned uploads
+          cleared after <span class="mono">{{ b.housekeeping.abort_days }}</span> days ·
+          {{ 'leftover delete markers cleared' if b.housekeeping.markers else 'leftover delete markers kept' }} ·
+          <a class="linklike" href="/setup/storage?edit={{ b.housekeeping.key|urlencode }}">Change…</a>
+          {% if b.versioning == 'on' and not b.versioning_waiting %} · <a class="linklike" href="/setup/storage?edit={{ b.housekeeping.key|urlencode }}">Suspend versioning…</a>{% endif %}</p>
+        {% if b.live_read_at %}<p class="hint">Rules as read <span class="stamp">{{ b.live_read_at }}</span>.</p>{% endif %}
+        {% if b.waiting %}
+        <div class="sig sig-warning" style="margin-top:var(--sp-3)" data-waiting="{{ b.name }}">
+          <span class="glyph" aria-hidden="true"></span>
+          <div class="body"><span class="label">Waiting for your confirmation</span>
+            <ul style="margin-top:var(--sp-2)">{% for w in b.waiting %}<li>{{ w }}</li>{% endfor %}</ul>
+            <p style="margin-top:var(--sp-2)">S3 keeps the current rule until you confirm.</p>
+            <form method="post" action="/setup/storage/preview" style="margin-top:var(--sp-3)">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="key" value="{{ b.name }}|*">
+              <input type="hidden" name="what" value="waiting">
+              <button type="submit" class="btn btn-sm">Review and confirm…</button>
+            </form>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+    <aside class="card" style="padding:var(--sp-4)" aria-label="Change a rule" id="s3-side">
+      {% if pvw %}{% include "_s3_preview.html" %}
+      {% elif ed %}{% include "_s3_editor.html" %}
+      {% else %}
+      <p class="slabel">Change a rule</p>
+      <p class="hint" style="margin-top:var(--sp-2)">Pick <strong>Change…</strong> on a row. A change that
+        keeps more applies at once; one that keeps less first shows what S3 would remove and asks you
+        to confirm.</p>
+      {% endif %}
+    </aside>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

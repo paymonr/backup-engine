@@ -1,0 +1,73 @@
+{#- The preview (spec §3), shared by the S3 rules screen and the job wizard: each change in
+    words; for one that keeps less, what S3 would permanently delete (from the stored summary)
+    and the damage warnings; then Apply — behind the typed bucket name when anything would be
+    deleted. `pvw` = s3_rules.preview_view(...). Numbers sit in mono spans. -#}
+<p class="slabel">Preview — nothing has changed yet</p>
+<ul class="stack" style="margin-top:var(--sp-3)">
+  {% for row in pvw.rows %}
+  <li data-change="{{ 'less' if row.less else 'more' }}">
+    <div>{{ row.words }}</div>
+    {% if not row.less %}<p class="hint">Keeps more — applies as part of this change.</p>{% endif %}
+    {% if row.impact %}
+      {% if row.impact.zero %}
+      <p class="hint" style="margin-top:var(--sp-1)">Nothing S3 keeps today would be removed · as of <span class="stamp">{{ row.impact.as_of }}</span></p>
+      {% else %}
+      <div class="sig sig-warning" style="margin-top:var(--sp-2)">
+        <span class="glyph" aria-hidden="true"></span>
+        <div class="body">S3 will permanently delete about <span class="mono">{{ row.impact.versions }}</span> old versions
+          (<span class="mono">{{ row.impact.bytes }}</span>){% if row.impact.oldest %}, oldest from <span class="mono">{{ row.impact.oldest }}</span>{% endif %},
+          within about a day of applying · as of <span class="stamp">{{ row.impact.as_of }}</span></div>
+      </div>
+      {% endif %}
+    {% elif row.no_summary %}
+    <p class="hint" style="margin-top:var(--sp-1)">No storage summary for this folder yet.{% if refresh_ok %} Refresh now for exact figures.{% endif %} Confirming still needs the bucket name.</p>
+    {% endif %}
+    {% if row.impact and row.impact.moved %}
+    <p class="hint" style="margin-top:var(--sp-1)">S3 moves about <span class="mono">{{ row.impact.moved.versions }}</span> old versions (<span class="mono">{{ row.impact.moved.bytes }}</span>) to the cheaper tier.</p>
+    {% endif %}
+    {% for n in row.notes %}<p class="hint" style="margin-top:var(--sp-1)">{{ n }}</p>{% endfor %}
+    {% if row.refresh and refresh_ok %}
+    <form method="post" action="/setup/storage/refresh" style="margin-top:var(--sp-1)">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="bucket" value="{{ row.refresh.bucket }}">
+      <input type="hidden" name="folder" value="{{ row.refresh.folder }}">
+      <input type="hidden" name="key" value="{{ row.refresh.bucket }}|{{ row.refresh.folder }}">
+      <button type="submit" class="btn btn-sm">Refresh now</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+<form method="post" action="{{ pvw.action }}" style="margin-top:var(--sp-4)">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="token" value="{{ pvw.token }}">
+  {% for name, value in pvw.hidden.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  {% if pvw.needs_typed %}
+  <div class="guard">
+    {% if pvw.guard %}<strong>{{ pvw.guard }}</strong> {% endif %}Type the bucket name to confirm.
+    <div class="confirm">
+      <label class="fld" for="s3-typed">Type <span class="mono">{{ pvw.bucket }}</span></label>
+      <input type="text" id="s3-typed" name="typed" autocomplete="off" spellcheck="false"
+             placeholder="{{ pvw.bucket }}" data-name="{{ pvw.bucket }}">
+      <button type="submit" class="btn btn-danger" id="s3-apply">Apply</button>
+    </div>
+    <p class="hint" id="s3-typed-hint"{% if pvw.error %} style="color:var(--danger)"{% endif %}>{{ pvw.error or 'Disabled until the name matches.' }}</p>
+  </div>
+  {% else %}
+  <input type="hidden" name="typed" value="">
+  <button type="submit" class="btn btn-primary" id="s3-apply">Apply</button>
+  {% endif %}
+  <a class="btn" href="{{ pvw.cancel }}">Cancel</a>
+</form>
+<script>
+// Enable Apply only on the exact bucket name (restore.html's pattern). With no JS the button is
+// enabled and the server refuses a wrong name.
+(function () {
+  var input = document.getElementById("s3-typed"), btn = document.getElementById("s3-apply");
+  if (!input || !btn) return;
+  var name = input.getAttribute("data-name") || "";
+  function sync() { btn.disabled = input.value.trim() !== name; }
+  input.addEventListener("input", sync);
+  sync();
+})();
+</script>

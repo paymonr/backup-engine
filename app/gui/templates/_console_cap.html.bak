@@ -1,0 +1,7 @@
+{#- A console rule that removes old versions sooner than the app's rule (final fix wave I4) --
+    `cap` = lifecycle.console_caps(...)[0]. Same words as s3_rules.console_cap_words, numbers in mono. -#}
+A rule you added in the AWS console (<span class="mono">{{ cap.id }}</span>)
+{%- if cap.newest and cap.days > 1 %} keeps only the newest <span class="mono">{{ cap.newest }}</span> old versions of each file and removes the rest after <span class="mono">{{ cap.days }}</span> days
+{%- elif cap.newest %} keeps only the newest <span class="mono">{{ cap.newest }}</span> old versions of each file
+{%- else %} removes old versions after <span class="mono">{{ cap.days }}</span> days
+{%- endif %} — delete it there to keep the longer history.

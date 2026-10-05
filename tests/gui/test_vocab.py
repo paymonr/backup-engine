@@ -65,7 +65,7 @@ def test_allowed_phrases_protect_the_tier_name():
 def test_term_exemptions_are_keyed_by_url_prefix():
     # Spec 10.3 per-page exemption table -- the only exemptions.
     assert set(vocab.TERM_EXEMPTIONS) == {
-        "/setup/about", "/setup/destination", "/setup/keys",
+        "/setup/about", "/setup/destination", "/setup/keys", "/how-it-works",
     }
     # About is the glossary: exempt from every term.
     assert vocab.TERM_EXEMPTIONS["/setup/about"] == vocab.FORBIDDEN_TERMS
@@ -73,5 +73,7 @@ def test_term_exemptions_are_keyed_by_url_prefix():
     assert vocab.TERM_EXEMPTIONS["/setup/destination"] == {"OpenTofu"}
     # Keys prints the RESTIC_* env key names beside their plain names.
     assert vocab.TERM_EXEMPTIONS["/setup/keys"] == {"restic", "repository"}
+    # How it works names restic/rclone in its last section, like About.
+    assert vocab.TERM_EXEMPTIONS["/how-it-works"] == vocab.FORBIDDEN_TERMS
     for terms in vocab.TERM_EXEMPTIONS.values():
         assert isinstance(terms, set)

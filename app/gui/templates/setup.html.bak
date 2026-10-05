@@ -1,0 +1,101 @@
+{% extends "base.html" %}{% block title %}Setup — backup-engine{% endblock %}
+{% block body %}
+{# Setup readiness (spec 5.10): "Is this install able to back up — and able to
+   restore?" One checklist table (no cards), failing rows already sorted to the
+   top by readiness.setup_checks(). Works unprovisioned (never redirects). #}
+<section class="screen read" aria-label="Setup readiness">
+  <p class="eyebrow">Setup</p>
+  <h1>Can this machine back up — and get it back?</h1>
+  <p class="lead">Real checks. The list always shows what remains; there is no
+     step counter to lose your place in.</p>
+
+  <table class="classes" style="margin-top:var(--sp-5)">
+    <thead>
+      <tr>
+        <th style="width:1.4rem" aria-label="Status"></th>
+        <th style="text-align:left">Check</th>
+        <th style="text-align:left">What it means</th>
+        <th style="text-align:left">Verified</th>
+        <th style="text-align:left" aria-label="Fix"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in checks %}
+      {%- set dot = 'dot-ok' if c.state == 'ok' else ('dot-danger' if c.state == 'fail' else 'dot-warn') -%}
+      <tr data-check="{{ c.code }}"{% if c.get('blocker') %} data-blocker="1"{% endif %}>
+        <td style="text-align:left"><span class="dot {{ dot }}" aria-hidden="true"></span></td>
+        <td style="text-align:left">{{ check_names.get(c.code, c.code) }}</td>
+        <td style="text-align:left">
+          {{ c.sentence }}
+          {% if c.get('reason') %}<div class="errline" style="margin-top:var(--sp-2)">{{ c.reason }}</div>{% endif %}
+        </td>
+        <td style="text-align:left" class="stamp">{{ c.verified_human or '—' }}</td>
+        <td style="text-align:left">
+          {% if c.code == 'destination' %}
+            {# Probe now stays as a re-probe affordance (§5.10 Fix column); the
+               "Set up the destination →" fix link only when the check is not ok. #}
+            <form method="post" action="/setup/probe" style="display:inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button type="submit" class="btn btn-sm">Probe now</button>
+            </form>
+            {% if c.state != 'ok' %}
+            <a class="linklike" href="/setup/destination">Set up the destination →</a>
+            {% endif %}
+          {% elif c.code == 'versioning' and c.state == 'unknown' %}
+            <form method="post" action="/setup/versioning-confirmed" style="display:inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button type="submit" class="btn btn-sm">Mark as confirmed</button>
+            </form>
+          {% elif c.code == 'versioning' and c.state == 'fail' %}
+            <a class="linklike" href="/setup/destination">Fix the destination →</a>
+          {% elif c.code == 'passphrase' and c.state != 'ok' %}
+            <a class="linklike" href="/setup/keys#RESTIC_PASSWORD">Set the passphrase →</a>
+          {% elif c.code == 'jobs_scheduled' and c.state != 'ok' %}
+            <a class="linklike" href="/jobs/new">Create a job →</a>
+          {% elif c.code == 'restore_tested' and c.state != 'ok' and c.fix_url %}
+            <a class="linklike" href="{{ c.fix_url }}">Test a restore →</a>
+          {% elif c.code == 'permissions' and c.state != 'ok' %}
+            <a class="linklike" href="/setup/permissions">Update permissions →</a>
+          {% elif c.code == 's3_rules' %}
+            {% if c.get('blocker') %}
+            <form method="post" action="/setup/s3-rules/acknowledge" style="display:inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="seen" value="{{ c.get('alarm_seen') or '' }}">
+              <button type="submit" class="btn btn-sm">I've seen this</button>
+            </form>
+            {% elif c.fix_url == '/setup/permissions' %}
+            <a class="linklike" href="/setup/permissions">Update permissions →</a>
+            {% endif %}
+            {% if c.fix_url != '/setup/permissions' %}
+            <form method="post" action="/setup/s3-rules/check" style="display:inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button type="submit" class="btn btn-sm">Check now</button>
+            </form>
+            {% endif %}
+            {% if c.fix_url != '/setup/permissions' %}
+            <a class="linklike" href="/setup/storage">{{ 'Review in S3 rules →' if c.fix_url == '/setup/storage' else 'S3 rules →' }}</a>
+            {% endif %}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="hint" style="margin-top:var(--sp-4)">
+    <a class="linklike" href="/setup/destination">Set up the destination →</a>
+    &nbsp;·&nbsp;
+    <a class="linklike" href="/setup/keys">Keys &amp; secrets →</a>
+    &nbsp;·&nbsp;
+    <a class="linklike" href="/setup/storage">S3 rules →</a>
+    &nbsp;·&nbsp;
+    <a class="linklike" href="/setup/about">About this app →</a>
+  </p>
+
+  <div class="sig sig-note" style="margin-top:var(--sp-5)">
+    <span class="glyph" aria-hidden="true"></span>
+    <div class="body">This GUI has no login. It is meant to be reached only from your
+      LAN; do not expose port 8099 to the internet.</div>
+  </div>
+</section>
+{% endblock %}

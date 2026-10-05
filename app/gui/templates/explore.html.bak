@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{#- explore.html — the per-job browser (Task 6 skeleton: the no-JS fallback,
+    plain full-page `?path=`/`?snapshot=` links. Task 8 enriches with a
+    breadcrumb, snapshot picker, per-file versions, the cold badge and CSRF
+    action forms; Task 9 adds in-place lazy loading against list.json.)
+
+    Field names in the per-row action form MUST match app/gui/routes.py's
+    `explore_get` exactly: `path`, `snapshot` (versioned), `asof`
+    (versioned-files — the version's exact `uploaded_at` float, passed
+    straight through to `--asof`), `target`, and the CSRF `csrf` field. `tier`/`thawed` are left
+    to explore_get's own defaults in this v1 (no client-side polling yet —
+    that is Task 9). `cold_classes` comes from `points.COLD_CLASSES`
+    (routes.py's `explore_job`) — never duplicate that list here. #}
+{% block title %}{{ name }} · Explore · backup-engine{% endblock %}
+{% block body %}
+{% set segments = path.split('/') if path else [] %}
+<section class="screen dense" aria-label="Explore {{ name }}">
+  <p class="slabel"><a href="{{ url_for('gui.explore_index') }}">Explore</a></p>
+  <h1>{{ name }}</h1>
+
+  {#- Task 9 hook: app.js finds this pane, swaps its innerHTML in place on
+      directory-link clicks (fetching the same ?path= HTML and reusing it
+      verbatim), and falls back to a normal navigation on any failure. The
+      no-JS ?path=/?snapshot= full-page navigation below is unchanged. #}
+  <div id="explore-pane" data-explore-job="{{ name }}">
+  <nav class="hint mono" aria-label="Breadcrumb" style="margin-bottom:var(--sp-3)">
+    {%- if segments -%}
+    <a href="/explore/{{ name }}{% if snapshot %}?snapshot={{ snapshot | urlencode }}{% endif %}">{{ name }}</a>
+    {%- for seg in segments %} / {% if loop.last %}<span>{{ seg }}</span>{% else %}<a href="/explore/{{ name }}?path={{ (segments[:loop.index] | join('/')) | urlencode }}{% if snapshot %}&amp;snapshot={{ snapshot | urlencode }}{% endif %}">{{ seg }}</a>{% endif %}{% endfor -%}
+    {%- else -%}
+    <span>{{ name }} <span class="hint">/ root</span></span>
+    {%- endif -%}
+  </nav>
+
+  {% if job.type == 'versioned' and snapshots %}
+  <form method="get" action="/explore/{{ name }}" style="margin-bottom:var(--sp-4)">
+    <input type="hidden" name="path" value="{{ path }}">
+    <label class="fld" for="snap-select" style="display:inline-block;margin-right:.5rem">Restore point</label>
+    <select id="snap-select" name="snapshot" onchange="this.form.submit()" style="max-width:26rem">
+      {% for p in snapshots %}
+      <option value="{{ p.id }}"{% if p.id == snapshot %} selected{% endif %}>{{ p.label or p.id }} <span class="mono">{{ p.id }}</span></option>
+      {% endfor %}
+    </select>
+    <noscript><button type="submit" class="btn btn-sm">Go</button></noscript>
+  </form>
+  {% elif job.type == 'versioned' %}
+  <p class="hint" style="margin-bottom:var(--sp-4)">No restore points have been listed for this job yet.</p>
+  {% endif %}
+
+  {% if level.error %}
+  <p class="sig sig-failure">{{ level.error }}</p>
+  {% else %}
+  <table>
+    <thead><tr><th>Name</th><th>Size</th><th>Storage</th><th>Modified</th><th></th></tr></thead>
+    <tbody>
+    {% for e in level.entries if e.kind == 'dir' %}
+    <tr>
+      <td><a href="/explore/{{ name }}?path={{ (path ~ '/' ~ e.name if path else e.name) | urlencode }}{% if snapshot %}&amp;snapshot={{ snapshot | urlencode }}{% endif %}">{{ e.name }}/</a></td>
+      <td></td><td></td><td></td><td></td>
+    </tr>
+    {% endfor %}
+    {% for e in level.entries if e.kind != 'dir' %}
+    <tr>
+      <td>{{ e.name }}</td>
+      <td class="mono">{% if e.size is not none %}{{ e.size | size }}{% endif %}</td>
+      <td>{% if e.storage_class %}<span class="mono">{{ e.storage_class }}</span>{% endif %}{% if e.storage_class in cold_classes %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
+      <td class="hint">{{ e.modified or '' }}</td>
+      <td>
+        {% if job.type == 'versioned-files' and e.versions %}
+        <details style="margin-bottom:var(--sp-2)">
+          <summary class="linklike">{{ e.versions | length }} version{{ 's' if e.versions | length != 1 else '' }}</summary>
+          <table style="margin-top:var(--sp-2)"><tbody>
+            {% for v in e.versions %}
+            <tr>
+              <td class="mono">{{ v.uploaded_at }}</td>
+              <td class="hint">{{ v.storage_class }}{% if v.storage_class in cold_classes %} <span class="tok tok-warming">Cold</span>{% endif %}</td>
+              <td class="hint">{% if v.size is not none %}{{ v.size | size }}{% endif %}</td>
+              <td class="hint">{% if v.deleted %}deleted{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody></table>
+        </details>
+        {% endif %}
+        <form method="post" action="/explore/{{ name }}/get">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="path" value="{{ (path ~ '/' ~ e.name) if path else e.name }}">
+          <input type="hidden" name="storage_class" value="{{ e.storage_class or job.storage_class }}">
+          {% if job.type == 'versioned' and snapshot %}
+          <input type="hidden" name="snapshot" value="{{ snapshot }}">
+          {% endif %}
+          {% if job.type == 'versioned-files' and e.versions %}
+          <label class="hint" for="version-{{ loop.index }}">Version</label>
+          <select id="version-{{ loop.index }}" name="asof" class="mono" style="max-width:20rem">
+            <option value="">Latest</option>
+            {% for v in e.versions %}
+            <option value="{{ v.uploaded_at }}">{{ v.uploaded_at }} · {{ v.storage_class }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+          <label class="hint" for="target-{{ loop.index }}">Write to</label>
+          <input type="text" id="target-{{ loop.index }}" name="target" class="mono"
+                 placeholder="{{ name }}/{{ e.name }}" style="max-width:16rem">
+          <button type="submit" class="btn btn-sm">{% if e.storage_class in cold_classes %}Warm up{% elif job.type == 'archive' %}Download{% else %}Restore{% endif %}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not level.entries %}
+    <tr><td colspan="5" class="hint">Nothing here.</td></tr>
+    {% endif %}
+    </tbody>
+  </table>
+  {% endif %}
+  </div>
+</section>
+{% endblock %}

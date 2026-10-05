@@ -349,3 +349,55 @@ def test_allowed_tier_phrase_survives_on_the_cold_job(full_app):
     text = visible_text(full_app.test_client().get("/jobs/manga").get_data(as_text=True))
     assert any(p in text for p in vocab.ALLOWED_PHRASES), \
         "the thaw-first tier name vanished from the cold job page"
+
+
+# --- Plain words (spec 2026-10-04 §3/§4) -----------------------------------
+# Two more rules, daily screens only: the plain-word banned list on rendered
+# pages, and a hint budget on template source. Both fail against today's
+# templates on purpose; each screen task turns its own pages green.
+TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "app" / "gui" / "templates"
+
+DAILY_PAGES = [
+    "/", "/jobs", "/jobs/appdata", "/jobs/manga",
+    f"/jobs/appdata/runs/{APPDATA_RUN}", f"/jobs/manga/runs/{MANGA_FAIL_RUN}",
+    "/activity", "/explore", "/cost", "/jobs/new", "/jobs/appdata/edit",
+    "/jobs/appdata/restore", "/jobs/manga/restore",
+]
+
+
+def daily_hits(markup: str) -> list:
+    text = visible_text(markup)
+    return sorted(t for t in vocab.DAILY_FORBIDDEN_TERMS if re.search(rf"\b{re.escape(t)}\b", text))
+
+
+def hint_count(template_name: str) -> int:
+    src = (TEMPLATES_DIR / template_name).read_text()
+    src = re.sub(r"{#.*?#}", "", src, flags=re.S)          # template comments are not markup
+    return len(re.findall(r'<(?:p|span|div|small|td|li)\s+class="hint(?:\s|")', src))
+
+
+@pytest.mark.parametrize("url", DAILY_PAGES)
+def test_daily_page_uses_plain_words(full_app, url):
+    resp = full_app.test_client().get(url)
+    assert resp.status_code == 200, f"{url} did not render (status {resp.status_code})"
+    hits = daily_hits(resp.get_data(as_text=True))
+    assert hits == [], f"jargon on daily screen {url}: {hits}"
+
+
+@pytest.mark.parametrize("template", vocab.DAILY_TEMPLATES)
+def test_daily_template_is_within_the_hint_budget(template):
+    n = hint_count(template)
+    assert n <= vocab.HINT_BUDGET, f"{template} has {n} hints; the budget is {vocab.HINT_BUDGET}"
+
+
+def test_daily_pages_never_append_arrows_to_links(full_app):
+    # Tone (spec §5): no "→" glued to link text on daily screens.
+    for url in DAILY_PAGES:
+        markup = full_app.test_client().get(url).get_data(as_text=True)
+        assert not re.search(r">[^<]*→\s*</a>", markup), f"arrow on a link on {url}"
+
+
+def test_no_google_fonts_anywhere():
+    bad = [p for p in TEMPLATES_DIR.glob("*.html") if "fonts.googleapis.com" in p.read_text()]
+    css = (TEMPLATES_DIR.parent / "static" / "style.css").read_text()
+    assert bad == [] and "fonts.googleapis.com" not in css
