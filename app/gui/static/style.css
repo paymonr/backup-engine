@@ -99,6 +99,13 @@ button,input,select,textarea{ font:inherit; color:inherit; }
 .screens a:hover{ color:var(--ink); text-decoration:none; }
 .screens a[aria-current]{ color:var(--ink); border-left-color:var(--accent); background:var(--surface); }
 .sidebar-foot{ margin-top:auto; display:grid; gap:.4rem; padding:0 .7rem; }
+.theme-pick{ display:inline-flex; border:1px solid var(--rule); border-radius:999px; overflow:hidden; margin-bottom:.4rem; }
+.theme-pick button{ appearance:none; border:0; background:transparent; color:var(--muted); font:inherit; font-size:.72rem; padding:.15rem .55rem; cursor:pointer; }
+.theme-pick button + button{ border-left:1px solid var(--rule); }
+.theme-pick button[aria-pressed="true"]{ background:var(--accent); color:var(--accent-ink); }
+.theme-pick button:hover{ color:var(--ink); }
+.radio-row{ display:flex; gap:1rem; flex-wrap:wrap; }
+.radio-row .radio{ display:inline-flex; align-items:center; gap:.4rem; }
 .chip{ font-family:var(--font-mono); font-size:.68rem; color:var(--faint); border:1px solid var(--rule); border-radius:999px; padding:.1rem .5rem; justify-self:start; }
 .clock{ font-family:var(--font-mono); font-size:.72rem; color:var(--faint); }
 .content{ min-width:0; display:flex; flex-direction:column; }
@@ -243,8 +250,8 @@ tr:last-child td{ border-bottom:0; }
 /* Job form storage-tier table (ported from style.css.bak 358-371, re-tokenised): numeric
    columns right-aligned; a blocked tier is faint, its figures struck (app.js toggles
    .struck), with the reason in red under the name. */
-table.classes th, table.classes td{ text-align:right; padding-left:.6rem; }
-table.classes th:first-child, table.classes td:first-child{ text-align:left; padding-left:0; }
+table.classes th, table.classes td{ padding-left:.6rem; }
+table.classes th:first-child, table.classes td:first-child{ padding-left:0; }
 table.classes td{ font-variant-numeric:tabular-nums; }
 table.classes tr.blocked td{ color:var(--faint); }
 table.classes td.struck{ text-decoration:line-through; }

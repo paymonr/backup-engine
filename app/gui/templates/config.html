@@ -8,7 +8,9 @@
 {%- set LABELS = {
   'S3_BUCKET': 'Bucket', 'AWS_REGION': 'Region', 'S3_ENDPOINT': 'Custom endpoint',
   'AWS_ACCESS_KEY_ID': 'Access key', 'AWS_SECRET_ACCESS_KEY': 'Secret key',
-  'RCLONE_TRANSFERS': 'Parallel transfers', 'RCLONE_BWLIMIT': 'Bandwidth limit',
+  'SOURCE_ROOT': 'Source folder (in the container)', 'SOURCE_ROOT_HOST': 'Source folder (on the host)',
+  'RESTORE_ROOT': 'Restore folder (in the container)', 'RESTORE_ROOT_HOST': 'Restore folder (on the host)',
+  'GUI_PORT': 'GUI port', 'GUI_ENABLED': 'GUI enabled',
   'RESTIC_PASSWORD': 'Recovery passphrase', 'RESTIC_REPOSITORY': 'Where snapshots live',
   'COST_EXPLORER_ACCESS_KEY_ID': 'Billing access key',
   'COST_EXPLORER_SECRET_ACCESS_KEY': 'Billing secret key',
@@ -19,7 +21,8 @@
   <p class="eyebrow">Setup · keys &amp; secrets</p>
   <h1>What this machine holds</h1>
   <p class="lead">Grouped by what each value is for. Secrets are write-only: leave a
-     field blank to keep what is there.</p>
+     field blank to keep what is there. This machine's preferences are under
+     <a href="/setup/settings">Settings</a>.</p>
 
   <form method="post" action="{{ url_for('gui.config_save') }}" class="form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -29,6 +32,8 @@
       <div class="band-head"><p class="slabel">{{ g.name }}</p></div>
       {% if g.name == 'Billing' %}
       <p class="hint">The read-only billing credential, never the runtime backup key.</p>
+      {% elif g.name == 'Mounts' %}
+      <p class="hint">Set by the container template. The GUI port and switch are shown, not edited, here.</p>
       {% endif %}
 
       {% for row in g.rows %}
@@ -44,6 +49,8 @@
 
         {% if row.key == 'RESTIC_REPOSITORY' %}
           <div class="errline">derived: {{ restic_repo }}</div>
+        {% elif row.readonly %}
+          <div class="errline">{{ row.value or 'default' }}</div>
         {% elif row.secret %}
           <input id="{{ row.key }}" name="{{ row.key }}" type="password" autocomplete="new-password"
                  placeholder="{{ '••••• (unchanged)' if row.status == 'set' else 'not set' }}">
@@ -69,19 +76,12 @@
     </section>
     {% endfor %}
 
-    <section class="band" id="band-resume">
-      <div class="band-head"><p class="slabel">When a backup is interrupted</p></div>
-      <div class="field" style="margin:var(--sp-3) 0">
-        <label><input type="checkbox" name="AUTO_RESUME_ON_BOOT" value="true"
-           {% if auto_resume_on_boot %}checked{% endif %}> Resume interrupted backups on restart
-           <code class="hint">AUTO_RESUME_ON_BOOT</code></label>
-      </div>
-
-      <p class="hint" style="margin-top:var(--sp-3)">
+    <section class="band" id="band-save">
+      <div class="band-head"><p class="slabel">Save</p></div>
+      <p class="hint">
         File mode: {{ secret_mode or 'not present' }}{% if secret_mode and secret_mode != '600' %}
         — not 600 — fix with <code>chmod 600 /config/secrets.env</code>{% endif %}
       </p>
-
       <div class="formfoot">
         <button type="submit" class="btn btn-primary">Save</button>
       </div>

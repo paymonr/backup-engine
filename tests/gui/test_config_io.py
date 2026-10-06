@@ -188,12 +188,12 @@ def test_secrets_status_3_covers_cost_explorer_secrets(dirs):
 
 def test_key_groups_membership_and_order(dirs):
     groups = cio.KEY_GROUPS
-    assert list(groups.keys()) == ["Destination", "Recovery", "Billing", "This machine"]
+    assert list(groups.keys()) == ["Destination", "Recovery", "Billing", "Mounts"]
     assert "AWS_ACCESS_KEY_ID" in groups["Destination"]
     assert "RESTIC_PASSWORD" in groups["Recovery"]
     assert set(cio.COST_EXPLORER_KEYS) <= set(groups["Billing"])
-    assert "RESTORE_ROOT" in groups["This machine"]
-    assert "RESTORE_ROOT_HOST" in groups["This machine"]
+    assert "RESTORE_ROOT" in groups["Mounts"]
+    assert "RESTORE_ROOT_HOST" in groups["Mounts"]
 
 
 def test_role_arn_defaults_empty(tmp_path):
@@ -219,3 +219,30 @@ def test_auto_resume_and_retry_overrides(tmp_path):
         "S3_BUCKET=b\nAUTO_RESUME_ON_BOOT=false\nBE_MAX_ATTEMPTS=5\nBE_RETRY_BASE_SECONDS=10\nBE_MAX_RESUMES=2\n")
     assert cio.auto_resume_on_boot(str(tmp_path)) is False
     assert cio.retry_settings(str(tmp_path)) == {"max_attempts":5,"base_seconds":10,"max_resumes":2}
+
+
+# --- Settings page split (2026-10-06): theme + machine settings ------------------
+
+def test_gui_theme_defaults_to_auto_and_reads_the_saved_value(dirs):
+    assert cio.gui_theme(dirs["config"]) == "auto"
+    Path(dirs["config"], "backup.env").write_text("GUI_THEME=dark\n")
+    assert cio.gui_theme(dirs["config"]) == "dark"
+    Path(dirs["config"], "backup.env").write_text("GUI_THEME=purple\n")
+    assert cio.gui_theme(dirs["config"]) == "auto"          # unknown values fall back
+
+
+def test_settings_keys_moved_out_of_the_keys_page_groups():
+    assert "RCLONE_TRANSFERS" not in cio.KEY_GROUPS["Destination"]
+    assert "This machine" not in cio.KEY_GROUPS and "Mounts" in cio.KEY_GROUPS
+    for k in ("TZ", "LOG_LEVEL", "APPRISE_URLS", "NOTIFY_ON_SUCCESS", "HEALTHCHECK_URL",
+              "BE_MAX_ATTEMPTS", "BE_RETRY_BASE_SECONDS", "BE_MAX_RESUMES",
+              "RCLONE_TRANSFERS", "RCLONE_BWLIMIT", "AUTO_RESUME_ON_BOOT", "GUI_THEME"):
+        assert k in cio.SETTINGS_KEYS, k
+    assert "GUI_PORT" in cio.READ_ONLY_KEYS and "GUI_ENABLED" in cio.READ_ONLY_KEYS
+
+
+def test_update_backup_env_overlays_only_the_given_keys(template_path, dirs):
+    cio.write_backup_env(template_path, dirs["config"], {"S3_BUCKET": "b1", "TZ": "Europe/Oslo"})
+    cio.update_backup_env(template_path, dirs["config"], {"GUI_THEME": "light"})
+    env = cio.read_backup_env(dirs["config"])
+    assert env["GUI_THEME"] == "light" and env["S3_BUCKET"] == "b1" and env["TZ"] == "Europe/Oslo"

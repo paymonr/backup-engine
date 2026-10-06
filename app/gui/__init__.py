@@ -108,8 +108,18 @@ def create_app(config: dict | None = None) -> Flask:
 
     @app.context_processor
     def _shell_globals():
-        # The clock and footer name the container's zone (spec 5.15).
-        return {"tz": os.environ.get("TZ", "UTC")}
+        # The clock and footer name the container's zone (spec 5.15); the shell applies
+        # the saved theme and carries a CSRF token for the sidebar's theme switch.
+        from . import config_io, security
+        try:
+            theme = config_io.gui_theme(app.config["CONFIG_DIR"])
+        except Exception:                       # noqa: BLE001 — the shell must always render
+            theme = "auto"
+        try:
+            shell_csrf = security.issue_csrf()
+        except Exception:                       # noqa: BLE001 — e.g. no session on an error page
+            shell_csrf = ""
+        return {"tz": os.environ.get("TZ", "UTC"), "theme": theme, "shell_csrf": shell_csrf}
 
     from .routes import bp
     from . import permissions_routes  # noqa: F401 — registers /setup/permissions on bp

@@ -58,6 +58,15 @@ def base_bucket_versioned(config_dir: str) -> bool:
 def auto_resume_on_boot(config_dir: str) -> bool:
     return read_backup_env(config_dir).get("AUTO_RESUME_ON_BOOT", "true").strip().lower() != "false"
 
+# --- GUI theme (Settings, 2026-10-06) -----------------------------------------
+# One setting per install, in backup.env: "auto" follows the device (the default
+# and what every pre-existing install reads as), "light"/"dark" force it.
+THEMES: tuple[str, ...] = ("auto", "light", "dark")
+
+def gui_theme(config_dir: str) -> str:
+    v = read_backup_env(config_dir).get("GUI_THEME", "auto").strip().lower()
+    return v if v in THEMES else "auto"
+
 def _int_env(config_dir, key, default):
     try: return int(read_backup_env(config_dir).get(key, "").strip() or default)
     except ValueError: return default
@@ -66,6 +75,13 @@ def retry_settings(config_dir: str) -> dict:
     return {"max_attempts": _int_env(config_dir, "BE_MAX_ATTEMPTS", 3),
             "base_seconds": _int_env(config_dir, "BE_RETRY_BASE_SECONDS", 30),
             "max_resumes": _int_env(config_dir, "BE_MAX_RESUMES", 3)}
+
+def update_backup_env(template_path: str, config_dir: str, changes: dict[str, str]) -> None:
+    """Rewrite backup.env with `changes` overlaid on what is saved, so a page that
+    owns a few keys (Settings, the theme switch) never blanks another page's keys."""
+    values = read_backup_env(config_dir)
+    values.update(changes)
+    write_backup_env(template_path, config_dir, values)
 
 def write_backup_env(template_path: str, config_dir: str, values: dict[str, str]) -> None:
     out: list[str] = []
@@ -112,18 +128,31 @@ def secrets_status_3(config_dir: str) -> dict[str, str]:
             out[k] = "set"
     return out
 
-# Keys & secrets screen grouping (5.12). Keys present in the template but in no
-# group fall into "This machine" (the last group), enforced by the route/template.
+# Keys & secrets screen grouping (5.12): credentials, the destination and the mounts.
+# Keys present in the template but in no group (and not a Settings key) fall into
+# "Mounts" (the last group), enforced by the route/template.
 KEY_GROUPS: dict[str, tuple[str, ...]] = {
     "Destination": ("S3_BUCKET", "AWS_REGION", "S3_ENDPOINT", "AWS_ACCESS_KEY_ID",
-                    "AWS_SECRET_ACCESS_KEY", "RCLONE_TRANSFERS", "RCLONE_BWLIMIT"),
+                    "AWS_SECRET_ACCESS_KEY"),
     "Recovery": ("RESTIC_PASSWORD", "RESTIC_REPOSITORY"),
     "Billing": ("COST_EXPLORER_ACCESS_KEY_ID", "COST_EXPLORER_SECRET_ACCESS_KEY",
                 "COST_EXPLORER_SESSION_TOKEN", "COST_EXPLORER_TAG"),
-    "This machine": ("TZ", "LOG_LEVEL", "SOURCE_ROOT", "APPRISE_URLS", "NOTIFY_ON_SUCCESS",
-                     "HEALTHCHECK_URL", "GUI_PORT", "GUI_ENABLED",
-                     "RESTORE_ROOT", "RESTORE_ROOT_HOST", "SOURCE_ROOT_HOST"),
+    "Mounts": ("SOURCE_ROOT", "SOURCE_ROOT_HOST", "RESTORE_ROOT", "RESTORE_ROOT_HOST",
+               "GUI_PORT", "GUI_ENABLED"),
 }
+# Deployment-only keys: shown read-only on Keys & secrets, set by the container template.
+READ_ONLY_KEYS: tuple[str, ...] = ("GUI_PORT", "GUI_ENABLED")
+
+# Settings screen grouping (2026-10-06): this machine's preferences, none of them a
+# credential. The theme and the resume checkbox get hand-built controls.
+SETTINGS_GROUPS: dict[str, tuple[str, ...]] = {
+    "Time and logging": ("TZ", "LOG_LEVEL"),
+    "Notifications": ("APPRISE_URLS", "NOTIFY_ON_SUCCESS", "HEALTHCHECK_URL"),
+    "Resilience": ("BE_MAX_ATTEMPTS", "BE_RETRY_BASE_SECONDS", "BE_MAX_RESUMES"),
+    "Transfers": ("RCLONE_TRANSFERS", "RCLONE_BWLIMIT"),
+}
+SETTINGS_KEYS: tuple[str, ...] = tuple(k for ks in SETTINGS_GROUPS.values() for k in ks) + (
+    "AUTO_RESUME_ON_BOOT", "GUI_THEME")
 
 def is_provisioned(config_dir: str) -> bool:
     """First-run signal: the app has a saved runtime AWS key AND a REAL destination

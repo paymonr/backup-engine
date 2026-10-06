@@ -315,6 +315,7 @@ ALL_PAGES = [
     "/setup",                         # Setup readiness
     "/setup/destination",             # Destination
     "/setup/keys",                    # Keys & secrets
+    "/setup/settings",                # Settings (2026-10-06)
     "/setup/about",                   # About / glossary
     "/setup/permissions",             # AWS permissions
     "/setup/storage",                 # S3 rules (spec 2026-09-23 §5)

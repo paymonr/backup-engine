@@ -138,18 +138,18 @@
       priced for {% if measured %}your <span class="n">{{ est.breakdown.billed_gb | size_gb }}</span>{% else %}an assumed <span class="n assumed">20 GB</span>{% endif %}</h3>
     <div class="tscroll card" style="margin-top:8px">
       <table class="classes">
-        <thead><tr><th scope="col">Class</th><th scope="col">Per month</th><th scope="col">Getting it back</th>
-          <th scope="col">Minimum stay</th><th scope="col">All of it, once</th></tr></thead>
+        <thead><tr><th scope="col">Class</th><th scope="col" class="num">Per month</th><th scope="col">Getting it back</th>
+          <th scope="col" class="num">Minimum stay</th><th scope="col" class="num">All of it, once</th></tr></thead>
         <tbody>
         {% for c in (est.classes if est else []) %}
           <tr class="{{ 'blocked' if c.blocked }}" data-cls-row="{{ c.class }}">
             <td><label class="cls" for="c-{{ c.class }}"><input type="radio" id="c-{{ c.class }}" name="storage_class"
                 value="{{ c.class }}" {{ 'checked' if fv.storage_class == c.class }}>
               <span>{{ c.plain }}<br><a class="term" href="/setup/about#tiers" title="AWS S3 storage class">{{ c.class }}</a></span></label></td>
-            <td class="{{ 'struck' if c.blocked }}" data-cls-monthly="{{ c.class }}">{{ money(c.monthly) }}</td>
+            <td class="num{{ ' struck' if c.blocked }}" data-cls-monthly="{{ c.class }}">{{ money(c.monthly) }}</td>
             <td>{{ c.read_access }}</td>
-            <td>{{ (c.min_days ~ ' d') if c.min_days else '—' }}</td>
-            <td class="{{ 'struck' if c.blocked }}" data-cls-restore="{{ c.class }}">{{ money(c.restore_once) }}{% if c.reason %}<span class="reason"> {{ c.reason }}</span>{% endif %}</td>
+            <td class="num">{{ (c.min_days ~ ' d') if c.min_days else '—' }}</td>
+            <td class="num{{ ' struck' if c.blocked }}" data-cls-restore="{{ c.class }}">{{ money(c.restore_once) }}{% if c.reason %}<span class="reason"> {{ c.reason }}</span>{% endif %}</td>
           </tr>
         {% endfor %}
         </tbody>

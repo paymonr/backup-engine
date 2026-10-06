@@ -183,37 +183,38 @@ _AUTO_RESUME_CHECKBOX_CHECKED = re.compile(
     r'type="checkbox"\s+name="AUTO_RESUME_ON_BOOT"\s+value="true"\s+checked')
 
 
-def test_keys_get_shows_auto_resume_checked_by_default(client):
+# The auto-resume checkbox moved to /setup/settings (Settings page, 2026-10-06).
+def test_settings_get_shows_auto_resume_checked_by_default(client):
     # Fresh env: config_io.auto_resume_on_boot() defaults True.
-    body = client.get("/setup/keys").get_data(as_text=True)
+    body = client.get("/setup/settings").get_data(as_text=True)
     assert 'name="AUTO_RESUME_ON_BOOT"' in body
     assert _AUTO_RESUME_CHECKBOX_CHECKED.search(body)
 
 
-def test_keys_get_shows_auto_resume_unchecked_when_disabled(client, dirs, template_path):
+def test_settings_get_shows_auto_resume_unchecked_when_disabled(client, dirs, template_path):
     config_io.write_backup_env(template_path, dirs["config"],
                                {"S3_BUCKET": "b", "AUTO_RESUME_ON_BOOT": "false"})
-    body = client.get("/setup/keys").get_data(as_text=True)
+    body = client.get("/setup/settings").get_data(as_text=True)
     assert not _AUTO_RESUME_CHECKBOX_CHECKED.search(body)
 
 
-def test_keys_save_checked_persists_true(client, dirs):
+def test_settings_save_checked_persists_true(client, dirs):
     token = _csrf(client)
-    client.post("/setup/keys", data={"csrf": token, "S3_BUCKET": "b",
-                                     "AUTO_RESUME_ON_BOOT": "true"})
+    client.post("/setup/settings", data={"csrf": token, "AUTO_RESUME_ON_BOOT": "true"})
     assert config_io.read_backup_env(dirs["config"])["AUTO_RESUME_ON_BOOT"] == "true"
 
 
-def test_keys_save_unchecked_persists_false(client, dirs):
+def test_settings_save_unchecked_persists_false(client, dirs):
     # An unchecked checkbox submits nothing at all — must still persist "false",
     # not fall back to a blank value (which would wrongly read as True).
     token = _csrf(client)
-    client.post("/setup/keys", data={"csrf": token, "S3_BUCKET": "b"})
+    client.post("/setup/settings", data={"csrf": token})
     assert config_io.read_backup_env(dirs["config"])["AUTO_RESUME_ON_BOOT"] == "false"
 
 
 def test_keys_auto_resume_not_rendered_as_raw_text_input(client):
-    # Task 1 side effect: AUTO_RESUME_ON_BOOT must not ALSO render via the generic
-    # "extra" text-field path (would produce a duplicate <input name="AUTO_RESUME_ON_BOOT">).
-    body = client.get("/setup/keys").get_data(as_text=True)
+    # AUTO_RESUME_ON_BOOT is a Settings key: it must not render on the Keys page at
+    # all, and on Settings only as its checkbox, never as a generic text input.
+    assert 'name="AUTO_RESUME_ON_BOOT"' not in client.get("/setup/keys").get_data(as_text=True)
+    body = client.get("/setup/settings").get_data(as_text=True)
     assert 'id="AUTO_RESUME_ON_BOOT" name="AUTO_RESUME_ON_BOOT"' not in body

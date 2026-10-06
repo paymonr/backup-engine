@@ -2,7 +2,7 @@
      Every screen extends this and fills the body block. The chrome — sidebar with the
      five screens, notices, the one-line footer — is the same on every page. -->
 <!doctype html>
-<html lang="en"><head>
+<html lang="en"{% if theme in ["light", "dark"] %} data-theme="{{ theme }}"{% endif %}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}backup-engine{% endblock %}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -10,6 +10,7 @@
 {% set ep = request.endpoint or '' %}
 {%- set nav_active =
      'help' if ep == 'gui.how_it_works'
+     else 'settings' if ep in ['gui.settings_page', 'gui.settings_save']
      else 'setup' if (ep.startswith('gui.provision') or ep.startswith('gui.setup') or ep in ['gui.config_page', 'gui.config_save', 'gui.about_page'])
      else 'cost' if (ep in ['gui.cost_page_view', 'gui.cost_json', 'gui.estimate_page', 'gui.jobs_estimate_json'] or ep.startswith('gui.costs'))
      else 'activity' if (ep.startswith('gui.activity') or ep == 'gui.logs')
@@ -24,8 +25,16 @@
     <a href="/activity" {{ 'aria-current="page"' if nav_active == 'activity' }}>Activity</a>
     <a href="/explore" {{ 'aria-current="page"' if nav_active == 'explore' }}>Explore</a>
     <a href="/setup" {{ 'aria-current="page"' if nav_active == 'setup' }}>Setup</a>
+    <a href="/setup/settings" {{ 'aria-current="page"' if nav_active == 'settings' }}>Settings</a>
   </nav>
   <div class="sidebar-foot">
+    <form method="post" action="/setup/theme" class="theme-pick" aria-label="Theme">
+      <input type="hidden" name="csrf" value="{{ shell_csrf }}">
+      <input type="hidden" name="next" value="{{ request.full_path.rstrip('?') }}">
+      {% for t, label in [('light', 'Light'), ('dark', 'Dark'), ('auto', 'Auto')] %}
+      <button type="submit" name="theme" value="{{ t }}"{% if theme == t %} aria-pressed="true"{% endif %}>{{ label }}</button>
+      {% endfor %}
+    </form>
     <a class="chip" href="/setup" title="This GUI has no authentication. Put it behind a reverse proxy or SSO and never expose it directly to the internet.">LAN only, no auth</a>
     <time class="clock mono" id="be-clock" data-tz="{{ tz }}"{% block clock_attrs %}{% endblock %}>{% block clock %}{% endblock %}</time>
   </div>

@@ -262,7 +262,7 @@ def test_setup_screens_drop_arrows_and_say_aws(full_app):
     client = full_app.test_client()
     urls = ("/setup", "/setup/destination", "/setup/destination/manual",
             "/setup/destination/automated", "/setup/destination/scripted",
-            "/setup/keys", "/setup/permissions", "/setup/storage", "/setup/about")
+            "/setup/keys", "/setup/settings", "/setup/permissions", "/setup/storage", "/setup/about")
     for url in urls:
         r = client.get(url)
         assert r.status_code == 200, f"{url} did not render (status {r.status_code})"

@@ -160,3 +160,11 @@ def test_job_page_and_flashes_carry_no_arrows():
     routes = (ROOT / "app" / "gui" / "routes.py").read_text()
     assert "watch it in Activity →" not in routes and routes.count("watch it in Activity\"") == 3
     assert "border-radius:6px" not in src
+
+
+def test_tables_right_align_only_numeric_cells():
+    # Owner report 2026-10-06: About's tier table had right-aligned cells under left-aligned
+    # headers. Right alignment is opt-in per cell (.num), never a blanket rule on a table class.
+    css = CSS.read_text()
+    assert not re.search(r"table\.classes th, table\.classes td\{[^}]*text-align:right", css)
+    assert re.search(r"\.num\{[^}]*text-align:right", css)

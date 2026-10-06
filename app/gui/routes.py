@@ -1579,7 +1579,10 @@ _KEY_SECRET_FIELDS = tuple(config_io.SECRET_KEYS) + tuple(config_io.COST_EXPLORE
 # Template keys the Keys page never renders as plain inputs. AUTO_RESUME_ON_BOOT is
 # a checkbox; the permissions stamp is written only by Setup → AWS permissions.
 _STAMP_KEYS = (permissions.STAMP_KEY, permissions.CHECKED_KEY)
-_UI_HANDLED_KEYS = {"AUTO_RESUME_ON_BOOT", *_STAMP_KEYS}
+# Settings keys live on /setup/settings (2026-10-06); read-only keys render as text.
+_UI_HANDLED_KEYS = {*config_io.SETTINGS_KEYS, *_STAMP_KEYS}
+# Keys the Keys page never writes: carried through from the saved file on every save.
+_CARRIED_KEYS = (*config_io.SETTINGS_KEYS, *config_io.READ_ONLY_KEYS)
 
 
 def _keys_groups(cfg):
@@ -1592,7 +1595,7 @@ def _keys_groups(cfg):
     secret_all = set(_KEY_SECRET_FIELDS)
 
     def row(k):
-        return {"key": k, "secret": k in secret_all,
+        return {"key": k, "secret": k in secret_all, "readonly": k in config_io.READ_ONLY_KEYS,
                 "value": values.get(k, ""),
                 "status": status3.get(k) if k in secret_all else None}
 
@@ -1606,7 +1609,7 @@ def _keys_groups(cfg):
     extra = [k for k in template
              if k not in seen and k not in secret_all and k not in _UI_HANDLED_KEYS]
     if extra:
-        tm = next(g for g in groups if g["name"] == "This machine")
+        tm = next(g for g in groups if g["name"] == "Mounts")
         tm["rows"].extend(row(k) for k in extra)
 
     region = (values.get("AWS_REGION") or "us-east-1").strip()
@@ -1621,7 +1624,6 @@ def config_page():
     groups, restic_repo = _keys_groups(cfg)
     return render_template("config.html", groups=groups, restic_repo=restic_repo,
                            secret_mode=config_io.secrets_mode(cfg["CONFIG_DIR"]),
-                           auto_resume_on_boot=config_io.auto_resume_on_boot(cfg["CONFIG_DIR"]),
                            csrf=security.issue_csrf())
 
 
@@ -1658,10 +1660,10 @@ def config_save():
     before_ce = config_io.read_cost_explorer_creds(cfg["CONFIG_DIR"])
     values = {k: f.get(k, "") for k in env_keys}
     values["S3_BUCKET"] = new_bucket
-    # Checkbox (Task 11): an unchecked checkbox submits no field at all, so
-    # f.get("AUTO_RESUME_ON_BOOT", "") above would write "" — and auto_resume_on_boot()
-    # treats anything other than the literal string "false" as True. Override explicitly.
-    values["AUTO_RESUME_ON_BOOT"] = "true" if f.get("AUTO_RESUME_ON_BOOT") else "false"
+    # Settings and deployment-only keys are never on this form: carry the saved
+    # values through so this save can't blank them (Settings page, 2026-10-06).
+    for k in _CARRIED_KEYS:
+        values[k] = before.get(k, "")
     # The stamp is never on this form (env_keys above just assigned it whatever a
     # request happened to submit, e.g. a smuggled PERMISSIONS_VERSION=99 — ignore
     # that and carry the SAVED value through instead, or write_backup_env would
@@ -1684,13 +1686,69 @@ def config_save():
     if bucket_changed:
         flash(f"Base bucket repointed to {new_bucket!r}. Existing data was NOT moved "
               "from the old bucket.", "warning")
-    if f.get("TZ", "").strip() and f.get("TZ", "").strip() != (before.get("TZ", "") or "").strip():
-        flash("TZ changes take effect after a restart.", "note")
     if before_ce is None and after_ce is not None:
         flash("Connected AWS billing.", "success")
     elif before_ce is not None and after_ce is None:
         flash("Disconnected AWS billing.", "success")
     return redirect(url_for("gui.config_page"))
+
+
+# --- Settings (2026-10-06): this machine's preferences, split from Keys & secrets ---
+
+def _settings_groups(cfg):
+    values = config_io.read_backup_env(cfg["CONFIG_DIR"])
+    return [{"name": name, "id": "band-" + name.lower().replace(" ", "-"),
+             "rows": [{"key": k, "value": values.get(k, "")} for k in keys]}
+            for name, keys in config_io.SETTINGS_GROUPS.items()]
+
+
+def _local_next(default: str) -> str:
+    """A same-site path to return to after the theme switch; anything else -> default."""
+    nxt = (request.form.get("next") or "").strip()
+    return nxt if nxt.startswith("/") and not nxt.startswith("//") else default
+
+
+@bp.get("/setup/settings")
+def settings_page():
+    cfg = current_app.config
+    return render_template("settings.html", groups=_settings_groups(cfg),
+                           theme=config_io.gui_theme(cfg["CONFIG_DIR"]), themes=config_io.THEMES,
+                           auto_resume_on_boot=config_io.auto_resume_on_boot(cfg["CONFIG_DIR"]),
+                           csrf=security.issue_csrf())
+
+
+@bp.post("/setup/settings")
+def settings_save():
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    cfg = current_app.config
+    f = request.form
+    theme = (f.get("GUI_THEME") or "auto").strip().lower()
+    if theme not in config_io.THEMES:
+        abort(400, description="theme")
+    before = config_io.read_backup_env(cfg["CONFIG_DIR"])
+    changes = {k: f.get(k, "") for ks in config_io.SETTINGS_GROUPS.values() for k in ks}
+    changes["GUI_THEME"] = theme
+    # An unchecked checkbox submits nothing; write the literal the reader expects.
+    changes["AUTO_RESUME_ON_BOOT"] = "true" if f.get("AUTO_RESUME_ON_BOOT") else "false"
+    config_io.update_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"], changes)
+    flash("Saved.", "success")
+    if changes["TZ"].strip() and changes["TZ"].strip() != (before.get("TZ", "") or "").strip():
+        flash("The time zone change takes effect after a restart.", "note")
+    return redirect(url_for("gui.settings_page"))
+
+
+@bp.post("/setup/theme")
+def theme_switch():
+    """The sidebar's Light / Dark / Auto buttons: one key, then back to the page."""
+    if not security.verify_csrf(request.form.get("csrf", "")):
+        abort(400, description="csrf")
+    theme = (request.form.get("theme") or "").strip().lower()
+    if theme not in config_io.THEMES:
+        abort(400, description="theme")
+    cfg = current_app.config
+    config_io.update_backup_env(cfg["TEMPLATE_PATH"], cfg["CONFIG_DIR"], {"GUI_THEME": theme})
+    return redirect(_local_next(url_for("gui.index")))
 
 
 @bp.get("/config")

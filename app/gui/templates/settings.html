@@ -1,0 +1,71 @@
+{% extends "base.html" %}{% block title %}Settings — backup-engine{% endblock %}
+{% block body %}
+{# Settings (2026-10-06): this machine's preferences, split from Keys & secrets. Nothing
+   here is a credential. The theme is one setting per install; the sidebar's switch
+   writes the same key. Env key names render inside <code class="hint"> so the
+   vocabulary test drops them by construction (10.3). #}
+{%- set LABELS = {
+  'TZ': 'Time zone', 'LOG_LEVEL': 'Log level',
+  'APPRISE_URLS': 'Notification URLs', 'NOTIFY_ON_SUCCESS': 'Also notify on success',
+  'HEALTHCHECK_URL': 'Healthcheck ping URL',
+  'BE_MAX_ATTEMPTS': 'Attempts per run', 'BE_RETRY_BASE_SECONDS': 'Seconds before the first retry',
+  'BE_MAX_RESUMES': 'Resumes after a restart',
+  'RCLONE_TRANSFERS': 'Parallel transfers', 'RCLONE_BWLIMIT': 'Bandwidth limit',
+} -%}
+{%- set NOTES = {
+  'LOG_LEVEL': 'DEBUG, INFO, WARN or ERROR.',
+  'APPRISE_URLS': 'Space-separated, e.g. discord://…, tgram://…, ntfy://…. Failures always notify.',
+  'NOTIFY_ON_SUCCESS': 'true or false.',
+  'RCLONE_BWLIMIT': 'e.g. 20M to cap upload bandwidth; blank for no cap.',
+} -%}
+<div class="screen read" aria-label="Settings">
+  <p class="eyebrow">Settings</p>
+  <h1>How this machine behaves</h1>
+  <p class="lead">Preferences for this install. Credentials and the destination are under
+     <a href="/setup/keys">Keys &amp; secrets</a>.</p>
+
+  <form method="post" action="{{ url_for('gui.settings_save') }}" class="form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+
+    <section class="band" id="band-appearance">
+      <div class="band-head"><p class="slabel">Appearance</p></div>
+      <div class="field" style="margin:var(--sp-3) 0">
+        <div class="radio-row" role="radiogroup" aria-label="Theme">
+          {% for t, label, note in [('light', 'Light', ''), ('dark', 'Dark', ''), ('auto', 'Auto', 'follows the device')] %}
+          <label class="radio"><input type="radio" name="GUI_THEME" value="{{ t }}"{% if theme == t %} checked{% endif %}> {{ label }}{% if note %} <span class="muted">({{ note }})</span>{% endif %}</label>
+          {% endfor %}
+        </div>
+        <p class="hint">One setting for every device that opens this install. <code class="hint">GUI_THEME</code></p>
+      </div>
+    </section>
+
+    {% for g in groups %}
+    <section class="band" id="{{ g.id }}">
+      <div class="band-head"><p class="slabel">{{ g.name }}</p></div>
+      {% if g.name == 'Resilience' %}
+      <div class="field" style="margin:var(--sp-3) 0">
+        <label><input type="checkbox" name="AUTO_RESUME_ON_BOOT" value="true"
+           {% if auto_resume_on_boot %}checked{% endif %}> Resume interrupted backups on restart
+           <code class="hint">AUTO_RESUME_ON_BOOT</code></label>
+      </div>
+      {% endif %}
+      {% for row in g.rows %}
+      <div class="field" style="margin:var(--sp-3) 0">
+        <label for="{{ row.key }}">{{ LABELS.get(row.key, row.key) }} <code class="hint">{{ row.key }}</code></label>
+        <input id="{{ row.key }}" name="{{ row.key }}" value="{{ row.value }}">
+        {% if NOTES.get(row.key) %}<p class="when">{{ NOTES[row.key] }}</p>{% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endfor %}
+
+    <section class="band" id="band-save">
+      <div class="band-head"><p class="slabel">Save</p></div>
+      <p class="when">Blank fields take the default. The time zone applies after a restart.</p>
+      <div class="formfoot">
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </section>
+  </form>
+</div>
+{% endblock %}
