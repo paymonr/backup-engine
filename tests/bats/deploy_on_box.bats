@@ -34,3 +34,31 @@ setup() {
   run keep_volume 1401ebc6a5f9 /backup 1 "/backup/media"
   [ "$status" -eq 1 ]
 }
+
+# carried_mounts: the wiring. Real Tower state (2026-10-10): the stray volume shows up BOTH in
+# HostConfig.Binds (an earlier deploy passed it as --volume <id>:/backup/appdata) and in .Mounts.
+VOL=1401ebc6a5f9e494af6610f26b13fa079446690e61b9102a951cf4c89971251f
+# each case stubs volume_is_anonymous (no docker in tests) inside its own bash -c
+
+@test "carried_mounts drops the stray anonymous volume from Binds and Mounts, keeps host binds" {
+  run bash -c "source '$BATS_TEST_DIRNAME/../../tools/unraid/deploy_on_box.sh'; volume_is_anonymous() { [ \"\$1\" = $VOL ]; }; carried_mounts '/backup/media /config /cache' '$VOL:/backup/appdata' '/mnt/user:/backup/media:ro' '/mnt/user/appdata/backup-engine/config:/config' '/mnt/user/appdata/backup-engine/cache:/cache' -- '$VOL:/backup/appdata' 2>/dev/null"
+  [ "$output" = "/mnt/user:/backup/media:ro
+/mnt/user/appdata/backup-engine/config:/config
+/mnt/user/appdata/backup-engine/cache:/cache" ]
+}
+
+@test "carried_mounts keeps an anonymous volume the new image still declares, once" {
+  run bash -c "source '$BATS_TEST_DIRNAME/../../tools/unraid/deploy_on_box.sh'; volume_is_anonymous() { [ \"\$1\" = $VOL ]; }; carried_mounts '/cache' '$VOL:/cache' -- '$VOL:/cache' 2>/dev/null"
+  [ "$output" = "$VOL:/cache" ]
+}
+
+@test "carried_mounts keeps a named volume and a mount not covered by a bind" {
+  run bash -c "source '$BATS_TEST_DIRNAME/../../tools/unraid/deploy_on_box.sh'; volume_is_anonymous() { return 1; }; carried_mounts '' '/mnt/user:/backup/media:ro' -- 'mydata:/data' 2>/dev/null"
+  [ "$output" = "/mnt/user:/backup/media:ro
+mydata:/data" ]
+}
+
+@test "carried_mounts says on stderr which volume it drops" {
+  run bash -c "source '$BATS_TEST_DIRNAME/../../tools/unraid/deploy_on_box.sh'; volume_is_anonymous() { return 0; }; carried_mounts '/config' 'abc:/backup/appdata' -- 2>&1 >/dev/null"
+  [[ "$output" == *"not carrying anonymous volume abc"*"/backup/appdata"* ]]
+}

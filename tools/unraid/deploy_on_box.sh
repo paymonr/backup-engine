@@ -18,6 +18,40 @@ keep_volume() {
   return 1
 }
 
+# volume_is_anonymous NAME — exit 0 if Docker labels NAME as an anonymous volume
+volume_is_anonymous() {
+  docker volume inspect -f '{{json .Labels}}' "$1" 2>/dev/null | grep -q '"com.docker.volume.anonymous"'
+}
+
+# carried_mounts "DECLARED DESTS" BIND... -- MOUNT... — print, one per line, the specs to pass as
+# --volume to the new container: every host-path bind, named volumes, and anonymous volumes only while
+# keep_volume says so. A volume can appear in both HostConfig.Binds (passed as --volume NAME:DEST by an
+# earlier deploy) and .Mounts; each destination is emitted at most once. Drops are reported on stderr.
+carried_mounts() {
+  local declared=$1; shift
+  local -a binds=() mounts=()
+  local x after_sep=0
+  for x in "$@"; do
+    if [ "$x" = "--" ]; then after_sep=1; continue; fi
+    [ -z "$x" ] && continue
+    if [ "$after_sep" = 0 ]; then binds+=("$x"); else mounts+=("$x"); fi
+  done
+  local -A handled=()
+  local spec src rest dest anon
+  for spec in "${binds[@]}" "${mounts[@]}"; do
+    src=${spec%%:*}; rest=${spec#*:}; dest=${rest%%:*}
+    [ -n "${handled[$dest]:-}" ] && continue
+    handled[$dest]=1
+    if [ "${src:0:1}" = / ]; then echo "$spec"; continue; fi
+    anon=0; volume_is_anonymous "$src" && anon=1
+    if keep_volume "$src" "$dest" "$anon" "$declared"; then
+      echo "$spec"
+    else
+      echo "-- not carrying anonymous volume $src: $dest is no longer declared by the new image" >&2
+    fi
+  done
+}
+
 main() {
 echo "== deploy start $(date -u +%FT%TZ) =="
 
@@ -37,7 +71,6 @@ ARGS=(-d --name "$CON")
 [ -n "$RESTART" ] && [ "$RESTART" != "no" ] && ARGS+=(--restart "$RESTART")
 [ -n "$NET" ] && ARGS+=(--network "$NET")
 for e in "${ENVS[@]}";  do [ -n "$e" ] && ARGS+=(--env  "$e"); done
-for b in "${BINDS[@]}"; do [ -n "$b" ] && ARGS+=(--volume "$b"); done
 for l in "${LABELS[@]}"; do [ -n "$l" ] && ARGS+=(--label "$l"); done
 if [ -n "$PORTBINDS" ]; then for pb in $PORTBINDS; do ARGS+=(--publish "${pb%%/*}"); done
 else ARGS+=(--publish 8099:8099); fi
@@ -51,20 +84,10 @@ if ! docker build -t "$IMG" "$BUILD"; then
   echo "FATAL: build failed — live container untouched, nothing changed."; exit 1
 fi
 
-# Volumes not already covered by Binds; drop anonymous ones the new image no longer declares
+# Binds + volumes, after the build: anonymous volumes the new image no longer declares are dropped
 DECLARED=$(docker image inspect -f '{{range $k,$v := .Config.Volumes}}{{$k}} {{end}}' "$IMG")
-for m in "${MOUNTS[@]}"; do
-  [ -z "$m" ] && continue
-  dup=0; for b in "${BINDS[@]}"; do [ "$b" = "$m" ] && dup=1; done
-  [ "$dup" = 1 ] && continue
-  name=${m%%:*}; dest=${m#*:}
-  anon=0; docker volume inspect -f '{{json .Labels}}' "$name" 2>/dev/null | grep -q '"com.docker.volume.anonymous"' && anon=1
-  if keep_volume "$name" "$dest" "$anon" "$DECLARED"; then
-    ARGS+=(--volume "$m")
-  else
-    echo "-- not carrying anonymous volume $name: $dest is no longer declared by $IMG"
-  fi
-done
+mapfile -t CARRY < <(carried_mounts "$DECLARED" "${BINDS[@]}" -- "${MOUNTS[@]}")
+for v in "${CARRY[@]}"; do [ -n "$v" ] && ARGS+=(--volume "$v"); done
 
 # 3) Recreate: stop old, rename to -prev (drop any stale -prev first), run new
 docker stop "$CON"
