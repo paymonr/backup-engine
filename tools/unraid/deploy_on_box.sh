@@ -7,6 +7,18 @@ BUILD=/root/backup-engine-build
 IMG=backup-engine:cost
 CON=backup-engine
 
+# keep_volume NAME DEST ANONYMOUS(0|1) "DECLARED DESTS" — exit 0 to carry the volume onto the new
+# container. Named volumes are always kept. An anonymous volume only exists because an image declared
+# VOLUME DEST; carry it only while the new image still declares DEST, so a removed VOLUME doesn't
+# survive every deploy as an empty, unmapped volume.
+keep_volume() {
+  local dest=$2 anonymous=$3 d
+  [ "$anonymous" = 0 ] && return 0
+  for d in $4; do [ "$d" = "$dest" ] && return 0; done
+  return 1
+}
+
+main() {
 echo "== deploy start $(date -u +%FT%TZ) =="
 
 docker inspect "$CON" >/dev/null 2>&1 || { echo "FATAL: container $CON not running"; exit 1; }
@@ -26,12 +38,6 @@ ARGS=(-d --name "$CON")
 [ -n "$NET" ] && ARGS+=(--network "$NET")
 for e in "${ENVS[@]}";  do [ -n "$e" ] && ARGS+=(--env  "$e"); done
 for b in "${BINDS[@]}"; do [ -n "$b" ] && ARGS+=(--volume "$b"); done
-# named volumes not already covered by Binds
-for m in "${MOUNTS[@]}"; do
-  [ -z "$m" ] && continue
-  dup=0; for b in "${BINDS[@]}"; do [ "$b" = "$m" ] && dup=1; done
-  [ "$dup" = 0 ] && ARGS+=(--volume "$m")
-done
 for l in "${LABELS[@]}"; do [ -n "$l" ] && ARGS+=(--label "$l"); done
 if [ -n "$PORTBINDS" ]; then for pb in $PORTBINDS; do ARGS+=(--publish "${pb%%/*}"); done
 else ARGS+=(--publish 8099:8099); fi
@@ -44,6 +50,21 @@ echo "-- building $IMG from $BUILD ..."
 if ! docker build -t "$IMG" "$BUILD"; then
   echo "FATAL: build failed — live container untouched, nothing changed."; exit 1
 fi
+
+# Volumes not already covered by Binds; drop anonymous ones the new image no longer declares
+DECLARED=$(docker image inspect -f '{{range $k,$v := .Config.Volumes}}{{$k}} {{end}}' "$IMG")
+for m in "${MOUNTS[@]}"; do
+  [ -z "$m" ] && continue
+  dup=0; for b in "${BINDS[@]}"; do [ "$b" = "$m" ] && dup=1; done
+  [ "$dup" = 1 ] && continue
+  name=${m%%:*}; dest=${m#*:}
+  anon=0; docker volume inspect -f '{{json .Labels}}' "$name" 2>/dev/null | grep -q '"com.docker.volume.anonymous"' && anon=1
+  if keep_volume "$name" "$dest" "$anon" "$DECLARED"; then
+    ARGS+=(--volume "$m")
+  else
+    echo "-- not carrying anonymous volume $name: $dest is no longer declared by $IMG"
+  fi
+done
 
 # 3) Recreate: stop old, rename to -prev (drop any stale -prev first), run new
 docker stop "$CON"
@@ -77,3 +98,7 @@ case "$code" in
     echo "ROLLED BACK; previous container health -> HTTP $rb"; exit 1
     ;;
 esac
+}
+
+# Run only when executed (the bats test sources this file for keep_volume)
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
